@@ -1,0 +1,44 @@
+# 依赖
+node_modules/
+server/node_modules/
+
+# 环境变量和配置
+.env
+.env.local
+.env.*.local
+server/.env
+server/.env.local
+
+# Umi 构建产物
+/.umirc.local.ts
+/config/config.local.ts
+/src/.umi
+/src/.umi-production
+/src/.umi-test
+/.umi
+/.umi-production
+/.umi-test
+/dist
+/.mfsu
+.swc
+
+# 日志
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# 系统文件
+.DS_Store
+Thumbs.db
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# 临时文件
+*.tmp
+.cache/
