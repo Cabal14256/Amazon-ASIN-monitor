@@ -9,13 +9,13 @@ import {
   Button,
   Form,
   Input,
-  message,
   Modal,
   Popconfirm,
   Space,
   Switch,
 } from 'antd';
 import React, { useRef, useState } from 'react';
+import { useMessage } from '@/utils/message';
 
 const {
   getFeishuConfigs,
@@ -31,6 +31,7 @@ const regionMap: Record<string, string> = {
 };
 
 const FeishuConfigPage: React.FC<unknown> = () => {
+  const message = useMessage();
   const actionRef = useRef<ActionType>();
   const [modalVisible, setModalVisible] = useState(false);
   const [editingConfig, setEditingConfig] =

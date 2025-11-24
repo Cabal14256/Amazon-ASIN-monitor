@@ -5,13 +5,15 @@ import {
   ProFormSwitch,
   ProFormText,
 } from '@ant-design/pro-components';
-import { Alert, Card, Space, Tabs, message } from 'antd';
+import { Alert, Card, Space, Tabs } from 'antd';
 import React, { useEffect, useState } from 'react';
+import { useMessage } from '@/utils/message';
 
 const { getSPAPIConfigs, updateSPAPIConfig } = services.SPAPIConfigController;
 const { getFeishuConfigs, upsertFeishuConfig } = services.FeishuController;
 
 const SettingsPage: React.FC<unknown> = () => {
+  const message = useMessage();
   const [spApiConfigs, setSpApiConfigs] = useState<API.SPAPIConfig[]>([]);
   const [feishuConfigs, setFeishuConfigs] = useState<API.FeishuConfig[]>([]);
   const [loading, setLoading] = useState(false);

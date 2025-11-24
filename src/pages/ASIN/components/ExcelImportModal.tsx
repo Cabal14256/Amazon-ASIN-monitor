@@ -1,9 +1,10 @@
 import services from '@/services/asin';
 import { DownloadOutlined, UploadOutlined } from '@ant-design/icons';
 import type { UploadFile, UploadProps } from 'antd';
-import { Alert, Button, message, Modal, Progress, Table, Upload } from 'antd';
+import { Alert, Button, Modal, Progress, Table, Upload } from 'antd';
 import type { RcFile } from 'antd/es/upload';
 import React, { useState } from 'react';
+import { useMessage } from '@/utils/message';
 
 const { importFromExcel } = services.ASINController;
 
@@ -24,6 +25,7 @@ interface ImportResult {
 
 const ExcelImportModal: React.FC<ExcelImportModalProps> = (props) => {
   const { visible, open, onCancel, onSuccess } = props;
+  const message = useMessage();
   const modalVisible = open !== undefined ? open : visible;
   const [fileList, setFileList] = useState<UploadFile[]>([]);
   const [uploading, setUploading] = useState(false);

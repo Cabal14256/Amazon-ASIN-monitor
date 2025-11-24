@@ -4,8 +4,8 @@ import {
   ProFormSelect,
   ProFormText,
 } from '@ant-design/pro-components';
-import { message } from 'antd';
 import React from 'react';
+import { useMessage } from '@/utils/message';
 
 const { addVariantGroup, modifyVariantGroup } = services.ASINController;
 
@@ -18,6 +18,7 @@ interface VariantGroupFormProps {
 
 const VariantGroupForm: React.FC<VariantGroupFormProps> = (props) => {
   const { modalVisible, onCancel, onSubmit, values } = props;
+  const message = useMessage();
   const isEdit = !!values?.id;
 
   const handleSubmit = async (formValues: API.VariantGroupVO) => {

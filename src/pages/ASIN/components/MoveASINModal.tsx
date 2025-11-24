@@ -1,6 +1,7 @@
 import services from '@/services/asin';
-import { Modal, Select, message } from 'antd';
+import { Modal, Select } from 'antd';
 import React, { useEffect, useState } from 'react';
+import { useMessage } from '@/utils/message';
 
 const { moveASIN, queryVariantGroupList } = services.ASINController;
 
@@ -14,6 +15,7 @@ interface MoveASINModalProps {
 
 const MoveASINModal: React.FC<MoveASINModalProps> = (props) => {
   const { visible, asinId, currentGroupId, onCancel, onSuccess } = props;
+  const message = useMessage();
   const [targetGroupId, setTargetGroupId] = useState<string>();
   const [variantGroups, setVariantGroups] = useState<API.VariantGroup[]>([]);
   const [loading, setLoading] = useState(false);

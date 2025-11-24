@@ -9,8 +9,9 @@ import {
 } from '@ant-design/pro-components';
 import { history } from '@umijs/max';
 import type { MenuProps } from 'antd';
-import { Button, Dropdown, message, Space, Switch, Tag } from 'antd';
+import { Button, Dropdown, Space, Switch, Tag } from 'antd';
 import React, { useRef, useState } from 'react';
+import { useMessage } from '@/utils/message';
 import ASINForm from './components/ASINForm';
 import ExcelImportModal from './components/ExcelImportModal';
 import MoveASINModal from './components/MoveASINModal';
@@ -38,41 +39,42 @@ const countryMap: Record<
   ES: { text: '西班牙', color: 'magenta', region: 'EU' },
 };
 
-/**
- * 删除节点
- */
-const handleRemove = async (
-  selectedRows: (API.VariantGroup | API.ASINInfo)[],
-) => {
-  const hide = message.loading('正在删除');
-  if (!selectedRows || selectedRows.length === 0) return true;
-  try {
-    // 区分变体组和ASIN进行删除
-    for (const row of selectedRows) {
-      if ((row as API.VariantGroup).parentId === undefined) {
-        // 变体组
-        await deleteVariantGroup({
-          groupId: row.id || '',
-        });
-      } else {
-        // ASIN
-        await deleteASIN({
-          asinId: row.id || '',
-        });
-      }
-    }
-    hide();
-    message.success('删除成功，即将刷新');
-    return true;
-  } catch (error) {
-    hide();
-    message.error('删除失败，请重试');
-    return false;
-  }
-};
-
 const ASINManagement: React.FC<unknown> = () => {
+  const message = useMessage();
   const actionRef = useRef<ActionType>();
+
+  /**
+   * 删除节点
+   */
+  const handleRemove = async (
+    selectedRows: (API.VariantGroup | API.ASINInfo)[],
+  ) => {
+    const hide = message.loading('正在删除');
+    if (!selectedRows || selectedRows.length === 0) return true;
+    try {
+      // 区分变体组和ASIN进行删除
+      for (const row of selectedRows) {
+        if ((row as API.VariantGroup).parentId === undefined) {
+          // 变体组
+          await deleteVariantGroup({
+            groupId: row.id || '',
+          });
+        } else {
+          // ASIN
+          await deleteASIN({
+            asinId: row.id || '',
+          });
+        }
+      }
+      hide();
+      message.success('删除成功，即将刷新');
+      return true;
+    } catch (error) {
+      hide();
+      message.error('删除失败，请重试');
+      return false;
+    }
+  };
   const [selectedRowsState, setSelectedRows] = useState<
     (API.VariantGroup | API.ASINInfo)[]
   >([]);

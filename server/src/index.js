@@ -2,6 +2,8 @@ const express = require('express');
 const cors = require('cors');
 require('dotenv').config();
 const { testConnection } = require('./config/database');
+const { initScheduler } = require('./services/schedulerService');
+const authRoutes = require('./routes/authRoutes');
 const asinRoutes = require('./routes/asinRoutes');
 const monitorRoutes = require('./routes/monitorRoutes');
 const variantCheckRoutes = require('./routes/variantCheckRoutes');
@@ -27,6 +29,7 @@ app.get('/health', (req, res) => {
 });
 
 // API路由
+app.use('/api/v1', authRoutes); // 认证路由（放在最前面，登录不需要认证）
 app.use('/api/v1', asinRoutes);
 app.use('/api/v1', monitorRoutes);
 app.use('/api/v1', variantCheckRoutes);
@@ -60,6 +63,9 @@ async function startServer() {
     console.error('⚠️  警告: 数据库连接失败，请检查配置');
     console.log('💡 提示: 请确保已创建数据库并配置 .env 文件');
   }
+
+  // 初始化定时任务
+  initScheduler();
 
   app.listen(PORT, () => {
     console.log(`🚀 服务器运行在 http://localhost:${PORT}`);

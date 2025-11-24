@@ -1,9 +1,10 @@
 import services from '@/services/asin';
 import { Column, Line, Pie } from '@ant-design/charts';
 import { PageContainer, StatisticCard } from '@ant-design/pro-components';
-import { App, Button, Card, Col, DatePicker, Row, Select, Space } from 'antd';
+import { Button, Card, Col, DatePicker, Row, Select, Space } from 'antd';
 import dayjs, { Dayjs } from 'dayjs';
 import React, { useEffect, useState } from 'react';
+import { useMessage } from '@/utils/message';
 
 const { RangePicker } = DatePicker;
 const {
@@ -24,7 +25,7 @@ const countryMap: Record<string, string> = {
 };
 
 const AnalyticsPageContent: React.FC<unknown> = () => {
-  const { message } = App.useApp();
+  const message = useMessage();
   const [dateRange, setDateRange] = useState<[Dayjs, Dayjs]>([
     dayjs().subtract(7, 'day'),
     dayjs(),

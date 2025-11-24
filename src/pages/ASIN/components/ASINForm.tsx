@@ -4,8 +4,8 @@ import {
   ProFormSelect,
   ProFormText,
 } from '@ant-design/pro-components';
-import { message } from 'antd';
 import React, { useEffect, useState } from 'react';
+import { useMessage } from '@/utils/message';
 
 const { addASIN, modifyASIN, queryVariantGroupList } = services.ASINController;
 
@@ -27,6 +27,7 @@ const ASINForm: React.FC<ASINFormProps> = (props) => {
     variantGroupId,
     variantGroupCountry,
   } = props;
+  const message = useMessage();
   const isEdit = !!values?.id;
   const [variantGroups, setVariantGroups] = useState<API.VariantGroup[]>([]);
 

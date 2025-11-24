@@ -42,3 +42,7 @@ Thumbs.db
 # 临时文件
 *.tmp
 .cache/
+
+# SpecStory 文件夹
+.specstory/
+specstory/
