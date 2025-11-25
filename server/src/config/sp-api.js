@@ -94,6 +94,8 @@ async function getAccessToken() {
       },
     };
 
+    console.log(`[getAccessToken] 正在获取访问令牌...`);
+
     const req = https.request(options, (res) => {
       let data = '';
       res.on('data', (chunk) => {
@@ -101,9 +103,29 @@ async function getAccessToken() {
       });
       res.on('end', () => {
         if (res.statusCode === 200) {
-          const response = JSON.parse(data);
-          resolve(response.access_token);
+          try {
+            const response = JSON.parse(data);
+            if (response.access_token) {
+              console.log(
+                `[getAccessToken] 访问令牌获取成功，长度: ${response.access_token.length}`,
+              );
+              resolve(response.access_token);
+            } else {
+              reject(
+                new Error(
+                  `获取访问令牌失败: 响应中缺少 access_token - ${JSON.stringify(
+                    response,
+                  )}`,
+                ),
+              );
+            }
+          } catch (e) {
+            reject(new Error(`解析访问令牌响应失败: ${e.message} - ${data}`));
+          }
         } else {
+          console.error(
+            `[getAccessToken] 获取访问令牌失败: ${res.statusCode} - ${data}`,
+          );
           reject(new Error(`获取访问令牌失败: ${res.statusCode} - ${data}`));
         }
       });
@@ -211,6 +233,12 @@ async function callSPAPI(method, path, country, params = {}, body = null) {
 
     // 获取访问令牌
     const accessToken = await getAccessToken();
+    if (!accessToken) {
+      throw new Error('无法获取访问令牌，请检查 LWA 配置');
+    }
+    console.log(
+      `[callSPAPI] Access Token 获取成功，长度: ${accessToken.length}`,
+    );
 
     // 确定端点和区域
     const region = SP_API_CONFIG.regionMap[country] || 'us-east-1';
@@ -220,8 +248,35 @@ async function callSPAPI(method, path, country, params = {}, body = null) {
     }
 
     // 构建URL
-    const queryString = new URLSearchParams(params).toString();
-    const url = `${endpoint}${path}${queryString ? '?' + queryString : ''}`;
+    // 如果path已经包含查询字符串，直接使用；否则从params构建
+    let url;
+    if (path.includes('?')) {
+      // path已经包含查询字符串
+      url = `${endpoint}${path}`;
+    } else if (params && Object.keys(params).length > 0) {
+      // 从params构建查询字符串
+      // SP-API要求数组参数在查询字符串中重复参数名
+      // 例如：marketplaceIds=xxx&includedData=variations
+      const queryParts = [];
+      for (const [key, value] of Object.entries(params)) {
+        if (Array.isArray(value)) {
+          // 如果是数组，重复参数名
+          value.forEach((v) => {
+            queryParts.push(`${key}=${encodeURIComponent(v)}`);
+          });
+        } else {
+          // 单个值
+          queryParts.push(`${key}=${encodeURIComponent(value)}`);
+        }
+      }
+      const queryString = queryParts.join('&');
+      url = `${endpoint}${path}${queryString ? '?' + queryString : ''}`;
+    } else {
+      url = `${endpoint}${path}`;
+    }
+
+    console.log(`[callSPAPI] 请求URL: ${url}`);
+    console.log(`[callSPAPI] 请求方法: ${method}, 国家: ${country}`);
     const urlObj = new URL(url);
 
     // 准备请求
@@ -229,11 +284,19 @@ async function callSPAPI(method, path, country, params = {}, body = null) {
     const headers = {
       host: urlObj.hostname,
       'x-amz-access-token': accessToken,
+      'user-agent': 'Amazon-ASIN-Monitor/1.0 (Language=Node.js)',
     };
 
     if (body) {
       headers['content-type'] = 'application/json';
     }
+
+    console.log(`[callSPAPI] 请求头（签名前）:`, {
+      host: headers.host,
+      'x-amz-access-token': headers['x-amz-access-token']
+        ? `${headers['x-amz-access-token'].substring(0, 20)}...`
+        : 'missing',
+    });
 
     // AWS签名
     const signatureHeaders = signRequest(
@@ -253,6 +316,17 @@ async function callSPAPI(method, path, country, params = {}, body = null) {
       ...signatureHeaders,
     };
 
+    console.log(`[callSPAPI] 最终请求头:`, {
+      host: finalHeaders.host,
+      'x-amz-access-token': finalHeaders['x-amz-access-token']
+        ? `${finalHeaders['x-amz-access-token'].substring(0, 20)}...`
+        : 'missing',
+      authorization: finalHeaders.authorization
+        ? `${finalHeaders.authorization.substring(0, 50)}...`
+        : 'missing',
+      'x-amz-date': finalHeaders['x-amz-date'],
+    });
+
     // 发送请求
     return new Promise((resolve, reject) => {
       const options = {
@@ -268,15 +342,38 @@ async function callSPAPI(method, path, country, params = {}, body = null) {
           data += chunk;
         });
         res.on('end', () => {
+          console.log(`[callSPAPI] 响应状态码: ${res.statusCode}`);
+          console.log(`[callSPAPI] 响应数据长度: ${data ? data.length : 0}`);
+
           if (res.statusCode >= 200 && res.statusCode < 300) {
             try {
               const response = data ? JSON.parse(data) : {};
+              console.log(`[callSPAPI] 响应解析成功:`, {
+                hasItems: !!response.items,
+                itemsCount: response.items ? response.items.length : 0,
+                keys: Object.keys(response),
+              });
+              // 输出完整的响应结构（限制长度以避免日志过长）
+              const responseStr = JSON.stringify(response);
+              if (responseStr.length < 1000) {
+                console.log(`[callSPAPI] 完整响应内容:`, responseStr);
+              } else {
+                console.log(
+                  `[callSPAPI] 响应内容（前500字符）:`,
+                  responseStr.substring(0, 500),
+                );
+              }
               resolve(response);
             } catch (e) {
+              console.log(`[callSPAPI] 响应解析失败，返回原始数据:`, e.message);
               resolve(data || {});
             }
           } else {
             const errorMsg = data || `HTTP ${res.statusCode}`;
+            console.error(`[callSPAPI] 请求失败:`, {
+              statusCode: res.statusCode,
+              errorMsg: errorMsg.substring(0, 500), // 限制日志长度
+            });
             reject(
               new Error(`SP-API调用失败: ${res.statusCode} - ${errorMsg}`),
             );

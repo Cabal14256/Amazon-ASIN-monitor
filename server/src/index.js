@@ -9,6 +9,12 @@ const monitorRoutes = require('./routes/monitorRoutes');
 const variantCheckRoutes = require('./routes/variantCheckRoutes');
 const feishuRoutes = require('./routes/feishuRoutes');
 const spApiConfigRoutes = require('./routes/spApiConfigRoutes');
+const userRoutes = require('./routes/userRoutes');
+const roleRoutes = require('./routes/roleRoutes');
+const dashboardRoutes = require('./routes/dashboardRoutes');
+const auditLogRoutes = require('./routes/auditLogRoutes');
+const exportRoutes = require('./routes/exportRoutes');
+const auditLogMiddleware = require('./middleware/auditLog');
 
 const app = express();
 const PORT = process.env.PORT || 3001;
@@ -30,11 +36,20 @@ app.get('/health', (req, res) => {
 
 // API路由
 app.use('/api/v1', authRoutes); // 认证路由（放在最前面，登录不需要认证）
+
+// 审计日志中间件（在需要记录的操作路由之前）
+app.use('/api/v1', auditLogMiddleware);
+
+app.use('/api/v1', dashboardRoutes); // 仪表盘路由
 app.use('/api/v1', asinRoutes);
 app.use('/api/v1', monitorRoutes);
 app.use('/api/v1', variantCheckRoutes);
 app.use('/api/v1', feishuRoutes);
 app.use('/api/v1', spApiConfigRoutes);
+app.use('/api/v1', userRoutes); // 用户管理路由
+app.use('/api/v1', roleRoutes); // 角色和权限管理路由
+app.use('/api/v1', auditLogRoutes); // 审计日志路由
+app.use('/api/v1', exportRoutes); // 导出路由
 
 // 404处理
 app.use((req, res) => {
@@ -70,6 +85,7 @@ async function startServer() {
   app.listen(PORT, () => {
     console.log(`🚀 服务器运行在 http://localhost:${PORT}`);
     console.log(`📝 API文档: http://localhost:${PORT}/api/v1`);
+    console.log(`📊 仪表盘API: http://localhost:${PORT}/api/v1/dashboard`);
   });
 }
 

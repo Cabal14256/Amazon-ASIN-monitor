@@ -49,6 +49,7 @@ mysql -u root -p < server/database/init.sql
 - `001_add_asin_type.sql`: 添加 ASIN 类型字段
 - `002_add_monitor_fields.sql`: 添加监控更新时间和飞书通知字段
 - `003_add_site_and_brand.sql`: 添加站点和品牌字段
+- `005_remove_batch_tables.sql`: 删除批次管理相关表（批次功能已不再需要）
 
 **执行方式**:
 
@@ -107,9 +108,13 @@ mysql -u root -p amazon_asin_monitor < server/database/migrations/003_add_site_a
 - `variant_groups`: 变体组表
 - `asins`: ASIN 表（包含类型、监控时间、通知开关等字段）
 - `monitor_history`: 监控历史表
-- `batches`: 批次表
-- `batch_variant_groups`: 批次变体组关联表
 - `feishu_config`: 飞书通知配置表
+- `sp_api_config`: SP-API 配置表
+- `users`: 用户表
+- `roles`: 角色表
+- `permissions`: 权限表
+- `user_roles`: 用户角色关联表
+- `role_permissions`: 角色权限关联表
 
 详细表结构请查看 `init.sql` 文件。
 
@@ -126,3 +131,4 @@ mysql -u root -p amazon_asin_monitor < server/database/migrations/003_add_site_a
 - **v1.1**: 添加 ASIN 类型字段（001_add_asin_type.sql）
 - **v1.2**: 添加监控更新时间和飞书通知字段（002_add_monitor_fields.sql）
 - **v1.3**: 添加站点和品牌字段（003_add_site_and_brand.sql）
+- **v1.4**: 删除批次管理相关表（005_remove_batch_tables.sql）

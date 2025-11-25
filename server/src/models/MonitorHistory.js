@@ -78,8 +78,20 @@ class MonitorHistory {
 
     const list = await query(sql, conditions);
 
+    // 转换字段名：数据库下划线命名 -> 前端驼峰命名
+    const formattedList = list.map((item) => ({
+      ...item,
+      checkTime: item.check_time,
+      checkType: item.check_type,
+      isBroken: item.is_broken,
+      notificationSent: item.notification_sent,
+      variantGroupName: item.variant_group_name,
+      asinName: item.asin_name,
+      createTime: item.create_time,
+    }));
+
     return {
-      list,
+      list: formattedList,
       total,
       current: Number(current),
       pageSize: Number(pageSize),
@@ -100,6 +112,20 @@ class MonitorHistory {
       WHERE mh.id = ?`,
       [id],
     );
+
+    if (history) {
+      // 转换字段名：数据库下划线命名 -> 前端驼峰命名
+      return {
+        ...history,
+        checkTime: history.check_time,
+        checkType: history.check_type,
+        isBroken: history.is_broken,
+        notificationSent: history.notification_sent,
+        variantGroupName: history.variant_group_name,
+        asinName: history.asin_name,
+        createTime: history.create_time,
+      };
+    }
     return history;
   }
 
@@ -181,7 +207,14 @@ class MonitorHistory {
     }
 
     const [result] = await query(sql, conditions);
-    return result;
+    // 将数据库字段名转换为前端期望的 camelCase 格式
+    return {
+      totalChecks: result?.total_checks || 0,
+      brokenCount: result?.broken_count || 0,
+      normalCount: result?.normal_count || 0,
+      groupCount: result?.group_count || 0,
+      asinCount: result?.asin_count || 0,
+    };
   }
 
   // 按时间分组统计

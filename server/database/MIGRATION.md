@@ -84,3 +84,39 @@ mysql -u root -p amazon_asin_monitor < server/database/migrations/003_add_site_a
 - 表示产品品牌名称
 - 例如：Apple, Samsung, Sony 等
 - **必填字段**，不能为 NULL
+
+---
+
+## 删除批次管理相关表
+
+执行以下 SQL 语句删除批次管理相关的表（批次管理功能已不再需要）：
+
+```sql
+USE `amazon_asin_monitor`;
+
+-- 删除批次变体组关联表（先删除，因为有外键依赖）
+DROP TABLE IF EXISTS `batch_variant_groups`;
+
+-- 删除批次表
+DROP TABLE IF EXISTS `batches`;
+```
+
+或者直接执行迁移脚本：
+
+```bash
+mysql -u root -p amazon_asin_monitor < server/database/migrations/005_remove_batch_tables.sql
+```
+
+## 功能说明
+
+**删除原因**:
+
+- 批次管理功能已不再需要
+- 删除 `batches` 表（批次表）
+- 删除 `batch_variant_groups` 表（批次变体组关联表）
+
+**注意事项**:
+
+- ⚠️ 执行前请备份数据库
+- ⚠️ 删除操作不可逆，请确认后再执行
+- ⚠️ 如果表中有数据，删除前请先导出备份

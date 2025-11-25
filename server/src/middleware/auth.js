@@ -65,6 +65,7 @@ function checkPermission(permissionCode) {
   return async (req, res, next) => {
     try {
       if (!req.userId) {
+        console.log('[checkPermission] 未认证', { permissionCode });
         return res.status(401).json({
           success: false,
           errorMessage: '未认证',
@@ -77,7 +78,17 @@ function checkPermission(permissionCode) {
         permissionCode,
       );
 
+      console.log('[checkPermission] 权限检查结果', {
+        userId: req.userId,
+        permissionCode,
+        hasPermission,
+      });
+
       if (!hasPermission) {
+        console.log('[checkPermission] 权限不足', {
+          userId: req.userId,
+          permissionCode,
+        });
         return res.status(403).json({
           success: false,
           errorMessage: '没有权限执行此操作',
@@ -87,7 +98,7 @@ function checkPermission(permissionCode) {
 
       next();
     } catch (error) {
-      console.error('权限检查错误:', error);
+      console.error('[checkPermission] 权限检查错误:', error);
       return res.status(500).json({
         success: false,
         errorMessage: '权限检查失败',
@@ -117,9 +128,7 @@ function checkRole(roleCodes) {
       const userRoles = await User.getUserRoles(req.userId);
       const userRoleCodes = userRoles.map((r) => r.code);
 
-      const hasRole = allowedRoles.some((role) =>
-        userRoleCodes.includes(role),
-      );
+      const hasRole = allowedRoles.some((role) => userRoleCodes.includes(role));
 
       if (!hasRole) {
         return res.status(403).json({

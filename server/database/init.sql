@@ -72,32 +72,6 @@ CREATE TABLE IF NOT EXISTS `monitor_history` (
   FOREIGN KEY (`asin_id`) REFERENCES `asins`(`id`) ON DELETE SET NULL
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='监控历史表';
 
--- 批次表
-CREATE TABLE IF NOT EXISTS `batches` (
-  `id` VARCHAR(50) PRIMARY KEY COMMENT '批次ID',
-  `name` VARCHAR(255) NOT NULL COMMENT '批次名称',
-  `description` TEXT COMMENT '批次描述',
-  `country` VARCHAR(10) COMMENT '国家(可选)',
-  `status` VARCHAR(20) DEFAULT 'ACTIVE' COMMENT '批次状态: ACTIVE-活跃, ARCHIVED-已归档',
-  `create_time` DATETIME DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
-  `update_time` DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT '更新时间',
-  INDEX `idx_status` (`status`),
-  INDEX `idx_create_time` (`create_time`)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='批次表';
-
--- 批次关联表
-CREATE TABLE IF NOT EXISTS `batch_variant_groups` (
-  `id` BIGINT AUTO_INCREMENT PRIMARY KEY,
-  `batch_id` VARCHAR(50) NOT NULL COMMENT '批次ID',
-  `variant_group_id` VARCHAR(50) NOT NULL COMMENT '变体组ID',
-  `create_time` DATETIME DEFAULT CURRENT_TIMESTAMP,
-  UNIQUE KEY `uk_batch_group` (`batch_id`, `variant_group_id`),
-  INDEX `idx_batch_id` (`batch_id`),
-  INDEX `idx_variant_group_id` (`variant_group_id`),
-  FOREIGN KEY (`batch_id`) REFERENCES `batches`(`id`) ON DELETE CASCADE,
-  FOREIGN KEY (`variant_group_id`) REFERENCES `variant_groups`(`id`) ON DELETE CASCADE
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='批次变体组关联表';
-
 -- 飞书通知配置表（按区域配置：US和EU）
 CREATE TABLE IF NOT EXISTS `feishu_config` (
   `id` INT AUTO_INCREMENT PRIMARY KEY,

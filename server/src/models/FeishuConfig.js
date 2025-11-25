@@ -6,7 +6,15 @@ class FeishuConfig {
     const list = await query(
       `SELECT * FROM feishu_config WHERE country IN ('US', 'EU') ORDER BY country ASC`,
     );
-    return list;
+    // 转换字段名为驼峰命名
+    return list.map((item) => ({
+      id: item.id,
+      country: item.country,
+      webhookUrl: item.webhook_url,
+      enabled: item.enabled,
+      createTime: item.create_time,
+      updateTime: item.update_time,
+    }));
   }
 
   // 根据国家查询配置（映射到区域）
@@ -42,8 +50,11 @@ class FeishuConfig {
   static async upsert(data) {
     const { country, webhookUrl, enabled = 1 } = data;
 
-    // 检查是否已存在
-    const existing = await this.findByCountry(country);
+    // 检查是否已存在（不检查 enabled 状态）
+    const [existing] = await query(
+      `SELECT * FROM feishu_config WHERE country = ?`,
+      [country],
+    );
 
     if (existing) {
       // 更新
@@ -59,7 +70,23 @@ class FeishuConfig {
       );
     }
 
-    return this.findByCountry(country);
+    // 返回更新后的配置（不检查 enabled 状态）
+    const [updated] = await query(
+      `SELECT * FROM feishu_config WHERE country = ?`,
+      [country],
+    );
+    // 转换字段名为驼峰命名
+    if (updated) {
+      return {
+        id: updated.id,
+        country: updated.country,
+        webhookUrl: updated.webhook_url,
+        enabled: updated.enabled,
+        createTime: updated.create_time,
+        updateTime: updated.update_time,
+      };
+    }
+    return null;
   }
 
   // 删除配置
