@@ -1,68 +1,147 @@
 require('dotenv').config();
 const crypto = require('crypto');
 const https = require('https');
+const SPAPIConfig = require('../models/SPAPIConfig');
 
-// SP-API配置（支持从数据库读取）
-let SP_API_CONFIG = {
-  // LWA (Login with Amazon) 配置
-  lwaClientId: process.env.SP_API_LWA_CLIENT_ID || '',
-  lwaClientSecret: process.env.SP_API_LWA_CLIENT_SECRET || '',
-  refreshToken: process.env.SP_API_REFRESH_TOKEN || '',
+const COUNTRY_REGION_MAP = {
+  US: 'US',
+  UK: 'EU',
+  DE: 'EU',
+  FR: 'EU',
+  IT: 'EU',
+  ES: 'EU',
+};
 
-  // AWS IAM配置
-  accessKeyId: process.env.SP_API_ACCESS_KEY_ID || '',
-  secretAccessKey: process.env.SP_API_SECRET_ACCESS_KEY || '',
-  roleArn: process.env.SP_API_ROLE_ARN || '',
-
-  // API端点（根据区域不同）
-  endpoints: {
-    US: 'https://sellingpartnerapi-na.amazon.com', // US区域
-    EU: 'https://sellingpartnerapi-eu.amazon.com', // EU区域（包括UK、DE、FR、IT、ES）
+const REGION_SETTINGS = {
+  US: {
+    endpoint: 'https://sellingpartnerapi-na.amazon.com',
+    awsRegion: 'us-east-1',
+    envSuffix: 'US',
   },
-
-  // 区域映射
-  regionMap: {
-    US: 'us-east-1',
-    UK: 'eu-west-1',
-    DE: 'eu-west-1',
-    FR: 'eu-west-1',
-    IT: 'eu-west-1',
-    ES: 'eu-west-1',
+  EU: {
+    endpoint: 'https://sellingpartnerapi-eu.amazon.com',
+    awsRegion: 'eu-west-1',
+    envSuffix: 'EU',
   },
 };
+
+const REGION_FIELD_SPECS = {
+  lwaClientId: 'LWA_CLIENT_ID',
+  lwaClientSecret: 'LWA_CLIENT_SECRET',
+  refreshToken: 'REFRESH_TOKEN',
+};
+
+const GLOBAL_AWS_FIELD_SPECS = {
+  accessKeyId: 'ACCESS_KEY_ID',
+  secretAccessKey: 'SECRET_ACCESS_KEY',
+  roleArn: 'ROLE_ARN',
+};
+
+// 初始化配置（先从环境变量读取）
+let SP_API_CONFIG = {
+  regionConfigs: {
+    US: buildRegionConfig('US'),
+    EU: buildRegionConfig('EU'),
+  },
+  aws: buildGlobalAWSConfig(),
+  endpoints: {
+    US: REGION_SETTINGS.US.endpoint,
+    EU: REGION_SETTINGS.EU.endpoint,
+  },
+  regionMap: COUNTRY_REGION_MAP,
+};
+
+const ACCESS_TOKEN_CACHE = {
+  US: null,
+  EU: null,
+};
+
+function buildRegionConfig(region) {
+  const suffix = REGION_SETTINGS[region]?.envSuffix || region;
+  const fallbackPrefix = 'SP_API_';
+  const result = {};
+  for (const [fieldKey, fieldSuffix] of Object.entries(REGION_FIELD_SPECS)) {
+    const envKey = `SP_API_${suffix}_${fieldSuffix}`;
+    const fallbackEnvKey = `${fallbackPrefix}${fieldSuffix}`;
+    result[fieldKey] =
+      process.env[envKey] || process.env[fallbackEnvKey] || '';
+  }
+  result.accessKeyId = '';
+  result.secretAccessKey = '';
+  result.roleArn = '';
+  return result;
+}
+
+function buildGlobalAWSConfig() {
+  const result = {};
+  const fallbackPrefix = 'SP_API_';
+  for (const [fieldKey, fieldSuffix] of Object.entries(
+    GLOBAL_AWS_FIELD_SPECS,
+  )) {
+    const envKey = `${fallbackPrefix}${fieldSuffix}`;
+    result[fieldKey] = process.env[envKey] || '';
+  }
+  return result;
+}
 
 // 从数据库加载配置
 async function loadConfigFromDatabase() {
   try {
-    const SPAPIConfig = require('../models/SPAPIConfig');
-    const configs = await SPAPIConfig.getAllAsObject();
+    const configs = await SPAPIConfig.findAll();
+    const configMap = {};
+    configs.forEach((item) => {
+      if (item.config_key) {
+        configMap[item.config_key] = item.config_value;
+      }
+    });
 
-    // 更新配置（如果数据库中有值，优先使用数据库的值）
-    if (configs.SP_API_LWA_CLIENT_ID) {
-      SP_API_CONFIG.lwaClientId = configs.SP_API_LWA_CLIENT_ID;
+    const awsConfig = {};
+    for (const [fieldKey, fieldSuffix] of Object.entries(
+      GLOBAL_AWS_FIELD_SPECS,
+    )) {
+      const key = `SP_API_${fieldSuffix}`;
+      awsConfig[fieldKey] = configMap[key] || SP_API_CONFIG.aws[fieldKey] || '';
     }
-    if (configs.SP_API_LWA_CLIENT_SECRET) {
-      SP_API_CONFIG.lwaClientSecret = configs.SP_API_LWA_CLIENT_SECRET;
-    }
-    if (configs.SP_API_REFRESH_TOKEN) {
-      SP_API_CONFIG.refreshToken = configs.SP_API_REFRESH_TOKEN;
-    }
-    if (configs.SP_API_ACCESS_KEY_ID) {
-      SP_API_CONFIG.accessKeyId = configs.SP_API_ACCESS_KEY_ID;
-    }
-    if (configs.SP_API_SECRET_ACCESS_KEY) {
-      SP_API_CONFIG.secretAccessKey = configs.SP_API_SECRET_ACCESS_KEY;
-    }
-    if (configs.SP_API_ROLE_ARN) {
-      SP_API_CONFIG.roleArn = configs.SP_API_ROLE_ARN;
+    SP_API_CONFIG.aws = awsConfig;
+
+    for (const region of Object.keys(REGION_SETTINGS)) {
+      const regionConfig = buildRegionConfig(region);
+      for (const [fieldKey, fieldSuffix] of Object.entries(
+        REGION_FIELD_SPECS,
+      )) {
+        const regionKey = `SP_API_${REGION_SETTINGS[region].envSuffix}_${fieldSuffix}`;
+        const fallbackKey = `SP_API_${fieldSuffix}`;
+        const value =
+          configMap[regionKey] ||
+          configMap[fallbackKey] ||
+          regionConfig[fieldKey];
+        if (value) {
+          regionConfig[fieldKey] = value;
+        }
+      }
+
+      for (const [fieldKey, fieldSuffix] of Object.entries(
+        GLOBAL_AWS_FIELD_SPECS,
+      )) {
+        const regionKey = `SP_API_${REGION_SETTINGS[region].envSuffix}_${fieldSuffix}`;
+        const fallbackKey = `SP_API_${fieldSuffix}`;
+        const value =
+          configMap[regionKey] ||
+          configMap[fallbackKey] ||
+          SP_API_CONFIG.aws[fieldKey] ||
+          '';
+        if (value) {
+          regionConfig[fieldKey] = value;
+        }
+      }
+
+      SP_API_CONFIG.regionConfigs[region] = regionConfig;
     }
 
+    clearAccessTokenCache();
     console.log('✅ SP-API配置已从数据库加载');
   } catch (error) {
-    console.error(
-      '⚠️ 从数据库加载SP-API配置失败，使用环境变量:',
-      error.message,
-    );
+    console.error('⚠️ 从数据库加载SP-API配置失败，使用环境变量:', error.message);
   }
 }
 
@@ -75,27 +154,48 @@ async function reloadSPAPIConfig() {
 loadConfigFromDatabase();
 
 // 获取访问令牌 (Access Token)
-async function getAccessToken() {
+async function getAccessToken(region) {
+  const normalizedRegion = normalizeRegion(region);
+  const regionConfig = SP_API_CONFIG.regionConfigs[normalizedRegion];
+  if (!regionConfig) {
+    throw new Error(`无效的SP-API区域配置: ${region}`);
+  }
+
+  if (
+    !regionConfig.lwaClientId ||
+    !regionConfig.lwaClientSecret ||
+    !regionConfig.refreshToken
+  ) {
+    throw new Error(
+      `SP-API ${normalizedRegion}区域的LWA配置不完整，请检查配置`,
+    );
+  }
+
+  const cached = ACCESS_TOKEN_CACHE[normalizedRegion];
+  if (cached && cached.expiresAt && Date.now() < cached.expiresAt) {
+    return cached.token;
+  }
+
+  const postData = new URLSearchParams({
+    grant_type: 'refresh_token',
+    refresh_token: regionConfig.refreshToken,
+    client_id: regionConfig.lwaClientId,
+    client_secret: regionConfig.lwaClientSecret,
+  }).toString();
+
+  const options = {
+    hostname: 'api.amazon.com',
+    path: '/auth/o2/token',
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/x-www-form-urlencoded',
+      'Content-Length': Buffer.byteLength(postData),
+    },
+  };
+
+  console.log(`[getAccessToken] 正在获取 ${normalizedRegion} 区域访问令牌...`);
+
   return new Promise((resolve, reject) => {
-    const postData = new URLSearchParams({
-      grant_type: 'refresh_token',
-      refresh_token: SP_API_CONFIG.refreshToken,
-      client_id: SP_API_CONFIG.lwaClientId,
-      client_secret: SP_API_CONFIG.lwaClientSecret,
-    }).toString();
-
-    const options = {
-      hostname: 'api.amazon.com',
-      path: '/auth/o2/token',
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/x-www-form-urlencoded',
-        'Content-Length': Buffer.byteLength(postData),
-      },
-    };
-
-    console.log(`[getAccessToken] 正在获取访问令牌...`);
-
     const req = https.request(options, (res) => {
       let data = '';
       res.on('data', (chunk) => {
@@ -106,8 +206,17 @@ async function getAccessToken() {
           try {
             const response = JSON.parse(data);
             if (response.access_token) {
+              const expiresIn = response.expires_in
+                ? Number(response.expires_in)
+                : 3600;
+              ACCESS_TOKEN_CACHE[normalizedRegion] = {
+                token: response.access_token,
+                expiresAt: Date.now() + (expiresIn - 60) * 1000,
+              };
               console.log(
-                `[getAccessToken] 访问令牌获取成功，长度: ${response.access_token.length}`,
+                `[getAccessToken] ${normalizedRegion} 访问令牌获取成功，长度: ${
+                  response.access_token.length
+                }`,
               );
               resolve(response.access_token);
             } else {
@@ -139,6 +248,7 @@ async function getAccessToken() {
     req.end();
   });
 }
+
 
 // AWS签名V4
 function signRequest(
@@ -215,57 +325,71 @@ function signRequest(
   };
 }
 
+function clearAccessTokenCache() {
+  Object.keys(ACCESS_TOKEN_CACHE).forEach((region) => {
+    ACCESS_TOKEN_CACHE[region] = null;
+  });
+}
+
+function normalizeRegion(region) {
+  if (!region) {
+    return 'US';
+  }
+  return REGION_SETTINGS[region] ? region : 'US';
+}
+
+function getRegionByCountry(country) {
+  if (!country) {
+    return 'US';
+  }
+  return COUNTRY_REGION_MAP[country] || 'US';
+}
+
+function getRegionConfig(region) {
+  return SP_API_CONFIG.regionConfigs[normalizeRegion(region)];
+}
+
 // 调用SP-API
 async function callSPAPI(method, path, country, params = {}, body = null) {
   try {
-    // 检查配置
+    const region = getRegionByCountry(country);
+    const regionConfig = SP_API_CONFIG.regionConfigs[region];
     if (
-      !SP_API_CONFIG.lwaClientId ||
-      !SP_API_CONFIG.lwaClientSecret ||
-      !SP_API_CONFIG.refreshToken
+      !regionConfig ||
+      !regionConfig.lwaClientId ||
+      !regionConfig.lwaClientSecret ||
+      !regionConfig.refreshToken
     ) {
-      throw new Error('SP-API LWA配置不完整，请检查环境变量');
+      throw new Error(`SP-API ${region}区域的LWA配置不完整，请检查配置`);
     }
 
-    if (!SP_API_CONFIG.accessKeyId || !SP_API_CONFIG.secretAccessKey) {
-      throw new Error('SP-API AWS配置不完整，请检查环境变量');
+    const awsConfig = SP_API_CONFIG.aws || {};
+    const accessKeyId = regionConfig.accessKeyId || awsConfig.accessKeyId;
+    const secretAccessKey =
+      regionConfig.secretAccessKey || awsConfig.secretAccessKey;
+    const roleArn = regionConfig.roleArn || awsConfig.roleArn;
+
+    if (!accessKeyId || !secretAccessKey || !roleArn) {
+      throw new Error(`SP-API ${region}区域的AWS配置不完整，请检查配置`);
     }
 
-    // 获取访问令牌
-    const accessToken = await getAccessToken();
-    if (!accessToken) {
-      throw new Error('无法获取访问令牌，请检查 LWA 配置');
-    }
+    const accessToken = await getAccessToken(region);
     console.log(
-      `[callSPAPI] Access Token 获取成功，长度: ${accessToken.length}`,
+      `[callSPAPI] ${region} 区域 Access Token 获取成功，长度: ${accessToken.length}`,
     );
 
-    // 确定端点和区域
-    const region = SP_API_CONFIG.regionMap[country] || 'us-east-1';
-    let endpoint = SP_API_CONFIG.endpoints.US;
-    if (['UK', 'DE', 'FR', 'IT', 'ES'].includes(country)) {
-      endpoint = SP_API_CONFIG.endpoints.EU;
-    }
-
-    // 构建URL
-    // 如果path已经包含查询字符串，直接使用；否则从params构建
+    const endpoint = SP_API_CONFIG.endpoints[region];
     let url;
     if (path.includes('?')) {
-      // path已经包含查询字符串
       url = `${endpoint}${path}`;
     } else if (params && Object.keys(params).length > 0) {
-      // 从params构建查询字符串
-      // SP-API要求数组参数在查询字符串中重复参数名
-      // 例如：marketplaceIds=xxx&includedData=variations
       const queryParts = [];
       for (const [key, value] of Object.entries(params)) {
         if (Array.isArray(value)) {
-          // 如果是数组，重复参数名
           value.forEach((v) => {
             queryParts.push(`${key}=${encodeURIComponent(v)}`);
           });
         } else {
-          // 单个值
           queryParts.push(`${key}=${encodeURIComponent(value)}`);
         }
       }
@@ -276,17 +400,16 @@ async function callSPAPI(method, path, country, params = {}, body = null) {
     }
 
     console.log(`[callSPAPI] 请求URL: ${url}`);
-    console.log(`[callSPAPI] 请求方法: ${method}, 国家: ${country}`);
+    console.log(
+      `[callSPAPI] 请求方法: ${method}, 国家: ${country}, 区域: ${region}`,
+    );
     const urlObj = new URL(url);
-
-    // 准备请求
     const payload = body ? JSON.stringify(body) : '';
     const headers = {
       host: urlObj.hostname,
       'x-amz-access-token': accessToken,
       'user-agent': 'Amazon-ASIN-Monitor/1.0 (Language=Node.js)',
     };
-
     if (body) {
       headers['content-type'] = 'application/json';
     }
@@ -298,19 +421,17 @@ async function callSPAPI(method, path, country, params = {}, body = null) {
         : 'missing',
     });
 
-    // AWS签名
     const signatureHeaders = signRequest(
       method,
       url,
       headers,
       payload,
-      SP_API_CONFIG.accessKeyId,
-      SP_API_CONFIG.secretAccessKey,
-      region,
+      accessKeyId,
+      secretAccessKey,
+      REGION_SETTINGS[region].awsRegion,
       'execute-api',
     );
 
-    // 合并头部
     const finalHeaders = {
       ...headers,
       ...signatureHeaders,
@@ -327,7 +448,6 @@ async function callSPAPI(method, path, country, params = {}, body = null) {
       'x-amz-date': finalHeaders['x-amz-date'],
     });
 
-    // 发送请求
     return new Promise((resolve, reject) => {
       const options = {
         hostname: urlObj.hostname,
@@ -343,7 +463,9 @@ async function callSPAPI(method, path, country, params = {}, body = null) {
         });
         res.on('end', () => {
           console.log(`[callSPAPI] 响应状态码: ${res.statusCode}`);
-          console.log(`[callSPAPI] 响应数据长度: ${data ? data.length : 0}`);
+          console.log(
+            `[callSPAPI] 响应数据长度: ${data ? data.length : 0}`,
+          );
 
           if (res.statusCode >= 200 && res.statusCode < 300) {
             try {
@@ -353,7 +475,6 @@ async function callSPAPI(method, path, country, params = {}, body = null) {
                 itemsCount: response.items ? response.items.length : 0,
                 keys: Object.keys(response),
               });
-              // 输出完整的响应结构（限制长度以避免日志过长）
               const responseStr = JSON.stringify(response);
               if (responseStr.length < 1000) {
                 console.log(`[callSPAPI] 完整响应内容:`, responseStr);
@@ -365,14 +486,17 @@ async function callSPAPI(method, path, country, params = {}, body = null) {
               }
               resolve(response);
             } catch (e) {
-              console.log(`[callSPAPI] 响应解析失败，返回原始数据:`, e.message);
+              console.log(
+                `[callSPAPI] 响应解析失败，返回原始数据:`,
+                e.message,
+              );
               resolve(data || {});
             }
           } else {
             const errorMsg = data || `HTTP ${res.statusCode}`;
             console.error(`[callSPAPI] 请求失败:`, {
               statusCode: res.statusCode,
-              errorMsg: errorMsg.substring(0, 500), // 限制日志长度
+              errorMsg: errorMsg.substring(0, 500),
             });
             reject(
               new Error(`SP-API调用失败: ${res.statusCode} - ${errorMsg}`),
@@ -402,4 +526,6 @@ module.exports = {
   callSPAPI,
   reloadSPAPIConfig,
   loadConfigFromDatabase,
+  getRegionByCountry,
+  getRegionConfig,
 };

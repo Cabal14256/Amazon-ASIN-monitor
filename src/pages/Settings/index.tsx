@@ -3,6 +3,7 @@ import { useMessage } from '@/utils/message';
 import {
   PageContainer,
   ProForm,
+  ProFormDigit,
   ProFormSwitch,
   ProFormText,
 } from '@ant-design/pro-components';
@@ -11,6 +12,8 @@ import React, { useEffect, useState } from 'react';
 
 const { getSPAPIConfigs, updateSPAPIConfig } = services.SPAPIConfigController;
 const { getFeishuConfigs, upsertFeishuConfig } = services.FeishuController;
+
+const MONITOR_CONCURRENCY_LIMIT = 10;
 
 const SettingsPage: React.FC<unknown> = () => {
   const message = useMessage();
@@ -56,9 +59,21 @@ const SettingsPage: React.FC<unknown> = () => {
       // 设置SP-API表单值
       const spApiFormValues: any = {};
       spApiData.forEach((config: API.SPAPIConfig) => {
-        if (config.configKey) {
-          spApiFormValues[config.configKey] = config.configValue || '';
+        if (!config.configKey) {
+          return;
         }
+
+        const value =
+          config.configKey === 'MONITOR_MAX_CONCURRENT_GROUP_CHECKS'
+            ? config.configValue
+              ? Math.min(
+                  Number(config.configValue),
+                  MONITOR_CONCURRENCY_LIMIT,
+                )
+              : undefined
+            : config.configValue || '';
+
+        spApiFormValues[config.configKey] = value;
       });
       // 只在当前 tab 是 sp-api 时设置值
       if (activeTab === 'sp-api') {
@@ -112,40 +127,74 @@ const SettingsPage: React.FC<unknown> = () => {
   }, []);
 
   // 保存SP-API配置
+  const buildConfigEntry = (
+    key: string,
+    value: any,
+    description: string,
+  ) => ({
+    configKey: key,
+    configValue:
+      value !== undefined && value !== null ? String(value) : undefined,
+    description,
+  });
+
   const handleSaveSPAPIConfig = async (values: any) => {
     try {
       const configs = [
-        {
-          configKey: 'SP_API_LWA_CLIENT_ID',
-          configValue: values.SP_API_LWA_CLIENT_ID || '',
-          description: 'LWA Client ID',
-        },
-        {
-          configKey: 'SP_API_LWA_CLIENT_SECRET',
-          configValue: values.SP_API_LWA_CLIENT_SECRET || '',
-          description: 'LWA Client Secret',
-        },
-        {
-          configKey: 'SP_API_REFRESH_TOKEN',
-          configValue: values.SP_API_REFRESH_TOKEN || '',
-          description: 'LWA Refresh Token',
-        },
-        {
-          configKey: 'SP_API_ACCESS_KEY_ID',
-          configValue: values.SP_API_ACCESS_KEY_ID || '',
-          description: 'AWS Access Key ID',
-        },
-        {
-          configKey: 'SP_API_SECRET_ACCESS_KEY',
-          configValue: values.SP_API_SECRET_ACCESS_KEY || '',
-          description: 'AWS Secret Access Key',
-        },
-        {
-          configKey: 'SP_API_ROLE_ARN',
-          configValue: values.SP_API_ROLE_ARN || '',
-          description: 'AWS IAM Role ARN',
-        },
-      ];
+        buildConfigEntry(
+          'MONITOR_MAX_CONCURRENT_GROUP_CHECKS',
+          values.MONITOR_MAX_CONCURRENT_GROUP_CHECKS ?? 3,
+          '每次最多同时检查的变体组数量',
+        ),
+        buildConfigEntry(
+          'SP_API_US_LWA_CLIENT_ID',
+          values.SP_API_US_LWA_CLIENT_ID,
+          'US 区域 LWA Client ID',
+        ),
+        buildConfigEntry(
+          'SP_API_US_LWA_CLIENT_SECRET',
+          values.SP_API_US_LWA_CLIENT_SECRET,
+          'US 区域 LWA Client Secret',
+        ),
+        buildConfigEntry(
+          'SP_API_US_REFRESH_TOKEN',
+          values.SP_API_US_REFRESH_TOKEN,
+          'US 区域 Refresh Token',
+        ),
+        buildConfigEntry(
+          'SP_API_EU_LWA_CLIENT_ID',
+          values.SP_API_EU_LWA_CLIENT_ID,
+          'EU 区域 LWA Client ID',
+        ),
+        buildConfigEntry(
+          'SP_API_EU_LWA_CLIENT_SECRET',
+          values.SP_API_EU_LWA_CLIENT_SECRET,
+          'EU 区域 LWA Client Secret',
+        ),
+        buildConfigEntry(
+          'SP_API_EU_REFRESH_TOKEN',
+          values.SP_API_EU_REFRESH_TOKEN,
+          'EU 区域 Refresh Token',
+        ),
+        buildConfigEntry(
+          'SP_API_ACCESS_KEY_ID',
+          values.SP_API_ACCESS_KEY_ID,
+          'AWS Access Key ID（US+EU共用）',
+        ),
+        buildConfigEntry(
+          'SP_API_SECRET_ACCESS_KEY',
+          values.SP_API_SECRET_ACCESS_KEY,
+          'AWS Secret Access Key（US+EU共用）',
+        ),
+        buildConfigEntry(
+          'SP_API_ROLE_ARN',
+          values.SP_API_ROLE_ARN,
+          'AWS IAM Role ARN（US+EU共用）',
+        ),
+      ].map((entry) => ({
+        ...entry,
+        configValue: entry.configValue ?? '',
+      }));
 
       await updateSPAPIConfig({ configs });
       message.success('SP-API配置已保存并重新加载');
@@ -194,29 +243,64 @@ const SettingsPage: React.FC<unknown> = () => {
               },
             }}
           >
-            <ProForm.Group title="LWA (Login with Amazon) 配置">
+            <ProForm.Group title="监控并发配置">
+              <ProFormDigit
+                name="MONITOR_MAX_CONCURRENT_GROUP_CHECKS"
+                label="并发变体组数"
+                min={1}
+                max={MONITOR_CONCURRENCY_LIMIT}
+                extra={`每次监控任务最多同时检查的变体组数量（建议 ≤ ${MONITOR_CONCURRENCY_LIMIT}）`}
+                fieldProps={{
+                  style: { width: '100%' },
+                }}
+                rules={[
+                  {
+                    required: true,
+                    type: 'number',
+                    message: '请输入大于0的值',
+                  },
+                  {
+                    validator: (_, value) => {
+                      if (!value) {
+                        return Promise.resolve();
+                      }
+                      if (value > MONITOR_CONCURRENCY_LIMIT) {
+                        return Promise.reject(
+                          new Error(
+                            `建议不超过 ${MONITOR_CONCURRENCY_LIMIT}，避免 SP-API 请求过载`,
+                          ),
+                        );
+                      }
+                      return Promise.resolve();
+                    },
+                  },
+                ]}
+              />
+            </ProForm.Group>
+
+            <ProForm.Group title="US区域 LWA 配置">
               <ProFormText
-                name="SP_API_LWA_CLIENT_ID"
+                name="SP_API_US_LWA_CLIENT_ID"
                 label="LWA Client ID"
-                placeholder="请输入LWA Client ID"
+                placeholder="请输入US区域的LWA Client ID"
                 rules={[{ required: true, message: '请输入LWA Client ID' }]}
                 fieldProps={{
                   style: { width: '100%' },
                 }}
               />
               <ProFormText.Password
-                name="SP_API_LWA_CLIENT_SECRET"
+                name="SP_API_US_LWA_CLIENT_SECRET"
                 label="LWA Client Secret"
-                placeholder="请输入LWA Client Secret"
+                placeholder="请输入US区域的LWA Client Secret"
                 rules={[{ required: true, message: '请输入LWA Client Secret' }]}
                 fieldProps={{
                   style: { width: '100%' },
                 }}
               />
               <ProFormText.Password
-                name="SP_API_REFRESH_TOKEN"
+                name="SP_API_US_REFRESH_TOKEN"
                 label="Refresh Token"
-                placeholder="请输入Refresh Token"
+                placeholder="请输入US区域的Refresh Token"
                 rules={[{ required: true, message: '请输入Refresh Token' }]}
                 fieldProps={{
                   style: { width: '100%' },
@@ -224,12 +308,42 @@ const SettingsPage: React.FC<unknown> = () => {
               />
             </ProForm.Group>
 
-            <ProForm.Group title="AWS IAM 配置">
+            <ProForm.Group title="EU区域 LWA 配置">
+              <ProFormText
+                name="SP_API_EU_LWA_CLIENT_ID"
+                label="LWA Client ID"
+                placeholder="请输入EU区域的LWA Client ID"
+                rules={[{ required: true, message: '请输入LWA Client ID' }]}
+                fieldProps={{
+                  style: { width: '100%' },
+                }}
+              />
+              <ProFormText.Password
+                name="SP_API_EU_LWA_CLIENT_SECRET"
+                label="LWA Client Secret"
+                placeholder="请输入EU区域的LWA Client Secret"
+                rules={[{ required: true, message: '请输入LWA Client Secret' }]}
+                fieldProps={{
+                  style: { width: '100%' },
+                }}
+              />
+              <ProFormText.Password
+                name="SP_API_EU_REFRESH_TOKEN"
+                label="Refresh Token"
+                placeholder="请输入EU区域的Refresh Token"
+                rules={[{ required: true, message: '请输入Refresh Token' }]}
+                fieldProps={{
+                  style: { width: '100%' },
+                }}
+              />
+            </ProForm.Group>
+
+            <ProForm.Group title="共享 AWS IAM 配置">
               <ProFormText
                 name="SP_API_ACCESS_KEY_ID"
                 label="AWS Access Key ID"
-                placeholder="请输入AWS Access Key ID"
-                rules={[{ required: true, message: '请输入AWS Access Key ID' }]}
+                placeholder="请输入 AWS Access Key ID"
+                rules={[{ required: true, message: '请输入 AWS Access Key ID' }]}
                 fieldProps={{
                   style: { width: '100%' },
                 }}
@@ -237,9 +351,9 @@ const SettingsPage: React.FC<unknown> = () => {
               <ProFormText.Password
                 name="SP_API_SECRET_ACCESS_KEY"
                 label="AWS Secret Access Key"
-                placeholder="请输入AWS Secret Access Key"
+                placeholder="请输入 AWS Secret Access Key"
                 rules={[
-                  { required: true, message: '请输入AWS Secret Access Key' },
+                  { required: true, message: '请输入 AWS Secret Access Key' },
                 ]}
                 fieldProps={{
                   style: { width: '100%' },
@@ -248,8 +362,8 @@ const SettingsPage: React.FC<unknown> = () => {
               <ProFormText
                 name="SP_API_ROLE_ARN"
                 label="AWS IAM Role ARN"
-                placeholder="请输入AWS IAM Role ARN"
-                rules={[{ required: true, message: '请输入AWS IAM Role ARN' }]}
+                placeholder="请输入 AWS IAM Role ARN"
+                rules={[{ required: true, message: '请输入 AWS IAM Role ARN' }]}
                 fieldProps={{
                   style: { width: '100%' },
                 }}

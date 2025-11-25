@@ -4,6 +4,11 @@ const ASIN = require('../models/ASIN');
 const MonitorHistory = require('../models/MonitorHistory');
 
 /**
+ * 每次最多同时检查的 ASIN 数（满足一次检查并发 5 个的要求）
+ */
+const MAX_CONCURRENT_ASIN_CHECKS = 5;
+
+/**
  * 检查单个ASIN的变体关系
  * @param {string} asin - ASIN编码
  * @param {string} country - 国家代码
@@ -270,37 +275,46 @@ async function checkVariantGroup(variantGroupId) {
       };
     }
 
-    const checkResults = [];
+    const checkResults = new Array(asins.length);
     const brokenASINs = [];
+    const concurrencyLimit = Math.min(MAX_CONCURRENT_ASIN_CHECKS, asins.length);
+    let nextIndex = 0;
 
-    // 检查每个ASIN
-    for (const asin of asins) {
-      try {
-        const result = await checkASINVariants(asin.asin, asin.country);
-        const hasVariants = result.hasVariants;
-
-        checkResults.push({
-          asin: asin.asin,
-          hasVariants,
-          variantCount: result.variantCount,
-        });
-
-        // 如果没有变体，视为异常
-        if (!hasVariants) {
-          brokenASINs.push(asin.asin);
+    const workerTasks = Array.from({ length: concurrencyLimit }, async () => {
+      while (true) {
+        const currentIndex = nextIndex++;
+        if (currentIndex >= asins.length) {
+          break;
         }
 
-        // 更新ASIN的变体状态
-        await ASIN.updateVariantStatus(asin.id, !hasVariants);
-      } catch (error) {
-        console.error(`检查ASIN ${asin.asin} 失败:`, error);
-        checkResults.push({
-          asin: asin.asin,
-          error: error.message,
-        });
-        brokenASINs.push(asin.asin);
+        const asin = asins[currentIndex];
+        try {
+          const result = await checkASINVariants(asin.asin, asin.country);
+          const hasVariants = result.hasVariants;
+
+          checkResults[currentIndex] = {
+            asin: asin.asin,
+            hasVariants,
+            variantCount: result.variantCount,
+          };
+
+          if (!hasVariants) {
+            brokenASINs.push(asin.asin);
+          }
+
+          await ASIN.updateVariantStatus(asin.id, !hasVariants);
+        } catch (error) {
+          console.error(`检查ASIN ${asin.asin} 失败:`, error);
+          checkResults[currentIndex] = {
+            asin: asin.asin,
+            error: error.message,
+          };
+          brokenASINs.push(asin.asin);
+        }
       }
-    }
+    });
+
+    await Promise.all(workerTasks);
 
     // 判断变体组是否异常（如果有任何一个ASIN异常，则整个组异常）
     const isBroken = brokenASINs.length > 0;

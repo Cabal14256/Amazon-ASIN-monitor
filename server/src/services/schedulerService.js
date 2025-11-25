@@ -4,6 +4,7 @@ const ASIN = require('../models/ASIN');
 const { checkVariantGroup } = require('./variantCheckService');
 const { sendBatchNotifications } = require('./feishuService');
 const MonitorHistory = require('../models/MonitorHistory');
+const { getMaxConcurrentGroupChecks } = require('../config/monitor-config');
 
 /**
  * 国家区域映射
@@ -57,134 +58,23 @@ async function runMonitorTask(countries) {
     )}] 开始执行监控任务，国家: ${countries.join(', ')}`,
   );
 
-  // 按国家分组收集检查结果
   const countryResults = {};
   let totalChecked = 0;
   let totalBroken = 0;
   const checkTime = new Date().toLocaleString('zh-CN');
 
   try {
-    // 查询需要检查的变体组（按国家筛选）
-    for (const country of countries) {
-      try {
-        // 初始化国家结果
-        if (!countryResults[country]) {
-          countryResults[country] = {
-            country,
-            totalGroups: 0,
-            brokenGroups: 0,
-            brokenGroupNames: [],
-            brokenASINs: [],
-            checkTime,
-          };
-        }
+    const stats = await Promise.all(
+      countries.map((country) =>
+        processCountry(countryResults, country, checkTime),
+      ),
+    );
 
-        // 获取该国家的所有变体组
-        const groups = await VariantGroup.findAll({
-          country,
-          current: 1,
-          pageSize: 1000, // 获取所有变体组
-        });
+    stats.forEach(({ checked, broken }) => {
+      totalChecked += checked;
+      totalBroken += broken;
+    });
 
-        console.log(`📊 国家 ${country}: 找到 ${groups.list.length} 个变体组`);
-
-        // 检查每个变体组
-        for (const group of groups.list) {
-          try {
-            totalChecked++;
-            countryResults[country].totalGroups++;
-            console.log(`  🔍 检查变体组: ${group.name} (${group.id})`);
-
-            // 执行检查
-            const result = await checkVariantGroup(group.id);
-
-            // 收集检查结果
-            const brokenASINs = result.brokenASINs || [];
-            if (result.isBroken) {
-              totalBroken++;
-              countryResults[country].brokenGroups++;
-              countryResults[country].brokenGroupNames.push(group.name);
-            }
-
-            // 记录监控历史
-            try {
-              await MonitorHistory.create({
-                variantGroupId: group.id,
-                checkType: 'GROUP',
-                country: group.country,
-                isBroken: result.isBroken ? 1 : 0,
-                checkResult: JSON.stringify(result),
-              });
-            } catch (historyError) {
-              console.error(`  ⚠️  记录监控历史失败:`, historyError.message);
-            }
-
-            // 为每个ASIN记录结果（从检查结果中获取）
-            // 重新获取变体组信息以获取完整的ASIN列表
-            const fullGroup = await VariantGroup.findById(group.id);
-            if (
-              fullGroup &&
-              fullGroup.children &&
-              fullGroup.children.length > 0
-            ) {
-              for (const asin of fullGroup.children) {
-                // 获取完整的ASIN信息
-                const asinInfo = await ASIN.findById(asin.id);
-                if (asinInfo) {
-                  // 更新监控时间（无论是否开启通知都更新）
-                  await ASIN.updateLastCheckTime(asin.id);
-
-                  // 只记录开启了飞书通知的异常ASIN（用于发送通知）
-                  if (
-                    asinInfo.feishuNotifyEnabled !== 0 &&
-                    asinInfo.isBroken === 1
-                  ) {
-                    countryResults[country].brokenASINs.push({
-                      asin: asinInfo.asin,
-                      name: asinInfo.name || '',
-                      groupName: group.name,
-                      brand: asinInfo.brand || '',
-                    });
-                  }
-
-                  // 记录单个ASIN的监控历史
-                  try {
-                    await MonitorHistory.create({
-                      asinId: asinInfo.id,
-                      checkType: 'ASIN',
-                      country: asinInfo.country,
-                      isBroken: asinInfo.isBroken === 1 ? 1 : 0,
-                      checkResult: JSON.stringify({
-                        asin: asinInfo.asin,
-                        isBroken: asinInfo.isBroken === 1,
-                      }),
-                    });
-                  } catch (historyError) {
-                    // 静默处理历史记录错误
-                  }
-                }
-              }
-            }
-
-            console.log(
-              `    ${result.isBroken ? '❌ 异常' : '✅ 正常'} - 异常ASIN: ${
-                brokenASINs.length
-              }`,
-            );
-          } catch (error) {
-            console.error(`  ❌ 检查变体组失败: ${group.name}`, error.message);
-            totalChecked++;
-            totalBroken++;
-            countryResults[country].brokenGroups++;
-            countryResults[country].brokenGroupNames.push(group.name);
-          }
-        }
-      } catch (error) {
-        console.error(`❌ 处理国家 ${country} 失败:`, error.message);
-      }
-    }
-
-    // 发送飞书通知（无论是否有异常都发送）
     console.log(`\n📨 开始发送飞书通知...`);
     const notifyResults = await sendBatchNotifications(countryResults);
     console.log(
@@ -197,6 +87,138 @@ async function runMonitorTask(countries) {
   } catch (error) {
     console.error(`❌ 监控任务执行失败:`, error);
   }
+}
+
+async function processCountry(countryResults, country, checkTime) {
+  const countryResult = (countryResults[country] =
+    countryResults[country] || {
+      country,
+      totalGroups: 0,
+      brokenGroups: 0,
+      brokenGroupNames: [],
+      brokenASINs: [],
+      checkTime,
+    });
+
+  let checked = 0;
+  let broken = 0;
+
+  try {
+    const groups = await VariantGroup.findAll({
+      country,
+      current: 1,
+      pageSize: 1000,
+    });
+
+    console.log(`📊 国家 ${country}: 找到 ${groups.list.length} 个变体组`);
+
+    const groupsList = (groups && groups.list) || [];
+    if (groupsList.length === 0) {
+      return { checked, broken };
+    }
+
+    const concurrencyLimit = Math.min(
+      Math.max(getMaxConcurrentGroupChecks(), 1),
+      groupsList.length,
+    );
+    let nextGroupIndex = 0;
+
+    const processGroup = async (group) => {
+      try {
+        checked++;
+        countryResult.totalGroups++;
+        console.log(`  🔍 检查变体组: ${group.name} (${group.id})`);
+
+        const result = await checkVariantGroup(group.id);
+        const brokenASINs = result.brokenASINs || [];
+
+        if (result.isBroken) {
+          broken++;
+          countryResult.brokenGroups++;
+          countryResult.brokenGroupNames.push(group.name);
+        }
+
+        try {
+          await MonitorHistory.create({
+            variantGroupId: group.id,
+            checkType: 'GROUP',
+            country: group.country,
+            isBroken: result.isBroken ? 1 : 0,
+            checkResult: JSON.stringify(result),
+          });
+        } catch (historyError) {
+          console.error(
+            `  ⚠️  记录监控历史失败:`,
+            historyError.message,
+          );
+        }
+
+        const fullGroup = await VariantGroup.findById(group.id);
+        if (fullGroup && fullGroup.children && fullGroup.children.length > 0) {
+          for (const asin of fullGroup.children) {
+            const asinInfo = await ASIN.findById(asin.id);
+            if (asinInfo) {
+              await ASIN.updateLastCheckTime(asin.id);
+              if (
+                asinInfo.feishuNotifyEnabled !== 0 &&
+                asinInfo.isBroken === 1
+              ) {
+                countryResult.brokenASINs.push({
+                  asin: asinInfo.asin,
+                  name: asinInfo.name || '',
+                  groupName: group.name,
+                  brand: asinInfo.brand || '',
+                });
+              }
+
+              try {
+                await MonitorHistory.create({
+                  asinId: asinInfo.id,
+                  checkType: 'ASIN',
+                  country: asinInfo.country,
+                  isBroken: asinInfo.isBroken === 1 ? 1 : 0,
+                  checkResult: JSON.stringify({
+                    asin: asinInfo.asin,
+                    isBroken: asinInfo.isBroken === 1,
+                  }),
+                });
+              } catch (historyError) {
+                // 静默处理历史记录错误
+              }
+            }
+          }
+        }
+
+        console.log(
+          `    ${result.isBroken ? '❌ 异常' : '✅ 正常'} - 异常ASIN: ${
+            brokenASINs.length
+          }`,
+        );
+      } catch (error) {
+        console.error(`  ❌ 检查变体组失败: ${group.name}`, error.message);
+        checked++;
+        broken++;
+        countryResult.brokenGroups++;
+        countryResult.brokenGroupNames.push(group.name);
+      }
+    };
+
+    const workers = Array.from({ length: concurrencyLimit }, async () => {
+      while (true) {
+        const currentIndex = nextGroupIndex++;
+        if (currentIndex >= groupsList.length) {
+          break;
+        }
+        await processGroup(groupsList[currentIndex]);
+      }
+    });
+
+    await Promise.all(workers);
+  } catch (error) {
+    console.error(`❌ 处理国家 ${country} 失败:`, error.message);
+  }
+
+  return { checked, broken };
 }
 
 /**
