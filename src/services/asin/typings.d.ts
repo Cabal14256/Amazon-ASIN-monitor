@@ -259,4 +259,79 @@ declare namespace API {
     errorMessage?: string;
     data?: ImportResult;
   }
+
+  /** 仪表盘概览数据 */
+  interface DashboardOverview {
+    /** 总变体组数 */
+    totalGroups?: number;
+    /** 总ASIN数 */
+    totalASINs?: number;
+    /** 异常变体组数 */
+    brokenGroups?: number;
+    /** 异常ASIN数 */
+    brokenASINs?: number;
+    /** 正常变体组数 */
+    normalGroups?: number;
+    /** 正常ASIN数 */
+    normalASINs?: number;
+    /** 今日检查次数 */
+    todayChecks?: number;
+    /** 今日异常次数 */
+    todayBroken?: number;
+  }
+
+  /** 异常变体组信息（简化版） */
+  interface BrokenVariantGroup {
+    id?: string;
+    name?: string;
+    country?: string;
+    site?: string;
+    brand?: string;
+    variant_status?: string;
+    update_time?: string;
+  }
+
+  /** 异常ASIN信息（简化版） */
+  interface BrokenASIN {
+    id?: string;
+    asin?: string;
+    name?: string;
+    country?: string;
+    site?: string;
+    brand?: string;
+    variant_status?: string;
+    update_time?: string;
+    variant_group_name?: string;
+  }
+
+  /** 国家分布数据 */
+  interface CountryDistribution {
+    country?: string;
+    total?: number;
+    broken?: number;
+    normal?: number;
+  }
+
+  /** 仪表盘数据 */
+  interface DashboardData {
+    /** 关键指标概览 */
+    overview?: DashboardOverview;
+    /** 实时异常监控 */
+    realtimeAlerts?: {
+      brokenGroups?: BrokenVariantGroup[];
+      brokenASINs?: BrokenASIN[];
+    };
+    /** 状态分布 */
+    distribution?: {
+      byCountry?: CountryDistribution[];
+    };
+    /** 最近活动 */
+    recentActivities?: MonitorHistory[];
+  }
+
+  interface Result_DashboardData_ {
+    success?: boolean;
+    errorMessage?: string;
+    data?: DashboardData;
+  }
 }

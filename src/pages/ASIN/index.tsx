@@ -1,5 +1,6 @@
 import services from '@/services/asin';
 import variantCheckServices from '@/services/variantCheck';
+import { useMessage } from '@/utils/message';
 import {
   ActionType,
   FooterToolbar,
@@ -7,11 +8,10 @@ import {
   ProColumns,
   ProTable,
 } from '@ant-design/pro-components';
-import { history } from '@umijs/max';
+import { Access, history, useAccess } from '@umijs/max';
 import type { MenuProps } from 'antd';
 import { Button, Dropdown, Space, Switch, Tag } from 'antd';
 import React, { useRef, useState } from 'react';
-import { useMessage } from '@/utils/message';
 import ASINForm from './components/ASINForm';
 import ExcelImportModal from './components/ExcelImportModal';
 import MoveASINModal from './components/MoveASINModal';
@@ -42,6 +42,7 @@ const countryMap: Record<
 const ASINManagement: React.FC<unknown> = () => {
   const message = useMessage();
   const actionRef = useRef<ActionType>();
+  const access = useAccess();
 
   /**
    * 删除节点
@@ -97,49 +98,54 @@ const ASINManagement: React.FC<unknown> = () => {
     record: API.VariantGroup | API.ASINInfo,
   ): MenuProps => {
     const isGroup = (record as API.VariantGroup).parentId === undefined;
-    return {
-      items: [
-        {
-          key: 'edit',
-          label: '编辑',
-          onClick: () => {
-            if (isGroup) {
-              setEditingVariantGroup(record as API.VariantGroup);
-              setVariantGroupModalVisible(true);
-            } else {
-              setEditingASIN(record as API.ASINInfo);
-              setAsinModalVisible(true);
-            }
-          },
+    const items: MenuProps['items'] = [
+      {
+        key: 'monitor',
+        label: '查看监控历史',
+        onClick: () => {
+          const id = record.id || '';
+          const type = isGroup ? 'group' : 'asin';
+          // 跳转到监控历史页面，带参数
+          history.push(`/monitor-history?type=${type}&id=${id}`);
         },
-        {
-          key: 'monitor',
-          label: '查看监控历史',
-          onClick: () => {
-            const id = record.id || '';
-            const type = isGroup ? 'group' : 'asin';
-            // 跳转到监控历史页面，带参数
-            history.push(`/monitor-history?type=${type}&id=${id}`);
-          },
+      },
+    ];
+
+    // 只有有编辑权限的用户才能看到编辑和移动选项
+    if (access.canWriteASIN) {
+      items.unshift({
+        key: 'edit',
+        label: '编辑',
+        onClick: () => {
+          if (isGroup) {
+            setEditingVariantGroup(record as API.VariantGroup);
+            setVariantGroupModalVisible(true);
+          } else {
+            setEditingASIN(record as API.ASINInfo);
+            setAsinModalVisible(true);
+          }
         },
-        // 仅对ASIN显示移动到选项
-        ...(isGroup
-          ? []
-          : [
-              {
-                type: 'divider' as const,
-              },
-              {
-                key: 'move',
-                label: '移动到...',
-                onClick: () => {
-                  setMovingASIN(record as API.ASINInfo);
-                  setMoveModalVisible(true);
-                },
-              },
-            ]),
-      ],
-    };
+      });
+
+      // 仅对ASIN显示移动到选项
+      if (!isGroup) {
+        items.push(
+          {
+            type: 'divider' as const,
+          },
+          {
+            key: 'move',
+            label: '移动到...',
+            onClick: () => {
+              setMovingASIN(record as API.ASINInfo);
+              setMoveModalVisible(true);
+            },
+          },
+        );
+      }
+    }
+
+    return { items };
   };
 
   const columns: ProColumns<API.VariantGroup | API.ASINInfo>[] = [
@@ -364,35 +370,37 @@ const ASINManagement: React.FC<unknown> = () => {
             >
               立即检查
             </Button>
-            {isGroup && (
+            <Access accessible={access.canWriteASIN}>
+              {isGroup && (
+                <Button
+                  type="link"
+                  size="small"
+                  onClick={() => {
+                    setEditingASIN(undefined);
+                    setSelectedVariantGroupId(record.id);
+                    setSelectedVariantGroupCountry(
+                      (record as API.VariantGroup).country,
+                    );
+                    setAsinModalVisible(true);
+                  }}
+                >
+                  添加ASIN
+                </Button>
+              )}
               <Button
                 type="link"
                 size="small"
-                onClick={() => {
-                  setEditingASIN(undefined);
-                  setSelectedVariantGroupId(record.id);
-                  setSelectedVariantGroupCountry(
-                    (record as API.VariantGroup).country,
-                  );
-                  setAsinModalVisible(true);
+                danger
+                onClick={async () => {
+                  const success = await handleRemove([record]);
+                  if (success) {
+                    actionRef.current?.reloadAndRest?.();
+                  }
                 }}
               >
-                添加ASIN
+                删除
               </Button>
-            )}
-            <Button
-              type="link"
-              size="small"
-              danger
-              onClick={async () => {
-                const success = await handleRemove([record]);
-                if (success) {
-                  actionRef.current?.reloadAndRest?.();
-                }
-              }}
-            >
-              删除
-            </Button>
+            </Access>
           </Space>
         );
       },
@@ -414,35 +422,87 @@ const ASINManagement: React.FC<unknown> = () => {
           labelWidth: 120,
         }}
         toolBarRender={() => [
-          <Button
-            key="1"
-            type="primary"
-            onClick={() => {
-              setEditingVariantGroup(undefined);
-              setVariantGroupModalVisible(true);
-            }}
-          >
-            新建变体组
-          </Button>,
-          <Button
-            key="2"
-            onClick={() => {
-              setExcelImportModalVisible(true);
-            }}
-          >
-            Excel导入
-          </Button>,
-          <Button
-            key="2"
-            onClick={() => {
-              setEditingASIN(undefined);
-              setSelectedVariantGroupId(undefined);
-              setSelectedVariantGroupCountry(undefined);
-              setAsinModalVisible(true);
-            }}
-          >
-            添加ASIN
-          </Button>,
+          <Access key="new-group" accessible={access.canWriteASIN}>
+            <Button
+              type="primary"
+              onClick={() => {
+                setEditingVariantGroup(undefined);
+                setVariantGroupModalVisible(true);
+              }}
+            >
+              新建变体组
+            </Button>
+          </Access>,
+          <Access key="excel-import" accessible={access.canWriteASIN}>
+            <Button
+              onClick={() => {
+                setExcelImportModalVisible(true);
+              }}
+            >
+              Excel导入
+            </Button>
+          </Access>,
+          <Access key="new-asin" accessible={access.canWriteASIN}>
+            <Button
+              onClick={() => {
+                setEditingASIN(undefined);
+                setSelectedVariantGroupId(undefined);
+                setSelectedVariantGroupCountry(undefined);
+                setAsinModalVisible(true);
+              }}
+            >
+              添加ASIN
+            </Button>
+          </Access>,
+          <Access key="export" accessible={access.canReadASIN}>
+            <Button
+              onClick={async () => {
+                try {
+                  const params = new URLSearchParams();
+                  const formValues =
+                    actionRef.current?.getFieldsValue?.() || {};
+                  if (formValues.keyword)
+                    params.append('keyword', formValues.keyword);
+                  if (formValues.country)
+                    params.append('country', formValues.country);
+                  if (formValues.variantStatus)
+                    params.append('variantStatus', formValues.variantStatus);
+
+                  const token = localStorage.getItem('token');
+                  const url = `/api/v1/export/asin?${params.toString()}`;
+
+                  const response = await fetch(url, {
+                    method: 'GET',
+                    headers: {
+                      Authorization: `Bearer ${token}`,
+                    },
+                  });
+
+                  if (response.ok) {
+                    const blob = await response.blob();
+                    const downloadUrl = window.URL.createObjectURL(blob);
+                    const a = document.createElement('a');
+                    a.href = downloadUrl;
+                    a.download = `ASIN数据_${
+                      new Date().toISOString().split('T')[0]
+                    }.xlsx`;
+                    document.body.appendChild(a);
+                    a.click();
+                    document.body.removeChild(a);
+                    window.URL.revokeObjectURL(downloadUrl);
+                    message.success('导出成功');
+                  } else {
+                    message.error('导出失败');
+                  }
+                } catch (error) {
+                  console.error('导出失败:', error);
+                  message.error('导出失败');
+                }
+              }}
+            >
+              导出Excel
+            </Button>
+          </Access>,
         ]}
         request={async (params) => {
           try {
@@ -519,9 +579,13 @@ const ASINManagement: React.FC<unknown> = () => {
           }
         }}
         columns={columns}
-        rowSelection={{
-          onChange: (_, selectedRows) => setSelectedRows(selectedRows),
-        }}
+        rowSelection={
+          access.canWriteASIN
+            ? {
+                onChange: (_, selectedRows) => setSelectedRows(selectedRows),
+              }
+            : false
+        }
         // 树形表格配置
         defaultExpandAllRows={true}
         childrenColumnName="children"
@@ -535,25 +599,27 @@ const ASINManagement: React.FC<unknown> = () => {
         }}
       />
       {selectedRowsState?.length > 0 && (
-        <FooterToolbar
-          extra={
-            <div>
-              已选择{' '}
-              <a style={{ fontWeight: 600 }}>{selectedRowsState.length}</a>{' '}
-              项&nbsp;&nbsp;
-            </div>
-          }
-        >
-          <Button
-            onClick={async () => {
-              await handleRemove(selectedRowsState);
-              setSelectedRows([]);
-              actionRef.current?.reloadAndRest?.();
-            }}
+        <Access accessible={access.canWriteASIN}>
+          <FooterToolbar
+            extra={
+              <div>
+                已选择{' '}
+                <a style={{ fontWeight: 600 }}>{selectedRowsState.length}</a>{' '}
+                项&nbsp;&nbsp;
+              </div>
+            }
           >
-            批量删除
-          </Button>
-        </FooterToolbar>
+            <Button
+              onClick={async () => {
+                await handleRemove(selectedRowsState);
+                setSelectedRows([]);
+                actionRef.current?.reloadAndRest?.();
+              }}
+            >
+              批量删除
+            </Button>
+          </FooterToolbar>
+        </Access>
       )}
       <VariantGroupForm
         modalVisible={variantGroupModalVisible}

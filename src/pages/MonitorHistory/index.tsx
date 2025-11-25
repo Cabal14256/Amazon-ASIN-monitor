@@ -7,7 +7,8 @@ import {
   StatisticCard,
 } from '@ant-design/pro-components';
 import { useSearchParams } from '@umijs/max';
-import { Space, Tag } from 'antd';
+import { Button, Space, Tag, message } from 'antd';
+import dayjs from 'dayjs';
 import React, { useEffect, useRef, useState } from 'react';
 
 const { queryMonitorHistory, getMonitorStatistics } =
@@ -60,7 +61,45 @@ const MonitorHistoryPage: React.FC<unknown> = () => {
       title: '检查时间',
       dataIndex: 'checkTime',
       width: 180,
+      valueType: 'dateTimeRange',
+      hideInTable: true,
+      fieldProps: {
+        style: { width: '100%', minWidth: 380 },
+        placeholder: ['开始时间', '结束时间'],
+        format: 'YYYY-MM-DD HH:mm',
+        showTime: { format: 'HH:mm' },
+      },
+      colSize: 2,
+      search: {
+        transform: (value: any) => {
+          if (value && Array.isArray(value) && value.length === 2) {
+            const start = value[0]
+              ? dayjs.isDayjs(value[0])
+                ? value[0]
+                : dayjs(value[0])
+              : null;
+            const end = value[1]
+              ? dayjs.isDayjs(value[1])
+                ? value[1]
+                : dayjs(value[1])
+              : null;
+            return {
+              startTime: start
+                ? start.format('YYYY-MM-DD HH:mm:ss')
+                : undefined,
+              endTime: end ? end.format('YYYY-MM-DD HH:mm:ss') : undefined,
+            };
+          }
+          return {};
+        },
+      },
+    },
+    {
+      title: '检查时间',
+      dataIndex: 'checkTime',
+      width: 180,
       valueType: 'dateTime',
+      hideInSearch: true,
       sorter: true,
     },
     {
@@ -197,14 +236,33 @@ const MonitorHistoryPage: React.FC<unknown> = () => {
         actionRef={actionRef}
         rowKey="id"
         search={{
-          labelWidth: 120,
+          labelWidth: 100,
+          defaultCollapsed: false,
         }}
         request={async (params, sorter) => {
           const requestParams: any = {
-            ...params,
             current: params.current || 1,
             pageSize: params.pageSize || 10,
           };
+
+          // 处理时间范围（transform 函数已经转换为 startTime 和 endTime）
+          if (params.startTime) {
+            requestParams.startTime = params.startTime;
+          }
+          if (params.endTime) {
+            requestParams.endTime = params.endTime;
+          }
+
+          // 处理其他筛选条件
+          if (params.country) {
+            requestParams.country = params.country;
+          }
+          if (params.checkType) {
+            requestParams.checkType = params.checkType;
+          }
+          if (params.isBroken !== undefined && params.isBroken !== '') {
+            requestParams.isBroken = params.isBroken;
+          }
 
           // 如果URL中有参数，添加到请求中
           if (type === 'group' && id) {
@@ -227,10 +285,86 @@ const MonitorHistoryPage: React.FC<unknown> = () => {
         }}
         columns={columns}
         pagination={{
-          pageSize: 10,
+          defaultPageSize: 10,
           showSizeChanger: true,
+          showQuickJumper: true,
+          showTotal: (total, range) =>
+            `第 ${range[0]}-${range[1]} 条/总共 ${total} 条`,
+          pageSizeOptions: ['10', '20', '50', '100'],
         }}
-        toolBarRender={() => []}
+        toolBarRender={() => [
+          <Button
+            key="export"
+            onClick={async () => {
+              try {
+                const params = new URLSearchParams();
+                // 获取当前表格的筛选条件
+                const formValues = actionRef.current?.getFieldsValue?.() || {};
+
+                // 处理时间范围（transform 函数已经转换为 startTime 和 endTime）
+                if (formValues.startTime) {
+                  params.append('startTime', formValues.startTime);
+                }
+                if (formValues.endTime) {
+                  params.append('endTime', formValues.endTime);
+                }
+
+                // 处理其他筛选条件
+                if (formValues.country) {
+                  params.append('country', formValues.country);
+                }
+                if (formValues.checkType) {
+                  params.append('checkType', formValues.checkType);
+                }
+                if (
+                  formValues.isBroken !== undefined &&
+                  formValues.isBroken !== ''
+                ) {
+                  params.append('isBroken', formValues.isBroken);
+                }
+
+                // 如果URL中有参数，添加到请求中
+                if (type === 'group' && id) {
+                  params.append('variantGroupId', id);
+                } else if (type === 'asin' && id) {
+                  params.append('asinId', id);
+                }
+
+                const token = localStorage.getItem('token');
+                const url = `/api/v1/export/monitor-history?${params.toString()}`;
+
+                const response = await fetch(url, {
+                  method: 'GET',
+                  headers: {
+                    Authorization: `Bearer ${token}`,
+                  },
+                });
+
+                if (response.ok) {
+                  const blob = await response.blob();
+                  const downloadUrl = window.URL.createObjectURL(blob);
+                  const a = document.createElement('a');
+                  a.href = downloadUrl;
+                  a.download = `监控历史_${
+                    new Date().toISOString().split('T')[0]
+                  }.xlsx`;
+                  document.body.appendChild(a);
+                  a.click();
+                  document.body.removeChild(a);
+                  window.URL.revokeObjectURL(downloadUrl);
+                  message.success('导出成功');
+                } else {
+                  message.error('导出失败');
+                }
+              } catch (error) {
+                console.error('导出失败:', error);
+                message.error('导出失败');
+              }
+            }}
+          >
+            导出Excel
+          </Button>,
+        ]}
       />
     </PageContainer>
   );

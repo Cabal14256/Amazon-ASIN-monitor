@@ -1,10 +1,10 @@
-import { LockOutlined, UserOutlined, SafetyOutlined } from '@ant-design/icons';
-import { LoginForm, ProFormText } from '@ant-design/pro-components';
-import { Card, Typography } from 'antd';
-import { history, useModel } from '@umijs/max';
-import React from 'react';
 import services from '@/services/auth';
 import { useMessage } from '@/utils/message';
+import { LockOutlined, SafetyOutlined, UserOutlined } from '@ant-design/icons';
+import { LoginForm, ProFormText } from '@ant-design/pro-components';
+import { history, useModel } from '@umijs/max';
+import { Card, Typography } from 'antd';
+import React from 'react';
 import styles from './index.less';
 
 const { login } = services.AuthController;
@@ -18,7 +18,7 @@ const LoginPage: React.FC = () => {
   React.useEffect(() => {
     const token = localStorage.getItem('token');
     const currentUser = initialState?.currentUser;
-    
+
     if (token && currentUser?.id) {
       // 已登录，重定向到主页
       const urlParams = new URL(window.location.href).searchParams;
@@ -44,9 +44,15 @@ const LoginPage: React.FC = () => {
 
         message.success('登录成功');
 
-        // 跳转到首页或之前访问的页面
+        // 获取重定向地址
         const urlParams = new URL(window.location.href).searchParams;
-        history.push(urlParams.get('redirect') || '/home');
+        const redirect = urlParams.get('redirect') || '/home';
+
+        // 使用 window.location.href 强制刷新页面，确保 getInitialState 重新执行
+        // 这样可以避免权限检查时状态未更新的问题
+        setTimeout(() => {
+          window.location.href = redirect;
+        }, 100);
       }
     } catch (error: any) {
       const errorMessage =

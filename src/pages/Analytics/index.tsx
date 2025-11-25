@@ -1,10 +1,10 @@
 import services from '@/services/asin';
+import { useMessage } from '@/utils/message';
 import { Column, Line, Pie } from '@ant-design/charts';
 import { PageContainer, StatisticCard } from '@ant-design/pro-components';
 import { Button, Card, Col, DatePicker, Row, Select, Space } from 'antd';
 import dayjs, { Dayjs } from 'dayjs';
-import React, { useEffect, useState } from 'react';
-import { useMessage } from '@/utils/message';
+import React, { useEffect, useMemo, useState } from 'react';
 
 const { RangePicker } = DatePicker;
 const {
@@ -27,11 +27,11 @@ const countryMap: Record<string, string> = {
 const AnalyticsPageContent: React.FC<unknown> = () => {
   const message = useMessage();
   const [dateRange, setDateRange] = useState<[Dayjs, Dayjs]>([
-    dayjs().subtract(7, 'day'),
-    dayjs(),
+    dayjs().startOf('day'),
+    dayjs().endOf('day'),
   ]);
   const [country, setCountry] = useState<string>('');
-  const [groupBy, setGroupBy] = useState<string>('day');
+  const [groupBy, setGroupBy] = useState<string>('hour');
   const [loading, setLoading] = useState(false);
 
   // 统计数据
@@ -51,8 +51,8 @@ const AnalyticsPageContent: React.FC<unknown> = () => {
   const loadStatistics = async () => {
     setLoading(true);
     try {
-      const startTime = dateRange[0].format('YYYY-MM-DD 00:00:00');
-      const endTime = dateRange[1].format('YYYY-MM-DD 23:59:59');
+      const startTime = dateRange[0].format('YYYY-MM-DD HH:mm:ss');
+      const endTime = dateRange[1].format('YYYY-MM-DD HH:mm:ss');
       const params: any = {
         startTime,
         endTime,
@@ -113,25 +113,31 @@ const AnalyticsPageContent: React.FC<unknown> = () => {
   }, []);
 
   // 时间趋势图表数据
-  const timeChartData = timeStatistics.flatMap((item) => [
-    { time: item.time_period, type: '正常', value: item.normal_count || 0 },
-    { time: item.time_period, type: '异常', value: item.broken_count || 0 },
-    { time: item.time_period, type: '总计', value: item.total_checks || 0 },
-  ]);
+  // 注意：确保数据顺序与颜色数组顺序一致（按字母顺序：异常、正常、总计）
+  const timeChartData = useMemo(() => {
+    return timeStatistics.flatMap((item) => [
+      { time: item.time_period, type: '异常', value: item.broken_count || 0 },
+      { time: item.time_period, type: '正常', value: item.normal_count || 0 },
+      { time: item.time_period, type: '总计', value: item.total_checks || 0 },
+    ]);
+  }, [timeStatistics]);
 
   // 国家统计柱状图数据
-  const countryColumnData = countryStatistics.flatMap((item) => [
-    {
-      country: countryMap[item.country || ''] || item.country,
-      type: '正常',
-      value: item.normal_count || 0,
-    },
-    {
-      country: countryMap[item.country || ''] || item.country,
-      type: '异常',
-      value: item.broken_count || 0,
-    },
-  ]);
+  // 注意：确保数据顺序与颜色数组顺序一致
+  const countryColumnData = useMemo(() => {
+    return countryStatistics.flatMap((item) => [
+      {
+        country: countryMap[item.country || ''] || item.country,
+        type: '异常',
+        value: item.broken_count || 0,
+      },
+      {
+        country: countryMap[item.country || ''] || item.country,
+        type: '正常',
+        value: item.normal_count || 0,
+      },
+    ]);
+  }, [countryStatistics]);
 
   // 国家统计饼图数据
   const countryPieData = countryStatistics.map((item) => ({
@@ -301,9 +307,33 @@ const AnalyticsPageContent: React.FC<unknown> = () => {
                 yField="value"
                 seriesField="type"
                 smooth
-                point={{ size: 4 }}
-                legend={{ position: 'top' }}
-                color={['#52c41a', '#ff4d4f', '#1890ff']}
+                point={{
+                  size: 6,
+                  shape: 'circle',
+                  style: {
+                    fillOpacity: 1,
+                    stroke: '#fff',
+                    lineWidth: 2,
+                  },
+                }}
+                lineStyle={{
+                  lineWidth: 4,
+                }}
+                legend={{
+                  position: 'top',
+                  itemName: {
+                    style: {
+                      fill: '#333',
+                      fontSize: 14,
+                      fontWeight: 'bold',
+                    },
+                  },
+                }}
+                color={['#ff4d4f', '#52c41a', '#1890ff']}
+                tooltip={{
+                  showCrosshairs: true,
+                  shared: true,
+                }}
               />
             ) : (
               <div style={{ textAlign: 'center', padding: 40 }}>暂无数据</div>
@@ -321,8 +351,25 @@ const AnalyticsPageContent: React.FC<unknown> = () => {
                 yField="value"
                 seriesField="type"
                 isStack
-                legend={{ position: 'top' }}
-                color={['#52c41a', '#ff4d4f']}
+                columnStyle={{
+                  radius: [4, 4, 0, 0],
+                  fillOpacity: 0.9,
+                }}
+                legend={{
+                  position: 'top',
+                  itemName: {
+                    style: {
+                      fill: '#333',
+                      fontSize: 14,
+                      fontWeight: 'bold',
+                    },
+                  },
+                }}
+                color={['#ff4d4f', '#52c41a']}
+                tooltip={{
+                  shared: true,
+                  showCrosshairs: false,
+                }}
               />
             ) : (
               <div style={{ textAlign: 'center', padding: 40 }}>暂无数据</div>
@@ -359,7 +406,14 @@ const AnalyticsPageContent: React.FC<unknown> = () => {
                 data={variantGroupColumnData}
                 xField="name"
                 yField="broken"
+                columnStyle={{
+                  fill: '#ff4d4f',
+                  radius: [4, 4, 0, 0],
+                }}
                 color="#ff4d4f"
+                tooltip={{
+                  showCrosshairs: false,
+                }}
               />
             ) : (
               <div style={{ textAlign: 'center', padding: 40 }}>暂无数据</div>
@@ -371,12 +425,4 @@ const AnalyticsPageContent: React.FC<unknown> = () => {
   );
 };
 
-const AnalyticsPage: React.FC<unknown> = () => {
-  return (
-    <App>
-      <AnalyticsPageContent />
-    </App>
-  );
-};
-
-export default AnalyticsPage;
+export default AnalyticsPageContent;

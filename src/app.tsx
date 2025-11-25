@@ -1,7 +1,8 @@
 // 运行时配置
-import { history, request as umiRequest, useModel } from '@umijs/max';
+import * as Icons from '@ant-design/icons';
+import { history, request as umiRequest } from '@umijs/max';
 import { App as AntdApp, Button, Space } from 'antd';
-import React from 'react';
+import React, { useEffect, useState } from 'react';
 
 // 全局初始化数据配置，用于 Layout 用户信息和权限初始化
 // 更多信息见文档：https://umijs.org/docs/api/runtime-config#getinitialstate
@@ -12,7 +13,7 @@ export async function getInitialState(): Promise<{
 }> {
   // 从localStorage获取token
   const token = localStorage.getItem('token');
-  
+
   // 调试日志
   if (process.env.NODE_ENV === 'development') {
     console.log('[getInitialState] 开始执行', {
@@ -23,7 +24,8 @@ export async function getInitialState(): Promise<{
 
   // 获取当前路径
   const currentPath = window.location.pathname;
-  const isLoginPage = currentPath === '/login' || currentPath.startsWith('/login');
+  const isLoginPage =
+    currentPath === '/login' || currentPath.startsWith('/login');
 
   if (!token) {
     // 调试日志
@@ -33,12 +35,14 @@ export async function getInitialState(): Promise<{
         currentPath,
       });
     }
-    
+
     // 如果没有token且不在登录页，强制重定向到登录页
     if (!isLoginPage) {
       // 使用 window.location 强制重定向，避免路由拦截
       const targetPath = currentPath === '/' ? '/home' : currentPath;
-      window.location.href = `/login?redirect=${encodeURIComponent(targetPath)}`;
+      window.location.href = `/login?redirect=${encodeURIComponent(
+        targetPath,
+      )}`;
       // 返回空对象，阻止后续渲染
       return {};
     }
@@ -59,7 +63,7 @@ export async function getInitialState(): Promise<{
     if (process.env.NODE_ENV === 'development') {
       console.log('[getInitialState] 正在调用API: /api/v1/auth/current-user');
     }
-    
+
     const response = await umiRequest<API.Result_CurrentUser_>(
       '/api/v1/auth/current-user',
       {
@@ -87,7 +91,7 @@ export async function getInitialState(): Promise<{
         permissions: response.data.permissions || [],
         roles: response.data.roles || [],
       };
-      
+
       // 调试日志
       if (process.env.NODE_ENV === 'development') {
         console.log('[getInitialState] 用户数据加载成功:', {
@@ -97,7 +101,7 @@ export async function getInitialState(): Promise<{
           rolesCount: userData.roles.length,
         });
       }
-      
+
       return userData;
     }
 
@@ -107,7 +111,7 @@ export async function getInitialState(): Promise<{
         errorMessage: response.errorMessage,
         errorCode: response.errorCode,
       });
-      
+
       // 如果是401错误，清除token并重定向
       if (response.errorCode === 401) {
         localStorage.removeItem('token');
@@ -118,21 +122,25 @@ export async function getInitialState(): Promise<{
         }
         return {};
       }
-      
+
       // 其他错误（非401），如果是401才清除token
       // 其他错误可能是临时问题，不应该清除token
       if (response.errorCode === 401 && token) {
         console.warn('[getInitialState] API返回401，清除token并重定向到登录页');
         localStorage.removeItem('token');
         if (!isLoginPage) {
-          window.location.href = `/login?redirect=${encodeURIComponent(currentPath)}`;
+          window.location.href = `/login?redirect=${encodeURIComponent(
+            currentPath,
+          )}`;
         }
         return {};
       }
-      
+
       // 非401错误，如果是临时问题，允许继续访问
       if (token) {
-        console.warn('[getInitialState] API返回失败，但token存在，允许继续访问（可能是临时问题）');
+        console.warn(
+          '[getInitialState] API返回失败，但token存在，允许继续访问（可能是临时问题）',
+        );
         return {
           permissions: [],
           roles: [],
@@ -148,25 +156,35 @@ export async function getInitialState(): Promise<{
       data: error?.data,
       errorCode: error?.data?.errorCode,
     });
-    
+
     // 检查错误状态码
     const errorStatus = error?.response?.status || error?.status;
-    const errorCode = error?.data?.errorCode || error?.response?.data?.errorCode;
-    
+    const errorCode =
+      error?.data?.errorCode || error?.response?.data?.errorCode;
+
     // 如果是401或403错误，说明token无效或过期
-    if (errorStatus === 401 || errorStatus === 403 || errorCode === 401 || errorCode === 403) {
-      console.warn('[getInitialState] Token无效或过期，清除token并重定向到登录页');
+    if (
+      errorStatus === 401 ||
+      errorStatus === 403 ||
+      errorCode === 401 ||
+      errorCode === 403
+    ) {
+      console.warn(
+        '[getInitialState] Token无效或过期，清除token并重定向到登录页',
+      );
       localStorage.removeItem('token');
       // 如果不在登录页，重定向到登录页
       if (!isLoginPage) {
         // 使用 window.location 强制重定向，避免路由拦截
-        window.location.href = `/login?redirect=${encodeURIComponent(currentPath)}`;
+        window.location.href = `/login?redirect=${encodeURIComponent(
+          currentPath,
+        )}`;
       }
       return {};
     }
 
     // 检查是否是网络错误或超时
-    const isNetworkError = 
+    const isNetworkError =
       error?.message?.includes('timeout') ||
       error?.message?.includes('Network Error') ||
       error?.message?.includes('Failed to fetch') ||
@@ -176,7 +194,9 @@ export async function getInitialState(): Promise<{
     // 如果是网络错误或超时，且有token，可能是临时问题
     // 返回一个状态让权限检查通过，这样用户可以看到页面（虽然可能没有完整功能）
     if (isNetworkError && token) {
-      console.warn('[getInitialState] 网络错误，但token存在，允许继续访问（可能是临时问题）');
+      console.warn(
+        '[getInitialState] 网络错误，但token存在，允许继续访问（可能是临时问题）',
+      );
       return {
         permissions: [],
         roles: [],
@@ -187,7 +207,9 @@ export async function getInitialState(): Promise<{
     // 如果后端返回500，说明后端有问题，不应该清除token（token可能仍然有效）
     // 返回一个状态让权限检查通过，但用户可能无法使用完整功能
     if ((errorStatus === 500 || errorCode === 500) && token) {
-      console.error('[getInitialState] 服务器错误，但token存在，允许继续访问（可能是临时问题）');
+      console.error(
+        '[getInitialState] 服务器错误，但token存在，允许继续访问（可能是临时问题）',
+      );
       return {
         permissions: [],
         roles: [],
@@ -196,7 +218,9 @@ export async function getInitialState(): Promise<{
 
     // 其他错误，如果有token，也允许继续访问（可能是临时问题）
     if (token) {
-      console.warn('[getInitialState] 获取用户信息失败，但token存在，允许继续访问（可能是临时问题）');
+      console.warn(
+        '[getInitialState] 获取用户信息失败，但token存在，允许继续访问（可能是临时问题）',
+      );
       return {
         permissions: [],
         roles: [],
@@ -213,13 +237,15 @@ export async function getInitialState(): Promise<{
   // 可能是网络问题或后端问题，不应该清除token
   // 返回一个状态让权限检查通过，这样用户可以看到页面
   if (token) {
-    console.warn('[getInitialState] 有token但未获取到用户数据，允许继续访问（可能是临时问题）');
+    console.warn(
+      '[getInitialState] 有token但未获取到用户数据，允许继续访问（可能是临时问题）',
+    );
     return {
       permissions: [],
       roles: [],
     };
   }
-  
+
   return {};
 }
 
@@ -229,45 +255,116 @@ export const layout = ({ initialState, setInitialState }: any) => {
     title: 'Amazon ASIN Monitor',
     menu: {
       locale: false,
+      // 自定义菜单数据，将字符串图标名称转换为 React 组件
+      menuDataRender: (menuData: any[]) => {
+        return menuData.map((item) => {
+          if (item.icon && typeof item.icon === 'string') {
+            const IconComponent = (Icons as any)[item.icon];
+            if (IconComponent) {
+              return {
+                ...item,
+                icon: React.createElement(IconComponent),
+              };
+            }
+          }
+          return item;
+        });
+      },
     },
     // 右上角用户操作区
     actionsRender: () => {
       const currentUser = initialState?.currentUser;
-      
+
       if (!currentUser) {
         return [];
       }
 
-      return [
-        <Space key="userActions" size="middle">
-          <span style={{ color: '#666' }}>
-            {currentUser.real_name || currentUser.username}
-          </span>
-          <Button
-            type="text"
-            size="small"
-            onClick={async () => {
-              // 清除Token和用户信息
-              localStorage.removeItem('token');
-              await setInitialState({
-                currentUser: undefined,
-                permissions: [],
-                roles: [],
-              });
-              // 跳转到登录页
-              history.push('/login');
-            }}
-          >
-            退出登录
-          </Button>
-        </Space>,
-      ];
+      // 创建一个组件来监听侧边栏状态
+      const UserActionsComponent: React.FC = () => {
+        const [collapsed, setCollapsed] = useState(false);
+
+        useEffect(() => {
+          // 监听侧边栏的收起/展开状态
+          const checkCollapsed = () => {
+            // 通过检查 DOM 元素来判断侧边栏是否收起
+            const sidebar = document.querySelector('.ant-layout-sider');
+            if (sidebar) {
+              const isCollapsed = sidebar.classList.contains(
+                'ant-layout-sider-collapsed',
+              );
+              setCollapsed(isCollapsed);
+            }
+          };
+
+          // 初始检查
+          checkCollapsed();
+
+          // 使用 MutationObserver 监听侧边栏类名变化
+          const observer = new MutationObserver(checkCollapsed);
+          const sidebar = document.querySelector('.ant-layout-sider');
+          if (sidebar) {
+            observer.observe(sidebar, {
+              attributes: true,
+              attributeFilter: ['class'],
+            });
+          }
+
+          // 定期检查（备用方案）
+          const interval = setInterval(checkCollapsed, 100);
+
+          return () => {
+            observer.disconnect();
+            clearInterval(interval);
+          };
+        }, []);
+
+        // 如果侧边栏收起，隐藏按钮
+        if (collapsed) {
+          return null;
+        }
+
+        return (
+          <Space size="middle" wrap>
+            <Button
+              type="text"
+              size="small"
+              onClick={() => {
+                history.push('/profile');
+              }}
+              style={{ whiteSpace: 'nowrap', minWidth: 'auto' }}
+            >
+              {currentUser.real_name || currentUser.username}
+            </Button>
+            <Button
+              type="text"
+              size="small"
+              onClick={async () => {
+                // 清除Token和用户信息
+                localStorage.removeItem('token');
+                await setInitialState({
+                  currentUser: undefined,
+                  permissions: [],
+                  roles: [],
+                });
+                // 跳转到登录页
+                history.push('/login');
+              }}
+              style={{ whiteSpace: 'nowrap', minWidth: 'auto' }}
+            >
+              退出登录
+            </Button>
+          </Space>
+        );
+      };
+
+      return [<UserActionsComponent key="userActions" />];
     },
     // 路由变化时的处理
     onPageChange: () => {
       const token = localStorage.getItem('token');
       const currentPath = window.location.pathname;
-      const isLoginPage = currentPath === '/login' || currentPath.startsWith('/login');
+      const isLoginPage =
+        currentPath === '/login' || currentPath.startsWith('/login');
       const is403Page = currentPath === '/403';
 
       // 如果未登录且访问的页面不是登录页和403页，重定向到登录页

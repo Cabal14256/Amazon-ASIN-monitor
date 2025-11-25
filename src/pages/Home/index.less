@@ -1,3 +1,17 @@
-.container {
-  padding-top: 80px;
+.dashboardContainer {
+  padding: 0;
+}
+
+.alertCard {
+  :global(.ant-card-body) {
+    max-height: 500px;
+    overflow-y: auto;
+  }
+}
+
+.timelineCard {
+  :global(.ant-timeline) {
+    max-height: 400px;
+    overflow-y: auto;
+  }
 }

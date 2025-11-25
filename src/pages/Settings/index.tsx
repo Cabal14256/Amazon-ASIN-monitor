@@ -1,4 +1,5 @@
 import services from '@/services/settings';
+import { useMessage } from '@/utils/message';
 import {
   PageContainer,
   ProForm,
@@ -7,7 +8,6 @@ import {
 } from '@ant-design/pro-components';
 import { Alert, Card, Space, Tabs } from 'antd';
 import React, { useEffect, useState } from 'react';
-import { useMessage } from '@/utils/message';
 
 const { getSPAPIConfigs, updateSPAPIConfig } = services.SPAPIConfigController;
 const { getFeishuConfigs, upsertFeishuConfig } = services.FeishuController;
@@ -72,16 +72,32 @@ const SettingsPage: React.FC<unknown> = () => {
       const euConfig = feishuData.find(
         (c: API.FeishuConfig) => c.country === 'EU',
       );
+
+      // 调试日志
+      console.log('[Settings] 飞书配置数据:', {
+        feishuData,
+        usConfig,
+        euConfig,
+        activeTab,
+      });
+
       // 只在当前 tab 是 feishu 时设置值
       if (activeTab === 'feishu') {
-        feishuUSForm.setFieldsValue({
-          webhookUrl: usConfig?.webhookUrl || '',
-          enabled: usConfig?.enabled === 1,
-        });
-        feishuEUForm.setFieldsValue({
-          webhookUrl: euConfig?.webhookUrl || '',
-          enabled: euConfig?.enabled === 1,
-        });
+        // 使用 setTimeout 确保表单已经渲染
+        setTimeout(() => {
+          const usValues = {
+            webhookUrl: usConfig?.webhookUrl || '',
+            enabled: usConfig?.enabled === 1,
+          };
+          const euValues = {
+            webhookUrl: euConfig?.webhookUrl || '',
+            enabled: euConfig?.enabled === 1,
+          };
+          console.log('[Settings] 设置US表单值:', usValues);
+          console.log('[Settings] 设置EU表单值:', euValues);
+          feishuUSForm.setFieldsValue(usValues);
+          feishuEUForm.setFieldsValue(euValues);
+        }, 100);
       }
     } catch (error) {
       console.error('加载配置失败:', error);

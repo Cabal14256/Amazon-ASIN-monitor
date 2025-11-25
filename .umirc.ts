@@ -46,30 +46,69 @@ export default defineConfig({
       path: '/home',
       component: './Home',
       access: 'isLogin', // 需要登录（更宽松的检查，登录后都有权限）
+      icon: 'DashboardOutlined',
     },
     {
       name: 'ASIN 管理',
       path: '/asin',
       component: './ASIN',
       access: 'canReadASIN', // 需要ASIN查看权限
+      icon: 'DatabaseOutlined',
     },
     {
       name: '监控历史',
       path: '/monitor-history',
       component: './MonitorHistory',
       access: 'canReadMonitor', // 需要监控查看权限
+      icon: 'HistoryOutlined',
     },
     {
       name: '数据分析',
       path: '/analytics',
       component: './Analytics',
       access: 'canReadAnalytics', // 需要数据分析权限
+      icon: 'BarChartOutlined',
     },
     {
       name: '系统设置',
       path: '/settings',
       component: './Settings',
       access: 'canReadSettings', // 需要系统设置查看权限
+      icon: 'SettingOutlined',
+    },
+    {
+      name: '用户管理',
+      path: '/user-management',
+      component: './UserManagement',
+      access: 'canReadUser', // 需要用户查看权限
+      icon: 'UserOutlined',
+    },
+    {
+      name: '角色管理',
+      path: '/role-management',
+      component: './RoleManagement',
+      access: 'canReadUser', // 需要用户查看权限
+      icon: 'TeamOutlined',
+    },
+    {
+      name: '权限管理',
+      path: '/permission-management',
+      component: './PermissionManagement',
+      access: 'canReadUser', // 需要用户查看权限
+      icon: 'SafetyOutlined',
+    },
+    {
+      name: '操作审计',
+      path: '/audit-log',
+      component: './AuditLog',
+      access: 'canReadUser', // 需要用户查看权限（只有管理员可以查看）
+      icon: 'FileTextOutlined',
+    },
+    {
+      name: '个人中心',
+      path: '/profile',
+      component: './Profile',
+      access: 'isLogin', // 需要登录
     },
   ],
   npmClient: 'npm',

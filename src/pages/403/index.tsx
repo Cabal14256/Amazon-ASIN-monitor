@@ -1,12 +1,12 @@
-import { Button, Result } from 'antd';
 import { history, useModel } from '@umijs/max';
-import React, { useEffect, useState } from 'react';
+import { Button, Result } from 'antd';
+import React, { useEffect } from 'react';
 
 const NoAccessPage: React.FC = () => {
   const { initialState } = useModel('@@initialState');
-  const [checked, setChecked] = useState(false);
   const currentUser = initialState?.currentUser;
-  const hasToken = typeof window !== 'undefined' && !!localStorage.getItem('token');
+  const hasToken =
+    typeof window !== 'undefined' && !!localStorage.getItem('token');
   const isLogin = !!currentUser?.id;
 
   useEffect(() => {
@@ -17,27 +17,34 @@ const NoAccessPage: React.FC = () => {
       return;
     }
 
-    // 如果有 token（无论是否有用户信息），访问主页时显示403，说明可能是初始化问题
-    // 立即重定向到主页，触发权限重新检查
-    const currentPath = window.location.pathname;
-    if (hasToken && (currentPath === '/home' || currentPath === '/')) {
-      console.log('[403页面] 检测到token且访问主页，自动重定向');
-      // 立即重定向，触发权限重新检查
-      setTimeout(() => {
-        window.location.href = '/home';
-      }, 100);
-      return;
+    // 如果有 token 但用户信息还没加载完（可能是刚登录，状态还在更新中）
+    if (hasToken && !isLogin) {
+      // 等待一下，让 getInitialState 有时间执行
+      const timer = setTimeout(() => {
+        // 如果还是没有用户信息，可能是初始化问题，强制刷新页面
+        if (!initialState?.currentUser?.id) {
+          console.log('[403页面] 检测到token但用户信息未加载，强制刷新页面');
+          window.location.href = '/home';
+        }
+      }, 500);
+
+      return () => clearTimeout(timer);
     }
 
-    // 如果有 token 但用户信息还没加载完（访问其他页面）
-    if (hasToken && !isLogin) {
-      // 等待一下，如果数据加载完成会自动跳转
+    // 如果有 token 且有用户信息，但仍然显示 403，可能是权限问题
+    // 但如果是刚登录后立即访问需要权限的页面，可能是状态更新延迟
+    if (hasToken && isLogin) {
+      // 检查是否是刚登录后的情况（用户信息存在但权限可能还没更新）
       const timer = setTimeout(() => {
-        // 如果还是没有用户信息，重定向到主页
-        if (!initialState?.currentUser?.id) {
-          history.replace('/home');
+        // 如果用户信息存在，尝试重新加载页面以刷新权限状态
+        if (
+          initialState?.currentUser?.id &&
+          !initialState?.permissions?.length
+        ) {
+          console.log('[403页面] 检测到用户信息但权限未加载，刷新页面');
+          window.location.reload();
         }
-      }, 1000);
+      }, 500);
 
       return () => clearTimeout(timer);
     }
@@ -75,4 +82,3 @@ const NoAccessPage: React.FC = () => {
 };
 
 export default NoAccessPage;
-
