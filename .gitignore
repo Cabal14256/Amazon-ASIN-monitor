@@ -43,6 +43,6 @@ Thumbs.db
 *.tmp
 .cache/
 
-# SpecStory 文件夹
+# SpecStory 聊天记录（不参与 Git 活动）
 .specstory/
 specstory/
