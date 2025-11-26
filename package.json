@@ -17,9 +17,11 @@
     "@ant-design/pro-components": "^2.4.4",
     "@umijs/max": "^4.5.3",
     "antd": "^5.4.0",
+    "bull": "^4.16.5",
     "dayjs": "^1.11.19",
     "echarts": "^5.4.2",
-    "echarts-for-react": "^3.0.5"
+    "echarts-for-react": "^3.0.5",
+    "ioredis": "^5.8.2"
   },
   "devDependencies": {
     "@types/react": "^18.0.33",

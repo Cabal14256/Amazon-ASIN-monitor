@@ -12,12 +12,14 @@ process.env.REDIS_URL = targetUrl;
 process.env.REDIS_URI = targetUrl;
 
 const Redis = require('ioredis');
+const Queue = require('bull');
 
 async function run() {
   console.log('🔍 验证 Redis 访问');
   console.log('➡️  连接地址:', targetUrl);
 
   const redis = new Redis(targetUrl);
+  let queue;
 
   try {
     const pong = await redis.ping();
@@ -33,10 +35,19 @@ async function run() {
       versionMatch ? versionMatch[1].trim() : 'unknown',
     );
 
-    const MonitorTaskQueue = require('../server/src/services/monitorTaskQueue');
-    const queue = MonitorTaskQueue.queue;
+    queue = new Queue('monitor-task-queue', targetUrl, {
+      defaultJobOptions: {
+        attempts: 3,
+        backoff: {
+          type: 'exponential',
+          delay: 5000,
+        },
+        removeOnComplete: { age: 3600 },
+        removeOnFail: { age: 86400 },
+      },
+    });
     console.log('📦 Bull 队列名称:', queue.name);
-    await queue.whenReady();
+    await queue.waitUntilReady();
 
     const counts = await queue.getJobCounts();
     console.log('📊 队列状态:', counts);
@@ -62,6 +73,9 @@ async function run() {
     process.exitCode = 1;
   } finally {
     redis.disconnect();
+    if (queue) {
+      await queue.close();
+    }
   }
 }
 
