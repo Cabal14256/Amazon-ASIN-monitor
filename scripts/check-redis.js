@@ -47,7 +47,7 @@ async function run() {
       },
     });
     console.log('📦 Bull 队列名称:', queue.name);
-    await queue.waitUntilReady();
+    await queue.isReady();
 
     const counts = await queue.getJobCounts();
     console.log('📊 队列状态:', counts);
