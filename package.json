@@ -3,6 +3,7 @@
   "author": "",
   "scripts": {
     "build": "max build",
+    "check-redis": "node scripts/check-redis.js",
     "dev": "max dev",
     "format": "prettier --cache --write .",
     "postinstall": "max setup",
