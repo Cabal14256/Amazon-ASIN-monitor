@@ -5,6 +5,11 @@ const { checkVariantGroup } = require('./variantCheckService');
 const { sendBatchNotifications } = require('./feishuService');
 const MonitorHistory = require('../models/MonitorHistory');
 const { getMaxConcurrentGroupChecks } = require('../config/monitor-config');
+const Semaphore = require('./semaphore');
+
+const monitorSemaphore = new Semaphore(getMaxConcurrentGroupChecks());
+let isMonitorTaskRunning = false;
+let pendingRunCountries = null;
 
 /**
  * 国家区域映射
@@ -43,6 +48,10 @@ function getCountriesToCheck(region, minute) {
   return countries;
 }
 
+function syncSemaphoreLimit() {
+  monitorSemaphore.setMax(getMaxConcurrentGroupChecks());
+}
+
 /**
  * 执行监控检查任务
  * @param {Array<string>} countries - 要检查的国家列表
@@ -51,6 +60,21 @@ async function runMonitorTask(countries) {
   if (countries.length === 0) {
     return;
   }
+
+  if (isMonitorTaskRunning) {
+    pendingRunCountries = Array.from(
+      new Set([...(pendingRunCountries || []), ...countries]),
+    );
+    console.log(
+      `⏳ 上一个监控任务仍在运行，已缓存下一次执行的国家: ${pendingRunCountries.join(
+        ', ',
+      )}`,
+    );
+    return;
+  }
+
+  isMonitorTaskRunning = true;
+  syncSemaphoreLimit();
 
   console.log(
     `\n⏰ [${new Date().toLocaleString(
@@ -86,42 +110,33 @@ async function runMonitorTask(countries) {
     );
   } catch (error) {
     console.error(`❌ 监控任务执行失败:`, error);
+  } finally {
+    isMonitorTaskRunning = false;
+    if (pendingRunCountries && pendingRunCountries.length > 0) {
+      const nextCountries = pendingRunCountries;
+      pendingRunCountries = null;
+      await runMonitorTask(nextCountries);
+    }
   }
 }
 
 async function processCountry(countryResults, country, checkTime) {
-  const countryResult = (countryResults[country] =
-    countryResults[country] || {
-      country,
-      totalGroups: 0,
-      brokenGroups: 0,
-      brokenGroupNames: [],
-      brokenASINs: [],
-      checkTime,
-    });
+  const countryResult = (countryResults[country] = countryResults[country] || {
+    country,
+    totalGroups: 0,
+    brokenGroups: 0,
+    brokenGroupNames: [],
+    brokenASINs: [],
+    checkTime,
+  });
 
   let checked = 0;
   let broken = 0;
 
   try {
-    const groups = await VariantGroup.findAll({
-      country,
-      current: 1,
-      pageSize: 1000,
-    });
-
-    console.log(`📊 国家 ${country}: 找到 ${groups.list.length} 个变体组`);
-
-    const groupsList = (groups && groups.list) || [];
-    if (groupsList.length === 0) {
-      return { checked, broken };
-    }
-
-    const concurrencyLimit = Math.min(
-      Math.max(getMaxConcurrentGroupChecks(), 1),
-      groupsList.length,
-    );
-    let nextGroupIndex = 0;
+    const pageSize = 200;
+    let page = 1;
+    let hasMore = true;
 
     const processGroup = async (group) => {
       try {
@@ -129,7 +144,14 @@ async function processCountry(countryResults, country, checkTime) {
         countryResult.totalGroups++;
         console.log(`  🔍 检查变体组: ${group.name} (${group.id})`);
 
-        const result = await checkVariantGroup(group.id);
+        let result;
+        await monitorSemaphore.acquire();
+        try {
+          result = await checkVariantGroup(group.id);
+        } finally {
+          monitorSemaphore.release();
+        }
+
         const brokenASINs = result.brokenASINs || [];
 
         if (result.isBroken) {
@@ -138,55 +160,49 @@ async function processCountry(countryResults, country, checkTime) {
           countryResult.brokenGroupNames.push(group.name);
         }
 
-        try {
-          await MonitorHistory.create({
+        const historyEntries = [
+          {
             variantGroupId: group.id,
             checkType: 'GROUP',
             country: group.country,
             isBroken: result.isBroken ? 1 : 0,
-            checkResult: JSON.stringify(result),
-          });
-        } catch (historyError) {
-          console.error(
-            `  ⚠️  记录监控历史失败:`,
-            historyError.message,
-          );
-        }
+            checkResult: result,
+            checkTime,
+          },
+        ];
 
         const fullGroup = await VariantGroup.findById(group.id);
-        if (fullGroup && fullGroup.children && fullGroup.children.length > 0) {
-          for (const asin of fullGroup.children) {
-            const asinInfo = await ASIN.findById(asin.id);
-            if (asinInfo) {
-              await ASIN.updateLastCheckTime(asin.id);
-              if (
-                asinInfo.feishuNotifyEnabled !== 0 &&
-                asinInfo.isBroken === 1
-              ) {
-                countryResult.brokenASINs.push({
-                  asin: asinInfo.asin,
-                  name: asinInfo.name || '',
-                  groupName: group.name,
-                  brand: asinInfo.brand || '',
-                });
-              }
+        if (fullGroup && Array.isArray(fullGroup.children)) {
+          for (const asinInfo of fullGroup.children) {
+            await ASIN.updateLastCheckTime(asinInfo.id);
 
-              try {
-                await MonitorHistory.create({
-                  asinId: asinInfo.id,
-                  checkType: 'ASIN',
-                  country: asinInfo.country,
-                  isBroken: asinInfo.isBroken === 1 ? 1 : 0,
-                  checkResult: JSON.stringify({
-                    asin: asinInfo.asin,
-                    isBroken: asinInfo.isBroken === 1,
-                  }),
-                });
-              } catch (historyError) {
-                // 静默处理历史记录错误
-              }
+            if (asinInfo.feishuNotifyEnabled !== 0 && asinInfo.isBroken === 1) {
+              countryResult.brokenASINs.push({
+                asin: asinInfo.asin,
+                name: asinInfo.name || '',
+                groupName: group.name,
+                brand: asinInfo.brand || '',
+              });
             }
+
+            historyEntries.push({
+              asinId: asinInfo.id,
+              checkType: 'ASIN',
+              country: asinInfo.country,
+              isBroken: asinInfo.isBroken === 1 ? 1 : 0,
+              checkResult: {
+                asin: asinInfo.asin,
+                isBroken: asinInfo.isBroken === 1,
+              },
+              checkTime,
+            });
           }
+        }
+
+        try {
+          await MonitorHistory.bulkCreate(historyEntries);
+        } catch (historyError) {
+          console.error(`  ⚠️  批量记录监控历史失败:`, historyError.message);
         }
 
         console.log(
@@ -203,17 +219,45 @@ async function processCountry(countryResults, country, checkTime) {
       }
     };
 
-    const workers = Array.from({ length: concurrencyLimit }, async () => {
-      while (true) {
-        const currentIndex = nextGroupIndex++;
-        if (currentIndex >= groupsList.length) {
-          break;
-        }
-        await processGroup(groupsList[currentIndex]);
+    while (hasMore) {
+      const groupsList = await VariantGroup.findByCountryPage(
+        country,
+        page,
+        pageSize,
+      );
+      if (!groupsList || groupsList.length === 0) {
+        hasMore = false;
+        break;
       }
-    });
 
-    await Promise.all(workers);
+      console.log(
+        `📊 国家 ${country}: 第 ${page} 页，共 ${groupsList.length} 个变体组`,
+      );
+
+      const chunkConcurrency = Math.min(
+        Math.max(getMaxConcurrentGroupChecks(), 1),
+        groupsList.length,
+      );
+      let nextGroupIndex = 0;
+
+      const workers = Array.from({ length: chunkConcurrency }, async () => {
+        while (true) {
+          const currentIndex = nextGroupIndex++;
+          if (currentIndex >= groupsList.length) {
+            break;
+          }
+          await processGroup(groupsList[currentIndex]);
+        }
+      });
+
+      await Promise.all(workers);
+
+      if (groupsList.length < pageSize) {
+        hasMore = false;
+      } else {
+        page++;
+      }
+    }
   } catch (error) {
     console.error(`❌ 处理国家 ${country} 失败:`, error.message);
   }

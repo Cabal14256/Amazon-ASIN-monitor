@@ -1,4 +1,4 @@
-const { callSPAPI } = require('../config/sp-api');
+const { callSPAPI, getMarketplaceId } = require('../config/sp-api');
 const VariantGroup = require('../models/VariantGroup');
 const ASIN = require('../models/ASIN');
 const MonitorHistory = require('../models/MonitorHistory');
@@ -7,6 +7,30 @@ const MonitorHistory = require('../models/MonitorHistory');
  * 每次最多同时检查的 ASIN 数（满足一次检查并发 5 个的要求）
  */
 const MAX_CONCURRENT_ASIN_CHECKS = 5;
+const VARIANT_CACHE_TTL_MS = 5 * 60 * 1000;
+const variantResultCache = new Map();
+
+function getVariantCacheKey(asin, country) {
+  return `${country}:${asin}`;
+}
+
+function getCachedVariantResult(asin, country) {
+  const key = getVariantCacheKey(asin, country);
+  const entry = variantResultCache.get(key);
+  if (entry && entry.expiresAt > Date.now()) {
+    return entry.result;
+  }
+  variantResultCache.delete(key);
+  return null;
+}
+
+function setVariantResultCache(asin, country, result) {
+  const key = getVariantCacheKey(asin, country);
+  variantResultCache.set(key, {
+    expiresAt: Date.now() + VARIANT_CACHE_TTL_MS,
+    result,
+  });
+}
 
 /**
  * 检查单个ASIN的变体关系
@@ -16,21 +40,18 @@ const MAX_CONCURRENT_ASIN_CHECKS = 5;
  */
 async function checkASINVariants(asin, country) {
   try {
-    // 调用SP-API获取ASIN信息
-    // 尝试使用Catalog Items API v2020-12-01（更稳定的版本）
-    // 根据SP-API文档，getItem端点需要marketplaceIds作为查询参数
-    const marketplaceId = getMarketplaceId(country);
+    const cached = getCachedVariantResult(asin, country);
+    if (cached) {
+      console.log(`[checkASINVariants] 使用缓存结果: ${asin} (${country})`);
+      return cached;
+    }
 
-    // 先尝试使用v2020-12-01版本
+    const marketplaceId = getMarketplaceId(country);
     let path = `/catalog/2020-12-01/items/${asin}`;
     let apiVersion = '2020-12-01';
-
-    // 根据SP-API文档，Catalog Items API的getItem端点
-    // marketplaceIds是必需参数（数组格式），includedData是可选的
-    // 直接请求variations数据，避免二次请求
     const params = {
-      marketplaceIds: [marketplaceId], // 使用数组格式
-      includedData: ['variations'], // 显式请求variations数据
+      marketplaceIds: [marketplaceId],
+      includedData: ['variations'],
     };
 
     console.log(
@@ -41,10 +62,8 @@ async function checkASINVariants(asin, country) {
 
     let response;
     try {
-      // 直接请求包含variations的数据
       response = await callSPAPI('GET', path, country, params);
     } catch (error) {
-      // 如果失败，尝试使用v2022-04-01版本
       if (error.message && error.message.includes('400')) {
         console.log(
           `[checkASINVariants] v2020-12-01失败，尝试使用v2022-04-01版本...`,
@@ -191,7 +210,7 @@ async function checkASINVariants(asin, country) {
       }
       console.log(`=====================================\n`);
 
-      return {
+      const resultPayload = {
         hasVariants: finalHasVariants,
         variantCount,
         details: {
@@ -203,15 +222,17 @@ async function checkASINVariants(asin, country) {
             '',
           variations: variantASINs.map((asin) => ({
             asin: asin,
-            title: '', // SP-API variations响应中不包含title，需要单独查询
+            title: '',
           })),
           relationships: variationRelations,
         },
       };
+      setVariantResultCache(asin, country, resultPayload);
+      return resultPayload;
     }
 
     // 如果没有找到变体，返回无变体
-    return {
+    const resultPayload = {
       hasVariants: false,
       variantCount: 0,
       details: {
@@ -219,6 +240,8 @@ async function checkASINVariants(asin, country) {
         message: '未找到变体信息',
       },
     };
+    setVariantResultCache(asin, country, resultPayload);
+    return resultPayload;
   } catch (error) {
     console.error(`检查ASIN ${asin} 变体失败:`, error.message);
 
@@ -323,18 +346,36 @@ async function checkVariantGroup(variantGroupId) {
     await VariantGroup.updateVariantStatus(variantGroupId, isBroken);
 
     // 记录监控历史
+    const checkTime = new Date();
     await MonitorHistory.create({
       variantGroupId,
       checkType: 'GROUP',
       country: group.country,
       isBroken: isBroken ? 1 : 0,
-      checkTime: new Date(),
+      checkTime,
       checkResult: JSON.stringify({
         totalASINs: asins.length,
         brokenCount: brokenASINs.length,
         results: checkResults,
       }),
     });
+
+    // 记录每个ASIN的检查历史
+    if (group.children && group.children.length > 0) {
+      const asinHistoryEntries = group.children.map((asinInfo) => ({
+        asinId: asinInfo.id,
+        variantGroupId,
+        checkType: 'ASIN',
+        country: asinInfo.country,
+        isBroken: asinInfo.isBroken === 1 ? 1 : 0,
+        checkResult: JSON.stringify({
+          asin: asinInfo.asin,
+          isBroken: asinInfo.isBroken === 1,
+        }),
+        checkTime,
+      }));
+      await MonitorHistory.bulkCreate(asinHistoryEntries);
+    }
 
     return {
       isBroken,
@@ -395,21 +436,8 @@ async function checkSingleASIN(asinId) {
  * @param {string} country - 国家代码
  * @returns {string} Marketplace ID
  */
-function getMarketplaceId(country) {
-  const marketplaceMap = {
-    US: 'ATVPDKIKX0DER', // 美国
-    UK: 'A1F83G8C2ARO7P', // 英国 (EU)
-    DE: 'A1PA6795UKMFR9', // 德国 (EU)
-    FR: 'A13V1IB3VIYZZH', // 法国 (EU)
-    IT: 'APJ6JRA9NG5V4', // 意大利 (EU)
-    ES: 'A1RKKUPIHCS9HS', // 西班牙 (EU)
-  };
-  return marketplaceMap[country] || marketplaceMap.US;
-}
-
 module.exports = {
   checkASINVariants,
   checkVariantGroup,
   checkSingleASIN,
-  getMarketplaceId,
 };

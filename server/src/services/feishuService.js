@@ -1,11 +1,48 @@
 const axios = require('axios');
 const FeishuConfig = require('../models/FeishuConfig');
 
+const RATE_LIMIT_CODE = 11232;
+const REQUEST_INTERVAL_MS = 500;
+const MAX_RETRY_ATTEMPTS = 3;
+const RATE_LIMIT_LOG_INTERVAL = 60 * 1000;
+
+const wait = (ms) =>
+  new Promise((resolve) => {
+    setTimeout(resolve, ms);
+  });
+
+const feishuMetrics = {
+  rateLimitCount: 0,
+  lastRateLimitAt: null,
+};
+
+function recordRateLimit(country) {
+  feishuMetrics.rateLimitCount++;
+  feishuMetrics.lastRateLimitAt = new Date();
+  if (feishuMetrics.rateLimitCount % 5 === 0) {
+    console.warn(
+      `[feishu] 累计 ${feishuMetrics.rateLimitCount} 次限频（最近一次: ${country}）`,
+    );
+  }
+}
+
+setInterval(() => {
+  if (feishuMetrics.rateLimitCount > 0) {
+    console.warn(
+      `[feishu] 最近 ${RATE_LIMIT_LOG_INTERVAL / 1000}s 触发 ${
+        feishuMetrics.rateLimitCount
+      } 次限频，上次发生在 ${feishuMetrics.lastRateLimitAt}`,
+    );
+    feishuMetrics.rateLimitCount = 0;
+    feishuMetrics.lastRateLimitAt = null;
+  }
+}, RATE_LIMIT_LOG_INTERVAL).unref?.();
+
 /**
  * 发送飞书通知
  * @param {string} region - 区域代码（US或EU），用于查找webhook配置
  * @param {Object} messageData - 消息数据
- * @returns {Promise<boolean>} 是否发送成功
+ * @returns {Promise<{success: boolean, errorCode?: number}>}
  */
 async function sendFeishuNotification(region, messageData) {
   try {
@@ -18,7 +55,7 @@ async function sendFeishuNotification(region, messageData) {
       console.log(
         `区域 ${region} (${displayCountry}) 未配置飞书Webhook，跳过通知`,
       );
-      return false;
+      return { success: false };
     }
 
     // 构建飞书消息卡片
@@ -43,15 +80,18 @@ async function sendFeishuNotification(region, messageData) {
       const displayCountry =
         messageData.countryDisplay || messageData.country || region;
       console.log(`✅ 飞书通知发送成功: ${region} (${displayCountry})`);
-      return true;
+      return { success: true };
     } else {
       const displayCountry =
         messageData.countryDisplay || messageData.country || region;
-      console.error(
-        `❌ 飞书通知发送失败: ${region} (${displayCountry})`,
-        response.data,
-      );
-      return false;
+      console.error(`❌ 飞书通知发送失败: ${region} (${displayCountry})`, {
+        code: response.data?.code,
+        msg: response.data?.msg,
+      });
+      return {
+        success: false,
+        errorCode: response.data?.code || response.status,
+      };
     }
   } catch (error) {
     const displayCountry =
@@ -60,8 +100,40 @@ async function sendFeishuNotification(region, messageData) {
       `❌ 发送飞书通知异常: ${region} (${displayCountry})`,
       error.message,
     );
-    return false;
+    return {
+      success: false,
+      errorCode: error?.response?.data?.code || error?.response?.status,
+    };
   }
+}
+
+async function sendNotificationWithRetry(region, messageData) {
+  let attempts = 0;
+  while (attempts < MAX_RETRY_ATTEMPTS) {
+    attempts++;
+    const result = await sendFeishuNotification(region, messageData);
+    if (result.success) {
+      return result;
+    }
+
+    const errorCode = Number(result.errorCode);
+    if (
+      !Number.isNaN(errorCode) &&
+      errorCode === RATE_LIMIT_CODE &&
+      attempts < MAX_RETRY_ATTEMPTS
+    ) {
+      const waitMs = 2000 + Math.floor(Math.random() * 2000);
+      console.warn(
+        `[feishu] 限频(${region})，第 ${attempts + 1} 次尝试前等待 ${waitMs}ms`,
+      );
+      recordRateLimit(region);
+      await wait(waitMs);
+      continue;
+    }
+    return result;
+  }
+
+  return { success: false, errorCode: RATE_LIMIT_CODE };
 }
 
 /**
@@ -190,28 +262,41 @@ async function sendBatchNotifications(countryResults) {
     ES: '西班牙',
   };
 
-  // 处理每个国家的数据
-  for (const country in countryResults) {
-    if (!Object.prototype.hasOwnProperty.call(countryResults, country)) {
-      continue;
-    }
-    const countryData = countryResults[country];
-    const region = countryToRegionMap[country] || country;
-    results.total++;
-    const countryName = countryNameMap[country] || country;
-    const notificationData = {
-      ...countryData,
-      country: country, // 使用国家代码作为显示
-      countryDisplay: `${countryName}(${country})`,
-      region: region, // 保存区域信息用于查找webhook
-    };
+  const countries = Object.keys(countryResults).filter((country) =>
+    Object.prototype.hasOwnProperty.call(countryResults, country),
+  );
+  const BATCH_SIZE = 2;
 
-    // 使用区域代码查找webhook配置，但显示国家名称
-    const success = await sendFeishuNotification(region, notificationData);
-    if (success) {
-      results.success++;
-    } else {
-      results.failed++;
+  for (let i = 0; i < countries.length; i += BATCH_SIZE) {
+    const batch = countries.slice(i, i + BATCH_SIZE);
+    const tasks = batch.map(async (country) => {
+      const countryData = countryResults[country];
+      const region = countryToRegionMap[country] || country;
+      results.total++;
+      const countryName = countryNameMap[country] || country;
+      const notificationData = {
+        ...countryData,
+        country,
+        countryDisplay: `${countryName}(${country})`,
+        region,
+      };
+
+      const result = await sendNotificationWithRetry(region, notificationData);
+      if (result.success) {
+        results.success++;
+      } else {
+        results.failed++;
+        if (result.errorCode === RATE_LIMIT_CODE) {
+          console.warn(`[feishu] 国家 ${country} 限频重试失败`);
+          recordRateLimit(country);
+        }
+      }
+    });
+
+    await Promise.all(tasks);
+
+    if (i + BATCH_SIZE < countries.length) {
+      await wait(REQUEST_INTERVAL_MS);
     }
   }
 

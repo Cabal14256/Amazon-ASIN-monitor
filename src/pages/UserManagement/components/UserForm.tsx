@@ -49,7 +49,6 @@ const UserForm: React.FC<UserFormProps> = (props) => {
     try {
       if (isEdit) {
         await updateUser(values.id || '', {
-          email: formValues.email,
           real_name: formValues.real_name,
           status: formValues.status ? 1 : 0,
           roleIds: formValues.roleIds,
@@ -58,7 +57,6 @@ const UserForm: React.FC<UserFormProps> = (props) => {
       } else {
         await createUser({
           username: formValues.username,
-          email: formValues.email,
           password: formValues.password,
           real_name: formValues.real_name,
           roleIds: formValues.roleIds,
@@ -123,15 +121,6 @@ const UserForm: React.FC<UserFormProps> = (props) => {
           ]}
         />
       )}
-      <ProFormText
-        name="email"
-        label="邮箱"
-        placeholder="请输入邮箱"
-        rules={[{ type: 'email', message: '请输入有效的邮箱地址' }]}
-        fieldProps={{
-          maxLength: 100,
-        }}
-      />
       <ProFormText
         name="real_name"
         label="真实姓名"

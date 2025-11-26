@@ -10,11 +10,10 @@ exports.getUserList = async (req, res) => {
       query: req.query,
       userId: req.userId,
     });
-    const { username, email, status, current = 1, pageSize = 10 } = req.query;
+    const { username, status, current = 1, pageSize = 10 } = req.query;
 
     const result = await User.findAll({
       username,
-      email,
       status,
       current: Number(current),
       pageSize: Number(pageSize),
@@ -97,7 +96,7 @@ exports.getUserDetail = async (req, res) => {
  */
 exports.createUser = async (req, res) => {
   try {
-    const { username, email, password, real_name, roleIds } = req.body;
+    const { username, password, real_name, roleIds } = req.body;
 
     if (!username || !password) {
       return res.status(400).json({
@@ -118,21 +117,9 @@ exports.createUser = async (req, res) => {
     }
 
     // 检查邮箱是否已存在（如果提供了邮箱）
-    if (email) {
-      const existingEmail = await User.findByEmail(email);
-      if (existingEmail) {
-        return res.status(400).json({
-          success: false,
-          errorMessage: '邮箱已被使用',
-          errorCode: 400,
-        });
-      }
-    }
-
     // 创建用户
     const user = await User.create({
       username,
-      email,
       password,
       real_name,
     });
@@ -169,7 +156,7 @@ exports.createUser = async (req, res) => {
 exports.updateUser = async (req, res) => {
   try {
     const { userId } = req.params;
-    const { email, real_name, status, roleIds } = req.body;
+    const { real_name, status, roleIds } = req.body;
 
     // 检查用户是否存在
     const user = await User.findById(userId);
@@ -182,20 +169,8 @@ exports.updateUser = async (req, res) => {
     }
 
     // 检查邮箱是否已被其他用户使用（如果提供了邮箱）
-    if (email && email !== user.email) {
-      const existingEmail = await User.findByEmail(email);
-      if (existingEmail) {
-        return res.status(400).json({
-          success: false,
-          errorMessage: '邮箱已被使用',
-          errorCode: 400,
-        });
-      }
-    }
-
     // 更新用户信息
     const updateData = {};
-    if (email !== undefined) updateData.email = email;
     if (real_name !== undefined) updateData.real_name = real_name;
     if (status !== undefined) updateData.status = status;
 

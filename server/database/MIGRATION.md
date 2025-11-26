@@ -29,7 +29,18 @@ mysql -u root -p amazon_asin_monitor < server/database/add_asin_type.sql
 
 ## 功能说明
 
-**ASIN 类型字段 (asin_type)**:
+## **ASIN 类型字段 (asin_type)**:
+
+## 移除邮箱字段与密码重置表
+
+```
+mysql -u root -p amazon_asin_monitor < server/database/migrations/009_remove_user_email_and_reset_table.sql
+```
+
+### 说明
+
+- 删除 `users.email` 字段，避免用户管理中依赖邮箱
+- 删除 `password_reset_tokens` 表，取消基于邮箱的密码重置逻辑
 
 - 表示 ASIN 的类型属性
 - 可选值：`MAIN_LINK`（主链）、`SUB_REVIEW`（副评）
@@ -120,3 +131,15 @@ mysql -u root -p amazon_asin_monitor < server/database/migrations/005_remove_bat
 - ⚠️ 执行前请备份数据库
 - ⚠️ 删除操作不可逆，请确认后再执行
 - ⚠️ 如果表中有数据，删除前请先导出备份
+
+---
+
+## 添加监控历史联合索引
+
+```
+mysql -u root -p amazon_asin_monitor < server/database/migrations/008_add_monitor_history_index.sql
+```
+
+此索引加速 `monitor_history` 基于国家与检查时间的查询（如仪表盘、导出），避免全表扫描。
+
+---

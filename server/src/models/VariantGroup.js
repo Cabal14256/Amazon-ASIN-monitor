@@ -1,5 +1,6 @@
 const { query } = require('../config/database');
 const { v4: uuidv4 } = require('uuid');
+const cacheService = require('../services/cacheService');
 
 class VariantGroup {
   // 查询所有变体组（带分页和筛选）
@@ -11,6 +12,19 @@ class VariantGroup {
       current = 1,
       pageSize = 10,
     } = params;
+
+    const shouldUseCache =
+      !keyword && Number(current) === 1 && Number(pageSize) <= 100;
+    const cacheKey = `variantGroups:${country || 'ALL'}:${
+      variantStatus || 'ALL'
+    }:pageSize:${pageSize}`;
+    if (shouldUseCache) {
+      const cachedValue = cacheService.get(cacheKey);
+      if (cachedValue) {
+        console.log('VariantGroup.findAll 使用缓存:', cacheKey);
+        return JSON.parse(JSON.stringify(cachedValue));
+      }
+    }
 
     let sql = `
       SELECT DISTINCT
@@ -128,12 +142,43 @@ class VariantGroup {
       }));
     }
 
-    return {
+    const result = {
       list,
       total,
       current: Number(current),
       pageSize: Number(pageSize),
     };
+
+    if (shouldUseCache) {
+      cacheService.set(cacheKey, JSON.parse(JSON.stringify(result)), 60 * 1000);
+    }
+
+    return result;
+  }
+
+  /**
+   * 分页按国家查询变体组（仅基础字段）
+   * @param {string} country
+   * @param {number} page
+   * @param {number} pageSize
+   */
+  static async findByCountryPage(country, page = 1, pageSize = 200) {
+    const offset = (Number(page) - 1) * Number(pageSize);
+    const sql = `
+      SELECT
+        id,
+        name,
+        country
+      FROM variant_groups
+      WHERE country = ?
+      ORDER BY create_time ASC
+      LIMIT ${Number(pageSize)} OFFSET ${offset}
+    `;
+    return query(sql, [country]);
+  }
+
+  static clearCache() {
+    cacheService.deleteByPrefix('variantGroups:');
   }
 
   // 根据ID查询变体组
@@ -180,6 +225,7 @@ class VariantGroup {
        VALUES (?, ?, ?, ?, ?, 0, 'NORMAL')`,
       [id, name, country, site, brand],
     );
+    this.clearCache();
     return this.findById(id);
   }
 
@@ -190,6 +236,7 @@ class VariantGroup {
       `UPDATE variant_groups SET name = ?, country = ?, site = ?, brand = ?, update_time = NOW() WHERE id = ?`,
       [name, country, site, brand, id],
     );
+    this.clearCache();
     return this.findById(id);
   }
 
@@ -197,6 +244,7 @@ class VariantGroup {
   static async delete(id) {
     // 外键约束会自动删除关联的ASIN
     await query(`DELETE FROM variant_groups WHERE id = ?`, [id]);
+    this.clearCache();
     return true;
   }
 
@@ -207,6 +255,7 @@ class VariantGroup {
       `UPDATE variant_groups SET is_broken = ?, variant_status = ?, update_time = NOW() WHERE id = ?`,
       [isBroken ? 1 : 0, variantStatus, id],
     );
+    this.clearCache();
     return this.findById(id);
   }
 }

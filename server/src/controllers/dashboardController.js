@@ -3,6 +3,12 @@ const ASIN = require('../models/ASIN');
 const MonitorHistory = require('../models/MonitorHistory');
 const { query } = require('../config/database');
 
+const DASHBOARD_TTL_MS = 30 * 1000;
+let dashboardCache = {
+  data: null,
+  expiresAt: 0,
+};
+
 /**
  * 获取仪表盘数据
  */
@@ -11,6 +17,15 @@ exports.getDashboardData = async (req, res) => {
     console.log('[getDashboardData] 开始获取仪表盘数据', {
       userId: req.userId,
     });
+
+    if (dashboardCache.expiresAt > Date.now() && dashboardCache.data) {
+      console.log('[getDashboardData] 使用缓存数据');
+      return res.json({
+        success: true,
+        data: dashboardCache.data,
+        errorCode: 0,
+      });
+    }
 
     // 1. 关键指标概览
     // 总变体组数
@@ -144,6 +159,11 @@ exports.getDashboardData = async (req, res) => {
       countryDistributionLength: countryDistribution.length,
       recentActivitiesLength: recentActivities.length,
     });
+
+    dashboardCache = {
+      data: dashboardData,
+      expiresAt: Date.now() + DASHBOARD_TTL_MS,
+    };
 
     res.json({
       success: true,

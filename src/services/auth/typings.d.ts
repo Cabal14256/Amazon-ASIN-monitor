@@ -9,7 +9,6 @@ declare namespace API {
   type CurrentUser = {
     id?: string;
     username?: string;
-    email?: string;
     real_name?: string;
     status?: number;
     last_login_time?: string;
@@ -76,7 +75,6 @@ declare namespace API {
   type UserInfo = {
     id?: string;
     username?: string;
-    email?: string;
     real_name?: string;
     status?: number;
     last_login_time?: string;
@@ -90,7 +88,6 @@ declare namespace API {
   /** 用户列表查询参数 */
   type UserListParams = {
     username?: string;
-    email?: string;
     status?: string;
     current?: number;
     pageSize?: number;
@@ -99,7 +96,6 @@ declare namespace API {
   /** 创建用户参数 */
   type CreateUserParams = {
     username: string;
-    email?: string;
     password: string;
     real_name?: string;
     roleIds?: string[];
@@ -107,7 +103,6 @@ declare namespace API {
 
   /** 更新用户参数 */
   type UpdateUserParams = {
-    email?: string;
     real_name?: string;
     status?: number;
     roleIds?: string[];

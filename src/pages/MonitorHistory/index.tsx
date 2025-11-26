@@ -121,7 +121,6 @@ const MonitorHistoryPage: React.FC<unknown> = () => {
       title: '变体组',
       dataIndex: 'variantGroupName',
       width: 200,
-      hideInTable: type === 'asin', // 如果是从ASIN查看，隐藏变体组列
       render: (text: string) => text || '-',
     },
     {

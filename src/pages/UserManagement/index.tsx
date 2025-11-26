@@ -56,11 +56,6 @@ const UserManagement: React.FC<unknown> = () => {
       width: 120,
     },
     {
-      title: '邮箱',
-      dataIndex: 'email',
-      width: 180,
-    },
-    {
       title: '状态',
       dataIndex: 'status',
       width: 80,
@@ -184,12 +179,11 @@ const UserManagement: React.FC<unknown> = () => {
         ]}
         request={async (params) => {
           try {
-            const { current, pageSize, username, email, status } = params;
+            const { current, pageSize, username, status } = params;
             const response = await getUserList({
               current: current || 1,
               pageSize: pageSize || 10,
               username: username as string,
-              email: email as string,
               status: status as string,
             });
 

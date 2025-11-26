@@ -63,8 +63,7 @@ function buildRegionConfig(region) {
   for (const [fieldKey, fieldSuffix] of Object.entries(REGION_FIELD_SPECS)) {
     const envKey = `SP_API_${suffix}_${fieldSuffix}`;
     const fallbackEnvKey = `${fallbackPrefix}${fieldSuffix}`;
-    result[fieldKey] =
-      process.env[envKey] || process.env[fallbackEnvKey] || '';
+    result[fieldKey] = process.env[envKey] || process.env[fallbackEnvKey] || '';
   }
   result.accessKeyId = '';
   result.secretAccessKey = '';
@@ -141,7 +140,10 @@ async function loadConfigFromDatabase() {
     clearAccessTokenCache();
     console.log('✅ SP-API配置已从数据库加载');
   } catch (error) {
-    console.error('⚠️ 从数据库加载SP-API配置失败，使用环境变量:', error.message);
+    console.error(
+      '⚠️ 从数据库加载SP-API配置失败，使用环境变量:',
+      error.message,
+    );
   }
 }
 
@@ -214,9 +216,7 @@ async function getAccessToken(region) {
                 expiresAt: Date.now() + (expiresIn - 60) * 1000,
               };
               console.log(
-                `[getAccessToken] ${normalizedRegion} 访问令牌获取成功，长度: ${
-                  response.access_token.length
-                }`,
+                `[getAccessToken] ${normalizedRegion} 访问令牌获取成功，长度: ${response.access_token.length}`,
               );
               resolve(response.access_token);
             } else {
@@ -248,7 +248,6 @@ async function getAccessToken(region) {
     req.end();
   });
 }
-
 
 // AWS签名V4
 function signRequest(
@@ -343,6 +342,18 @@ function getRegionByCountry(country) {
     return 'US';
   }
   return COUNTRY_REGION_MAP[country] || 'US';
+}
+
+function getMarketplaceId(country) {
+  const marketplaceMap = {
+    US: 'ATVPDKIKX0DER',
+    UK: 'A1F83G8C2ARO7P',
+    DE: 'A1PA6795UKMFR9',
+    FR: 'A13V1IB3VIYZZH',
+    IT: 'APJ6JRA9NG5V4',
+    ES: 'A1RKKUPIHCS9HS',
+  };
+  return marketplaceMap[country] || marketplaceMap.US;
 }
 
 function getRegionConfig(region) {
@@ -463,9 +474,7 @@ async function callSPAPI(method, path, country, params = {}, body = null) {
         });
         res.on('end', () => {
           console.log(`[callSPAPI] 响应状态码: ${res.statusCode}`);
-          console.log(
-            `[callSPAPI] 响应数据长度: ${data ? data.length : 0}`,
-          );
+          console.log(`[callSPAPI] 响应数据长度: ${data ? data.length : 0}`);
 
           if (res.statusCode >= 200 && res.statusCode < 300) {
             try {
@@ -486,10 +495,7 @@ async function callSPAPI(method, path, country, params = {}, body = null) {
               }
               resolve(response);
             } catch (e) {
-              console.log(
-                `[callSPAPI] 响应解析失败，返回原始数据:`,
-                e.message,
-              );
+              console.log(`[callSPAPI] 响应解析失败，返回原始数据:`, e.message);
               resolve(data || {});
             }
           } else {
@@ -528,4 +534,5 @@ module.exports = {
   loadConfigFromDatabase,
   getRegionByCountry,
   getRegionConfig,
+  getMarketplaceId,
 };

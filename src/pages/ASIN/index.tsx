@@ -42,6 +42,17 @@ const countryMap: Record<
 const ASINManagement: React.FC<unknown> = () => {
   const message = useMessage();
   const actionRef = useRef<ActionType>();
+  const requestCacheRef = useRef<
+    Map<
+      string,
+      {
+        data: (API.VariantGroup | API.ASINInfo)[];
+        total: number;
+        timestamp: number;
+      }
+    >
+  >(new Map());
+  const CACHE_TTL = 30 * 1000;
   const access = useAccess();
 
   /**
@@ -505,6 +516,22 @@ const ASINManagement: React.FC<unknown> = () => {
           </Access>,
         ]}
         request={async (params) => {
+          const cacheKey = JSON.stringify({
+            keyword: params.keyword || '',
+            country: params.country || '',
+            variantStatus: params.variantStatus || '',
+            current: params.current || 1,
+            pageSize: params.pageSize || 10,
+          });
+          const cached = requestCacheRef.current.get(cacheKey);
+          if (cached && Date.now() - cached.timestamp < CACHE_TTL) {
+            return {
+              data: cached.data,
+              success: true,
+              total: cached.total,
+            };
+          }
+
           try {
             // 只传递后端需要的参数
             const { current, pageSize, keyword, country, variantStatus } =
@@ -562,6 +589,12 @@ const ASINManagement: React.FC<unknown> = () => {
                 );
               }
               return groupWithParentId;
+            });
+            const finalData = treeData || [];
+            requestCacheRef.current.set(cacheKey, {
+              data: finalData,
+              total: data?.total || 0,
+              timestamp: Date.now(),
             });
 
             return {
@@ -631,6 +664,7 @@ const ASINManagement: React.FC<unknown> = () => {
           setVariantGroupModalVisible(false);
           setEditingVariantGroup(undefined);
           // 确保表格刷新
+          requestCacheRef.current.clear();
           if (actionRef.current) {
             await actionRef.current.reload();
           }
@@ -651,6 +685,7 @@ const ASINManagement: React.FC<unknown> = () => {
           setSelectedVariantGroupId(undefined);
           setSelectedVariantGroupCountry(undefined);
           // 确保表格刷新
+          requestCacheRef.current.clear();
           if (actionRef.current) {
             await actionRef.current.reload();
           }
@@ -670,6 +705,7 @@ const ASINManagement: React.FC<unknown> = () => {
         onSuccess={async () => {
           setMoveModalVisible(false);
           setMovingASIN(undefined);
+          requestCacheRef.current.clear();
           if (actionRef.current) {
             await actionRef.current.reload();
           }
@@ -682,6 +718,7 @@ const ASINManagement: React.FC<unknown> = () => {
         }}
         onSuccess={async () => {
           setExcelImportModalVisible(false);
+          requestCacheRef.current.clear();
           if (actionRef.current) {
             await actionRef.current.reload();
           }

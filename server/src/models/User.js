@@ -8,7 +8,7 @@ class User {
   // 根据ID查找用户（不包含密码）
   static async findById(id) {
     const [user] = await query(
-      `SELECT id, username, email, real_name, status, last_login_time, last_login_ip, create_time, update_time 
+      `SELECT id, username, real_name, status, last_login_time, last_login_ip, create_time, update_time 
        FROM users WHERE id = ?`,
       [id],
     );
@@ -17,43 +17,24 @@ class User {
 
   // 根据ID查找用户（包含密码，用于登录验证）
   static async findByIdWithPassword(id) {
-    const [user] = await query(
-      `SELECT * FROM users WHERE id = ?`,
-      [id],
-    );
+    const [user] = await query(`SELECT * FROM users WHERE id = ?`, [id]);
     return user;
   }
 
   // 根据用户名查找用户
   static async findByUsername(username) {
-    const [user] = await query(
-      `SELECT * FROM users WHERE username = ?`,
-      [username],
-    );
-    return user;
-  }
-
-  // 根据邮箱查找用户
-  static async findByEmail(email) {
-    const [user] = await query(
-      `SELECT * FROM users WHERE email = ?`,
-      [email],
-    );
+    const [user] = await query(`SELECT * FROM users WHERE username = ?`, [
+      username,
+    ]);
     return user;
   }
 
   // 查询所有用户（分页）
   static async findAll(params = {}) {
-    const {
-      username = '',
-      email = '',
-      status = '',
-      current = 1,
-      pageSize = 10,
-    } = params;
+    const { username = '', status = '', current = 1, pageSize = 10 } = params;
 
     let sql = `
-      SELECT id, username, email, real_name, status, last_login_time, last_login_ip, create_time, update_time
+      SELECT id, username, real_name, status, last_login_time, last_login_ip, create_time, update_time
       FROM users
       WHERE 1=1
     `;
@@ -62,11 +43,6 @@ class User {
     if (username) {
       sql += ` AND username LIKE ?`;
       conditions.push(`%${username}%`);
-    }
-
-    if (email) {
-      sql += ` AND email LIKE ?`;
-      conditions.push(`%${email}%`);
     }
 
     if (status !== '') {
@@ -93,13 +69,13 @@ class User {
 
   // 创建用户
   static async create(userData) {
-    const { username, email, password, real_name } = userData;
+    const { username, password, real_name } = userData;
     const id = uuidv4();
     const hashedPassword = await bcrypt.hash(password, 10);
 
     await query(
-      `INSERT INTO users (id, username, email, password, real_name) VALUES (?, ?, ?, ?, ?)`,
-      [id, username, email || null, hashedPassword, real_name || null],
+      `INSERT INTO users (id, username, password, real_name) VALUES (?, ?, ?, ?)`,
+      [id, username, hashedPassword, real_name || null],
     );
 
     return this.findById(id);
@@ -107,14 +83,10 @@ class User {
 
   // 更新用户
   static async update(id, userData) {
-    const { email, real_name, status } = userData;
+    const { real_name, status } = userData;
     const updates = [];
     const values = [];
 
-    if (email !== undefined) {
-      updates.push('email = ?');
-      values.push(email);
-    }
     if (real_name !== undefined) {
       updates.push('real_name = ?');
       values.push(real_name);
@@ -129,10 +101,7 @@ class User {
     }
 
     values.push(id);
-    await query(
-      `UPDATE users SET ${updates.join(', ')} WHERE id = ?`,
-      values,
-    );
+    await query(`UPDATE users SET ${updates.join(', ')} WHERE id = ?`, values);
 
     return this.findById(id);
   }
@@ -140,10 +109,10 @@ class User {
   // 更新密码
   static async updatePassword(id, newPassword) {
     const hashedPassword = await bcrypt.hash(newPassword, 10);
-    await query(
-      `UPDATE users SET password = ? WHERE id = ?`,
-      [hashedPassword, id],
-    );
+    await query(`UPDATE users SET password = ? WHERE id = ?`, [
+      hashedPassword,
+      id,
+    ]);
     return true;
   }
 
@@ -220,20 +189,20 @@ class User {
     );
 
     if (existing.length === 0) {
-      await query(
-        `INSERT INTO user_roles (user_id, role_id) VALUES (?, ?)`,
-        [userId, roleId],
-      );
+      await query(`INSERT INTO user_roles (user_id, role_id) VALUES (?, ?)`, [
+        userId,
+        roleId,
+      ]);
     }
     return true;
   }
 
   // 移除用户角色
   static async removeRole(userId, roleId) {
-    await query(
-      `DELETE FROM user_roles WHERE user_id = ? AND role_id = ?`,
-      [userId, roleId],
-    );
+    await query(`DELETE FROM user_roles WHERE user_id = ? AND role_id = ?`, [
+      userId,
+      roleId,
+    ]);
     return true;
   }
 
@@ -245,10 +214,10 @@ class User {
     // 添加新角色
     if (roleIds && roleIds.length > 0) {
       for (const roleId of roleIds) {
-        await query(
-          `INSERT INTO user_roles (user_id, role_id) VALUES (?, ?)`,
-          [userId, roleId],
-        );
+        await query(`INSERT INTO user_roles (user_id, role_id) VALUES (?, ?)`, [
+          userId,
+          roleId,
+        ]);
       }
     }
     return true;

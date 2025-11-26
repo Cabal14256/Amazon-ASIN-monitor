@@ -267,26 +267,9 @@ exports.changePassword = async (req, res) => {
 exports.updateProfile = async (req, res) => {
   try {
     const userId = req.userId;
-    const { email, real_name } = req.body;
+    const { real_name } = req.body;
 
-    // 检查邮箱是否已被其他用户使用（如果提供了邮箱）
-    if (email) {
-      const user = await User.findById(userId);
-      if (email !== user.email) {
-        const existingEmail = await User.findByEmail(email);
-        if (existingEmail) {
-          return res.status(400).json({
-            success: false,
-            errorMessage: '邮箱已被使用',
-            errorCode: 400,
-          });
-        }
-      }
-    }
-
-    // 更新用户信息
     const updateData = {};
-    if (email !== undefined) updateData.email = email;
     if (real_name !== undefined) updateData.real_name = real_name;
 
     if (Object.keys(updateData).length === 0) {

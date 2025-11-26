@@ -1,4 +1,5 @@
 const { query } = require('../config/database');
+const cacheService = require('../services/cacheService');
 
 class MonitorHistory {
   // 查询监控历史列表
@@ -63,13 +64,24 @@ class MonitorHistory {
       conditions.push(endTime);
     }
 
-    // 获取总数
-    const countSql = sql.replace(
-      /SELECT[\s\S]*?FROM/,
-      'SELECT COUNT(*) as total FROM',
-    );
-    const countResult = await query(countSql, conditions);
-    const total = countResult[0]?.total || 0;
+    const countKey = `monitorHistoryCount:${variantGroupId || 'ALL'}:${
+      asinId || 'ALL'
+    }:${country || 'ALL'}:${checkType || 'ALL'}:${isBroken || 'ALL'}:${
+      startTime || 'ALL'
+    }:${endTime || 'ALL'}`;
+    let total = cacheService.get(countKey);
+    if (total === null) {
+      // 获取总数
+      const countSql = sql.replace(
+        /SELECT[\s\S]*?FROM/,
+        'SELECT COUNT(*) as total FROM',
+      );
+      const countResult = await query(countSql, conditions);
+      total = countResult[0]?.total || 0;
+      cacheService.set(countKey, total, 60 * 1000);
+    } else {
+      console.log('MonitorHistory.findAll 使用缓存总数:', countKey);
+    }
 
     // 分页 - LIMIT 和 OFFSET 不能使用参数绑定，必须直接拼接（确保是整数）
     const offset = (Number(current) - 1) * Number(pageSize);
@@ -156,7 +168,36 @@ class MonitorHistory {
       ],
     );
 
+    cacheService.deleteByPrefix('monitorHistoryCount:');
     return this.findById(result.insertId);
+  }
+
+  static async bulkCreate(entries = []) {
+    if (!Array.isArray(entries) || entries.length === 0) {
+      return;
+    }
+
+    const placeholders = [];
+    const values = [];
+    for (const entry of entries) {
+      placeholders.push('(?, ?, ?, ?, ?, ?, ?)');
+      values.push(
+        entry.variantGroupId || null,
+        entry.asinId || null,
+        entry.checkType || 'GROUP',
+        entry.country || null,
+        entry.isBroken ? 1 : 0,
+        entry.checkTime || new Date(),
+        entry.checkResult ? JSON.stringify(entry.checkResult) : null,
+      );
+    }
+
+    const sql = `INSERT INTO monitor_history 
+      (variant_group_id, asin_id, check_type, country, is_broken, check_time, check_result) 
+      VALUES ${placeholders.join(', ')}`;
+
+    await query(sql, values);
+    cacheService.deleteByPrefix('monitorHistoryCount:');
   }
 
   // 获取统计信息

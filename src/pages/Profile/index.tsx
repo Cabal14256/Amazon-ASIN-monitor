@@ -31,7 +31,6 @@ const ProfilePage: React.FC<unknown> = () => {
         const user = response.data.user;
         profileForm.setFieldsValue({
           username: user.username,
-          email: user.email,
           real_name: user.real_name,
         });
       }
@@ -46,7 +45,6 @@ const ProfilePage: React.FC<unknown> = () => {
     if (currentUser) {
       profileForm.setFieldsValue({
         username: currentUser.username,
-        email: currentUser.email,
         real_name: currentUser.real_name,
       });
     } else {
@@ -55,10 +53,7 @@ const ProfilePage: React.FC<unknown> = () => {
   }, [currentUser]);
 
   // 更新个人资料
-  const handleUpdateProfile = async (values: {
-    email?: string;
-    real_name?: string;
-  }) => {
+  const handleUpdateProfile = async (values: { real_name?: string }) => {
     try {
       const response = await updateProfile(values);
       if (response?.success && response?.data) {
@@ -135,15 +130,6 @@ const ProfilePage: React.FC<unknown> = () => {
               disabled
               fieldProps={{
                 disabled: true,
-              }}
-            />
-            <ProFormText
-              name="email"
-              label="邮箱"
-              placeholder="请输入邮箱"
-              rules={[{ type: 'email', message: '请输入有效的邮箱地址' }]}
-              fieldProps={{
-                maxLength: 100,
               }}
             />
             <ProFormText
