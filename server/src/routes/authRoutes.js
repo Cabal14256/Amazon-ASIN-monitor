@@ -16,6 +16,14 @@ router.get(
 // 用户登出（需要认证）
 router.post('/auth/logout', authenticateToken, authController.logout);
 
+// 会话管理（需要认证）
+router.get('/auth/sessions', authenticateToken, authController.listSessions);
+router.post(
+  '/auth/sessions/revoke',
+  authenticateToken,
+  authController.revokeSession,
+);
+
 // 修改当前用户密码（需要认证）
 router.post(
   '/auth/change-password',

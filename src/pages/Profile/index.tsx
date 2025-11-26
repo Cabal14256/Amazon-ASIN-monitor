@@ -6,11 +6,16 @@ import {
   ProFormText,
 } from '@ant-design/pro-components';
 import { useModel } from '@umijs/max';
-import { Card, Tabs } from 'antd';
+import { Button, Card, List, Space, Tabs, Tag } from 'antd';
 import React, { useEffect, useState } from 'react';
 
-const { changePassword, updateProfile, getCurrentUser } =
-  services.AuthController;
+const {
+  changePassword,
+  getCurrentUser,
+  getSessions,
+  revokeSession,
+  updateProfile,
+} = services.AuthController;
 
 const ProfilePage: React.FC<unknown> = () => {
   const message = useMessage();
@@ -19,6 +24,9 @@ const ProfilePage: React.FC<unknown> = () => {
   const [passwordForm] = ProForm.useForm();
   const [activeTab, setActiveTab] = useState<string>('profile');
   const [loading, setLoading] = useState(false);
+  const [sessions, setSessions] = useState<API.SessionInfo[]>([]);
+  const [sessionsLoading, setSessionsLoading] = useState(false);
+  const currentSessionId = initialState?.sessionId;
 
   const currentUser = initialState?.currentUser;
 
@@ -41,6 +49,21 @@ const ProfilePage: React.FC<unknown> = () => {
     }
   };
 
+  const loadSessions = async () => {
+    setSessionsLoading(true);
+    try {
+      const response = await getSessions();
+      if (response?.success && response?.data) {
+        setSessions(response.data);
+      }
+    } catch (error) {
+      console.error('加载会话列表失败:', error);
+      message.error('加载会话列表失败');
+    } finally {
+      setSessionsLoading(false);
+    }
+  };
+
   useEffect(() => {
     if (currentUser) {
       profileForm.setFieldsValue({
@@ -50,7 +73,22 @@ const ProfilePage: React.FC<unknown> = () => {
     } else {
       loadUserInfo();
     }
+    loadSessions();
   }, [currentUser]);
+
+  const handleRevokeSession = async (sessionId?: string) => {
+    if (!sessionId) {
+      return;
+    }
+    try {
+      await revokeSession({ sessionId });
+      message.success('会话已踢出');
+      loadSessions();
+    } catch (error) {
+      console.error('踢出会话失败:', error);
+      message.error('踢出会话失败');
+    }
+  };
 
   // 更新个人资料
   const handleUpdateProfile = async (values: { real_name?: string }) => {
@@ -64,6 +102,7 @@ const ProfilePage: React.FC<unknown> = () => {
           currentUser: response.data.user,
           permissions: response.data.permissions,
           roles: response.data.roles,
+          sessionId: initialState?.sessionId,
         });
       }
       return true;
@@ -191,6 +230,61 @@ const ProfilePage: React.FC<unknown> = () => {
               ]}
             />
           </ProForm>
+        </Card>
+      ),
+    },
+    {
+      key: 'sessions',
+      label: '多设备管理',
+      children: (
+        <Card loading={sessionsLoading}>
+          <List
+            dataSource={sessions}
+            locale={{ emptyText: '暂无其他会话' }}
+            renderItem={(item) => {
+              const isCurrent = item.id === currentSessionId;
+              return (
+                <List.Item
+                  actions={[
+                    isCurrent ? (
+                      <Tag color="green">当前会话</Tag>
+                    ) : (
+                      <Button
+                        type="link"
+                        onClick={() => handleRevokeSession(item.id)}
+                      >
+                        踢出
+                      </Button>
+                    ),
+                  ]}
+                >
+                  <List.Item.Meta
+                    title={
+                      <Space>
+                        <span>{item.user_agent || '未知设备'}</span>
+                        <Tag>{item.status}</Tag>
+                      </Space>
+                    }
+                    description={
+                      <>
+                        <div>
+                          IP: {item.ip_address || '未知'} • 创建于:{' '}
+                          {item.created_at || '未知'}
+                        </div>
+                        <div>最近活动: {item.last_active_at || '未知'}</div>
+                        {item.expires_at && (
+                          <div>过期时间: {item.expires_at}</div>
+                        )}
+                        {item.remember_me === 1 && (
+                          <Tag color="blue">已记住设备</Tag>
+                        )}
+                      </>
+                    }
+                  />
+                </List.Item>
+              );
+            }}
+          />
         </Card>
       ),
     },

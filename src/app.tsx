@@ -1,8 +1,15 @@
 // 运行时配置
+import GlobalAlert from '@/components/GlobalAlert';
+import { clearToken, getToken } from '@/utils/token';
 import * as Icons from '@ant-design/icons';
+import {
+  FileTextOutlined,
+  LogoutOutlined,
+  SettingOutlined,
+} from '@ant-design/icons';
 import { history, request as umiRequest } from '@umijs/max';
-import { App as AntdApp, Button, Space } from 'antd';
-import React, { useEffect, useState } from 'react';
+import { App as AntdApp, Avatar, Badge, Button, Dropdown, Space } from 'antd';
+import React from 'react';
 
 // 全局初始化数据配置，用于 Layout 用户信息和权限初始化
 // 更多信息见文档：https://umijs.org/docs/api/runtime-config#getinitialstate
@@ -11,8 +18,8 @@ export async function getInitialState(): Promise<{
   permissions?: string[];
   roles?: string[];
 }> {
-  // 从localStorage获取token
-  const token = localStorage.getItem('token');
+  // 从storage获取token
+  const token = getToken();
 
   // 调试日志
   if (process.env.NODE_ENV === 'development') {
@@ -90,6 +97,7 @@ export async function getInitialState(): Promise<{
         currentUser: response.data.user,
         permissions: response.data.permissions || [],
         roles: response.data.roles || [],
+        sessionId: response.data.sessionId,
       };
 
       // 调试日志
@@ -114,7 +122,7 @@ export async function getInitialState(): Promise<{
 
       // 如果是401错误，清除token并重定向
       if (response.errorCode === 401) {
-        localStorage.removeItem('token');
+        clearToken();
         if (!isLoginPage) {
           setTimeout(() => {
             history.push(`/login?redirect=${encodeURIComponent(currentPath)}`);
@@ -127,7 +135,7 @@ export async function getInitialState(): Promise<{
       // 其他错误可能是临时问题，不应该清除token
       if (response.errorCode === 401 && token) {
         console.warn('[getInitialState] API返回401，清除token并重定向到登录页');
-        localStorage.removeItem('token');
+        clearToken();
         if (!isLoginPage) {
           window.location.href = `/login?redirect=${encodeURIComponent(
             currentPath,
@@ -172,7 +180,7 @@ export async function getInitialState(): Promise<{
       console.warn(
         '[getInitialState] Token无效或过期，清除token并重定向到登录页',
       );
-      localStorage.removeItem('token');
+      clearToken();
       // 如果不在登录页，重定向到登录页
       if (!isLoginPage) {
         // 使用 window.location 强制重定向，避免路由拦截
@@ -271,97 +279,92 @@ export const layout = ({ initialState, setInitialState }: any) => {
         });
       },
     },
+    childrenRender: (children: React.ReactNode) => (
+      <AntdApp>
+        <GlobalAlert />
+        {children}
+      </AntdApp>
+    ),
     // 右上角用户操作区
     actionsRender: () => {
       const currentUser = initialState?.currentUser;
-
       if (!currentUser) {
         return [];
       }
 
-      // 创建一个组件来监听侧边栏状态
-      const UserActionsComponent: React.FC = () => {
-        const [collapsed, setCollapsed] = useState(false);
-
-        useEffect(() => {
-          // 监听侧边栏的收起/展开状态
-          const checkCollapsed = () => {
-            // 通过检查 DOM 元素来判断侧边栏是否收起
-            const sidebar = document.querySelector('.ant-layout-sider');
-            if (sidebar) {
-              const isCollapsed = sidebar.classList.contains(
-                'ant-layout-sider-collapsed',
-              );
-              setCollapsed(isCollapsed);
-            }
-          };
-
-          // 初始检查
-          checkCollapsed();
-
-          // 使用 MutationObserver 监听侧边栏类名变化
-          const observer = new MutationObserver(checkCollapsed);
-          const sidebar = document.querySelector('.ant-layout-sider');
-          if (sidebar) {
-            observer.observe(sidebar, {
-              attributes: true,
-              attributeFilter: ['class'],
-            });
-          }
-
-          // 定期检查（备用方案）
-          const interval = setInterval(checkCollapsed, 100);
-
-          return () => {
-            observer.disconnect();
-            clearInterval(interval);
-          };
-        }, []);
-
-        // 如果侧边栏收起，隐藏按钮
-        if (collapsed) {
-          return null;
-        }
-
-        return (
-          <Space size="middle" wrap>
-            <Button
-              type="text"
-              size="small"
-              onClick={() => {
-                history.push('/profile');
-              }}
-              style={{ whiteSpace: 'nowrap', minWidth: 'auto' }}
-            >
-              {currentUser.real_name || currentUser.username}
-            </Button>
-            <Button
-              type="text"
-              size="small"
-              onClick={async () => {
-                // 清除Token和用户信息
-                localStorage.removeItem('token');
-                await setInitialState({
-                  currentUser: undefined,
-                  permissions: [],
-                  roles: [],
-                });
-                // 跳转到登录页
-                history.push('/login');
-              }}
-              style={{ whiteSpace: 'nowrap', minWidth: 'auto' }}
-            >
-              退出登录
-            </Button>
-          </Space>
-        );
+      const displayName =
+        currentUser.real_name || currentUser.username || '用户';
+      const handleLogout = async () => {
+        clearToken();
+        await setInitialState({
+          currentUser: undefined,
+          permissions: [],
+          roles: [],
+        });
+        history.push('/login');
       };
 
-      return [<UserActionsComponent key="userActions" />];
+      const menuItems = [
+        {
+          key: 'profile',
+          label: '个人中心',
+          icon: <SettingOutlined />,
+        },
+        {
+          key: 'audit',
+          label: '操作审计',
+          icon: <FileTextOutlined />,
+        },
+        {
+          key: 'settings',
+          label: '系统设置',
+          icon: <SettingOutlined />,
+        },
+        {
+          type: 'divider',
+        },
+        {
+          key: 'logout',
+          label: '退出登录',
+          icon: <LogoutOutlined />,
+          danger: true,
+        },
+      ];
+      const handleMenuClick = ({ key }: any) => {
+        if (key === 'profile') {
+          history.push('/profile');
+        } else if (key === 'audit') {
+          history.push('/audit-log');
+        } else if (key === 'settings') {
+          history.push('/settings');
+        } else if (key === 'logout') {
+          handleLogout();
+        }
+      };
+
+      return [
+        <Dropdown
+          menu={{ items: menuItems, onClick: handleMenuClick }}
+          placement="bottomRight"
+          trigger={['click']}
+          key="userActions"
+        >
+          <Button type="text">
+            <Space>
+              <Badge dot={false}>
+                <Avatar style={{ backgroundColor: '#87d068' }}>
+                  {displayName.charAt(0).toUpperCase()}
+                </Avatar>
+              </Badge>
+              <span>{displayName}</span>
+            </Space>
+          </Button>
+        </Dropdown>,
+      ];
     },
     // 路由变化时的处理
     onPageChange: () => {
-      const token = localStorage.getItem('token');
+      const token = getToken();
       const currentPath = window.location.pathname;
       const isLoginPage =
         currentPath === '/login' || currentPath.startsWith('/login');
@@ -385,7 +388,7 @@ export const request = {
   // 请求拦截器 - 添加Token
   requestInterceptors: [
     (config: any) => {
-      const token = localStorage.getItem('token');
+      const token = getToken();
       if (token && config.headers) {
         config.headers.Authorization = `Bearer ${token}`;
       }
@@ -397,7 +400,7 @@ export const request = {
     (response: any) => {
       // 处理401错误，跳转到登录页
       if (response?.status === 401 || response?.data?.errorCode === 401) {
-        localStorage.removeItem('token');
+        clearToken();
         if (window.location.pathname !== '/login') {
           window.location.href = '/login';
         }

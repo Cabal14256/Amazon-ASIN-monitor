@@ -128,8 +128,10 @@ class User {
   }
 
   // 生成JWT Token
-  static generateToken(userId) {
-    return jwt.sign({ userId }, secret, { expiresIn });
+  static generateToken(userId, sessionId, customExpiresIn) {
+    return jwt.sign({ userId, sessionId: sessionId || uuidv4() }, secret, {
+      expiresIn: customExpiresIn || expiresIn,
+    });
   }
 
   // 验证Token

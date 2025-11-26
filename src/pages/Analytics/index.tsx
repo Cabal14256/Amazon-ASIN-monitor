@@ -45,7 +45,10 @@ const toNumber = (value: unknown) => {
 };
 
 const filterValidValuesByKey = <T, K extends keyof T>(data: T[], key: K) =>
-  data.filter((item) => Number.isFinite(Number(item[key])));
+  data.filter((item) => {
+    const value = Number(item[key]);
+    return Number.isFinite(value) && value > 0;
+  });
 
 const attachLabelValue = (row: any, mode: 'count' | 'percent') => ({
   ...row,
@@ -405,6 +408,18 @@ const AnalyticsPageContent: React.FC<unknown> = () => {
     return filterValidValuesByKey(percentData, 'broken');
   }, [variantGroupColumnData, valueMode]);
 
+  const countryTotals = useMemo(() => {
+    const totals: Record<string, number> = {};
+    countryColumnDisplayData.forEach((item) => {
+      const raw = Number(item.rawValue ?? item.value);
+      if (!Number.isFinite(raw)) {
+        return;
+      }
+      totals[item.country] = (totals[item.country] || 0) + raw;
+    });
+    return totals;
+  }, [countryColumnDisplayData]);
+
   const countryBarOptions = useMemo(() => {
     if (!countryColumnDisplayData.length) {
       return {};
@@ -428,6 +443,7 @@ const AnalyticsPageContent: React.FC<unknown> = () => {
         );
         return {
           value: cell ? Number(cell.value) : 0,
+          rawValue: cell?.rawValue ?? (cell ? Number(cell.value) : 0),
           labelValue: cell?.labelValue,
         };
       }),
@@ -442,8 +458,9 @@ const AnalyticsPageContent: React.FC<unknown> = () => {
           const points = Array.isArray(params) ? params : [params];
           const content = points
             .map((param: any) => {
-              const value = Number(param.value?.[0]) || 0;
-              const rawValue = Number(param.value?.[2]) || 0;
+              const rawValue =
+                Number(param?.data?.rawValue ?? param?.value) || 0;
+              const value = Number(param?.data?.value ?? param?.value) || 0;
               const formatted = formatTooltipValue(valueMode, value, rawValue);
               return `
                 <div style="display:flex;justify-content:space-between">
@@ -453,7 +470,13 @@ const AnalyticsPageContent: React.FC<unknown> = () => {
             })
             .join('');
           const axisVal = points[0]?.axisValue ?? '';
-          return `<div style="margin-bottom:4px;font-weight:600;">${axisVal}</div>${content}`;
+          const totalRaw = countryTotals[axisVal] ?? 0;
+          const totalFormatted = formatTooltipValue(
+            'count',
+            totalRaw,
+            totalRaw,
+          );
+          return `<div style="margin-bottom:4px;font-weight:600;">${axisVal}（总计：${totalFormatted}）</div>${content}`;
         },
       },
       legend: {
@@ -526,6 +549,7 @@ const AnalyticsPageContent: React.FC<unknown> = () => {
     const categories = variantGroupDisplayData.map((item) => item.name);
     const data = variantGroupDisplayData.map((item) => ({
       value: Number(item.broken),
+      rawValue: item.rawValue ?? Number(item.broken),
       labelValue: item.labelValue,
     }));
     return {
@@ -533,8 +557,8 @@ const AnalyticsPageContent: React.FC<unknown> = () => {
         trigger: 'axis',
         formatter: (params: any) => {
           const point = Array.isArray(params) ? params[0] : params;
-          const value = Number(point?.value?.[0]) || 0;
-          const rawValue = Number(point?.value?.[2]) || value;
+          const rawValue = Number(point?.data?.rawValue ?? point?.value) || 0;
+          const value = Number(point?.data?.value ?? point?.value) || 0;
           const formatted = formatTooltipValue(valueMode, value, rawValue);
           return `
             <div>${point?.seriesName}</div>
@@ -589,10 +613,15 @@ const AnalyticsPageContent: React.FC<unknown> = () => {
         params.append('country', country);
       }
 
-      const url = `/api/v1/monitor-history/export?${params.toString()}`;
+      const url = `/api/v1/export/monitor-history?${params.toString()}`;
+      const token = localStorage.getItem('token');
 
       // 使用 fetch 下载文件，避免 HTTPS 警告
-      const response = await fetch(url);
+      const response = await fetch(url, {
+        headers: {
+          ...(token ? { Authorization: `Bearer ${token}` } : {}),
+        },
+      });
       if (!response.ok) {
         throw new Error('导出失败');
       }

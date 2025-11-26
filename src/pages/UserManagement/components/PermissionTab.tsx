@@ -1,14 +1,12 @@
 import services from '@/services/role';
 import { useMessage } from '@/utils/message';
-import { PageContainer } from '@ant-design/pro-components';
-import { Card, Space, Tag } from 'antd';
+import { Card, Space, Tag, Typography } from 'antd';
 import React, { useEffect, useState } from 'react';
 
 const { getPermissionList } = services.RoleController;
 
-const PermissionManagement: React.FC<unknown> = () => {
+const PermissionTab: React.FC = () => {
   const message = useMessage();
-  const [, setPermissions] = useState<API.Permission[]>([]);
   const [groupedPermissions, setGroupedPermissions] = useState<
     Record<string, API.Permission[]>
   >({});
@@ -19,17 +17,14 @@ const PermissionManagement: React.FC<unknown> = () => {
     try {
       const response = await getPermissionList();
 
-      let data: API.Permission[] = [];
       let grouped: Record<string, API.Permission[]> = {};
 
       if (response && typeof response === 'object') {
         if ('data' in response) {
-          data = response.data?.list || [];
           grouped = response.data?.grouped || {};
         }
       }
 
-      setPermissions(data);
       setGroupedPermissions(grouped);
     } catch (error: any) {
       console.error('获取权限列表失败:', error);
@@ -50,29 +45,28 @@ const PermissionManagement: React.FC<unknown> = () => {
   }, []);
 
   return (
-    <PageContainer
-      header={{
-        title: '权限管理',
-        breadcrumb: {},
-      }}
-    >
-      <Card loading={loading}>
-        <Space direction="vertical" size="large" style={{ width: '100%' }}>
-          {Object.keys(groupedPermissions).map((resource) => (
+    <Card loading={loading}>
+      <Space direction="vertical" size="large" style={{ width: '100%' }}>
+        {Object.keys(groupedPermissions).length === 0 ? (
+          <Typography.Text type="secondary">
+            当前尚未配置权限分组或权限项。
+          </Typography.Text>
+        ) : (
+          Object.entries(groupedPermissions).map(([resource, perms]) => (
             <Card key={resource} size="small" title={resource || '其他'}>
               <Space wrap>
-                {groupedPermissions[resource].map((perm) => (
-                  <Tag key={perm.id} color="blue" style={{ marginBottom: 8 }}>
+                {perms.map((perm) => (
+                  <Tag key={perm.id} color="blue">
                     {perm.name} ({perm.code})
                   </Tag>
                 ))}
               </Space>
             </Card>
-          ))}
-        </Space>
-      </Card>
-    </PageContainer>
+          ))
+        )}
+      </Space>
+    </Card>
   );
 };
 
-export default PermissionManagement;
+export default PermissionTab;

@@ -2,34 +2,26 @@ const { callSPAPI, getMarketplaceId } = require('../config/sp-api');
 const VariantGroup = require('../models/VariantGroup');
 const ASIN = require('../models/ASIN');
 const MonitorHistory = require('../models/MonitorHistory');
+const cacheService = require('./cacheService');
 
 /**
  * 每次最多同时检查的 ASIN 数（满足一次检查并发 5 个的要求）
  */
 const MAX_CONCURRENT_ASIN_CHECKS = 5;
 const VARIANT_CACHE_TTL_MS = 5 * 60 * 1000;
-const variantResultCache = new Map();
 
 function getVariantCacheKey(asin, country) {
-  return `${country}:${asin}`;
+  return `variant:${country}:${asin}`;
 }
 
 function getCachedVariantResult(asin, country) {
   const key = getVariantCacheKey(asin, country);
-  const entry = variantResultCache.get(key);
-  if (entry && entry.expiresAt > Date.now()) {
-    return entry.result;
-  }
-  variantResultCache.delete(key);
-  return null;
+  return cacheService.get(key);
 }
 
 function setVariantResultCache(asin, country, result) {
   const key = getVariantCacheKey(asin, country);
-  variantResultCache.set(key, {
-    expiresAt: Date.now() + VARIANT_CACHE_TTL_MS,
-    result,
-  });
+  cacheService.set(key, result, VARIANT_CACHE_TTL_MS);
 }
 
 /**

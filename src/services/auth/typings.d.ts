@@ -29,6 +29,7 @@ declare namespace API {
       user?: CurrentUser;
       permissions?: string[];
       roles?: string[];
+      sessionId?: string;
     };
   }
 
@@ -41,6 +42,35 @@ declare namespace API {
       user?: CurrentUser;
       permissions?: string[];
       roles?: string[];
+      sessionId?: string;
+    };
+  }
+
+  type SessionInfo = {
+    id?: string;
+    user_agent?: string;
+    ip_address?: string;
+    status?: string;
+    remember_me?: number;
+    created_at?: string;
+    last_active_at?: string;
+    expires_at?: string;
+  };
+
+  interface Result_SessionList_ {
+    success?: boolean;
+    errorMessage?: string;
+    errorCode?: number;
+    data?: SessionInfo[];
+  }
+
+  interface Result_SystemAlert_ {
+    success?: boolean;
+    errorMessage?: string;
+    errorCode?: number;
+    data?: {
+      message?: string;
+      type?: 'success' | 'info' | 'warning' | 'error';
     };
   }
 

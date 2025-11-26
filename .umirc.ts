@@ -77,25 +77,11 @@ export default defineConfig({
       icon: 'SettingOutlined',
     },
     {
-      name: '用户管理',
+      name: '用户与权限',
       path: '/user-management',
       component: './UserManagement',
       access: 'canReadUser', // 需要用户查看权限
       icon: 'UserOutlined',
-    },
-    {
-      name: '角色管理',
-      path: '/role-management',
-      component: './RoleManagement',
-      access: 'canReadUser', // 需要用户查看权限
-      icon: 'TeamOutlined',
-    },
-    {
-      name: '权限管理',
-      path: '/permission-management',
-      component: './PermissionManagement',
-      access: 'canReadUser', // 需要用户查看权限
-      icon: 'SafetyOutlined',
     },
     {
       name: '操作审计',
@@ -109,6 +95,7 @@ export default defineConfig({
       path: '/profile',
       component: './Profile',
       access: 'isLogin', // 需要登录
+      icon: 'SmileOutlined',
     },
   ],
   npmClient: 'npm',

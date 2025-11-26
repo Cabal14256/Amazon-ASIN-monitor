@@ -1,11 +1,35 @@
+const { v4: uuidv4 } = require('uuid');
 const User = require('../models/User');
+const Session = require('../models/Session');
 const AuditLog = require('../models/AuditLog');
+const { expiresIn, rememberExpiresIn } = require('../config/jwt');
 
 /**
  * 用户登录
  */
+const durationToMs = (duration) => {
+  if (!duration) {
+    return null;
+  }
+  const normalized = duration.trim();
+  const match = normalized.match(/^(\d+)(d|h|m|s)?$/i);
+  if (!match) {
+    return null;
+  }
+  const value = Number(match[1]);
+  const unit = (match[2] || 's').toLowerCase();
+  const multipliers = {
+    s: 1000,
+    m: 60 * 1000,
+    h: 60 * 60 * 1000,
+    d: 24 * 60 * 60 * 1000,
+  };
+  return value * (multipliers[unit] || 1000);
+};
+
 exports.login = async (req, res) => {
   try {
+    const { rememberMe = false } = req.body;
     const { username, password } = req.body;
 
     if (!username || !password) {
@@ -107,8 +131,11 @@ exports.login = async (req, res) => {
       });
     }
 
-    // 生成Token
-    const token = User.generateToken(user.id);
+    const sessionId = uuidv4();
+    const tokenExpiresIn = rememberMe ? rememberExpiresIn : expiresIn;
+    const token = User.generateToken(user.id, sessionId, tokenExpiresIn);
+    const expiresAtMs = durationToMs(tokenExpiresIn);
+    const expiresAt = expiresAtMs ? new Date(Date.now() + expiresAtMs) : null;
 
     // 获取用户权限和角色
     const permissions = await User.getUserPermissions(user.id);
@@ -116,6 +143,15 @@ exports.login = async (req, res) => {
 
     // 更新登录信息（clientIp已在上面定义）
     await User.updateLoginInfo(user.id, clientIp);
+
+    await Session.create({
+      id: sessionId,
+      userId: user.id,
+      userAgent: req.headers['user-agent'] || '',
+      ipAddress: clientIp,
+      expiresAt,
+      rememberMe: !!rememberMe,
+    });
 
     // 记录登录审计日志
     setImmediate(async () => {
@@ -143,6 +179,7 @@ exports.login = async (req, res) => {
       success: true,
       data: {
         token,
+        sessionId,
         user: userInfo,
         permissions,
         roles: roles.map((r) => r.code),
@@ -182,6 +219,7 @@ exports.getCurrentUser = async (req, res) => {
         user,
         permissions,
         roles: roles.map((r) => r.code),
+        sessionId: req.sessionId,
       },
       errorCode: 0,
     });
@@ -199,16 +237,76 @@ exports.getCurrentUser = async (req, res) => {
  * 用户登出（前端清除Token即可）
  */
 exports.logout = async (req, res) => {
-  res.json({
-    success: true,
-    message: '登出成功',
-    errorCode: 0,
-  });
+  try {
+    if (req.sessionId) {
+      await Session.revoke(req.sessionId, req.userId);
+    }
+    res.json({
+      success: true,
+      message: '登出成功',
+      errorCode: 0,
+    });
+  } catch (error) {
+    console.error('登出失败:', error);
+    res.status(500).json({
+      success: false,
+      errorMessage: '登出失败',
+      errorCode: 500,
+    });
+  }
 };
 
-/**
- * 修改当前用户密码
- */
+exports.listSessions = async (req, res) => {
+  try {
+    const sessions = await Session.findByUserId(req.userId);
+    res.json({
+      success: true,
+      data: sessions,
+      errorCode: 0,
+    });
+  } catch (error) {
+    console.error('获取会话列表失败:', error);
+    res.status(500).json({
+      success: false,
+      errorMessage: '获取会话列表失败',
+      errorCode: 500,
+    });
+  }
+};
+
+exports.revokeSession = async (req, res) => {
+  try {
+    const { sessionId } = req.body;
+    if (!sessionId) {
+      return res.status(400).json({
+        success: false,
+        errorMessage: '缺少 sessionId',
+        errorCode: 400,
+      });
+    }
+    const revoked = await Session.revoke(sessionId, req.userId);
+    if (!revoked) {
+      return res.status(404).json({
+        success: false,
+        errorMessage: '会话不存在或已被拒绝',
+        errorCode: 404,
+      });
+    }
+    res.json({
+      success: true,
+      message: '已踢出会话',
+      errorCode: 0,
+    });
+  } catch (error) {
+    console.error('踢出会话失败:', error);
+    res.status(500).json({
+      success: false,
+      errorMessage: '踢出会话失败',
+      errorCode: 500,
+    });
+  }
+};
+
 exports.changePassword = async (req, res) => {
   try {
     const { oldPassword, newPassword } = req.body;

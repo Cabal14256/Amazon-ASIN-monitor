@@ -14,7 +14,10 @@ const roleRoutes = require('./routes/roleRoutes');
 const dashboardRoutes = require('./routes/dashboardRoutes');
 const auditLogRoutes = require('./routes/auditLogRoutes');
 const exportRoutes = require('./routes/exportRoutes');
+const systemRoutes = require('./routes/systemRoutes');
 const auditLogMiddleware = require('./middleware/auditLog');
+const metricsMiddleware = require('./middleware/metrics');
+const metricsService = require('./services/metricsService');
 
 const app = express();
 const PORT = process.env.PORT || 3001;
@@ -28,6 +31,9 @@ app.use(
 );
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
+
+// Prometheus 监控
+app.use(metricsMiddleware);
 
 // 健康检查
 app.get('/health', (req, res) => {
@@ -50,6 +56,12 @@ app.use('/api/v1', userRoutes); // 用户管理路由
 app.use('/api/v1', roleRoutes); // 角色和权限管理路由
 app.use('/api/v1', auditLogRoutes); // 审计日志路由
 app.use('/api/v1', exportRoutes); // 导出路由
+app.use('/api/v1', systemRoutes); // 系统级别配置
+
+app.get('/metrics', async (req, res) => {
+  res.set('Content-Type', metricsService.register.contentType);
+  res.send(await metricsService.register.metrics());
+});
 
 // 404处理
 app.use((req, res) => {

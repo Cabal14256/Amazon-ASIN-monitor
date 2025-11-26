@@ -10,6 +10,8 @@ import {
 import { Button, Popconfirm, Space, Tag } from 'antd';
 import React, { useRef, useState } from 'react';
 import PasswordForm from './components/PasswordForm';
+import PermissionTab from './components/PermissionTab';
+import RoleTab from './components/RoleTab';
 import UserForm from './components/UserForm';
 
 const { getUserList, deleteUser } = services.UserController;
@@ -22,6 +24,23 @@ const UserManagement: React.FC<unknown> = () => {
   const [passwordModalVisible, setPasswordModalVisible] = useState(false);
   const [editingUser, setEditingUser] = useState<Partial<API.UserInfo>>();
   const [passwordUserId, setPasswordUserId] = useState<string>();
+  const [activeTab, setActiveTab] = useState<'users' | 'roles' | 'permissions'>(
+    'users',
+  );
+  const tabList = [
+    {
+      tab: '用户管理',
+      key: 'users',
+    },
+    {
+      tab: '角色管理',
+      key: 'roles',
+    },
+    {
+      tab: '权限控制',
+      key: 'permissions',
+    },
+  ];
 
   /**
    * 删除用户
@@ -154,111 +173,124 @@ const UserManagement: React.FC<unknown> = () => {
   return (
     <PageContainer
       header={{
-        title: '用户管理',
+        title: '用户与权限管理',
         breadcrumb: {},
       }}
+      tabList={tabList}
+      tabActiveKey={activeTab}
+      onTabChange={(key) =>
+        setActiveTab(key as 'users' | 'roles' | 'permissions')
+      }
     >
-      <ProTable<API.UserInfo>
-        headerTitle="用户列表"
-        actionRef={actionRef}
-        rowKey="id"
-        search={{
-          labelWidth: 120,
-        }}
-        toolBarRender={() => [
-          <Button
-            key="1"
-            type="primary"
-            onClick={() => {
-              setEditingUser(undefined);
-              setUserModalVisible(true);
+      {activeTab === 'users' && (
+        <>
+          <ProTable<API.UserInfo>
+            headerTitle="用户列表"
+            actionRef={actionRef}
+            rowKey="id"
+            search={{
+              labelWidth: 120,
             }}
-          >
-            新建用户
-          </Button>,
-        ]}
-        request={async (params) => {
-          try {
-            const { current, pageSize, username, status } = params;
-            const response = await getUserList({
-              current: current || 1,
-              pageSize: pageSize || 10,
-              username: username as string,
-              status: status as string,
-            });
+            toolBarRender={() => [
+              <Button
+                key="1"
+                type="primary"
+                onClick={() => {
+                  setEditingUser(undefined);
+                  setUserModalVisible(true);
+                }}
+              >
+                新建用户
+              </Button>,
+            ]}
+            request={async (params) => {
+              try {
+                const { current, pageSize, username, status } = params;
+                const response = await getUserList({
+                  current: current || 1,
+                  pageSize: pageSize || 10,
+                  username: username as string,
+                  status: status as string,
+                });
 
-            let data;
-            if (response && typeof response === 'object') {
-              if ('data' in response) {
-                data = response.data;
-              } else if ('list' in response) {
-                data = response;
-              } else {
-                data = { list: [], total: 0 };
-              }
-            } else {
-              data = { list: [], total: 0 };
-            }
+                let data;
+                if (response && typeof response === 'object') {
+                  if ('data' in response) {
+                    data = response.data;
+                  } else if ('list' in response) {
+                    data = response;
+                  } else {
+                    data = { list: [], total: 0 };
+                  }
+                } else {
+                  data = { list: [], total: 0 };
+                }
 
-            return {
-              data: data?.list || [],
-              success: true,
-              total: data?.total || 0,
-            };
-          } catch (error: any) {
-            console.error('获取用户列表失败:', error);
-            const errorMessage =
-              error?.response?.data?.errorMessage ||
-              error?.data?.errorMessage ||
-              error?.errorMessage ||
-              error?.message ||
-              '获取用户列表失败';
-            message.error(errorMessage);
-            return {
-              data: [],
-              success: false,
-              total: 0,
-            };
-          }
-        }}
-        columns={columns}
-        rowSelection={{
-          onChange: (_, selectedRows) => {
-            setSelectedRows(selectedRows);
-          },
-        }}
-        pagination={{
-          defaultPageSize: 10,
-          showSizeChanger: true,
-          showQuickJumper: true,
-        }}
-      />
-      {selectedRowsState?.length > 0 && (
-        <FooterToolbar
-          extra={
-            <div>
-              已选择{' '}
-              <a style={{ fontWeight: 600 }}>{selectedRowsState.length}</a>{' '}
-              项&nbsp;&nbsp;
-            </div>
-          }
-        >
-          <Popconfirm
-            title="确定要删除选中的用户吗？"
-            onConfirm={async () => {
-              const success = await handleRemove(selectedRowsState);
-              if (success) {
-                setSelectedRows([]);
-                actionRef.current?.reloadAndRest?.();
+                return {
+                  data: data?.list || [],
+                  success: true,
+                  total: data?.total || 0,
+                };
+              } catch (error: any) {
+                console.error('获取用户列表失败:', error);
+                const errorMessage =
+                  error?.response?.data?.errorMessage ||
+                  error?.data?.errorMessage ||
+                  error?.errorMessage ||
+                  error?.message ||
+                  '获取用户列表失败';
+                message.error(errorMessage);
+                return {
+                  data: [],
+                  success: false,
+                  total: 0,
+                };
               }
             }}
-          >
-            <Button type="primary" danger>
-              批量删除
-            </Button>
-          </Popconfirm>
-        </FooterToolbar>
+            columns={columns}
+            rowSelection={{
+              onChange: (_, selectedRows) => {
+                setSelectedRows(selectedRows);
+              },
+            }}
+            pagination={{
+              defaultPageSize: 10,
+              showSizeChanger: true,
+              showQuickJumper: true,
+            }}
+          />
+          {selectedRowsState?.length > 0 && (
+            <FooterToolbar
+              extra={
+                <div>
+                  已选择{' '}
+                  <a style={{ fontWeight: 600 }}>{selectedRowsState.length}</a>{' '}
+                  项&nbsp;&nbsp;
+                </div>
+              }
+            >
+              <Popconfirm
+                title="确定要删除选中的用户吗？"
+                onConfirm={async () => {
+                  const success = await handleRemove(selectedRowsState);
+                  if (success) {
+                    setSelectedRows([]);
+                    actionRef.current?.reloadAndRest?.();
+                  }
+                }}
+              >
+                <Button type="primary" danger>
+                  批量删除
+                </Button>
+              </Popconfirm>
+            </FooterToolbar>
+          )}
+        </>
       )}
+
+      {activeTab === 'roles' && <RoleTab />}
+
+      {activeTab === 'permissions' && <PermissionTab />}
 
       <UserForm
         modalVisible={userModalVisible}

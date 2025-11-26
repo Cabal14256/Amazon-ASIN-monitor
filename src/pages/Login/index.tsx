@@ -1,7 +1,12 @@
 import services from '@/services/auth';
 import { useMessage } from '@/utils/message';
+import { getToken, isRemembered, setToken } from '@/utils/token';
 import { LockOutlined, SafetyOutlined, UserOutlined } from '@ant-design/icons';
-import { LoginForm, ProFormText } from '@ant-design/pro-components';
+import {
+  LoginForm,
+  ProFormCheckbox,
+  ProFormText,
+} from '@ant-design/pro-components';
 import { history, useModel } from '@umijs/max';
 import { Card, Typography } from 'antd';
 import React from 'react';
@@ -13,10 +18,11 @@ const { Title, Text } = Typography;
 const LoginPage: React.FC = () => {
   const { initialState, setInitialState } = useModel('@@initialState');
   const message = useMessage();
+  const [rememberMe, setRememberMe] = React.useState<boolean>(isRemembered());
 
   // 如果已登录，重定向到主页
   React.useEffect(() => {
-    const token = localStorage.getItem('token');
+    const token = getToken();
     const currentUser = initialState?.currentUser;
 
     if (token && currentUser?.id) {
@@ -27,19 +33,23 @@ const LoginPage: React.FC = () => {
     }
   }, [initialState]);
 
-  const handleSubmit = async (values: API.LoginParams) => {
+  const handleSubmit = async (
+    values: API.LoginParams & { rememberMe?: boolean },
+  ) => {
     try {
       const response = await login(values);
 
       if (response?.success && response?.data) {
-        // 保存Token
-        localStorage.setItem('token', response.data.token || '');
+        const remember = values.rememberMe ?? rememberMe;
+        setToken(response.data.token || '', remember);
+        setRememberMe(remember);
 
         // 更新全局状态
         await setInitialState({
           currentUser: response.data.user,
           permissions: response.data.permissions || [],
           roles: response.data.roles || [],
+          sessionId: response.data.sessionId,
         });
 
         message.success('登录成功');
@@ -90,6 +100,7 @@ const LoginPage: React.FC = () => {
 
           <LoginForm
             onFinish={handleSubmit}
+            initialValues={{ rememberMe }}
             submitter={{
               searchConfig: {
                 submitText: '登录',
@@ -132,6 +143,14 @@ const LoginPage: React.FC = () => {
               placeholder="请输入密码"
               rules={[{ required: true, message: '请输入密码' }]}
             />
+            <ProFormCheckbox
+              name="rememberMe"
+              fieldProps={{
+                onChange: (event) => setRememberMe(event.target.checked),
+              }}
+            >
+              记住我
+            </ProFormCheckbox>
           </LoginForm>
 
           <div className={styles.footer}>

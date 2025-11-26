@@ -1,6 +1,7 @@
 const jwt = require('jsonwebtoken');
 const { secret } = require('../config/jwt');
 const User = require('../models/User');
+const Session = require('../models/Session');
 
 /**
  * 验证Token中间件
@@ -19,6 +20,23 @@ async function authenticateToken(req, res, next) {
 
   try {
     const decoded = jwt.verify(token, secret);
+    const sessionId = decoded.sessionId;
+    const session = sessionId ? await Session.findById(sessionId) : null;
+    if (!session) {
+      return res.status(401).json({
+        success: false,
+        errorMessage: '会话不存在或已过期',
+        errorCode: 401,
+      });
+    }
+    if (session.user_id !== decoded.userId || session.status !== 'ACTIVE') {
+      return res.status(403).json({
+        success: false,
+        errorMessage: '会话已失效',
+        errorCode: 403,
+      });
+    }
+    await Session.touch(sessionId);
     const user = await User.findByIdWithPassword(decoded.userId);
 
     if (!user) {
@@ -39,6 +57,7 @@ async function authenticateToken(req, res, next) {
 
     req.user = user;
     req.userId = user.id;
+    req.sessionId = sessionId;
     next();
   } catch (error) {
     if (error.name === 'TokenExpiredError') {

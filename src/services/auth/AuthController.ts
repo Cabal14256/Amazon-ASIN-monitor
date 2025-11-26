@@ -2,7 +2,7 @@ import { request } from '@umijs/max';
 
 /** 登录 POST /api/v1/auth/login */
 export async function login(
-  body: API.LoginParams,
+  body: API.LoginParams & { rememberMe?: boolean },
   options?: { [key: string]: any },
 ) {
   return request<API.Result_Login_>('/api/v1/auth/login', {
@@ -53,6 +53,29 @@ export async function updateProfile(
 ) {
   return request<API.Result_CurrentUser_>('/api/v1/auth/profile', {
     method: 'PUT',
+    headers: {
+      'Content-Type': 'application/json',
+    },
+    data: body,
+    ...(options || {}),
+  });
+}
+
+/** 获取当前用户会话 GET /api/v1/auth/sessions */
+export async function getSessions(options?: { [key: string]: any }) {
+  return request<API.Result_SessionList_>('/api/v1/auth/sessions', {
+    method: 'GET',
+    ...(options || {}),
+  });
+}
+
+/** 踢出会话 POST /api/v1/auth/sessions/revoke */
+export async function revokeSession(
+  body: { sessionId: string },
+  options?: { [key: string]: any },
+) {
+  return request<API.Result_void_>('/api/v1/auth/sessions/revoke', {
+    method: 'POST',
     headers: {
       'Content-Type': 'application/json',
     },
