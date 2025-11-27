@@ -31,7 +31,9 @@ async function initAdminUser() {
       console.log(`   用户名: ${existing.username}`);
       console.log(`   用户ID: ${existing.id}\n`);
       console.log('💡 如需重置密码，请使用以下SQL:');
-      console.log(`   UPDATE users SET password = ? WHERE id = '${existing.id}';`);
+      console.log(
+        `   UPDATE users SET password = ? WHERE id = '${existing.id}';`,
+      );
       console.log('   (需要先使用 bcrypt 加密密码)\n');
       process.exit(0);
     }
@@ -44,16 +46,9 @@ async function initAdminUser() {
 
     // 插入用户
     await query(
-      `INSERT INTO users (id, username, email, password, real_name, status) 
-       VALUES (?, ?, ?, ?, ?, ?)`,
-      [
-        adminId,
-        'admin',
-        'admin@example.com',
-        hashedPassword,
-        '系统管理员',
-        1,
-      ],
+      `INSERT INTO users (id, username, password, real_name, status)
+       VALUES (?, ?, ?, ?, ?)`,
+      [adminId, 'admin', hashedPassword, '系统管理员', 1],
     );
 
     // 分配管理员角色
@@ -62,10 +57,10 @@ async function initAdminUser() {
     );
 
     if (adminRole) {
-      await query(
-        `INSERT INTO user_roles (user_id, role_id) VALUES (?, ?)`,
-        [adminId, adminRole.id],
-      );
+      await query(`INSERT INTO user_roles (user_id, role_id) VALUES (?, ?)`, [
+        adminId,
+        adminRole.id,
+      ]);
     }
 
     console.log('✅ 默认管理员账户创建成功！\n');
