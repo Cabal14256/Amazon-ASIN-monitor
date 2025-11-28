@@ -177,14 +177,18 @@ const ASINManagement: React.FC<unknown> = () => {
       render: (_: any, record: API.VariantGroup | API.ASINInfo) => {
         const isGroup = (record as API.VariantGroup).parentId === undefined;
         return (
-          <Space>
-            {isGroup ? (
-              <Tag color="blue">变体组</Tag>
-            ) : (
-              <Tag color="default">ASIN</Tag>
-            )}
-            <span>{record.name || '-'}</span>
-          </Space>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
+            <div style={{ display: 'flex', alignItems: 'center' }}>
+              {isGroup ? (
+                <Tag color="blue">变体组</Tag>
+              ) : (
+                <Tag color="default">ASIN</Tag>
+              )}
+            </div>
+            <div style={{ marginTop: '4px' }}>
+              <span>{record.name || '-'}</span>
+            </div>
+          </div>
         );
       },
     },
