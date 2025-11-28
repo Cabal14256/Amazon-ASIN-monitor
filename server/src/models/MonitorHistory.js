@@ -343,6 +343,71 @@ class MonitorHistory {
     return list;
   }
 
+  // 高峰期统计
+  static async getPeakHoursStatistics(params = {}) {
+    const { country = '', startTime = '', endTime = '' } = params;
+
+    if (!country) {
+      throw new Error('高峰期统计需要指定国家');
+    }
+
+    const { isPeakHour } = require('../utils/peakHours');
+
+    let sql = `
+      SELECT 
+        check_time,
+        is_broken
+      FROM monitor_history
+      WHERE country = ?
+    `;
+    const conditions = [country];
+
+    if (startTime) {
+      sql += ` AND check_time >= ?`;
+      conditions.push(startTime);
+    }
+
+    if (endTime) {
+      sql += ` AND check_time <= ?`;
+      conditions.push(endTime);
+    }
+
+    sql += ` ORDER BY check_time ASC`;
+
+    const list = await query(sql, conditions);
+
+    let peakBroken = 0;
+    let peakTotal = 0;
+    let offPeakBroken = 0;
+    let offPeakTotal = 0;
+
+    list.forEach((item) => {
+      const checkTime = new Date(item.check_time);
+      const isBroken = item.is_broken === 1;
+
+      if (isPeakHour(checkTime, country)) {
+        peakTotal++;
+        if (isBroken) {
+          peakBroken++;
+        }
+      } else {
+        offPeakTotal++;
+        if (isBroken) {
+          offPeakBroken++;
+        }
+      }
+    });
+
+    return {
+      peakBroken,
+      peakTotal,
+      peakRate: peakTotal > 0 ? (peakBroken / peakTotal) * 100 : 0,
+      offPeakBroken,
+      offPeakTotal,
+      offPeakRate: offPeakTotal > 0 ? (offPeakBroken / offPeakTotal) * 100 : 0,
+    };
+  }
+
   // 按变体组分组统计
   static async getStatisticsByVariantGroup(params = {}) {
     const { country = '', startTime = '', endTime = '', limit = 10 } = params;

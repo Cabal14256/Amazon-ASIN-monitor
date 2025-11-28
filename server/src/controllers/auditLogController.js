@@ -25,13 +25,14 @@ async function getAuditLogList(req, res) {
       resourceId,
       startTime,
       endTime,
-      current,
-      pageSize,
+      current: Number(current),
+      pageSize: Number(pageSize),
     });
 
     res.json({
       success: true,
       data: result,
+      errorCode: 0,
     });
   } catch (error) {
     console.error('获取审计日志列表失败:', error);
@@ -39,6 +40,9 @@ async function getAuditLogList(req, res) {
     res.status(500).json({
       success: false,
       errorMessage: `获取审计日志列表失败: ${error.message}`,
+      errorCode: 500,
+      errorDetails:
+        process.env.NODE_ENV === 'development' ? error.stack : undefined,
     });
   }
 }

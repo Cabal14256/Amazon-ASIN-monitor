@@ -16,6 +16,10 @@ router.get(
   '/monitor-history/statistics/by-variant-group',
   monitorController.getStatisticsByVariantGroup,
 );
+router.get(
+  '/monitor-history/statistics/peak-hours',
+  monitorController.getPeakHoursStatistics,
+);
 router.get('/monitor-history/statistics', monitorController.getStatistics);
 router.get('/monitor-history/:id', monitorController.getMonitorHistoryById);
 router.get('/monitor-history', monitorController.getMonitorHistory);

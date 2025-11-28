@@ -171,3 +171,37 @@ exports.getStatisticsByVariantGroup = async (req, res) => {
     });
   }
 };
+
+// 高峰期统计
+exports.getPeakHoursStatistics = async (req, res) => {
+  try {
+    const { country, startTime, endTime } = req.query;
+
+    if (!country) {
+      return res.status(400).json({
+        success: false,
+        errorMessage: '高峰期统计需要指定国家',
+        errorCode: 400,
+      });
+    }
+
+    const statistics = await MonitorHistory.getPeakHoursStatistics({
+      country,
+      startTime,
+      endTime,
+    });
+
+    res.json({
+      success: true,
+      data: statistics,
+      errorCode: 0,
+    });
+  } catch (error) {
+    console.error('高峰期统计错误:', error);
+    res.status(500).json({
+      success: false,
+      errorMessage: error.message || '查询失败',
+      errorCode: 500,
+    });
+  }
+};

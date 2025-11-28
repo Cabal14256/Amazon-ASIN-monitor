@@ -242,6 +242,28 @@ declare namespace API {
     data?: VariantGroupStatistics[];
   }
 
+  /** 高峰期统计信息 */
+  interface PeakHoursStatistics {
+    /** 高峰期异常数量 */
+    peakBroken?: number;
+    /** 高峰期总数量 */
+    peakTotal?: number;
+    /** 高峰期异常率（百分比） */
+    peakRate?: number;
+    /** 低峰期异常数量 */
+    offPeakBroken?: number;
+    /** 低峰期总数量 */
+    offPeakTotal?: number;
+    /** 低峰期异常率（百分比） */
+    offPeakRate?: number;
+  }
+
+  interface Result_PeakHoursStatistics_ {
+    success?: boolean;
+    errorMessage?: string;
+    data?: PeakHoursStatistics;
+  }
+
   /** Excel导入结果 */
   interface ImportResult {
     /** 总数 */

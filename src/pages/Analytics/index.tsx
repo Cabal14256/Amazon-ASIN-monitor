@@ -1,5 +1,6 @@
 import services from '@/services/asin';
 import { useMessage } from '@/utils/message';
+import { getPeakHours } from '@/utils/peakHours';
 import { PageContainer, StatisticCard } from '@ant-design/pro-components';
 import { Button, Card, Col, DatePicker, Radio, Row, Select, Space } from 'antd';
 import dayjs, { Dayjs } from 'dayjs';
@@ -12,6 +13,7 @@ const {
   getStatisticsByCountry,
   getStatisticsByVariantGroup,
   getMonitorStatistics,
+  getPeakHoursStatistics,
 } = services.MonitorController;
 
 // 国家选项映射
@@ -90,6 +92,8 @@ const AnalyticsPageContent: React.FC<unknown> = () => {
   >([]);
   const [overallStatistics, setOverallStatistics] =
     useState<API.MonitorStatistics>({});
+  const [peakHoursStatistics, setPeakHoursStatistics] =
+    useState<API.PeakHoursStatistics>({});
 
   // 加载所有统计数据
   const loadStatistics = async () => {
@@ -106,13 +110,21 @@ const AnalyticsPageContent: React.FC<unknown> = () => {
       }
 
       // 并行加载所有统计数据
-      const [timeData, countryData, variantGroupData, overallData] =
-        await Promise.all([
-          getStatisticsByTime({ ...params, groupBy }),
-          getStatisticsByCountry(params),
-          getStatisticsByVariantGroup({ ...params, limit: 10 }),
-          getMonitorStatistics(params),
-        ]);
+      const promises: any[] = [
+        getStatisticsByTime({ ...params, groupBy }),
+        getStatisticsByCountry(params),
+        getStatisticsByVariantGroup({ ...params, limit: 10 }),
+        getMonitorStatistics(params),
+      ];
+
+      // 如果选择了国家，加载高峰期统计
+      if (country) {
+        promises.push(getPeakHoursStatistics({ ...params, country }));
+      }
+
+      const results = await Promise.all(promises);
+      const [timeData, countryData, variantGroupData, overallData, peakData] =
+        results;
 
       // 处理响应数据
       const timeStats =
@@ -144,6 +156,17 @@ const AnalyticsPageContent: React.FC<unknown> = () => {
         variantGroupStats as API.VariantGroupStatistics[],
       );
       setOverallStatistics(overallStats);
+
+      // 处理高峰期统计数据
+      if (country && peakData) {
+        const peakStats =
+          peakData && typeof peakData === 'object' && !('success' in peakData)
+            ? peakData
+            : (peakData as any)?.data || {};
+        setPeakHoursStatistics(peakStats);
+      } else {
+        setPeakHoursStatistics({});
+      }
     } catch (error) {
       console.error('加载统计数据失败:', error);
       message.error('加载统计数据失败');
@@ -222,6 +245,53 @@ const AnalyticsPageContent: React.FC<unknown> = () => {
     ...countryColorMap,
   };
 
+  // 高峰期背景区域（仅在按小时分组且选择了国家时显示）
+  const peakHoursMarkAreas = useMemo(() => {
+    if (groupBy !== 'hour' || !country) {
+      return [];
+    }
+
+    const peakHours = getPeakHours(country);
+    const areas: any[] = [];
+
+    // 获取时间范围
+    if (timeChartData.length > 0) {
+      const firstTime = timeChartData[0]?.time;
+      const lastTime = timeChartData[timeChartData.length - 1]?.time;
+      if (firstTime && lastTime) {
+        const startDate = dayjs(firstTime).startOf('day');
+        const endDate = dayjs(lastTime).endOf('day');
+        let currentDate = startDate;
+
+        while (currentDate <= endDate) {
+          const dateForLoop = currentDate; // 创建局部变量避免闭包问题
+          peakHours.forEach((peak) => {
+            const startHour = peak.start;
+            const endHour = peak.end === 24 ? 0 : peak.end;
+            const startTime = dateForLoop.hour(startHour).minute(0).second(0);
+            const endTime =
+              endHour === 0
+                ? dateForLoop.add(1, 'day').hour(0).minute(0).second(0)
+                : dateForLoop.hour(endHour).minute(0).second(0);
+
+            areas.push([
+              {
+                name: '高峰期',
+                xAxis: startTime.format('YYYY-MM-DD HH:mm'),
+              },
+              {
+                xAxis: endTime.format('YYYY-MM-DD HH:mm'),
+              },
+            ]);
+          });
+          currentDate = currentDate.add(1, 'day');
+        }
+      }
+    }
+
+    return areas;
+  }, [groupBy, country, timeChartData]);
+
   const lineChartOptions = useMemo(() => {
     const series = lineTypes.map((type) => {
       const data = timeChartData
@@ -251,6 +321,19 @@ const AnalyticsPageContent: React.FC<unknown> = () => {
         },
         connectNulls: true,
         data,
+        // 只在第一个系列添加高峰期背景
+        markArea:
+          type === '异常' && peakHoursMarkAreas.length > 0
+            ? {
+                itemStyle: {
+                  color: 'rgba(255, 193, 7, 0.1)',
+                },
+                label: {
+                  show: false,
+                },
+                data: peakHoursMarkAreas,
+              }
+            : undefined,
       };
     });
     return {
@@ -750,6 +833,32 @@ const AnalyticsPageContent: React.FC<unknown> = () => {
               : '0%',
           }}
         />
+        {country && peakHoursStatistics.peakTotal !== undefined && (
+          <>
+            <StatisticCard
+              statistic={{
+                title: '高峰期异常率',
+                value: peakHoursStatistics.peakTotal
+                  ? `${(peakHoursStatistics.peakRate || 0).toFixed(2)}%`
+                  : '0%',
+                description: `高峰期: ${peakHoursStatistics.peakBroken || 0}/${
+                  peakHoursStatistics.peakTotal || 0
+                }`,
+              }}
+            />
+            <StatisticCard
+              statistic={{
+                title: '低峰期异常率',
+                value: peakHoursStatistics.offPeakTotal
+                  ? `${(peakHoursStatistics.offPeakRate || 0).toFixed(2)}%`
+                  : '0%',
+                description: `低峰期: ${
+                  peakHoursStatistics.offPeakBroken || 0
+                }/${peakHoursStatistics.offPeakTotal || 0}`,
+              }}
+            />
+          </>
+        )}
       </StatisticCard.Group>
 
       {/* 图表区域 */}

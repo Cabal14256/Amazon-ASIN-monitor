@@ -97,7 +97,7 @@ const UserForm: React.FC<UserFormProps> = (props) => {
         roleIds: values?.roles?.map((r) => r.id) || [],
       }}
       modalProps={{
-        destroyOnClose: true,
+        destroyOnHidden: true,
       }}
     >
       <ProFormText

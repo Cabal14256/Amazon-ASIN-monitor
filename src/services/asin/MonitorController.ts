@@ -164,3 +164,28 @@ export async function getStatisticsByVariantGroup(
     },
   );
 }
+
+/** 高峰期统计 */
+export async function getPeakHoursStatistics(
+  params: {
+    // query
+    /** 国家筛选（必填） */
+    country: string;
+    /** 开始时间 */
+    startTime?: string;
+    /** 结束时间 */
+    endTime?: string;
+  },
+  options?: { [key: string]: any },
+) {
+  return request<API.Result_PeakHoursStatistics_>(
+    '/api/v1/monitor-history/statistics/peak-hours',
+    {
+      method: 'GET',
+      params: {
+        ...params,
+      },
+      ...(options || {}),
+    },
+  );
+}

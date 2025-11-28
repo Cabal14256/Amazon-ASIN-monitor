@@ -1,21 +1,13 @@
 import services from '@/services/feishu';
+import { useMessage } from '@/utils/message';
 import type { ActionType } from '@ant-design/pro-components';
 import {
   PageContainer,
   ProColumns,
   ProTable,
 } from '@ant-design/pro-components';
-import {
-  Button,
-  Form,
-  Input,
-  Modal,
-  Popconfirm,
-  Space,
-  Switch,
-} from 'antd';
+import { Button, Form, Input, Modal, Popconfirm, Space, Switch } from 'antd';
 import React, { useRef, useState } from 'react';
-import { useMessage } from '@/utils/message';
 
 const {
   getFeishuConfigs,
@@ -248,7 +240,7 @@ const FeishuConfigPage: React.FC<unknown> = () => {
           }
         }}
         width={600}
-        destroyOnClose
+        destroyOnHidden
       >
         <Form form={form} layout="vertical" preserve={false}>
           <Form.Item

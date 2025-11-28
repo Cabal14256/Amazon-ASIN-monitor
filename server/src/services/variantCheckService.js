@@ -337,6 +337,16 @@ async function checkVariantGroup(variantGroupId) {
     // 更新变体组状态
     await VariantGroup.updateVariantStatus(variantGroupId, isBroken);
 
+    // 重新查询变体组状态确保准确性
+    const updatedGroup = await VariantGroup.findById(variantGroupId);
+    if (updatedGroup) {
+      // 如果状态不一致，再次更新
+      const actualIsBroken = updatedGroup.isBroken === 1;
+      if (actualIsBroken !== isBroken) {
+        await VariantGroup.updateVariantStatus(variantGroupId, actualIsBroken);
+      }
+    }
+
     // 记录监控历史
     const checkTime = new Date();
     await MonitorHistory.create({
@@ -390,8 +400,9 @@ async function checkVariantGroup(variantGroupId) {
  * @returns {Promise<{isBroken: boolean, details: any}>}
  */
 async function checkSingleASIN(asinId) {
+  let asin = null;
   try {
-    const asin = await ASIN.findById(asinId);
+    asin = await ASIN.findById(asinId);
     if (!asin) {
       throw new Error('ASIN不存在');
     }
@@ -401,6 +412,23 @@ async function checkSingleASIN(asinId) {
 
     // 更新ASIN状态
     await ASIN.updateVariantStatus(asinId, isBroken);
+
+    // 如果ASIN属于某个变体组，同步更新变体组状态
+    if (asin.variantGroupId) {
+      // 重新查询变体组，获取所有ASIN的最新状态
+      const group = await VariantGroup.findById(asin.variantGroupId);
+      if (group && group.children && group.children.length > 0) {
+        // 检查变体组中是否有任何ASIN异常
+        const hasBrokenASIN = group.children.some(
+          (child) => child.isBroken === 1,
+        );
+        // 更新变体组状态
+        await VariantGroup.updateVariantStatus(
+          asin.variantGroupId,
+          hasBrokenASIN,
+        );
+      }
+    }
 
     // 记录监控历史
     await MonitorHistory.create({
@@ -419,6 +447,40 @@ async function checkSingleASIN(asinId) {
     };
   } catch (error) {
     console.error(`检查ASIN ${asinId} 失败:`, error);
+    // 检查失败时，标记ASIN为异常状态
+    if (asin) {
+      try {
+        await ASIN.updateVariantStatus(asinId, true);
+        // 如果ASIN属于某个变体组，同步更新变体组状态
+        if (asin.variantGroupId) {
+          const group = await VariantGroup.findById(asin.variantGroupId);
+          if (group && group.children && group.children.length > 0) {
+            const hasBrokenASIN = group.children.some(
+              (child) => child.isBroken === 1,
+            );
+            await VariantGroup.updateVariantStatus(
+              asin.variantGroupId,
+              hasBrokenASIN,
+            );
+          }
+        }
+        // 记录检查失败的历史
+        await MonitorHistory.create({
+          asinId,
+          variantGroupId: asin.variantGroupId,
+          checkType: 'ASIN',
+          country: asin.country,
+          isBroken: 1,
+          checkTime: new Date(),
+          checkResult: JSON.stringify({
+            error: error.message,
+            checkFailed: true,
+          }),
+        });
+      } catch (updateError) {
+        console.error(`更新ASIN ${asinId} 状态失败:`, updateError);
+      }
+    }
     throw error;
   }
 }

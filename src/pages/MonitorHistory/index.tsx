@@ -11,7 +11,7 @@ import { Button, Space, Tag, message } from 'antd';
 import dayjs from 'dayjs';
 import React, { useEffect, useRef, useState } from 'react';
 
-const { queryMonitorHistory, getMonitorStatistics } =
+const { queryMonitorHistory, getMonitorStatistics, getPeakHoursStatistics } =
   services.MonitorController;
 
 // 国家选项映射
@@ -31,13 +31,16 @@ const MonitorHistoryPage: React.FC<unknown> = () => {
   const actionRef = useRef<ActionType>();
   const [searchParams] = useSearchParams();
   const [statistics, setStatistics] = useState<API.MonitorStatistics>({});
+  const [peakHoursStatistics, setPeakHoursStatistics] =
+    useState<API.PeakHoursStatistics>({});
+  const [selectedCountry, setSelectedCountry] = useState<string>('');
 
   // 从URL参数获取筛选条件
   const type = searchParams.get('type') || '';
   const id = searchParams.get('id') || '';
 
   // 加载统计信息
-  const loadStatistics = async () => {
+  const loadStatistics = async (country?: string) => {
     try {
       const params: any = {};
       if (type === 'group' && id) {
@@ -47,6 +50,25 @@ const MonitorHistoryPage: React.FC<unknown> = () => {
       }
       const { data } = await getMonitorStatistics(params);
       setStatistics(data || {});
+
+      // 如果有国家筛选，加载高峰期统计
+      const countryToUse = country || selectedCountry;
+      if (countryToUse) {
+        try {
+          const peakData = await getPeakHoursStatistics({
+            country: countryToUse,
+          });
+          const peakStats =
+            peakData && typeof peakData === 'object' && !('success' in peakData)
+              ? peakData
+              : (peakData as any)?.data || {};
+          setPeakHoursStatistics(peakStats);
+        } catch (error) {
+          console.error('加载高峰期统计失败:', error);
+        }
+      } else {
+        setPeakHoursStatistics({});
+      }
     } catch (error) {
       console.error('加载统计信息失败:', error);
     }
@@ -227,6 +249,32 @@ const MonitorHistoryPage: React.FC<unknown> = () => {
               value: (statistics.groupCount || 0) + (statistics.asinCount || 0),
             }}
           />
+          {selectedCountry && peakHoursStatistics.peakTotal !== undefined && (
+            <>
+              <StatisticCard
+                statistic={{
+                  title: '高峰期异常率',
+                  value: peakHoursStatistics.peakTotal
+                    ? `${(peakHoursStatistics.peakRate || 0).toFixed(2)}%`
+                    : '0%',
+                  description: `高峰期: ${
+                    peakHoursStatistics.peakBroken || 0
+                  }/${peakHoursStatistics.peakTotal || 0}`,
+                }}
+              />
+              <StatisticCard
+                statistic={{
+                  title: '低峰期异常率',
+                  value: peakHoursStatistics.offPeakTotal
+                    ? `${(peakHoursStatistics.offPeakRate || 0).toFixed(2)}%`
+                    : '0%',
+                  description: `低峰期: ${
+                    peakHoursStatistics.offPeakBroken || 0
+                  }/${peakHoursStatistics.offPeakTotal || 0}`,
+                }}
+              />
+            </>
+          )}
         </StatisticCard.Group>
       </Space>
 
@@ -255,6 +303,9 @@ const MonitorHistoryPage: React.FC<unknown> = () => {
           // 处理其他筛选条件
           if (params.country) {
             requestParams.country = params.country;
+            setSelectedCountry(params.country);
+          } else {
+            setSelectedCountry('');
           }
           if (params.checkType) {
             requestParams.checkType = params.checkType;
@@ -276,6 +327,14 @@ const MonitorHistoryPage: React.FC<unknown> = () => {
           }
 
           const { data, success } = await queryMonitorHistory(requestParams);
+
+          // 如果筛选了国家，加载高峰期统计
+          if (params.country) {
+            loadStatistics(params.country);
+          } else {
+            setPeakHoursStatistics({});
+          }
+
           return {
             data: data?.list || [],
             success,

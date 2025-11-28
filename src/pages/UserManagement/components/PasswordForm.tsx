@@ -56,7 +56,7 @@ const PasswordForm: React.FC<PasswordFormProps> = (props) => {
       }}
       onFinish={handleSubmit}
       modalProps={{
-        destroyOnClose: true,
+        destroyOnHidden: true,
       }}
     >
       <ProFormText.Password
