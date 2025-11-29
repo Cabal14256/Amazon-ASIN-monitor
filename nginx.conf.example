@@ -1,0 +1,52 @@
+# Nginx配置文件示例
+# 用于1Panel网站配置
+# 在1Panel网站设置中，可以复制此配置到"其他设置" -> "配置文件"
+
+server {
+    listen 80;
+    server_name _;  # 使用公网IP时，可以设置为_或具体IP
+
+    # 前端静态文件目录
+    root /opt/amazon-asin-monitor/dist;
+    index index.html;
+
+    # 前端路由支持（SPA应用）
+    location / {
+        try_files $uri $uri/ /index.html;
+    }
+
+    # 后端API反向代理
+    location /api {
+        proxy_pass http://127.0.0.1:3001/api/v1;
+        proxy_http_version 1.1;
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection 'upgrade';
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_cache_bypass $http_upgrade;
+        
+        # 超时设置
+        proxy_connect_timeout 60s;
+        proxy_send_timeout 60s;
+        proxy_read_timeout 60s;
+    }
+
+    # 健康检查端点
+    location /health {
+        proxy_pass http://127.0.0.1:3001/health;
+        proxy_set_header Host $host;
+    }
+
+    # 静态资源缓存
+    location ~* \.(js|css|png|jpg|jpeg|gif|ico|svg|woff|woff2|ttf|eot)$ {
+        expires 1y;
+        add_header Cache-Control "public, immutable";
+    }
+
+    # 日志
+    access_log /www/wwwlogs/amazon-asin-monitor-access.log;
+    error_log /www/wwwlogs/amazon-asin-monitor-error.log;
+}
+

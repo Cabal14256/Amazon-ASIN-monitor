@@ -12,8 +12,11 @@ export default defineConfig({
   mock: false, // 禁用mock数据，使用真实后端API
   request: {
     // 配置请求基础路径，开发环境使用代理，生产环境使用实际API地址
+    // 生产环境：如果使用Nginx反向代理，使用'/api'；如果直接访问后端，使用环境变量API_BASE_URL
     baseURL:
-      process.env.NODE_ENV === 'production' ? 'http://localhost:3001' : '/api',
+      process.env.NODE_ENV === 'production'
+        ? process.env.API_BASE_URL || '/api'
+        : '/api',
   },
   // 开发环境代理配置
   proxy: {
