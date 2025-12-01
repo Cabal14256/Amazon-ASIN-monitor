@@ -1,11 +1,11 @@
 import services from '@/services/asin';
+import { useMessage } from '@/utils/message';
 import {
   ModalForm,
   ProFormSelect,
   ProFormText,
 } from '@ant-design/pro-components';
 import React, { useEffect, useState } from 'react';
-import { useMessage } from '@/utils/message';
 
 const { addASIN, modifyASIN, queryVariantGroupList } = services.ASINController;
 
@@ -139,8 +139,8 @@ const ASINForm: React.FC<ASINFormProps> = (props) => {
         label="ASIN类型"
         placeholder="请选择ASIN类型（可选）"
         options={[
-          { label: '主链', value: 'MAIN_LINK' },
-          { label: '副评', value: 'SUB_REVIEW' },
+          { label: '主链', value: '1' },
+          { label: '副评', value: '2' },
         ]}
       />
       <ProFormText

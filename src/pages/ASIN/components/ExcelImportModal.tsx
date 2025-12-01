@@ -1,10 +1,10 @@
 import services from '@/services/asin';
+import { useMessage } from '@/utils/message';
 import { DownloadOutlined, UploadOutlined } from '@ant-design/icons';
 import type { UploadFile, UploadProps } from 'antd';
 import { Alert, Button, Modal, Progress, Table, Upload } from 'antd';
 import type { RcFile } from 'antd/es/upload';
 import React, { useState } from 'react';
-import { useMessage } from '@/utils/message';
 
 const { importFromExcel } = services.ASINController;
 
