@@ -1,6 +1,13 @@
 const SPAPIConfig = require('../models/SPAPIConfig');
-const { reloadSPAPIConfig } = require('../config/sp-api');
+const {
+  reloadSPAPIConfig,
+  loadUseAwsSignatureConfig,
+} = require('../config/sp-api');
 const { reloadMonitorConfig } = require('../config/monitor-config');
+const {
+  reloadHtmlScraperFallbackConfig,
+  reloadLegacyClientFallbackConfig,
+} = require('../services/variantCheckService');
 
 // 获取所有SP-API配置
 exports.getSPAPIConfigs = async (req, res) => {
@@ -88,6 +95,14 @@ exports.updateSPAPIConfig = async (req, res) => {
       console.error('⚠️ 重新加载HTML抓取兜底配置失败:', htmlError);
     }
 
+    // 重新加载旧客户端备用配置
+    try {
+      await reloadLegacyClientFallbackConfig();
+      console.log('✅ 旧客户端备用配置已重新加载');
+    } catch (legacyError) {
+      console.error('⚠️ 重新加载旧客户端备用配置失败:', legacyError);
+    }
+
     try {
       await reloadMonitorConfig();
       console.log('✅ 监控并发配置已重新加载');
@@ -132,6 +147,7 @@ exports.getSPAPIConfigForDisplay = async (req, res) => {
       'MONITOR_MAX_CONCURRENT_GROUP_CHECKS',
       'SP_API_USE_AWS_SIGNATURE',
       'ENABLE_HTML_SCRAPER_FALLBACK',
+      'ENABLE_LEGACY_CLIENT_FALLBACK',
     ];
 
     // 创建配置映射
@@ -215,6 +231,7 @@ function getConfigDescription(key) {
     SP_API_USE_AWS_SIGNATURE:
       '是否启用AWS签名（简化模式：关闭，标准模式：开启）',
     ENABLE_HTML_SCRAPER_FALLBACK: '是否启用HTML抓取兜底（SP-API失败时使用）',
+    ENABLE_LEGACY_CLIENT_FALLBACK: '是否启用旧客户端备用（SP-API失败时使用）',
   };
   return descriptions[key] || key;
 }

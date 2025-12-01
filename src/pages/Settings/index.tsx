@@ -70,7 +70,8 @@ const SettingsPage: React.FC<unknown> = () => {
             : undefined;
         } else if (
           config.configKey === 'SP_API_USE_AWS_SIGNATURE' ||
-          config.configKey === 'ENABLE_HTML_SCRAPER_FALLBACK'
+          config.configKey === 'ENABLE_HTML_SCRAPER_FALLBACK' ||
+          config.configKey === 'ENABLE_LEGACY_CLIENT_FALLBACK'
         ) {
           // 布尔值字段：转换为布尔类型
           value =
@@ -205,6 +206,16 @@ const SettingsPage: React.FC<unknown> = () => {
           'ENABLE_HTML_SCRAPER_FALLBACK',
           values.ENABLE_HTML_SCRAPER_FALLBACK ? 'true' : 'false',
           '是否启用HTML抓取兜底（SP-API失败时使用）',
+        ),
+        buildConfigEntry(
+          'ENABLE_LEGACY_CLIENT_FALLBACK',
+          values.ENABLE_LEGACY_CLIENT_FALLBACK ? 'true' : 'false',
+          '是否启用旧客户端备用（SP-API失败时使用）',
+        ),
+        buildConfigEntry(
+          'ENABLE_LEGACY_CLIENT_FALLBACK',
+          values.ENABLE_LEGACY_CLIENT_FALLBACK ? 'true' : 'false',
+          '是否启用旧客户端备用（SP-API失败时使用）',
         ),
       ].map((entry) => ({
         ...entry,
@@ -397,7 +408,14 @@ const SettingsPage: React.FC<unknown> = () => {
               />
             </ProForm.Group>
 
-            <ProForm.Group title="HTML 抓取兜底">
+            <ProForm.Group title="降级策略">
+              <ProFormSwitch
+                name="ENABLE_LEGACY_CLIENT_FALLBACK"
+                label="启用旧客户端备用"
+                checkedChildren="启用"
+                unCheckedChildren="禁用"
+                extra="当标准 SP-API 调用失败时，使用旧客户端方式作为备用方案。"
+              />
               <ProFormSwitch
                 name="ENABLE_HTML_SCRAPER_FALLBACK"
                 label="启用 HTML 抓取兜底"
@@ -406,7 +424,7 @@ const SettingsPage: React.FC<unknown> = () => {
                 extra={
                   <Alert
                     message="风险提示"
-                    description="HTML 抓取可能违反 Amazon 服务条款，可能触发反爬虫机制（IP封禁、验证码等）。建议仅在 SP-API 完全失败时使用。"
+                    description="HTML 抓取可能违反 Amazon 服务条款，可能触发反爬虫机制（IP封禁、验证码等）。建议仅在 SP-API 和旧客户端都失败时使用。降级顺序：SP-API → 旧客户端 → HTML 抓取。"
                     type="warning"
                     showIcon
                     style={{ marginTop: 8 }}

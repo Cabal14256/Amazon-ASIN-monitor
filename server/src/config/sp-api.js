@@ -408,180 +408,261 @@ function getRegionConfig(region) {
   return SP_API_CONFIG.regionConfigs[normalizeRegion(region)];
 }
 
-// 调用SP-API
-async function callSPAPI(method, path, country, params = {}, body = null) {
-  try {
-    const region = getRegionByCountry(country);
-    const regionConfig = SP_API_CONFIG.regionConfigs[region];
-    if (
-      !regionConfig ||
-      !regionConfig.lwaClientId ||
-      !regionConfig.lwaClientSecret ||
-      !regionConfig.refreshToken
-    ) {
-      throw new Error(`SP-API ${region}区域的LWA配置不完整，请检查配置`);
-    }
-
-    const accessToken = await getAccessToken(region);
-    console.log(
-      `[callSPAPI] ${region} 区域 Access Token 获取成功，长度: ${accessToken.length}`,
-    );
-
-    const endpoint = SP_API_CONFIG.endpoints[region];
-    let url;
-    if (path.includes('?')) {
-      url = `${endpoint}${path}`;
-    } else if (params && Object.keys(params).length > 0) {
-      const queryParts = [];
-      for (const [key, value] of Object.entries(params)) {
-        if (Array.isArray(value)) {
-          value.forEach((v) => {
-            queryParts.push(`${key}=${encodeURIComponent(v)}`);
-          });
-        } else {
-          queryParts.push(`${key}=${encodeURIComponent(value)}`);
-        }
-      }
-      const queryString = queryParts.join('&');
-      url = `${endpoint}${path}${queryString ? '?' + queryString : ''}`;
-    } else {
-      url = `${endpoint}${path}`;
-    }
-
-    console.log(`[callSPAPI] 请求URL: ${url}`);
-    console.log(
-      `[callSPAPI] 请求方法: ${method}, 国家: ${country}, 区域: ${region}`,
-    );
-    const urlObj = new URL(url);
-    const payload = body ? JSON.stringify(body) : '';
-    const headers = {
-      host: urlObj.hostname,
-      'x-amz-access-token': accessToken,
-      'user-agent': 'Amazon-ASIN-Monitor/1.0 (Language=Node.js)',
-    };
-    if (body) {
-      headers['content-type'] = 'application/json';
-    }
-
-    console.log(`[callSPAPI] 请求头（签名前）:`, {
-      host: headers.host,
-      'x-amz-access-token': headers['x-amz-access-token']
-        ? `${headers['x-amz-access-token'].substring(0, 20)}...`
-        : 'missing',
-    });
-
-    // 根据 USE_AWS_SIGNATURE 配置决定是否使用 AWS 签名
-    let finalHeaders = { ...headers };
-
-    if (USE_AWS_SIGNATURE) {
-      // 需要 AWS 签名
-      const awsConfig = SP_API_CONFIG.aws || {};
-      const accessKeyId = regionConfig.accessKeyId || awsConfig.accessKeyId;
-      const secretAccessKey =
-        regionConfig.secretAccessKey || awsConfig.secretAccessKey;
-
-      if (!accessKeyId || !secretAccessKey) {
-        throw new Error(
-          `SP-API ${region}区域的AWS配置不完整（启用签名模式需要Access Key），请检查配置`,
-        );
-      }
-
-      const signatureHeaders = signRequest(
-        method,
-        url,
-        headers,
-        payload,
-        accessKeyId,
-        secretAccessKey,
-        REGION_SETTINGS[region].awsRegion,
-        'execute-api',
-      );
-
-      finalHeaders = {
-        ...headers,
-        ...signatureHeaders,
-      };
-    } else {
-      // 简化模式：不需要 AWS 签名
-      console.log(`[callSPAPI] 使用简化模式（无需AWS签名）`);
-    }
-
-    console.log(`[callSPAPI] 最终请求头:`, {
-      host: finalHeaders.host,
-      'x-amz-access-token': finalHeaders['x-amz-access-token']
-        ? `${finalHeaders['x-amz-access-token'].substring(0, 20)}...`
-        : 'missing',
-      authorization: finalHeaders.authorization
-        ? `${finalHeaders.authorization.substring(0, 50)}...`
-        : 'missing',
-      'x-amz-date': finalHeaders['x-amz-date'],
-    });
-
-    return new Promise((resolve, reject) => {
-      const options = {
-        hostname: urlObj.hostname,
-        path: urlObj.pathname + (urlObj.search || ''),
-        method: method,
-        headers: finalHeaders,
-      };
-
-      const req = https.request(options, (res) => {
-        let data = '';
-        res.on('data', (chunk) => {
-          data += chunk;
-        });
-        res.on('end', () => {
-          console.log(`[callSPAPI] 响应状态码: ${res.statusCode}`);
-          console.log(`[callSPAPI] 响应数据长度: ${data ? data.length : 0}`);
-
-          if (res.statusCode >= 200 && res.statusCode < 300) {
-            try {
-              const response = data ? JSON.parse(data) : {};
-              console.log(`[callSPAPI] 响应解析成功:`, {
-                hasItems: !!response.items,
-                itemsCount: response.items ? response.items.length : 0,
-                keys: Object.keys(response),
-              });
-              const responseStr = JSON.stringify(response);
-              if (responseStr.length < 1000) {
-                console.log(`[callSPAPI] 完整响应内容:`, responseStr);
-              } else {
-                console.log(
-                  `[callSPAPI] 响应内容（前500字符）:`,
-                  responseStr.substring(0, 500),
-                );
-              }
-              resolve(response);
-            } catch (e) {
-              console.log(`[callSPAPI] 响应解析失败，返回原始数据:`, e.message);
-              resolve(data || {});
-            }
-          } else {
-            const errorMsg = data || `HTTP ${res.statusCode}`;
-            console.error(`[callSPAPI] 请求失败:`, {
-              statusCode: res.statusCode,
-              errorMsg: errorMsg.substring(0, 500),
-            });
-            reject(
-              new Error(`SP-API调用失败: ${res.statusCode} - ${errorMsg}`),
-            );
-          }
-        });
-      });
-
-      req.on('error', (error) => {
-        reject(error);
-      });
-
-      if (payload) {
-        req.write(payload);
-      }
-      req.end();
-    });
-  } catch (error) {
-    console.error('SP-API调用错误:', error);
-    throw error;
+/**
+ * 执行单次 SP-API 请求（内部函数，不包含重试逻辑）
+ */
+async function callSPAPIInternal(
+  method,
+  path,
+  country,
+  params = {},
+  body = null,
+) {
+  const region = getRegionByCountry(country);
+  const regionConfig = SP_API_CONFIG.regionConfigs[region];
+  if (
+    !regionConfig ||
+    !regionConfig.lwaClientId ||
+    !regionConfig.lwaClientSecret ||
+    !regionConfig.refreshToken
+  ) {
+    throw new Error(`SP-API ${region}区域的LWA配置不完整，请检查配置`);
   }
+
+  const accessToken = await getAccessToken(region);
+  console.log(
+    `[callSPAPI] ${region} 区域 Access Token 获取成功，长度: ${accessToken.length}`,
+  );
+
+  const endpoint = SP_API_CONFIG.endpoints[region];
+  let url;
+  if (path.includes('?')) {
+    url = `${endpoint}${path}`;
+  } else if (params && Object.keys(params).length > 0) {
+    const queryParts = [];
+    for (const [key, value] of Object.entries(params)) {
+      if (Array.isArray(value)) {
+        value.forEach((v) => {
+          queryParts.push(`${key}=${encodeURIComponent(v)}`);
+        });
+      } else {
+        queryParts.push(`${key}=${encodeURIComponent(value)}`);
+      }
+    }
+    const queryString = queryParts.join('&');
+    url = `${endpoint}${path}${queryString ? '?' + queryString : ''}`;
+  } else {
+    url = `${endpoint}${path}`;
+  }
+
+  console.log(`[callSPAPI] 请求URL: ${url}`);
+  console.log(
+    `[callSPAPI] 请求方法: ${method}, 国家: ${country}, 区域: ${region}`,
+  );
+  const urlObj = new URL(url);
+  const payload = body ? JSON.stringify(body) : '';
+  const headers = {
+    host: urlObj.hostname,
+    'x-amz-access-token': accessToken,
+    'user-agent': 'Amazon-ASIN-Monitor/1.0 (Language=Node.js)',
+  };
+  if (body) {
+    headers['content-type'] = 'application/json';
+  }
+
+  console.log(`[callSPAPI] 请求头（签名前）:`, {
+    host: headers.host,
+    'x-amz-access-token': headers['x-amz-access-token']
+      ? `${headers['x-amz-access-token'].substring(0, 20)}...`
+      : 'missing',
+  });
+
+  // 根据 USE_AWS_SIGNATURE 配置决定是否使用 AWS 签名
+  let finalHeaders = { ...headers };
+
+  if (USE_AWS_SIGNATURE) {
+    // 需要 AWS 签名
+    const awsConfig = SP_API_CONFIG.aws || {};
+    const accessKeyId = regionConfig.accessKeyId || awsConfig.accessKeyId;
+    const secretAccessKey =
+      regionConfig.secretAccessKey || awsConfig.secretAccessKey;
+
+    if (!accessKeyId || !secretAccessKey) {
+      throw new Error(
+        `SP-API ${region}区域的AWS配置不完整（启用签名模式需要Access Key），请检查配置`,
+      );
+    }
+
+    const signatureHeaders = signRequest(
+      method,
+      url,
+      headers,
+      payload,
+      accessKeyId,
+      secretAccessKey,
+      REGION_SETTINGS[region].awsRegion,
+      'execute-api',
+    );
+
+    finalHeaders = {
+      ...headers,
+      ...signatureHeaders,
+    };
+  } else {
+    // 简化模式：不需要 AWS 签名
+    console.log(`[callSPAPI] 使用简化模式（无需AWS签名）`);
+  }
+
+  console.log(`[callSPAPI] 最终请求头:`, {
+    host: finalHeaders.host,
+    'x-amz-access-token': finalHeaders['x-amz-access-token']
+      ? `${finalHeaders['x-amz-access-token'].substring(0, 20)}...`
+      : 'missing',
+    authorization: finalHeaders.authorization
+      ? `${finalHeaders.authorization.substring(0, 50)}...`
+      : 'missing',
+    'x-amz-date': finalHeaders['x-amz-date'],
+  });
+
+  return new Promise((resolve, reject) => {
+    const options = {
+      hostname: urlObj.hostname,
+      path: urlObj.pathname + (urlObj.search || ''),
+      method: method,
+      headers: finalHeaders,
+    };
+
+    const req = https.request(options, (res) => {
+      let data = '';
+      res.on('data', (chunk) => {
+        data += chunk;
+      });
+      res.on('end', () => {
+        console.log(`[callSPAPI] 响应状态码: ${res.statusCode}`);
+        console.log(`[callSPAPI] 响应数据长度: ${data ? data.length : 0}`);
+
+        if (res.statusCode >= 200 && res.statusCode < 300) {
+          try {
+            const response = data ? JSON.parse(data) : {};
+            console.log(`[callSPAPI] 响应解析成功:`, {
+              hasItems: !!response.items,
+              itemsCount: response.items ? response.items.length : 0,
+              keys: Object.keys(response),
+            });
+            const responseStr = JSON.stringify(response);
+            if (responseStr.length < 1000) {
+              console.log(`[callSPAPI] 完整响应内容:`, responseStr);
+            } else {
+              console.log(
+                `[callSPAPI] 响应内容（前500字符）:`,
+                responseStr.substring(0, 500),
+              );
+            }
+            resolve(response);
+          } catch (e) {
+            console.log(`[callSPAPI] 响应解析失败，返回原始数据:`, e.message);
+            resolve(data || {});
+          }
+        } else {
+          const errorMsg = data || `HTTP ${res.statusCode}`;
+          console.error(`[callSPAPI] 请求失败:`, {
+            statusCode: res.statusCode,
+            errorMsg: errorMsg.substring(0, 500),
+          });
+
+          // 创建错误对象，包含状态码和错误信息
+          const error = new Error(
+            `SP-API调用失败: ${res.statusCode} - ${errorMsg}`,
+          );
+          error.statusCode = res.statusCode;
+          error.responseData = data;
+          reject(error);
+        }
+      });
+    });
+
+    req.on('error', (error) => {
+      reject(error);
+    });
+
+    if (payload) {
+      req.write(payload);
+    }
+    req.end();
+  });
+}
+
+/**
+ * 调用SP-API（带指数退避重试）
+ * @param {string} method - HTTP方法
+ * @param {string} path - API路径
+ * @param {string} country - 国家代码
+ * @param {object} params - 查询参数
+ * @param {object} body - 请求体
+ * @param {object} options - 重试选项 {maxRetries: 3, initialDelay: 1000}
+ */
+async function callSPAPI(
+  method,
+  path,
+  country,
+  params = {},
+  body = null,
+  options = {},
+) {
+  const maxRetries = options.maxRetries !== undefined ? options.maxRetries : 3;
+  const initialDelay =
+    options.initialDelay !== undefined ? options.initialDelay : 1000;
+
+  let lastError = null;
+
+  for (let attempt = 0; attempt <= maxRetries; attempt++) {
+    try {
+      if (attempt > 0) {
+        // 计算指数退避延迟：initialDelay * 2^(attempt-1)
+        const delay = initialDelay * Math.pow(2, attempt - 1);
+        console.log(
+          `[callSPAPI] 第 ${attempt} 次重试，延迟 ${delay}ms 后重试...`,
+        );
+        await new Promise((resolve) => {
+          setTimeout(() => {
+            resolve();
+          }, delay);
+        });
+      }
+
+      return await callSPAPIInternal(method, path, country, params, body);
+    } catch (error) {
+      lastError = error;
+
+      // 检查是否是 429 或 QuotaExceeded 错误
+      const isRateLimitError =
+        error.statusCode === 429 ||
+        (error.message &&
+          (error.message.includes('429') ||
+            error.message.includes('QuotaExceeded') ||
+            error.message.includes('TooManyRequests')));
+
+      if (isRateLimitError && attempt < maxRetries) {
+        console.log(
+          `[callSPAPI] 遇到限流错误（429/QuotaExceeded），将进行第 ${
+            attempt + 1
+          } 次重试（最多 ${maxRetries} 次）`,
+        );
+        continue; // 继续重试
+      } else {
+        // 不是限流错误，或者已达到最大重试次数，直接抛出错误
+        if (isRateLimitError && attempt >= maxRetries) {
+          console.error(
+            `[callSPAPI] 达到最大重试次数（${maxRetries}），放弃重试`,
+          );
+        }
+        throw error;
+      }
+    }
+  }
+
+  // 如果所有重试都失败，抛出最后一个错误
+  throw lastError || new Error('SP-API调用失败：未知错误');
 }
 
 module.exports = {

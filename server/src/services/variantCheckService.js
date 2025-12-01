@@ -1,4 +1,5 @@
 const { callSPAPI, getMarketplaceId } = require('../config/sp-api');
+const { callLegacySPAPI } = require('./legacySPAPIClient');
 const VariantGroup = require('../models/VariantGroup');
 const ASIN = require('../models/ASIN');
 const MonitorHistory = require('../models/MonitorHistory');
@@ -25,6 +26,9 @@ const API_VERSIONS = ['2022-04-01', '2020-12-01'];
 
 // HTML 抓取兜底开关
 let ENABLE_HTML_SCRAPER_FALLBACK = false;
+
+// 旧客户端备用开关
+let ENABLE_LEGACY_CLIENT_FALLBACK = false;
 
 /**
  * 从数据库或环境变量加载 HTML 抓取兜底配置
@@ -60,6 +64,39 @@ async function loadHtmlScraperFallbackConfig() {
 }
 
 /**
+ * 从数据库或环境变量加载旧客户端备用配置
+ */
+async function loadLegacyClientFallbackConfig() {
+  try {
+    const config = await SPAPIConfig.findByKey('ENABLE_LEGACY_CLIENT_FALLBACK');
+    if (
+      config &&
+      config.config_value !== null &&
+      config.config_value !== undefined
+    ) {
+      ENABLE_LEGACY_CLIENT_FALLBACK =
+        config.config_value === 'true' ||
+        config.config_value === true ||
+        config.config_value === '1';
+    } else {
+      // 从环境变量读取
+      ENABLE_LEGACY_CLIENT_FALLBACK =
+        process.env.ENABLE_LEGACY_CLIENT_FALLBACK === 'true' ||
+        process.env.ENABLE_LEGACY_CLIENT_FALLBACK === '1';
+    }
+    console.log(
+      `[变体检查] ENABLE_LEGACY_CLIENT_FALLBACK: ${ENABLE_LEGACY_CLIENT_FALLBACK}`,
+    );
+  } catch (error) {
+    console.error(
+      '[变体检查] 加载 ENABLE_LEGACY_CLIENT_FALLBACK 配置失败:',
+      error.message,
+    );
+    ENABLE_LEGACY_CLIENT_FALLBACK = false; // 默认关闭
+  }
+}
+
+/**
  * 重新加载 HTML 抓取兜底配置（供外部调用）
  */
 async function reloadHtmlScraperFallbackConfig() {
@@ -68,6 +105,7 @@ async function reloadHtmlScraperFallbackConfig() {
 
 // 初始化时加载配置
 loadHtmlScraperFallbackConfig();
+loadLegacyClientFallbackConfig();
 
 function getVariantCacheKey(asin, country) {
   return `variant:${country}:${asin}`;
@@ -178,10 +216,33 @@ async function checkASINVariants(asin, country) {
       }
     }
 
-    // 如果所有 SP-API 版本都失败，尝试 HTML 抓取兜底
+    // 如果所有 SP-API 版本都失败，尝试旧客户端备用
+    if (!response && ENABLE_LEGACY_CLIENT_FALLBACK) {
+      console.log(
+        `[checkASINVariants] 所有SP-API版本都失败，尝试旧客户端备用...`,
+      );
+      try {
+        // 尝试使用最新版本
+        const path = `/catalog/2022-04-01/items/${asin}`;
+        apiVersion = '2022-04-01';
+        response = await callLegacySPAPI('GET', path, country, params);
+
+        if (response) {
+          console.log(`[checkASINVariants] 旧客户端调用成功`);
+        }
+      } catch (legacyError) {
+        console.error(
+          `[checkASINVariants] 旧客户端也失败:`,
+          legacyError.message,
+        );
+        // 继续尝试 HTML 抓取
+      }
+    }
+
+    // 如果所有 SP-API 版本和旧客户端都失败，尝试 HTML 抓取兜底
     if (!response && ENABLE_HTML_SCRAPER_FALLBACK) {
       console.log(
-        `[checkASINVariants] 所有SP-API版本都失败，尝试HTML抓取兜底...`,
+        `[checkASINVariants] 所有SP-API版本和旧客户端都失败，尝试HTML抓取兜底...`,
       );
       try {
         const htmlResult = await htmlScraperService.checkASINVariantsByHTML(
@@ -230,7 +291,7 @@ async function checkASINVariants(asin, country) {
       if (lastError) {
         throw lastError;
       }
-      throw new Error('所有SP-API版本调用失败，且HTML抓取未启用或失败');
+      throw new Error('所有SP-API版本调用失败，且备用方案未启用或失败');
     }
 
     // 解析响应
@@ -651,6 +712,13 @@ async function checkSingleASIN(asinId) {
 }
 
 /**
+ * 重新加载旧客户端备用配置（供外部调用）
+ */
+async function reloadLegacyClientFallbackConfig() {
+  await loadLegacyClientFallbackConfig();
+}
+
+/**
  * 获取Marketplace ID
  * @param {string} country - 国家代码
  * @returns {string} Marketplace ID
@@ -660,5 +728,6 @@ module.exports = {
   checkVariantGroup,
   checkSingleASIN,
   reloadHtmlScraperFallbackConfig,
+  reloadLegacyClientFallbackConfig,
   MAX_CONCURRENT_ASIN_CHECKS,
 };
