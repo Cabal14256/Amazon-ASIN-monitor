@@ -83,6 +83,51 @@ function buildGlobalAWSConfig() {
   return result;
 }
 
+// USE_AWS_SIGNATURE 配置（默认 false，简化模式）
+let USE_AWS_SIGNATURE = false;
+
+/**
+ * 从数据库或环境变量加载 USE_AWS_SIGNATURE 配置
+ */
+async function loadUseAwsSignatureConfig() {
+  try {
+    const config = await SPAPIConfig.findByKey('SP_API_USE_AWS_SIGNATURE');
+    if (
+      config &&
+      config.config_value !== null &&
+      config.config_value !== undefined
+    ) {
+      USE_AWS_SIGNATURE =
+        config.config_value === 'true' ||
+        config.config_value === true ||
+        config.config_value === '1';
+    } else {
+      // 从环境变量读取
+      USE_AWS_SIGNATURE =
+        process.env.SP_API_USE_AWS_SIGNATURE === 'true' ||
+        process.env.SP_API_USE_AWS_SIGNATURE === '1';
+    }
+    console.log(
+      `[SP-API配置] USE_AWS_SIGNATURE: ${USE_AWS_SIGNATURE} (${
+        USE_AWS_SIGNATURE ? '启用AWS签名' : '简化模式，无需AWS签名'
+      })`,
+    );
+  } catch (error) {
+    console.error(
+      '[SP-API配置] 加载 USE_AWS_SIGNATURE 配置失败:',
+      error.message,
+    );
+    USE_AWS_SIGNATURE = false; // 默认使用简化模式
+  }
+}
+
+/**
+ * 获取当前 USE_AWS_SIGNATURE 配置值
+ */
+function getUseAwsSignature() {
+  return USE_AWS_SIGNATURE;
+}
+
 // 从数据库加载配置
 async function loadConfigFromDatabase() {
   try {
@@ -93,6 +138,9 @@ async function loadConfigFromDatabase() {
         configMap[item.config_key] = item.config_value;
       }
     });
+
+    // 加载 USE_AWS_SIGNATURE 配置
+    await loadUseAwsSignatureConfig();
 
     const awsConfig = {};
     for (const [fieldKey, fieldSuffix] of Object.entries(
@@ -374,16 +422,6 @@ async function callSPAPI(method, path, country, params = {}, body = null) {
       throw new Error(`SP-API ${region}区域的LWA配置不完整，请检查配置`);
     }
 
-    const awsConfig = SP_API_CONFIG.aws || {};
-    const accessKeyId = regionConfig.accessKeyId || awsConfig.accessKeyId;
-    const secretAccessKey =
-      regionConfig.secretAccessKey || awsConfig.secretAccessKey;
-    const roleArn = regionConfig.roleArn || awsConfig.roleArn;
-
-    if (!accessKeyId || !secretAccessKey || !roleArn) {
-      throw new Error(`SP-API ${region}区域的AWS配置不完整，请检查配置`);
-    }
-
     const accessToken = await getAccessToken(region);
     console.log(
       `[callSPAPI] ${region} 区域 Access Token 获取成功，长度: ${accessToken.length}`,
@@ -432,21 +470,41 @@ async function callSPAPI(method, path, country, params = {}, body = null) {
         : 'missing',
     });
 
-    const signatureHeaders = signRequest(
-      method,
-      url,
-      headers,
-      payload,
-      accessKeyId,
-      secretAccessKey,
-      REGION_SETTINGS[region].awsRegion,
-      'execute-api',
-    );
+    // 根据 USE_AWS_SIGNATURE 配置决定是否使用 AWS 签名
+    let finalHeaders = { ...headers };
 
-    const finalHeaders = {
-      ...headers,
-      ...signatureHeaders,
-    };
+    if (USE_AWS_SIGNATURE) {
+      // 需要 AWS 签名
+      const awsConfig = SP_API_CONFIG.aws || {};
+      const accessKeyId = regionConfig.accessKeyId || awsConfig.accessKeyId;
+      const secretAccessKey =
+        regionConfig.secretAccessKey || awsConfig.secretAccessKey;
+
+      if (!accessKeyId || !secretAccessKey) {
+        throw new Error(
+          `SP-API ${region}区域的AWS配置不完整（启用签名模式需要Access Key），请检查配置`,
+        );
+      }
+
+      const signatureHeaders = signRequest(
+        method,
+        url,
+        headers,
+        payload,
+        accessKeyId,
+        secretAccessKey,
+        REGION_SETTINGS[region].awsRegion,
+        'execute-api',
+      );
+
+      finalHeaders = {
+        ...headers,
+        ...signatureHeaders,
+      };
+    } else {
+      // 简化模式：不需要 AWS 签名
+      console.log(`[callSPAPI] 使用简化模式（无需AWS签名）`);
+    }
 
     console.log(`[callSPAPI] 最终请求头:`, {
       host: finalHeaders.host,
@@ -535,4 +593,6 @@ module.exports = {
   getRegionByCountry,
   getRegionConfig,
   getMarketplaceId,
+  loadUseAwsSignatureConfig,
+  getUseAwsSignature,
 };

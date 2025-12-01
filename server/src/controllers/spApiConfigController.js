@@ -72,6 +72,22 @@ exports.updateSPAPIConfig = async (req, res) => {
       console.error('⚠️ 重新加载SP-API配置失败:', reloadError);
     }
 
+    // 重新加载AWS签名配置
+    try {
+      await loadUseAwsSignatureConfig();
+      console.log('✅ AWS签名配置已重新加载');
+    } catch (awsError) {
+      console.error('⚠️ 重新加载AWS签名配置失败:', awsError);
+    }
+
+    // 重新加载HTML抓取兜底配置
+    try {
+      await reloadHtmlScraperFallbackConfig();
+      console.log('✅ HTML抓取兜底配置已重新加载');
+    } catch (htmlError) {
+      console.error('⚠️ 重新加载HTML抓取兜底配置失败:', htmlError);
+    }
+
     try {
       await reloadMonitorConfig();
       console.log('✅ 监控并发配置已重新加载');
@@ -114,6 +130,8 @@ exports.getSPAPIConfigForDisplay = async (req, res) => {
       'SP_API_SECRET_ACCESS_KEY',
       'SP_API_ROLE_ARN',
       'MONITOR_MAX_CONCURRENT_GROUP_CHECKS',
+      'SP_API_USE_AWS_SIGNATURE',
+      'ENABLE_HTML_SCRAPER_FALLBACK',
     ];
 
     // 创建配置映射
@@ -136,11 +154,12 @@ exports.getSPAPIConfigForDisplay = async (req, res) => {
       }
 
       let displayValue = value;
-      // 对于敏感字段，只显示部分内容
+      // 对于敏感字段，只显示部分内容（布尔值字段不需要隐藏）
       if (
-        key.includes('SECRET') ||
-        key.includes('TOKEN') ||
-        key.includes('KEY')
+        !['SP_API_USE_AWS_SIGNATURE', 'ENABLE_HTML_SCRAPER_FALLBACK'].includes(
+          key,
+        ) &&
+        (key.includes('SECRET') || key.includes('TOKEN') || key.includes('KEY'))
       ) {
         if (value.length > 8) {
           displayValue =
@@ -193,6 +212,9 @@ function getConfigDescription(key) {
     SP_API_SECRET_ACCESS_KEY: 'AWS Secret Access Key（US+EU共用）',
     SP_API_ROLE_ARN: 'AWS IAM Role ARN（US+EU共用）',
     MONITOR_MAX_CONCURRENT_GROUP_CHECKS: '每次并发检查的变体组数量',
+    SP_API_USE_AWS_SIGNATURE:
+      '是否启用AWS签名（简化模式：关闭，标准模式：开启）',
+    ENABLE_HTML_SCRAPER_FALLBACK: '是否启用HTML抓取兜底（SP-API失败时使用）',
   };
   return descriptions[key] || key;
 }

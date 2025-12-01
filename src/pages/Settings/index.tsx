@@ -63,15 +63,24 @@ const SettingsPage: React.FC<unknown> = () => {
           return;
         }
 
-        const value =
-          config.configKey === 'MONITOR_MAX_CONCURRENT_GROUP_CHECKS'
-            ? config.configValue
-              ? Math.min(
-                  Number(config.configValue),
-                  MONITOR_CONCURRENCY_LIMIT,
-                )
-              : undefined
-            : config.configValue || '';
+        let value: any;
+        if (config.configKey === 'MONITOR_MAX_CONCURRENT_GROUP_CHECKS') {
+          value = config.configValue
+            ? Math.min(Number(config.configValue), MONITOR_CONCURRENCY_LIMIT)
+            : undefined;
+        } else if (
+          config.configKey === 'SP_API_USE_AWS_SIGNATURE' ||
+          config.configKey === 'ENABLE_HTML_SCRAPER_FALLBACK'
+        ) {
+          // 布尔值字段：转换为布尔类型
+          value =
+            config.configValue === 'true' ||
+            config.configValue === true ||
+            config.configValue === '1' ||
+            config.configValue === 1;
+        } else {
+          value = config.configValue || '';
+        }
 
         spApiFormValues[config.configKey] = value;
       });
@@ -127,11 +136,7 @@ const SettingsPage: React.FC<unknown> = () => {
   }, []);
 
   // 保存SP-API配置
-  const buildConfigEntry = (
-    key: string,
-    value: any,
-    description: string,
-  ) => ({
+  const buildConfigEntry = (key: string, value: any, description: string) => ({
     configKey: key,
     configValue:
       value !== undefined && value !== null ? String(value) : undefined,
@@ -190,6 +195,16 @@ const SettingsPage: React.FC<unknown> = () => {
           'SP_API_ROLE_ARN',
           values.SP_API_ROLE_ARN,
           'AWS IAM Role ARN（US+EU共用）',
+        ),
+        buildConfigEntry(
+          'SP_API_USE_AWS_SIGNATURE',
+          values.SP_API_USE_AWS_SIGNATURE ? 'true' : 'false',
+          '是否启用AWS签名（简化模式：关闭，标准模式：开启）',
+        ),
+        buildConfigEntry(
+          'ENABLE_HTML_SCRAPER_FALLBACK',
+          values.ENABLE_HTML_SCRAPER_FALLBACK ? 'true' : 'false',
+          '是否启用HTML抓取兜底（SP-API失败时使用）',
         ),
       ].map((entry) => ({
         ...entry,
@@ -343,7 +358,9 @@ const SettingsPage: React.FC<unknown> = () => {
                 name="SP_API_ACCESS_KEY_ID"
                 label="AWS Access Key ID"
                 placeholder="请输入 AWS Access Key ID"
-                rules={[{ required: true, message: '请输入 AWS Access Key ID' }]}
+                rules={[
+                  { required: true, message: '请输入 AWS Access Key ID' },
+                ]}
                 fieldProps={{
                   style: { width: '100%' },
                 }}
@@ -367,6 +384,34 @@ const SettingsPage: React.FC<unknown> = () => {
                 fieldProps={{
                   style: { width: '100%' },
                 }}
+              />
+            </ProForm.Group>
+
+            <ProForm.Group title="SP-API 调用模式">
+              <ProFormSwitch
+                name="SP_API_USE_AWS_SIGNATURE"
+                label="启用 AWS 签名"
+                checkedChildren="标准模式"
+                unCheckedChildren="简化模式"
+                extra="简化模式：无需 AWS 签名，仅使用 Access Token。标准模式：需要完整的 AWS 签名（需要 Access Key 和 Secret Key）。"
+              />
+            </ProForm.Group>
+
+            <ProForm.Group title="HTML 抓取兜底">
+              <ProFormSwitch
+                name="ENABLE_HTML_SCRAPER_FALLBACK"
+                label="启用 HTML 抓取兜底"
+                checkedChildren="启用"
+                unCheckedChildren="禁用"
+                extra={
+                  <Alert
+                    message="风险提示"
+                    description="HTML 抓取可能违反 Amazon 服务条款，可能触发反爬虫机制（IP封禁、验证码等）。建议仅在 SP-API 完全失败时使用。"
+                    type="warning"
+                    showIcon
+                    style={{ marginTop: 8 }}
+                  />
+                }
               />
             </ProForm.Group>
           </ProForm>

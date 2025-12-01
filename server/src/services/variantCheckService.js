@@ -3,12 +3,71 @@ const VariantGroup = require('../models/VariantGroup');
 const ASIN = require('../models/ASIN');
 const MonitorHistory = require('../models/MonitorHistory');
 const cacheService = require('./cacheService');
+const htmlScraperService = require('./htmlScraperService');
+const SPAPIConfig = require('../models/SPAPIConfig');
 
 /**
- * 每次最多同时检查的 ASIN 数（满足一次检查并发 5 个的要求）
+ * 每次最多同时检查的 ASIN 数（降低并发以减少限流风险）
  */
-const MAX_CONCURRENT_ASIN_CHECKS = 5;
-const VARIANT_CACHE_TTL_MS = 5 * 60 * 1000;
+const MAX_CONCURRENT_ASIN_CHECKS = 3;
+const VARIANT_CACHE_TTL_MS = 12 * 60 * 1000; // 12分钟缓存
+
+// 请求延迟配置（每 N 个请求延迟 M 毫秒）
+const REQUEST_DELAY_INTERVAL =
+  Number(process.env.SP_API_REQUEST_DELAY_INTERVAL) || 20;
+const REQUEST_DELAY_MS = Number(process.env.SP_API_REQUEST_DELAY_MS) || 150;
+
+// 全局请求计数器（用于延迟控制）
+let globalRequestCounter = 0;
+
+// SP-API 版本列表（按优先级排序）
+const API_VERSIONS = ['2022-04-01', '2020-12-01'];
+
+// HTML 抓取兜底开关
+let ENABLE_HTML_SCRAPER_FALLBACK = false;
+
+/**
+ * 从数据库或环境变量加载 HTML 抓取兜底配置
+ */
+async function loadHtmlScraperFallbackConfig() {
+  try {
+    const config = await SPAPIConfig.findByKey('ENABLE_HTML_SCRAPER_FALLBACK');
+    if (
+      config &&
+      config.config_value !== null &&
+      config.config_value !== undefined
+    ) {
+      ENABLE_HTML_SCRAPER_FALLBACK =
+        config.config_value === 'true' ||
+        config.config_value === true ||
+        config.config_value === '1';
+    } else {
+      // 从环境变量读取
+      ENABLE_HTML_SCRAPER_FALLBACK =
+        process.env.ENABLE_HTML_SCRAPER_FALLBACK === 'true' ||
+        process.env.ENABLE_HTML_SCRAPER_FALLBACK === '1';
+    }
+    console.log(
+      `[变体检查] ENABLE_HTML_SCRAPER_FALLBACK: ${ENABLE_HTML_SCRAPER_FALLBACK}`,
+    );
+  } catch (error) {
+    console.error(
+      '[变体检查] 加载 ENABLE_HTML_SCRAPER_FALLBACK 配置失败:',
+      error.message,
+    );
+    ENABLE_HTML_SCRAPER_FALLBACK = false; // 默认关闭
+  }
+}
+
+/**
+ * 重新加载 HTML 抓取兜底配置（供外部调用）
+ */
+async function reloadHtmlScraperFallbackConfig() {
+  await loadHtmlScraperFallbackConfig();
+}
+
+// 初始化时加载配置
+loadHtmlScraperFallbackConfig();
 
 function getVariantCacheKey(asin, country) {
   return `variant:${country}:${asin}`;
@@ -39,8 +98,6 @@ async function checkASINVariants(asin, country) {
     }
 
     const marketplaceId = getMarketplaceId(country);
-    let path = `/catalog/2020-12-01/items/${asin}`;
-    let apiVersion = '2020-12-01';
     const params = {
       marketplaceIds: [marketplaceId],
       includedData: ['variations'],
@@ -49,23 +106,131 @@ async function checkASINVariants(asin, country) {
     console.log(
       `[checkASINVariants] 调用SP-API检查ASIN ${asin}，国家: ${country}，Marketplace ID: ${marketplaceId}`,
     );
-    console.log(`[checkASINVariants] API版本: ${apiVersion}`);
-    console.log(`[checkASINVariants] 参数:`, params);
 
-    let response;
-    try {
-      response = await callSPAPI('GET', path, country, params);
-    } catch (error) {
-      if (error.message && error.message.includes('400')) {
-        console.log(
-          `[checkASINVariants] v2020-12-01失败，尝试使用v2022-04-01版本...`,
-        );
-        path = `/catalog/2022-04-01/items/${asin}`;
-        apiVersion = '2022-04-01';
+    // 请求延迟控制（每 N 个请求延迟 M 毫秒）
+    globalRequestCounter++;
+    if (globalRequestCounter >= REQUEST_DELAY_INTERVAL) {
+      console.log(
+        `[checkASINVariants] 达到延迟阈值（${REQUEST_DELAY_INTERVAL}个请求），延迟 ${REQUEST_DELAY_MS}ms`,
+      );
+      await new Promise((resolve) => {
+        setTimeout(() => {
+          resolve();
+        }, REQUEST_DELAY_MS);
+      });
+      globalRequestCounter = 0;
+    }
+
+    // 多版本回退策略：优先使用 2022-04-01，失败后回退到 2020-12-01
+    let response = null;
+    let apiVersion = null;
+    let lastError = null;
+
+    for (const version of API_VERSIONS) {
+      try {
+        const path = `/catalog/${version}/items/${asin}`;
+        apiVersion = version;
+        console.log(`[checkASINVariants] 尝试API版本: ${apiVersion}`);
+        console.log(`[checkASINVariants] 参数:`, params);
+
         response = await callSPAPI('GET', path, country, params);
-      } else {
-        throw error;
+
+        // 如果成功，跳出循环
+        if (response) {
+          console.log(`[checkASINVariants] API版本 ${apiVersion} 调用成功`);
+          break;
+        }
+      } catch (error) {
+        lastError = error;
+        console.log(
+          `[checkASINVariants] API版本 ${version} 调用失败:`,
+          error.message,
+        );
+
+        // 如果是 400 或 404 错误，尝试下一个版本
+        if (
+          error.message &&
+          (error.message.includes('400') || error.message.includes('404'))
+        ) {
+          console.log(
+            `[checkASINVariants] 版本 ${version} 返回 400/404，尝试下一个版本...`,
+          );
+          continue;
+        }
+
+        // 其他错误（如 429、500 等），也尝试下一个版本
+        if (error.message && error.message.includes('429')) {
+          console.log(
+            `[checkASINVariants] 版本 ${version} 返回 429（限流），尝试下一个版本...`,
+          );
+          continue;
+        }
+
+        // 如果是网络错误或其他严重错误，直接抛出
+        if (
+          !error.message ||
+          (!error.message.includes('400') &&
+            !error.message.includes('404') &&
+            !error.message.includes('429'))
+        ) {
+          throw error;
+        }
       }
+    }
+
+    // 如果所有 SP-API 版本都失败，尝试 HTML 抓取兜底
+    if (!response && ENABLE_HTML_SCRAPER_FALLBACK) {
+      console.log(
+        `[checkASINVariants] 所有SP-API版本都失败，尝试HTML抓取兜底...`,
+      );
+      try {
+        const htmlResult = await htmlScraperService.checkASINVariantsByHTML(
+          asin,
+          country,
+        );
+
+        // 将 HTML 抓取结果转换为标准格式
+        const variantASINs = htmlResult.details.variantAsins || [];
+        const parentASIN = htmlResult.details.parentAsin;
+
+        const hasVariants = htmlResult.hasVariants;
+        const variantCount = variantASINs.length;
+
+        const result = {
+          hasVariants,
+          variantCount,
+          details: {
+            asin,
+            parentAsin: parentASIN,
+            variantASINs,
+            source: 'html_scraper',
+            apiVersion: null,
+          },
+        };
+
+        // 缓存结果
+        setVariantResultCache(asin, country, result);
+
+        console.log(
+          `[checkASINVariants] HTML抓取成功: hasVariants=${hasVariants}, variantCount=${variantCount}`,
+        );
+        return result;
+      } catch (htmlError) {
+        console.error(`[checkASINVariants] HTML抓取也失败:`, htmlError.message);
+        // HTML 抓取失败，抛出最后一个 SP-API 错误
+        if (lastError) {
+          throw lastError;
+        }
+        throw htmlError;
+      }
+    }
+
+    // 如果所有方法都失败，抛出错误
+    if (!response) {
+      if (lastError) {
+        throw lastError;
+      }
+      throw new Error('所有SP-API版本调用失败，且HTML抓取未启用或失败');
     }
 
     // 解析响应
@@ -494,4 +659,6 @@ module.exports = {
   checkASINVariants,
   checkVariantGroup,
   checkSingleASIN,
+  reloadHtmlScraperFallbackConfig,
+  MAX_CONCURRENT_ASIN_CHECKS,
 };

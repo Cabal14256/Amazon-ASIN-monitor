@@ -11,6 +11,10 @@ let monitorSemaphore = new Semaphore(getMaxConcurrentGroupChecks());
 let isMonitorTaskRunning = false;
 let pendingRunCountries = null;
 
+// 单次任务限制处理的变体组数量（防止单次任务过大）
+const MAX_GROUPS_PER_TASK =
+  Number(process.env.MONITOR_MAX_GROUPS_PER_TASK) || 0; // 0 表示不限制
+
 const REGION_MAP = {
   US: 'US',
   UK: 'EU',
@@ -37,7 +41,12 @@ function getCountriesToCheck(region, minute) {
   return countries;
 }
 
-async function processCountry(countryResults, country, checkTime) {
+async function processCountry(
+  countryResults,
+  country,
+  checkTime,
+  batchConfig = null,
+) {
   const countryResult = (countryResults[country] = countryResults[country] || {
     country,
     totalGroups: 0,
@@ -51,118 +60,169 @@ async function processCountry(countryResults, country, checkTime) {
   let broken = 0;
 
   try {
-    const pageSize = 200;
-    let page = 1;
-    let hasMore = true;
+    let groupsList = [];
 
-    while (hasMore) {
-      const groupsList = await VariantGroup.findByCountryPage(
+    // 如果提供了 batchConfig，使用分批查询
+    if (
+      batchConfig &&
+      batchConfig.batchIndex !== undefined &&
+      batchConfig.totalBatches > 1
+    ) {
+      console.log(
+        `[processCountry] ${country} 使用分批查询: 批次 ${
+          batchConfig.batchIndex + 1
+        }/${batchConfig.totalBatches}`,
+      );
+      groupsList = await VariantGroup.findByCountryBatch(
         country,
-        page,
-        pageSize,
+        batchConfig.batchIndex,
+        batchConfig.totalBatches,
       );
-      if (!groupsList || groupsList.length === 0) {
-        hasMore = false;
-        break;
-      }
+    } else {
+      // 否则使用分页查询
+      const pageSize = 200;
+      let page = 1;
+      let hasMore = true;
 
-      const chunkConcurrency = Math.min(
-        Math.max(getMaxConcurrentGroupChecks(), 1),
-        groupsList.length,
-      );
-      let nextGroupIndex = 0;
-
-      const workers = Array.from({ length: chunkConcurrency }, async () => {
-        while (true) {
-          const currentIndex = nextGroupIndex++;
-          if (currentIndex >= groupsList.length) {
-            break;
-          }
-          const group = groupsList[currentIndex];
-          checked++;
-          countryResult.totalGroups++;
-
-          let result;
-          const workerStart = process.hrtime();
-          await monitorSemaphore.acquire();
-          try {
-            result = await checkVariantGroup(group.id);
-          } finally {
-            monitorSemaphore.release();
-          }
-          const [seconds, nanoseconds] = process.hrtime(workerStart);
-          metricsService.recordVariantGroupCheck({
-            region: country,
-            durationSec: seconds + nanoseconds / 1e9,
-            isBroken: result?.isBroken,
-          });
-
-          const brokenASINs = result?.brokenASINs || [];
-          if (result?.isBroken) {
-            broken++;
-            countryResult.brokenGroups++;
-            countryResult.brokenGroupNames.push(group.name);
-          }
-
-          const historyEntries = [
-            {
-              variantGroupId: group.id,
-              checkType: 'GROUP',
-              country: group.country,
-              isBroken: result?.isBroken ? 1 : 0,
-              checkResult: result,
-              checkTime,
-            },
-          ];
-
-          const fullGroup = await VariantGroup.findById(group.id);
-          if (fullGroup && Array.isArray(fullGroup.children)) {
-            for (const asinInfo of fullGroup.children) {
-              await ASIN.updateLastCheckTime(asinInfo.id);
-
-              if (
-                asinInfo.feishuNotifyEnabled !== 0 &&
-                asinInfo.isBroken === 1
-              ) {
-                countryResult.brokenASINs.push({
-                  asin: asinInfo.asin,
-                  name: asinInfo.name || '',
-                  groupName: group.name,
-                  brand: asinInfo.brand || '',
-                });
-              }
-
-              historyEntries.push({
-                asinId: asinInfo.id,
-                variantGroupId: group.id,
-                checkType: 'ASIN',
-                country: asinInfo.country,
-                isBroken: asinInfo.isBroken === 1 ? 1 : 0,
-                checkResult: {
-                  asin: asinInfo.asin,
-                  isBroken: asinInfo.isBroken === 1,
-                },
-                checkTime,
-              });
-            }
-          }
-
-          try {
-            await MonitorHistory.bulkCreate(historyEntries);
-          } catch (historyError) {
-            console.error(`  ⚠️  批量记录监控历史失败:`, historyError.message);
-          }
+      while (hasMore) {
+        const pageGroups = await VariantGroup.findByCountryPage(
+          country,
+          page,
+          pageSize,
+        );
+        if (!pageGroups || pageGroups.length === 0) {
+          hasMore = false;
+          break;
         }
-      });
+        groupsList.push(...pageGroups);
 
-      await Promise.all(workers);
+        // 如果设置了单次任务限制，检查是否达到限制
+        if (
+          MAX_GROUPS_PER_TASK > 0 &&
+          groupsList.length >= MAX_GROUPS_PER_TASK
+        ) {
+          console.log(
+            `[processCountry] ${country} 达到单次任务限制 (${MAX_GROUPS_PER_TASK})，停止加载更多变体组`,
+          );
+          groupsList = groupsList.slice(0, MAX_GROUPS_PER_TASK);
+          hasMore = false;
+          break;
+        }
 
-      if (groupsList.length < pageSize) {
-        hasMore = false;
-      } else {
+        if (pageGroups.length < pageSize) {
+          hasMore = false;
+          break;
+        }
         page++;
       }
     }
+
+    // 如果设置了单次任务限制，截取到限制数量
+    if (MAX_GROUPS_PER_TASK > 0 && groupsList.length > MAX_GROUPS_PER_TASK) {
+      console.log(
+        `[processCountry] ${country} 截取到单次任务限制 (${MAX_GROUPS_PER_TASK})`,
+      );
+      groupsList = groupsList.slice(0, MAX_GROUPS_PER_TASK);
+    }
+
+    if (groupsList.length === 0) {
+      console.log(`[processCountry] ${country} 没有需要检查的变体组`);
+      return;
+    }
+
+    console.log(
+      `[processCountry] ${country} 开始检查 ${groupsList.length} 个变体组`,
+    );
+
+    const chunkConcurrency = Math.min(
+      Math.max(getMaxConcurrentGroupChecks(), 1),
+      groupsList.length,
+    );
+    let nextGroupIndex = 0;
+
+    const workers = Array.from({ length: chunkConcurrency }, async () => {
+      while (true) {
+        const currentIndex = nextGroupIndex++;
+        if (currentIndex >= groupsList.length) {
+          break;
+        }
+        const group = groupsList[currentIndex];
+        checked++;
+        countryResult.totalGroups++;
+
+        let result;
+        const workerStart = process.hrtime();
+        await monitorSemaphore.acquire();
+        try {
+          result = await checkVariantGroup(group.id);
+        } finally {
+          monitorSemaphore.release();
+        }
+        const [seconds, nanoseconds] = process.hrtime(workerStart);
+        metricsService.recordVariantGroupCheck({
+          region: country,
+          durationSec: seconds + nanoseconds / 1e9,
+          isBroken: result?.isBroken,
+        });
+
+        const brokenASINs = result?.brokenASINs || [];
+        if (result?.isBroken) {
+          broken++;
+          countryResult.brokenGroups++;
+          countryResult.brokenGroupNames.push(group.name);
+        }
+
+        const historyEntries = [
+          {
+            variantGroupId: group.id,
+            checkType: 'GROUP',
+            country: group.country,
+            isBroken: result?.isBroken ? 1 : 0,
+            checkResult: result,
+            checkTime,
+          },
+        ];
+
+        const fullGroup = await VariantGroup.findById(group.id);
+        if (fullGroup && Array.isArray(fullGroup.children)) {
+          for (const asinInfo of fullGroup.children) {
+            await ASIN.updateLastCheckTime(asinInfo.id);
+
+            if (asinInfo.feishuNotifyEnabled !== 0 && asinInfo.isBroken === 1) {
+              countryResult.brokenASINs.push({
+                asin: asinInfo.asin,
+                name: asinInfo.name || '',
+                groupName: group.name,
+                brand: asinInfo.brand || '',
+              });
+            }
+
+            historyEntries.push({
+              asinId: asinInfo.id,
+              variantGroupId: group.id,
+              checkType: 'ASIN',
+              country: asinInfo.country,
+              isBroken: asinInfo.isBroken === 1 ? 1 : 0,
+              checkResult: {
+                asin: asinInfo.asin,
+                isBroken: asinInfo.isBroken === 1,
+              },
+              checkTime,
+            });
+          }
+        }
+
+        try {
+          await MonitorHistory.bulkCreate(historyEntries);
+        } catch (historyError) {
+          console.error(`  ⚠️  批量记录监控历史失败:`, historyError.message);
+        }
+      }
+    });
+
+    await Promise.all(workers);
+
+    // 分批查询模式下不需要分页循环
   } catch (error) {
     console.error(`❌ 处理国家 ${country} 失败:`, error.message);
   }
@@ -170,7 +230,7 @@ async function processCountry(countryResults, country, checkTime) {
   return { checked, broken };
 }
 
-async function runMonitorTask(countries) {
+async function runMonitorTask(countries, batchConfig = null) {
   if (!countries || countries.length === 0) {
     return;
   }
@@ -190,22 +250,25 @@ async function runMonitorTask(countries) {
   isMonitorTaskRunning = true;
   syncSemaphoreLimit();
 
+  const batchInfo = batchConfig
+    ? ` (批次 ${batchConfig.batchIndex + 1}/${batchConfig.totalBatches})`
+    : '';
   console.log(
     `\n⏰ [${new Date().toLocaleString(
       'zh-CN',
-    )}] 开始执行监控任务，国家: ${countries.join(', ')}`,
+    )}] 开始执行监控任务，国家: ${countries.join(', ')}${batchInfo}`,
   );
 
   const startTime = process.hrtime();
   const countryResults = {};
   let totalChecked = 0;
   let totalBroken = 0;
-  const checkTime = new Date().toLocaleString('zh-CN');
+  const checkTime = new Date(); // 使用 Date 对象而不是字符串
 
   try {
     const stats = await Promise.all(
       countries.map((country) =>
-        processCountry(countryResults, country, checkTime),
+        processCountry(countryResults, country, checkTime, batchConfig),
       ),
     );
 

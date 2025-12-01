@@ -14,14 +14,19 @@ const monitorTaskQueue = new Queue('monitor-task-queue', redisUrl, {
     removeOnComplete: { age: 3600 },
     removeOnFail: { age: 86400 },
   },
+  // 限流器：每 200ms 最多处理 1 个任务（相当于 5 rps）
+  limiter: {
+    max: 1,
+    duration: 200,
+  },
 });
 
 monitorTaskQueue.process(async (job) => {
-  const { countries } = job.data || {};
+  const { countries, batchConfig } = job.data || {};
   if (!countries || !countries.length) {
     return;
   }
-  await monitorTaskRunner.runMonitorTask(countries);
+  await monitorTaskRunner.runMonitorTask(countries, batchConfig);
 });
 
 monitorTaskQueue.on('failed', (job, err) => {
@@ -31,11 +36,11 @@ monitorTaskQueue.on('failed', (job, err) => {
   );
 });
 
-function enqueue(countries) {
+function enqueue(countries, batchConfig = null) {
   if (!countries || !countries.length) {
     return;
   }
-  monitorTaskQueue.add({ countries });
+  monitorTaskQueue.add({ countries, batchConfig });
 }
 
 module.exports = {

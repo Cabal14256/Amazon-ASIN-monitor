@@ -162,6 +162,29 @@ class VariantGroup {
    * @param {number} page
    * @param {number} pageSize
    */
+  // 按批次查询变体组（用于分批处理）
+  static async findByCountryBatch(country, batchIndex, totalBatches) {
+    if (totalBatches <= 1) {
+      // 如果只有一批，直接返回所有
+      return this.findByCountryPage(country, 1, 10000);
+    }
+
+    // 使用变体组ID的哈希值来分配批次
+    // 这样可以确保同一个变体组总是被分配到同一批次
+    const sql = `
+      SELECT
+        id,
+        name,
+        country
+      FROM variant_groups
+      WHERE country = ?
+      AND (CRC32(id) % ?) = ?
+      ORDER BY create_time ASC
+    `;
+    const results = await query(sql, [country, totalBatches, batchIndex]);
+    return results;
+  }
+
   static async findByCountryPage(country, page = 1, pageSize = 200) {
     const offset = (Number(page) - 1) * Number(pageSize);
     const sql = `
