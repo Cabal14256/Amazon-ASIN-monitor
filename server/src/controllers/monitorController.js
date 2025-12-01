@@ -205,3 +205,55 @@ exports.getPeakHoursStatistics = async (req, res) => {
     });
   }
 };
+
+// 手动触发监控检查
+exports.triggerManualCheck = async (req, res) => {
+  try {
+    const { countries } = req.body; // 可选：指定要检查的国家数组
+
+    const { triggerManualCheck } = require('../services/monitorTaskRunner');
+
+    console.log(
+      `[手动检查] 收到手动检查请求，国家: ${
+        countries ? countries.join(', ') : '全部'
+      }`,
+    );
+
+    const result = await triggerManualCheck(countries);
+
+    if (result && result.success) {
+      res.json({
+        success: true,
+        data: {
+          message: '检查完成',
+          totalChecked: result.totalChecked,
+          totalBroken: result.totalBroken,
+          totalNormal: result.totalNormal,
+          duration: result.duration,
+          checkTime: result.checkTime,
+          countryResults: result.countryResults,
+          notifyResults: result.notifyResults,
+        },
+        errorCode: 0,
+      });
+    } else {
+      res.status(500).json({
+        success: false,
+        errorMessage: (result && result.error) || '检查失败',
+        errorCode: 500,
+        data: {
+          totalChecked: (result && result.totalChecked) || 0,
+          totalBroken: (result && result.totalBroken) || 0,
+          totalNormal: (result && result.totalNormal) || 0,
+        },
+      });
+    }
+  } catch (error) {
+    console.error('手动触发监控检查错误:', error);
+    res.status(500).json({
+      success: false,
+      errorMessage: error.message || '检查失败',
+      errorCode: 500,
+    });
+  }
+};

@@ -1,6 +1,5 @@
 import services from '@/services/dashboard';
 import { useMessage } from '@/utils/message';
-import { Column, Pie } from '@ant-design/charts';
 import { PageContainer, StatisticCard } from '@ant-design/pro-components';
 import { history } from '@umijs/max';
 import {
@@ -15,6 +14,7 @@ import {
   Timeline,
 } from 'antd';
 import dayjs from 'dayjs';
+import ReactECharts from 'echarts-for-react';
 import React, { useEffect, useState } from 'react';
 import styles from './index.less';
 
@@ -28,6 +28,22 @@ const countryMap: Record<string, string> = {
   FR: '法国',
   IT: '意大利',
   ES: '西班牙',
+};
+
+// 工具函数
+const toNumber = (value: unknown) => {
+  const num = Number(value);
+  return Number.isFinite(num) ? num : 0;
+};
+
+// 颜色映射
+const countryColorMap: Record<string, string> = {
+  异常: '#ff4d4f',
+  正常: '#52c41a',
+};
+
+const pieColorMap: Record<string, string> = {
+  ...countryColorMap,
 };
 
 const HomePage: React.FC = () => {
@@ -76,34 +92,152 @@ const HomePage: React.FC = () => {
   const { overview, realtimeAlerts, distribution, recentActivities } =
     dashboardData;
 
-  // 国家分布图表数据
-  const countryChartData =
-    distribution?.byCountry?.map((item) => ({
-      country: countryMap[item.country || ''] || item.country,
-      type: '正常',
-      value: item.normal || 0,
-    })) || [];
+  // 国家分布柱状图数据（ECharts格式）
+  const countryColumnData = React.useMemo(() => {
+    const data = (distribution?.byCountry || []).map((item) => {
+      const countryLabel = countryMap[item.country || ''] || item.country;
+      const normal = toNumber(item.normal);
+      const broken = toNumber(item.broken);
+      return {
+        country: countryLabel,
+        normal,
+        broken,
+        total: normal + broken,
+      };
+    });
+    return data.filter((item) => item.total > 0);
+  }, [distribution]);
 
-  const countryBrokenData =
-    distribution?.byCountry?.map((item) => ({
-      country: countryMap[item.country || ''] || item.country,
-      type: '异常',
-      value: item.broken || 0,
-    })) || [];
+  // 国家分布柱状图配置（ECharts）
+  const countryBarOptions = React.useMemo(() => {
+    if (!countryColumnData.length) {
+      return {};
+    }
+    const categories = countryColumnData.map((item) => item.country);
+    const series = [
+      {
+        name: '正常',
+        type: 'bar',
+        stack: 'total',
+        emphasis: {
+          focus: 'series',
+        },
+        itemStyle: {
+          color: countryColorMap['正常'] || '#52c41a',
+        },
+        data: countryColumnData.map((item) => item.normal),
+      },
+      {
+        name: '异常',
+        type: 'bar',
+        stack: 'total',
+        emphasis: {
+          focus: 'series',
+        },
+        itemStyle: {
+          color: countryColorMap['异常'] || '#ff4d4f',
+        },
+        data: countryColumnData.map((item) => item.broken),
+      },
+    ];
+    return {
+      tooltip: {
+        trigger: 'axis',
+        axisPointer: {
+          type: 'shadow',
+        },
+        formatter: (params: any) => {
+          const points = Array.isArray(params) ? params : [params];
+          const content = points
+            .map((param: any) => {
+              const value = Number(param.value) || 0;
+              return `
+                <div style="display:flex;justify-content:space-between">
+                  <span>${param.seriesName}</span>
+                  <span>${value}</span>
+                </div>`;
+            })
+            .join('');
+          const axisVal = points[0]?.axisValue ?? '';
+          const item = countryColumnData.find((d) => d.country === axisVal);
+          const total = item ? item.total : 0;
+          return `<div style="margin-bottom:4px;font-weight:600;">${axisVal}（总计：${total}）</div>${content}`;
+        },
+      },
+      legend: {
+        data: ['异常', '正常'],
+        top: 8,
+      },
+      grid: {
+        left: '3%',
+        right: '3%',
+        bottom: '8%',
+        containLabel: true,
+      },
+      xAxis: {
+        type: 'category',
+        data: categories,
+      },
+      yAxis: {
+        type: 'value',
+      },
+      series,
+    };
+  }, [countryColumnData]);
 
-  const countryColumnData = [...countryChartData, ...countryBrokenData];
+  // 状态分布饼图数据（ECharts格式）
+  const statusPieData = React.useMemo(() => {
+    const normal = toNumber(overview?.normalGroups);
+    const broken = toNumber(overview?.brokenGroups);
+    return [
+      {
+        name: '正常',
+        value: normal,
+      },
+      {
+        name: '异常',
+        value: broken,
+      },
+    ].filter((item) => item.value > 0);
+  }, [overview]);
 
-  // 状态分布饼图数据
-  const statusPieData = [
-    {
-      type: '正常',
-      value: overview?.normalGroups || 0,
-    },
-    {
-      type: '异常',
-      value: overview?.brokenGroups || 0,
-    },
-  ];
+  // 状态分布饼图配置（ECharts）
+  const statusPieOptions = React.useMemo(() => {
+    if (!statusPieData.length) {
+      return {};
+    }
+    return {
+      tooltip: {
+        trigger: 'item',
+        formatter: (param: any) => {
+          const value = Number(param.value) || 0;
+          return `${param.name}<br/>${value}`;
+        },
+      },
+      legend: {
+        orient: 'vertical',
+        left: 'right',
+        top: 0,
+        itemHeight: 8,
+      },
+      series: [
+        {
+          name: '状态分布',
+          type: 'pie',
+          radius: ['45%', '70%'],
+          avoidLabelOverlap: false,
+          labelLine: {
+            length: 12,
+            length2: 6,
+          },
+          data: statusPieData,
+          color: statusPieData.map(
+            (item) => pieColorMap[item.name] || '#52c41a',
+          ),
+        },
+      ],
+    };
+  }, [statusPieData]);
 
   return (
     <PageContainer
@@ -297,15 +431,10 @@ const HomePage: React.FC = () => {
                   style={{ marginBottom: 16 }}
                 >
                   {countryColumnData.length > 0 ? (
-                    <Column
-                      data={countryColumnData}
-                      xField="country"
-                      yField="value"
-                      seriesField="type"
-                      isStack
-                      legend={{ position: 'top' }}
-                      color={['#52c41a', '#ff4d4f']}
-                      height={200}
+                    <ReactECharts
+                      option={countryBarOptions}
+                      style={{ height: 200 }}
+                      opts={{ renderer: 'svg' }}
                     />
                   ) : (
                     <Empty
@@ -318,18 +447,11 @@ const HomePage: React.FC = () => {
               </Col>
               <Col span={12}>
                 <Card size="small" title="状态分布">
-                  {statusPieData.some((item) => item.value > 0) ? (
-                    <Pie
-                      data={statusPieData}
-                      angleField="value"
-                      colorField="type"
-                      radius={0.8}
-                      legend={{
-                        position: 'bottom',
-                      }}
-                      interactions={[{ type: 'element-active' }]}
-                      color={['#52c41a', '#ff4d4f']}
-                      height={200}
+                  {statusPieData.length > 0 ? (
+                    <ReactECharts
+                      option={statusPieOptions}
+                      style={{ height: 200 }}
+                      opts={{ renderer: 'svg' }}
                     />
                   ) : (
                     <Empty

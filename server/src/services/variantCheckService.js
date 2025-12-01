@@ -108,7 +108,9 @@ loadHtmlScraperFallbackConfig();
 loadLegacyClientFallbackConfig();
 
 function getVariantCacheKey(asin, country) {
-  return `variant:${country}:${asin}`;
+  // 统一使用大写的 ASIN 作为缓存键，避免大小写不一致导致缓存失效
+  const cleanASIN = asin ? asin.trim().toUpperCase() : asin;
+  return `variant:${country}:${cleanASIN}`;
 }
 
 function getCachedVariantResult(asin, country) {
@@ -127,22 +129,40 @@ function setVariantResultCache(asin, country, result) {
  * @param {string} country - 国家代码
  * @returns {Promise<{hasVariants: boolean, variantCount: number, details: any}>}
  */
-async function checkASINVariants(asin, country) {
+async function checkASINVariants(asin, country, forceRefresh = false) {
   try {
-    const cached = getCachedVariantResult(asin, country);
-    if (cached) {
-      console.log(`[checkASINVariants] 使用缓存结果: ${asin} (${country})`);
-      return cached;
+    // 如果 forceRefresh 为 true，跳过缓存
+    if (!forceRefresh) {
+      const cached = getCachedVariantResult(asin, country);
+      if (cached) {
+        console.log(`[checkASINVariants] 使用缓存结果: ${asin} (${country})`);
+        return cached;
+      }
+    } else {
+      console.log(
+        `[checkASINVariants] 强制刷新，跳过缓存: ${asin} (${country})`,
+      );
+    }
+
+    // ASIN 格式验证
+    if (!asin || typeof asin !== 'string' || asin.trim().length === 0) {
+      throw new Error('ASIN 不能为空');
+    }
+
+    // 清理 ASIN（去除空格，转换为大写）
+    const cleanASIN = asin.trim().toUpperCase();
+
+    // 验证 ASIN 格式（Amazon ASIN 通常是 10 位字符，以 B 开头）
+    if (!/^[A-Z0-9]{10}$/.test(cleanASIN)) {
+      console.warn(
+        `[checkASINVariants] ASIN 格式可能不正确: ${cleanASIN}，但继续尝试调用 API`,
+      );
     }
 
     const marketplaceId = getMarketplaceId(country);
-    const params = {
-      marketplaceIds: [marketplaceId],
-      includedData: ['variations'],
-    };
 
     console.log(
-      `[checkASINVariants] 调用SP-API检查ASIN ${asin}，国家: ${country}，Marketplace ID: ${marketplaceId}`,
+      `[checkASINVariants] 调用SP-API检查ASIN ${cleanASIN}，国家: ${country}，Marketplace ID: ${marketplaceId}`,
     );
 
     // 请求延迟控制（每 N 个请求延迟 M 毫秒）
@@ -166,10 +186,46 @@ async function checkASINVariants(asin, country) {
 
     for (const version of API_VERSIONS) {
       try {
-        const path = `/catalog/${version}/items/${asin}`;
+        const path = `/catalog/${version}/items/${cleanASIN}`;
         apiVersion = version;
+
+        // 为不同版本优化参数格式
+        // 2022-04-01 版本：使用标准参数（避免不必要的参数导致 400 错误）
+        // 2020-12-01 版本：使用兼容的参数
+        let params;
+        if (version === '2022-04-01') {
+          // 2022-04-01 版本：只使用必要的参数，确保参数格式正确
+          // 注意：marketplaceIds 和 includedData 必须是数组
+          // 确保 marketplaceId 不为空
+          if (!marketplaceId) {
+            throw new Error(`无法获取 ${country} 的 Marketplace ID`);
+          }
+          params = {
+            marketplaceIds: [marketplaceId],
+            includedData: ['variations'],
+          };
+        } else {
+          // 2020-12-01 版本：使用兼容的参数
+          if (!marketplaceId) {
+            throw new Error(`无法获取 ${country} 的 Marketplace ID`);
+          }
+          params = {
+            marketplaceIds: [marketplaceId],
+            includedData: ['variations'],
+          };
+        }
+
         console.log(`[checkASINVariants] 尝试API版本: ${apiVersion}`);
-        console.log(`[checkASINVariants] 参数:`, params);
+        console.log(`[checkASINVariants] 请求路径: ${path}`);
+        console.log(
+          `[checkASINVariants] 参数对象:`,
+          JSON.stringify(params, null, 2),
+        );
+        console.log(
+          `[checkASINVariants] Marketplace ID: ${marketplaceId}, 类型: ${typeof marketplaceId}, 长度: ${
+            marketplaceId ? marketplaceId.length : 0
+          }`,
+        );
 
         response = await callSPAPI('GET', path, country, params);
 
@@ -180,24 +236,60 @@ async function checkASINVariants(asin, country) {
         }
       } catch (error) {
         lastError = error;
+        const statusCode =
+          error.statusCode || error.message.match(/\d{3}/)?.[0];
+
         console.log(
           `[checkASINVariants] API版本 ${version} 调用失败:`,
           error.message,
         );
 
-        // 如果是 400 或 404 错误，尝试下一个版本
+        // 记录详细的错误信息
+        if (error.responseData) {
+          try {
+            const errorData =
+              typeof error.responseData === 'string'
+                ? JSON.parse(error.responseData)
+                : error.responseData;
+            console.log(
+              `[checkASINVariants] 错误详情:`,
+              JSON.stringify(errorData, null, 2),
+            );
+          } catch (e) {
+            console.log(
+              `[checkASINVariants] 错误响应数据:`,
+              error.responseData,
+            );
+          }
+        }
+
+        // 如果是 400 错误，可能是参数问题，尝试下一个版本
         if (
-          error.message &&
-          (error.message.includes('400') || error.message.includes('404'))
+          statusCode === 400 ||
+          (error.message && error.message.includes('400'))
         ) {
           console.log(
-            `[checkASINVariants] 版本 ${version} 返回 400/404，尝试下一个版本...`,
+            `[checkASINVariants] 版本 ${version} 返回 400（Bad Request），可能是参数不兼容，尝试下一个版本...`,
+          );
+          continue;
+        }
+
+        // 如果是 404 错误，可能是 ASIN 不存在或版本不支持，尝试下一个版本
+        if (
+          statusCode === 404 ||
+          (error.message && error.message.includes('404'))
+        ) {
+          console.log(
+            `[checkASINVariants] 版本 ${version} 返回 404（Not Found），可能是 ASIN 不存在或版本不支持，尝试下一个版本...`,
           );
           continue;
         }
 
         // 其他错误（如 429、500 等），也尝试下一个版本
-        if (error.message && error.message.includes('429')) {
+        if (
+          statusCode === 429 ||
+          (error.message && error.message.includes('429'))
+        ) {
           console.log(
             `[checkASINVariants] 版本 ${version} 返回 429（限流），尝试下一个版本...`,
           );
@@ -223,9 +315,13 @@ async function checkASINVariants(asin, country) {
       );
       try {
         // 尝试使用最新版本
-        const path = `/catalog/2022-04-01/items/${asin}`;
+        const path = `/catalog/2022-04-01/items/${cleanASIN}`;
         apiVersion = '2022-04-01';
-        response = await callLegacySPAPI('GET', path, country, params);
+        const legacyParams = {
+          marketplaceIds: [marketplaceId],
+          includedData: ['variations'],
+        };
+        response = await callLegacySPAPI('GET', path, country, legacyParams);
 
         if (response) {
           console.log(`[checkASINVariants] 旧客户端调用成功`);
@@ -246,7 +342,7 @@ async function checkASINVariants(asin, country) {
       );
       try {
         const htmlResult = await htmlScraperService.checkASINVariantsByHTML(
-          asin,
+          cleanASIN,
           country,
         );
 
@@ -269,8 +365,8 @@ async function checkASINVariants(asin, country) {
           },
         };
 
-        // 缓存结果
-        setVariantResultCache(asin, country, result);
+        // 缓存结果（使用清理后的 ASIN）
+        setVariantResultCache(cleanASIN, country, result);
 
         console.log(
           `[checkASINVariants] HTML抓取成功: hasVariants=${hasVariants}, variantCount=${variantCount}`,
@@ -445,7 +541,8 @@ async function checkASINVariants(asin, country) {
           relationships: variationRelations,
         },
       };
-      setVariantResultCache(asin, country, resultPayload);
+      // 使用清理后的 ASIN 存储缓存
+      setVariantResultCache(cleanASIN, country, resultPayload);
       return resultPayload;
     }
 
@@ -454,11 +551,12 @@ async function checkASINVariants(asin, country) {
       hasVariants: false,
       variantCount: 0,
       details: {
-        asin,
+        asin: cleanASIN,
         message: '未找到变体信息',
       },
     };
-    setVariantResultCache(asin, country, resultPayload);
+    // 使用清理后的 ASIN 存储缓存
+    setVariantResultCache(cleanASIN, country, resultPayload);
     return resultPayload;
   } catch (error) {
     console.error(`检查ASIN ${asin} 变体失败:`, error.message);
@@ -497,7 +595,7 @@ async function checkASINVariants(asin, country) {
  * @param {string} variantGroupId - 变体组ID
  * @returns {Promise<{isBroken: boolean, brokenASINs: Array, details: any}>}
  */
-async function checkVariantGroup(variantGroupId) {
+async function checkVariantGroup(variantGroupId, forceRefresh = false) {
   try {
     const group = await VariantGroup.findById(variantGroupId);
     if (!group) {
@@ -530,7 +628,11 @@ async function checkVariantGroup(variantGroupId) {
 
         const asin = asins[currentIndex];
         try {
-          const result = await checkASINVariants(asin.asin, asin.country);
+          const result = await checkASINVariants(
+            asin.asin,
+            asin.country,
+            forceRefresh,
+          );
           const hasVariants = result.hasVariants;
 
           checkResults[currentIndex] = {
@@ -625,7 +727,7 @@ async function checkVariantGroup(variantGroupId) {
  * @param {string} asinId - ASIN ID
  * @returns {Promise<{isBroken: boolean, details: any}>}
  */
-async function checkSingleASIN(asinId) {
+async function checkSingleASIN(asinId, forceRefresh = false) {
   let asin = null;
   try {
     asin = await ASIN.findById(asinId);
@@ -633,7 +735,11 @@ async function checkSingleASIN(asinId) {
       throw new Error('ASIN不存在');
     }
 
-    const result = await checkASINVariants(asin.asin, asin.country);
+    const result = await checkASINVariants(
+      asin.asin,
+      asin.country,
+      forceRefresh,
+    );
     const isBroken = !result.hasVariants;
 
     // 更新ASIN状态

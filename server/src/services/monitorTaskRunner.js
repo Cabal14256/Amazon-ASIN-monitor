@@ -127,7 +127,7 @@ async function processCountry(
 
     if (groupsList.length === 0) {
       console.log(`[processCountry] ${country} 没有需要检查的变体组`);
-      return;
+      return { checked: 0, broken: 0 };
     }
 
     console.log(
@@ -225,6 +225,8 @@ async function processCountry(
     // 分批查询模式下不需要分页循环
   } catch (error) {
     console.error(`❌ 处理国家 ${country} 失败:`, error.message);
+    // 即使出错也返回统计信息
+    return { checked, broken };
   }
 
   return { checked, broken };
@@ -232,7 +234,13 @@ async function processCountry(
 
 async function runMonitorTask(countries, batchConfig = null) {
   if (!countries || countries.length === 0) {
-    return;
+    return {
+      success: false,
+      error: '没有指定要检查的国家',
+      totalChecked: 0,
+      totalBroken: 0,
+      countryResults: {},
+    };
   }
 
   if (isMonitorTaskRunning) {
@@ -244,7 +252,13 @@ async function runMonitorTask(countries, batchConfig = null) {
         ', ',
       )}`,
     );
-    return;
+    return {
+      success: false,
+      error: '上一个监控任务仍在运行',
+      totalChecked: 0,
+      totalBroken: 0,
+      countryResults: {},
+    };
   }
 
   isMonitorTaskRunning = true;
@@ -283,11 +297,36 @@ async function runMonitorTask(countries, batchConfig = null) {
       `📨 通知发送完成: 总计 ${notifyResults.total}, 成功 ${notifyResults.success}, 失败 ${notifyResults.failed}, 跳过 ${notifyResults.skipped}`,
     );
 
+    const [seconds, nanoseconds] = process.hrtime(startTime);
+    const duration = seconds + nanoseconds / 1e9;
+
     console.log(
-      `\n✅ 监控任务完成: 检查 ${totalChecked} 个变体组, 异常 ${totalBroken} 个\n`,
+      `\n✅ 监控任务完成: 检查 ${totalChecked} 个变体组, 异常 ${totalBroken} 个, 耗时 ${duration.toFixed(
+        2,
+      )}秒\n`,
     );
+
+    return {
+      success: true,
+      totalChecked,
+      totalBroken,
+      totalNormal: totalChecked - totalBroken,
+      countryResults,
+      notifyResults,
+      duration,
+      checkTime: checkTime.toISOString(),
+    };
   } catch (error) {
     console.error(`❌ 监控任务执行失败:`, error);
+    return {
+      success: false,
+      error: error.message || '监控任务执行失败',
+      totalChecked,
+      totalBroken,
+      totalNormal: totalChecked - totalBroken,
+      countryResults,
+      duration: 0,
+    };
   } finally {
     isMonitorTaskRunning = false;
     const [seconds, nanoseconds] = process.hrtime(startTime);
@@ -305,10 +344,10 @@ async function runMonitorTask(countries, batchConfig = null) {
 
 async function triggerManualCheck(countries = null) {
   if (countries && Array.isArray(countries)) {
-    await runMonitorTask(countries);
+    return await runMonitorTask(countries);
   } else {
     const allCountries = Object.keys(REGION_MAP);
-    await runMonitorTask(allCountries);
+    return await runMonitorTask(allCountries);
   }
 }
 

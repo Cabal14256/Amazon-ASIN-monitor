@@ -24,4 +24,7 @@ router.get('/monitor-history/statistics', monitorController.getStatistics);
 router.get('/monitor-history/:id', monitorController.getMonitorHistoryById);
 router.get('/monitor-history', monitorController.getMonitorHistory);
 
+// 手动触发监控检查
+router.post('/monitor/trigger', monitorController.triggerManualCheck);
+
 module.exports = router;

@@ -366,10 +366,18 @@ const ASINManagement: React.FC<unknown> = () => {
                 const hide = message.loading('正在检查...', 0);
                 try {
                   if (isGroup) {
-                    await checkVariantGroup({ groupId: record.id || '' });
+                    // 立即检查时强制刷新，不使用缓存
+                    await checkVariantGroup({
+                      groupId: record.id || '',
+                      forceRefresh: true,
+                    });
                     message.success('检查完成');
                   } else {
-                    await checkASIN({ asinId: record.id || '' });
+                    // 立即检查时强制刷新，不使用缓存
+                    await checkASIN({
+                      asinId: record.id || '',
+                      forceRefresh: true,
+                    });
                     message.success('检查完成');
                   }
                   // 刷新表格

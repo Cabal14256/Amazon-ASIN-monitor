@@ -441,16 +441,27 @@ async function callSPAPIInternal(
   } else if (params && Object.keys(params).length > 0) {
     const queryParts = [];
     for (const [key, value] of Object.entries(params)) {
-      if (Array.isArray(value)) {
-        value.forEach((v) => {
-          queryParts.push(`${key}=${encodeURIComponent(v)}`);
-        });
-      } else {
-        queryParts.push(`${key}=${encodeURIComponent(value)}`);
+      if (Array.isArray(value) && value.length > 0) {
+        // SP-API Catalog Items API 要求数组参数使用逗号分隔的格式
+        // 根据官方文档：marketplaceIds 和 includedData 应该使用逗号分隔
+        // 例如：marketplaceIds=A1PA6795UKMFR9&includedData=variations
+        const validValues = value.filter(
+          (v) => v !== null && v !== undefined && v !== '',
+        );
+        if (validValues.length > 0) {
+          const arrayValue = validValues
+            .map((v) => encodeURIComponent(String(v)))
+            .join(',');
+          queryParts.push(`${key}=${arrayValue}`);
+        }
+      } else if (value !== null && value !== undefined && value !== '') {
+        queryParts.push(`${key}=${encodeURIComponent(String(value))}`);
       }
     }
     const queryString = queryParts.join('&');
     url = `${endpoint}${path}${queryString ? '?' + queryString : ''}`;
+    console.log(`[callSPAPI] 构建的查询字符串: ${queryString}`);
+    console.log(`[callSPAPI] 完整请求URL: ${url}`);
   } else {
     url = `${endpoint}${path}`;
   }
