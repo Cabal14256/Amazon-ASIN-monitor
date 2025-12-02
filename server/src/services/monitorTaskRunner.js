@@ -53,6 +53,7 @@ async function processCountry(
     brokenGroups: 0,
     brokenGroupNames: [],
     brokenASINs: [],
+    brokenByType: { SP_API_ERROR: 0, NO_VARIANTS: 0 }, // 按类型统计异常
     checkTime,
   });
 
@@ -166,10 +167,21 @@ async function processCountry(
         });
 
         const brokenASINs = result?.brokenASINs || [];
+        const brokenByType = result?.brokenByType || {
+          SP_API_ERROR: 0,
+          NO_VARIANTS: 0,
+        };
+
         if (result?.isBroken) {
           broken++;
           countryResult.brokenGroups++;
           countryResult.brokenGroupNames.push(group.name);
+
+          // 累加错误类型统计
+          countryResult.brokenByType.SP_API_ERROR +=
+            brokenByType.SP_API_ERROR || 0;
+          countryResult.brokenByType.NO_VARIANTS +=
+            brokenByType.NO_VARIANTS || 0;
         }
 
         const historyEntries = [
@@ -189,11 +201,23 @@ async function processCountry(
             await ASIN.updateLastCheckTime(asinInfo.id);
 
             if (asinInfo.feishuNotifyEnabled !== 0 && asinInfo.isBroken === 1) {
+              // 从 brokenASINs 中查找对应的错误类型
+              const brokenASINItem = brokenASINs.find(
+                (item) =>
+                  (typeof item === 'string' ? item : item.asin) ===
+                  asinInfo.asin,
+              );
+              const errorType =
+                brokenASINItem && typeof brokenASINItem !== 'string'
+                  ? brokenASINItem.errorType
+                  : 'NO_VARIANTS';
+
               countryResult.brokenASINs.push({
                 asin: asinInfo.asin,
                 name: asinInfo.name || '',
                 groupName: group.name,
                 brand: asinInfo.brand || '',
+                errorType, // 添加错误类型
               });
             }
 

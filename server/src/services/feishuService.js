@@ -149,6 +149,7 @@ function buildFeishuCard(data) {
     brokenGroups = 0,
     brokenGroupNames = [],
     brokenASINs = [],
+    brokenByType = { SP_API_ERROR: 0, NO_VARIANTS: 0 },
     checkTime,
   } = data;
 
@@ -166,9 +167,27 @@ function buildFeishuCard(data) {
   const countryName = data.countryDisplay || countryMap[country] || country;
   const timeStr = checkTime || new Date().toLocaleString('zh-CN');
 
+  // 统计异常类型
+  const spApiErrorCount = brokenByType?.SP_API_ERROR || 0;
+  const noVariantsCount = brokenByType?.NO_VARIANTS || 0;
+  const totalBrokenASINs = brokenASINs.length;
+
   // 构建通知内容主体
   let contentText = `【${timeStr}】【${countryName}】\n\n`;
-  contentText += `已检查分组数量：${totalGroups}，异常分组数量：${brokenGroups}，异常ASIN数量：${brokenASINs.length}\n\n`;
+  contentText += `已检查分组数量：${totalGroups}，异常分组数量：${brokenGroups}，异常ASIN数量：${totalBrokenASINs}\n\n`;
+
+  // 显示异常分类统计
+  if (totalBrokenASINs > 0) {
+    contentText += `异常分类统计：\n`;
+    if (spApiErrorCount > 0) {
+      contentText += `  ❌ SP-API错误：${spApiErrorCount} 个\n`;
+    }
+    if (noVariantsCount > 0) {
+      contentText += `  ⚠️ 无父变体ASIN：${noVariantsCount} 个\n`;
+    }
+    contentText += `\n`;
+  }
+
   contentText += `${statusText}\n`;
 
   // 如果有异常，按变体组分组显示异常ASIN

@@ -442,17 +442,17 @@ async function callSPAPIInternal(
     const queryParts = [];
     for (const [key, value] of Object.entries(params)) {
       if (Array.isArray(value) && value.length > 0) {
-        // SP-API Catalog Items API 要求数组参数使用逗号分隔的格式
-        // 根据官方文档：marketplaceIds 和 includedData 应该使用逗号分隔
+        // SP-API Catalog Items API 要求数组参数使用重复键的格式（标准 REST API 格式）
         // 例如：marketplaceIds=A1PA6795UKMFR9&includedData=variations
+        // 对于数组，每个值作为单独的键值对
         const validValues = value.filter(
           (v) => v !== null && v !== undefined && v !== '',
         );
         if (validValues.length > 0) {
-          const arrayValue = validValues
-            .map((v) => encodeURIComponent(String(v)))
-            .join(',');
-          queryParts.push(`${key}=${arrayValue}`);
+          // 使用重复键格式：key=value1&key=value2
+          validValues.forEach((v) => {
+            queryParts.push(`${key}=${encodeURIComponent(String(v))}`);
+          });
         }
       } else if (value !== null && value !== undefined && value !== '') {
         queryParts.push(`${key}=${encodeURIComponent(String(value))}`);
@@ -460,6 +460,7 @@ async function callSPAPIInternal(
     }
     const queryString = queryParts.join('&');
     url = `${endpoint}${path}${queryString ? '?' + queryString : ''}`;
+    console.log(`[callSPAPI] 参数对象:`, JSON.stringify(params, null, 2));
     console.log(`[callSPAPI] 构建的查询字符串: ${queryString}`);
     console.log(`[callSPAPI] 完整请求URL: ${url}`);
   } else {

@@ -127,7 +127,8 @@ function setVariantResultCache(asin, country, result) {
  * 检查单个ASIN的变体关系
  * @param {string} asin - ASIN编码
  * @param {string} country - 国家代码
- * @returns {Promise<{hasVariants: boolean, variantCount: number, details: any}>}
+ * @returns {Promise<{hasVariants: boolean, variantCount: number, details: any, errorType?: string}>}
+ * errorType: 'SP_API_ERROR' - SP-API调用错误, 'NO_VARIANTS' - ASIN无变体（正常情况）
  */
 async function checkASINVariants(asin, country, forceRefresh = false) {
   try {
@@ -527,6 +528,8 @@ async function checkASINVariants(asin, country, forceRefresh = false) {
       const resultPayload = {
         hasVariants: finalHasVariants,
         variantCount,
+        // 如果有变体，不需要 errorType；如果没有变体，标记为 NO_VARIANTS
+        errorType: finalHasVariants ? undefined : 'NO_VARIANTS',
         details: {
           asin: item.asin,
           title:
@@ -546,10 +549,11 @@ async function checkASINVariants(asin, country, forceRefresh = false) {
       return resultPayload;
     }
 
-    // 如果没有找到变体，返回无变体
+    // 如果没有找到变体，返回无变体（这是正常情况，不是错误）
     const resultPayload = {
       hasVariants: false,
       variantCount: 0,
+      errorType: 'NO_VARIANTS', // 标识为无变体（正常情况）
       details: {
         asin: cleanASIN,
         message: '未找到变体信息',
@@ -561,19 +565,22 @@ async function checkASINVariants(asin, country, forceRefresh = false) {
   } catch (error) {
     console.error(`检查ASIN ${asin} 变体失败:`, error.message);
 
-    // 如果是404错误，说明ASIN不存在或无法访问
+    // 如果是404错误，说明ASIN不存在或无法访问（可能是ASIN不存在，也可能是SP-API版本不支持）
+    // 这种情况下，我们标记为 SP-API 错误，因为可能是API调用问题
     if (error.message.includes('404') || error.message.includes('NotFound')) {
       return {
         hasVariants: false,
         variantCount: 0,
+        errorType: 'SP_API_ERROR', // 标记为SP-API错误
         details: {
           asin,
-          error: 'ASIN不存在或无法访问',
+          error: 'ASIN不存在或无法访问（可能是SP-API调用失败）',
+          errorMessage: error.message,
         },
       };
     }
 
-    // 如果是认证错误，抛出异常
+    // 如果是认证错误，抛出异常（这是配置问题，不是ASIN问题）
     if (
       error.message.includes('401') ||
       error.message.includes('Unauthorized')
@@ -581,12 +588,44 @@ async function checkASINVariants(asin, country, forceRefresh = false) {
       throw new Error('SP-API认证失败，请检查配置');
     }
 
-    // 如果是权限错误
+    // 如果是权限错误，抛出异常（这是配置问题，不是ASIN问题）
     if (error.message.includes('403') || error.message.includes('Forbidden')) {
       throw new Error('SP-API权限不足，请检查IAM角色配置');
     }
 
-    throw error;
+    // 其他SP-API错误（400, 429, 500等），标记为SP-API错误
+    if (
+      error.message.includes('SP-API') ||
+      error.message.includes('400') ||
+      error.message.includes('429') ||
+      error.message.includes('500') ||
+      error.message.includes('503') ||
+      error.statusCode
+    ) {
+      return {
+        hasVariants: false,
+        variantCount: 0,
+        errorType: 'SP_API_ERROR', // 标记为SP-API错误
+        details: {
+          asin,
+          error: 'SP-API调用失败',
+          errorMessage: error.message,
+          statusCode: error.statusCode,
+        },
+      };
+    }
+
+    // 未知错误，也标记为SP-API错误
+    return {
+      hasVariants: false,
+      variantCount: 0,
+      errorType: 'SP_API_ERROR',
+      details: {
+        asin,
+        error: '检查失败',
+        errorMessage: error.message,
+      },
+    };
   }
 }
 
@@ -608,6 +647,7 @@ async function checkVariantGroup(variantGroupId, forceRefresh = false) {
       return {
         isBroken: true,
         brokenASINs: [],
+        brokenByType: { SP_API_ERROR: 0, NO_VARIANTS: 0 },
         details: {
           message: '变体组中没有ASIN',
         },
@@ -634,15 +674,21 @@ async function checkVariantGroup(variantGroupId, forceRefresh = false) {
             forceRefresh,
           );
           const hasVariants = result.hasVariants;
+          const errorType =
+            result.errorType || (hasVariants ? undefined : 'NO_VARIANTS');
 
           checkResults[currentIndex] = {
             asin: asin.asin,
             hasVariants,
             variantCount: result.variantCount,
+            errorType, // 记录错误类型
           };
 
           if (!hasVariants) {
-            brokenASINs.push(asin.asin);
+            brokenASINs.push({
+              asin: asin.asin,
+              errorType, // 记录错误类型
+            });
           }
 
           await ASIN.updateVariantStatus(asin.id, !hasVariants);
@@ -651,8 +697,12 @@ async function checkVariantGroup(variantGroupId, forceRefresh = false) {
           checkResults[currentIndex] = {
             asin: asin.asin,
             error: error.message,
+            errorType: 'SP_API_ERROR', // 异常情况标记为SP-API错误
           };
-          brokenASINs.push(asin.asin);
+          brokenASINs.push({
+            asin: asin.asin,
+            errorType: 'SP_API_ERROR', // 异常情况标记为SP-API错误
+          });
         }
       }
     });
@@ -707,9 +757,27 @@ async function checkVariantGroup(variantGroupId, forceRefresh = false) {
       await MonitorHistory.bulkCreate(asinHistoryEntries);
     }
 
+    // 统计不同类型的异常
+    const brokenByType = {
+      SP_API_ERROR: 0,
+      NO_VARIANTS: 0,
+    };
+    brokenASINs.forEach((item) => {
+      const errorType =
+        typeof item === 'string'
+          ? 'NO_VARIANTS'
+          : item.errorType || 'NO_VARIANTS';
+      brokenByType[errorType] = (brokenByType[errorType] || 0) + 1;
+    });
+
     return {
       isBroken,
-      brokenASINs,
+      brokenASINs: brokenASINs.map((item) =>
+        typeof item === 'string'
+          ? { asin: item, errorType: 'NO_VARIANTS' }
+          : item,
+      ),
+      brokenByType, // 按类型统计的异常数量
       details: {
         totalASINs: asins.length,
         brokenCount: brokenASINs.length,
