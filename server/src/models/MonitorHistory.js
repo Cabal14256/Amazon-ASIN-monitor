@@ -280,35 +280,66 @@ class MonitorHistory {
       dateFormat = 'DATE_FORMAT(check_time, "%Y-%m-%d")';
     }
 
-    let sql = `
-      SELECT 
-        ${dateFormat} as time_period,
-        COUNT(*) as total_checks,
-        SUM(CASE WHEN is_broken = 1 THEN 1 ELSE 0 END) as broken_count,
-        SUM(CASE WHEN is_broken = 0 THEN 1 ELSE 0 END) as normal_count
-      FROM monitor_history
-      WHERE 1=1
-    `;
+    // 构建WHERE条件和参数
+    let whereClause = 'WHERE 1=1';
     const conditions = [];
 
     if (country) {
-      sql += ` AND country = ?`;
+      whereClause += ` AND country = ?`;
       conditions.push(country);
     }
 
     if (startTime) {
-      sql += ` AND check_time >= ?`;
+      whereClause += ` AND check_time >= ?`;
       conditions.push(startTime);
     }
 
     if (endTime) {
-      sql += ` AND check_time <= ?`;
+      whereClause += ` AND check_time <= ?`;
       conditions.push(endTime);
     }
 
-    sql += ` GROUP BY ${dateFormat} ORDER BY time_period ASC`;
+    // 由于两个子查询都需要相同的参数，需要将参数数组重复两次
+    const allConditions = [...conditions, ...conditions];
 
-    const list = await query(sql, conditions);
+    // 使用子查询计算ASIN异常占比
+    let sql = `
+      SELECT 
+        t.time_period,
+        t.total_checks,
+        t.broken_count,
+        t.normal_count,
+        COALESCE(asin_stats.total_asins, 0) as total_asins,
+        COALESCE(asin_stats.broken_asins, 0) as broken_asins,
+        CASE 
+          WHEN COALESCE(asin_stats.total_asins, 0) > 0 
+          THEN (COALESCE(asin_stats.broken_asins, 0) / COALESCE(asin_stats.total_asins, 1)) * 100
+          ELSE 0 
+        END as asin_broken_rate
+      FROM (
+        SELECT 
+          ${dateFormat} as time_period,
+          COUNT(*) as total_checks,
+          SUM(CASE WHEN is_broken = 1 THEN 1 ELSE 0 END) as broken_count,
+          SUM(CASE WHEN is_broken = 0 THEN 1 ELSE 0 END) as normal_count
+        FROM monitor_history
+        ${whereClause}
+        GROUP BY ${dateFormat}
+      ) t
+      LEFT JOIN (
+        SELECT 
+          ${dateFormat} as time_period,
+          COUNT(DISTINCT asin_id) as total_asins,
+          COUNT(DISTINCT CASE WHEN is_broken = 1 THEN asin_id END) as broken_asins
+        FROM monitor_history
+        ${whereClause}
+        AND asin_id IS NOT NULL
+        GROUP BY ${dateFormat}
+      ) asin_stats ON t.time_period = asin_stats.time_period
+      ORDER BY t.time_period ASC
+    `;
+
+    const list = await query(sql, allConditions);
     return list;
   }
 

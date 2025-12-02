@@ -197,10 +197,29 @@ async function processCountry(
 
         const fullGroup = await VariantGroup.findById(group.id);
         if (fullGroup && Array.isArray(fullGroup.children)) {
+          // 检查变体组的通知开关（默认为1，即开启）
+          const groupNotifyEnabled =
+            fullGroup.feishuNotifyEnabled !== null &&
+            fullGroup.feishuNotifyEnabled !== undefined
+              ? fullGroup.feishuNotifyEnabled !== 0
+              : true; // 默认为开启
+
           for (const asinInfo of fullGroup.children) {
             await ASIN.updateLastCheckTime(asinInfo.id);
 
-            if (asinInfo.feishuNotifyEnabled !== 0 && asinInfo.isBroken === 1) {
+            // 同时检查变体组和ASIN的通知开关
+            // 只有当两者都开启时，才发送通知
+            const asinNotifyEnabled =
+              asinInfo.feishuNotifyEnabled !== null &&
+              asinInfo.feishuNotifyEnabled !== undefined
+                ? asinInfo.feishuNotifyEnabled !== 0
+                : true; // 默认为开启
+
+            if (
+              groupNotifyEnabled &&
+              asinNotifyEnabled &&
+              asinInfo.isBroken === 1
+            ) {
               // 从 brokenASINs 中查找对应的错误类型
               const brokenASINItem = brokenASINs.find(
                 (item) =>
@@ -315,6 +334,20 @@ async function runMonitorTask(countries, batchConfig = null) {
       totalBroken += broken;
     });
 
+    // 汇总所有国家的异常类型统计
+    const totalBrokenByType = {
+      SP_API_ERROR: 0,
+      NO_VARIANTS: 0,
+    };
+    Object.values(countryResults).forEach((countryResult) => {
+      if (countryResult.brokenByType) {
+        totalBrokenByType.SP_API_ERROR +=
+          countryResult.brokenByType.SP_API_ERROR || 0;
+        totalBrokenByType.NO_VARIANTS +=
+          countryResult.brokenByType.NO_VARIANTS || 0;
+      }
+    });
+
     console.log(`\n📨 开始发送飞书通知...`);
     const notifyResults = await sendBatchNotifications(countryResults);
     console.log(
@@ -324,8 +357,20 @@ async function runMonitorTask(countries, batchConfig = null) {
     const [seconds, nanoseconds] = process.hrtime(startTime);
     const duration = seconds + nanoseconds / 1e9;
 
+    // 构建异常分类信息
+    const errorTypeInfo = [];
+    if (totalBrokenByType.SP_API_ERROR > 0) {
+      errorTypeInfo.push(`SP-API错误: ${totalBrokenByType.SP_API_ERROR} 个`);
+    }
+    if (totalBrokenByType.NO_VARIANTS > 0) {
+      errorTypeInfo.push(`无父变体ASIN: ${totalBrokenByType.NO_VARIANTS} 个`);
+    }
+
+    const errorTypeText =
+      errorTypeInfo.length > 0 ? ` (${errorTypeInfo.join(', ')})` : '';
+
     console.log(
-      `\n✅ 监控任务完成: 检查 ${totalChecked} 个变体组, 异常 ${totalBroken} 个, 耗时 ${duration.toFixed(
+      `\n✅ 监控任务完成: 检查 ${totalChecked} 个变体组, 异常 ${totalBroken} 个${errorTypeText}, 耗时 ${duration.toFixed(
         2,
       )}秒\n`,
     );

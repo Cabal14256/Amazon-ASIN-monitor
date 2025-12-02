@@ -44,6 +44,10 @@ router.get('/variant-groups/:groupId', asinController.getVariantGroupById);
 router.post('/variant-groups', asinController.createVariantGroup);
 router.put('/variant-groups/:groupId', asinController.updateVariantGroup);
 router.delete('/variant-groups/:groupId', asinController.deleteVariantGroup);
+router.put(
+  '/variant-groups/:groupId/feishu-notify',
+  asinController.updateVariantGroupFeishuNotify,
+);
 
 // ASIN路由
 router.post('/asins', asinController.createASIN);

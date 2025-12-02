@@ -1,5 +1,6 @@
 const { query } = require('../config/database');
 const { v4: uuidv4 } = require('uuid');
+const VariantGroup = require('./VariantGroup');
 
 class ASIN {
   // 查询所有ASIN
@@ -108,6 +109,12 @@ class ASIN {
         variantGroupId,
       ],
     );
+
+    // 更新变体组的更新时间（ASIN变动）
+    if (variantGroupId) {
+      await VariantGroup.updateTimeOnASINChange(variantGroupId);
+    }
+
     return this.findById(id);
   }
 
@@ -123,16 +130,42 @@ class ASIN {
 
   // 移动到其他变体组
   static async moveToGroup(asinId, targetGroupId) {
+    // 先获取当前ASIN的变体组ID（源变体组）
+    const asin = await this.findById(asinId);
+    if (!asin) {
+      throw new Error('ASIN不存在');
+    }
+    const sourceGroupId = asin.variantGroupId;
+
     await query(
       `UPDATE asins SET variant_group_id = ?, update_time = NOW() WHERE id = ?`,
       [targetGroupId, asinId],
     );
+
+    // 更新源变体组和目标变体组的更新时间（ASIN变动）
+    if (sourceGroupId) {
+      await VariantGroup.updateTimeOnASINChange(sourceGroupId);
+    }
+    if (targetGroupId && targetGroupId !== sourceGroupId) {
+      await VariantGroup.updateTimeOnASINChange(targetGroupId);
+    }
+
     return this.findById(asinId);
   }
 
   // 删除ASIN
   static async delete(id) {
+    // 先获取ASIN的变体组ID，以便更新变体组的更新时间
+    const asin = await this.findById(id);
+    const variantGroupId = asin?.variantGroupId;
+
     await query(`DELETE FROM asins WHERE id = ?`, [id]);
+
+    // 更新变体组的更新时间（ASIN变动）
+    if (variantGroupId) {
+      await VariantGroup.updateTimeOnASINChange(variantGroupId);
+    }
+
     return true;
   }
 

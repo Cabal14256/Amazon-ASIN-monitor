@@ -11,17 +11,20 @@ import {
 import { Access, history, useAccess } from '@umijs/max';
 import type { MenuProps } from 'antd';
 import { Button, Dropdown, Space, Switch, Tag } from 'antd';
+import dayjs from 'dayjs';
 import React, { useRef, useState } from 'react';
 import ASINForm from './components/ASINForm';
 import ExcelImportModal from './components/ExcelImportModal';
 import MoveASINModal from './components/MoveASINModal';
 import VariantGroupForm from './components/VariantGroupForm';
+import './index.less';
 
 const {
   queryVariantGroupList,
   deleteVariantGroup,
   deleteASIN,
   updateASINFeishuNotify,
+  updateVariantGroupFeishuNotify,
 } = services.ASINController;
 const { checkVariantGroup, checkASIN } =
   variantCheckServices.VariantCheckController;
@@ -231,30 +234,42 @@ const ASINManagement: React.FC<unknown> = () => {
       dataIndex: 'site',
       width: 150,
       hideInSearch: true,
-      render: (text: string) => text || '-',
+      render: (_: any, record: API.VariantGroup | API.ASINInfo) => {
+        const text = record.site;
+        return text || '-';
+      },
     },
     {
       title: '品牌',
       dataIndex: 'brand',
       width: 150,
       hideInSearch: true,
-      render: (text: string) => text || '-',
+      render: (_: any, record: API.VariantGroup | API.ASINInfo) => {
+        const text = record.brand;
+        return text || '-';
+      },
     },
     {
       title: 'ASIN类型',
-      dataIndex: 'asinType',
+      // 不设置 dataIndex，避免 ProTable 的默认值处理
       width: 120,
-      valueType: 'select' as const,
-      valueEnum: {
-        MAIN_LINK: { text: '主链', status: 'Success' },
-        SUB_REVIEW: { text: '副评', status: 'Default' },
-      },
       hideInSearch: true,
       render: (_: any, record: API.VariantGroup | API.ASINInfo) => {
-        // 变体组不显示ASIN类型
-        if ((record as API.VariantGroup).parentId === undefined) {
-          return null;
+        // 变体组不显示ASIN类型（与ASIN列判断逻辑一致）
+        // 判断方式：没有asin字段，或者parentId为undefined，或者有children属性
+        const hasAsin = !!(record as API.ASINInfo).asin;
+        const parentId = (record as API.VariantGroup).parentId;
+        const hasChildren = Array.isArray(
+          (record as API.VariantGroup).children,
+        );
+        const isGroup = !hasAsin || parentId === undefined || hasChildren;
+
+        if (isGroup) {
+          // 对于变体组，返回空字符串（与ASIN列保持一致）
+          return '';
         }
+
+        // 对于ASIN，显示ASIN类型
         const asinType = (record as API.ASINInfo).asinType;
         if (asinType === 'MAIN_LINK') {
           return <Tag color="green">主链</Tag>;
@@ -268,6 +283,7 @@ const ASINManagement: React.FC<unknown> = () => {
             </Tag>
           );
         }
+        // 如果ASIN没有类型，显示"-"
         return '-';
       },
     },
@@ -303,12 +319,13 @@ const ASINManagement: React.FC<unknown> = () => {
       valueType: 'dateTime',
       hideInSearch: true,
       render: (_: any, record: API.VariantGroup | API.ASINInfo) => {
-        // 变体组不显示监控更新时间
-        if ((record as API.VariantGroup).parentId === undefined) {
-          return null;
-        }
-        const lastCheckTime = (record as API.ASINInfo).lastCheckTime;
-        return lastCheckTime || '-';
+        const isGroup = (record as API.VariantGroup).parentId === undefined;
+        const lastCheckTime = isGroup
+          ? (record as API.VariantGroup).lastCheckTime
+          : (record as API.ASINInfo).lastCheckTime;
+        // 使用 dayjs 格式化，确保时区与更新时间一致
+        if (!lastCheckTime) return '-';
+        return dayjs(lastCheckTime).format('YYYY-MM-DD HH:mm:ss');
       },
     },
     {
@@ -317,21 +334,28 @@ const ASINManagement: React.FC<unknown> = () => {
       width: 120,
       hideInSearch: true,
       render: (_: any, record: API.VariantGroup | API.ASINInfo) => {
-        // 变体组不显示飞书通知开关
-        if ((record as API.VariantGroup).parentId === undefined) {
-          return null;
-        }
-        const asin = record as API.ASINInfo;
-        const enabled = asin.feishuNotifyEnabled !== 0; // 默认为1（开启）
+        const isGroup = (record as API.VariantGroup).parentId === undefined;
+        const enabled = isGroup
+          ? (record as API.VariantGroup).feishuNotifyEnabled !== 0
+          : (record as API.ASINInfo).feishuNotifyEnabled !== 0;
         return (
           <Switch
             checked={enabled}
             onChange={async (checked) => {
               try {
-                await updateASINFeishuNotify(
-                  { asinId: asin.id },
-                  { enabled: checked },
-                );
+                if (isGroup) {
+                  const group = record as API.VariantGroup;
+                  await updateVariantGroupFeishuNotify(
+                    { groupId: group.id },
+                    { enabled: checked },
+                  );
+                } else {
+                  const asin = record as API.ASINInfo;
+                  await updateASINFeishuNotify(
+                    { asinId: asin.id },
+                    { enabled: checked },
+                  );
+                }
                 message.success(checked ? '已开启飞书通知' : '已关闭飞书通知');
                 if (actionRef.current) {
                   await actionRef.current.reload();
@@ -443,6 +467,22 @@ const ASINManagement: React.FC<unknown> = () => {
         rowKey="id"
         search={{
           labelWidth: 120,
+        }}
+        rowClassName={(record) => {
+          // 根据 parentId 判断是变体组还是 ASIN
+          const isGroup = (record as API.VariantGroup).parentId === undefined;
+          // 变体组使用浅蓝色背景，ASIN 使用浅灰色背景
+          return isGroup ? 'variant-group-row' : 'asin-row';
+        }}
+        onRow={(record) => {
+          // 使用内联样式作为备用方案
+          const isGroup = (record as API.VariantGroup).parentId === undefined;
+          return {
+            style: {
+              backgroundColor: isGroup ? 'transparent' : '#fffef5',
+            },
+            className: isGroup ? 'variant-group-row' : 'asin-row',
+          };
         }}
         toolBarRender={() => [
           <Access key="new-group" accessible={access.canWriteASIN}>

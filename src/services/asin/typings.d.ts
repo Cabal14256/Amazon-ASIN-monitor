@@ -67,6 +67,10 @@ declare namespace API {
     createTime?: string;
     /** 更新时间 */
     updateTime?: string;
+    /** 监控更新时间（上一次检查的时间） */
+    lastCheckTime?: string;
+    /** 飞书通知开关：0-关闭，1-开启 */
+    feishuNotifyEnabled?: number;
   }
 
   /** 分页信息 */
@@ -196,6 +200,12 @@ declare namespace API {
     broken_count?: number;
     /** 正常次数 */
     normal_count?: number;
+    /** 总ASIN数 */
+    total_asins?: number;
+    /** 异常ASIN数 */
+    broken_asins?: number;
+    /** ASIN异常占比（百分比） */
+    asin_broken_rate?: number;
   }
 
   interface Result_TimeStatistics_ {

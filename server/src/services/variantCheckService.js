@@ -715,6 +715,9 @@ async function checkVariantGroup(variantGroupId, forceRefresh = false) {
     // 更新变体组状态
     await VariantGroup.updateVariantStatus(variantGroupId, isBroken);
 
+    // 更新变体组的监控更新时间
+    await VariantGroup.updateLastCheckTime(variantGroupId);
+
     // 重新查询变体组状态确保准确性
     const updatedGroup = await VariantGroup.findById(variantGroupId);
     if (updatedGroup) {

@@ -2,7 +2,17 @@ import services from '@/services/asin';
 import { useMessage } from '@/utils/message';
 import { getPeakHours } from '@/utils/peakHours';
 import { PageContainer, StatisticCard } from '@ant-design/pro-components';
-import { Button, Card, Col, DatePicker, Radio, Row, Select, Space } from 'antd';
+import {
+  Alert,
+  Button,
+  Card,
+  Col,
+  DatePicker,
+  Radio,
+  Row,
+  Select,
+  Space,
+} from 'antd';
 import dayjs, { Dayjs } from 'dayjs';
 import ReactECharts from 'echarts-for-react';
 import React, { useEffect, useMemo, useState } from 'react';
@@ -205,6 +215,11 @@ const AnalyticsPageContent: React.FC<unknown> = () => {
       const brokenCount = toNumber(item.broken_count);
       const normalCount = toNumber(item.normal_count);
       const totalCount = toNumber(item.total_checks);
+      // ASIN异常占比（始终为百分比）
+      const asinBrokenRate = toNumber((item as any).asin_broken_rate || 0);
+      const totalAsins = toNumber((item as any).total_asins || 0);
+      const brokenAsins = toNumber((item as any).broken_asins || 0);
+
       const rows = [
         {
           time: parsedTime,
@@ -224,18 +239,39 @@ const AnalyticsPageContent: React.FC<unknown> = () => {
           value: totalCount * multiplier,
           rawValue: totalCount,
         },
+        {
+          time: parsedTime,
+          type: 'ASIN异常占比',
+          value: asinBrokenRate, // ASIN异常占比始终显示为百分比
+          rawValue: asinBrokenRate,
+          isAsinRate: true, // 标记这是ASIN异常占比，需要特殊处理
+          totalAsins,
+          brokenAsins,
+        },
       ];
       return rows
         .filter((row) => Number.isFinite(row.value))
-        .map((row) => attachLabelValue(row, valueMode));
+        .map((row) => {
+          if ((row as any).isAsinRate) {
+            // ASIN异常占比始终显示为百分比格式
+            return {
+              ...row,
+              labelValue: `${asinBrokenRate.toFixed(
+                2,
+              )}% (${brokenAsins}/${totalAsins} ASIN)`,
+            };
+          }
+          return attachLabelValue(row, valueMode);
+        });
     });
   }, [timeStatistics, valueMode, normalizedOverall.totalChecks]);
 
-  const lineTypes = ['异常', '正常', '总计'] as const;
+  const lineTypes = ['异常', '正常', '总计', 'ASIN异常占比'] as const;
   const lineColorMap: Record<string, string> = {
     异常: '#1890ff',
     正常: '#52c41a',
     总计: '#ff9c28',
+    ASIN异常占比: '#ff4d4f',
   };
   const countryColorMap: Record<string, string> = {
     异常: '#ff4d4f',
@@ -301,7 +337,10 @@ const AnalyticsPageContent: React.FC<unknown> = () => {
           Number(item.value),
           Number(item.rawValue),
           item.labelValue,
+          (item as any).totalAsins,
+          (item as any).brokenAsins,
         ]);
+      const isAsinRate = type === 'ASIN异常占比';
       return {
         name: type,
         type: 'line',
@@ -321,6 +360,7 @@ const AnalyticsPageContent: React.FC<unknown> = () => {
         },
         connectNulls: true,
         data,
+        yAxisIndex: isAsinRate ? 1 : 0, // ASIN异常占比使用右侧Y轴
         // 只在第一个系列添加高峰期背景
         markArea:
           type === '异常' && peakHoursMarkAreas.length > 0
@@ -345,6 +385,17 @@ const AnalyticsPageContent: React.FC<unknown> = () => {
             .map((param: any) => {
               const value = Number(param.value?.[1]) || 0;
               const rawValue = Number(param.value?.[2]) || 0;
+              const labelValue = param.value?.[3] || '';
+
+              // ASIN异常占比使用特殊格式
+              if (param.seriesName === 'ASIN异常占比' && labelValue) {
+                return `
+                  <div style="display:flex;justify-content:space-between">
+                    <span>${param.seriesName}</span>
+                    <span>${labelValue}</span>
+                  </div>`;
+              }
+
               const formatted = formatTooltipValue(valueMode, value, rawValue);
               return `
                 <div style="display:flex;justify-content:space-between">
@@ -371,9 +422,23 @@ const AnalyticsPageContent: React.FC<unknown> = () => {
         type: 'category',
         boundaryGap: false,
       },
-      yAxis: {
-        type: 'value',
-      },
+      yAxis: [
+        {
+          type: 'value',
+          name: valueMode === 'percent' ? '百分比 (%)' : '数量',
+          position: 'left',
+        },
+        {
+          type: 'value',
+          name: 'ASIN异常占比 (%)',
+          position: 'right',
+          min: 0,
+          max: 100,
+          axisLabel: {
+            formatter: '{value}%',
+          },
+        },
+      ],
       series,
     };
   }, [timeChartData, valueMode]);
@@ -753,6 +818,15 @@ const AnalyticsPageContent: React.FC<unknown> = () => {
         </Button>,
       ]}
     >
+      {/* 数据说明 */}
+      <Alert
+        message="数据说明"
+        description="本页面的统计数据基于ASIN级别的监控记录，每条记录代表一次对特定ASIN的检查结果。"
+        type="info"
+        showIcon
+        style={{ marginBottom: 16 }}
+        closable
+      />
       {/* 筛选条件 */}
       <Card style={{ marginBottom: 16 }}>
         <Space>

@@ -206,6 +206,34 @@ export async function updateASINFeishuNotify(
   );
 }
 
+/** 更新变体组飞书通知开关 */
+export async function updateVariantGroupFeishuNotify(
+  params: {
+    // path
+    /** 变体组ID */
+    groupId?: string;
+  },
+  body?: {
+    /** 是否启用：true-开启，false-关闭 */
+    enabled?: boolean;
+  },
+  options?: { [key: string]: any },
+) {
+  const { groupId: param0 } = params;
+  return request<API.Result_VariantGroup_>(
+    `/api/v1/variant-groups/${param0}/feishu-notify`,
+    {
+      method: 'PUT',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      params: { ...params },
+      data: body,
+      ...(options || {}),
+    },
+  );
+}
+
 /** Excel导入变体组和ASIN */
 export async function importFromExcel(
   formData: FormData,

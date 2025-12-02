@@ -314,6 +314,41 @@ exports.updateASINFeishuNotify = async (req, res) => {
   }
 };
 
+// 更新变体组飞书通知开关
+exports.updateVariantGroupFeishuNotify = async (req, res) => {
+  try {
+    const { groupId } = req.params;
+    const { enabled } = req.body;
+    if (typeof enabled !== 'boolean' && enabled !== 0 && enabled !== 1) {
+      return res.status(400).json({
+        success: false,
+        errorMessage: 'enabled参数必须是布尔值或0/1',
+        errorCode: 400,
+      });
+    }
+    const groupData = await VariantGroup.updateFeishuNotify(groupId, enabled);
+    if (!groupData) {
+      return res.status(404).json({
+        success: false,
+        errorMessage: '变体组不存在',
+        errorCode: 404,
+      });
+    }
+    res.json({
+      success: true,
+      data: groupData,
+      errorCode: 0,
+    });
+  } catch (error) {
+    console.error('更新变体组飞书通知开关错误:', error);
+    res.status(500).json({
+      success: false,
+      errorMessage: error.message || '更新失败',
+      errorCode: 500,
+    });
+  }
+};
+
 // 删除ASIN
 exports.deleteASIN = async (req, res) => {
   try {

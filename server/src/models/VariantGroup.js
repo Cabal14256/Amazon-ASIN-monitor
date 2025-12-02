@@ -140,6 +140,30 @@ class VariantGroup {
         feishuNotifyEnabled:
           asin.feishu_notify_enabled !== null ? asin.feishu_notify_enabled : 1, // 默认为1
       }));
+
+      // 根据ASIN的变体状态动态计算变体组状态
+      // 如果至少有一个ASIN的变体状态为异常，则整个变体组显示为异常
+      const hasBrokenASIN = group.children.some(
+        (child) => child.isBroken === 1,
+      );
+      if (hasBrokenASIN) {
+        group.is_broken = 1;
+        group.isBroken = 1;
+        group.variant_status = 'BROKEN';
+        group.variantStatus = 'BROKEN';
+      } else {
+        group.is_broken = 0;
+        group.isBroken = 0;
+        group.variant_status = 'NORMAL';
+        group.variantStatus = 'NORMAL';
+      }
+
+      // 添加字段映射（驼峰命名）
+      group.updateTime = group.update_time;
+      group.createTime = group.create_time;
+      group.lastCheckTime = group.last_check_time;
+      group.feishuNotifyEnabled =
+        group.feishu_notify_enabled !== null ? group.feishu_notify_enabled : 1;
     }
 
     const result = {
@@ -235,6 +259,30 @@ class VariantGroup {
         feishuNotifyEnabled:
           asin.feishu_notify_enabled !== null ? asin.feishu_notify_enabled : 1,
       }));
+
+      // 根据ASIN的变体状态动态计算变体组状态
+      // 如果至少有一个ASIN的变体状态为异常，则整个变体组显示为异常
+      const hasBrokenASIN = group.children.some(
+        (child) => child.isBroken === 1,
+      );
+      if (hasBrokenASIN) {
+        group.is_broken = 1;
+        group.isBroken = 1;
+        group.variant_status = 'BROKEN';
+        group.variantStatus = 'BROKEN';
+      } else {
+        group.is_broken = 0;
+        group.isBroken = 0;
+        group.variant_status = 'NORMAL';
+        group.variantStatus = 'NORMAL';
+      }
+
+      // 添加字段映射（驼峰命名）
+      group.updateTime = group.update_time;
+      group.createTime = group.create_time;
+      group.lastCheckTime = group.last_check_time;
+      group.feishuNotifyEnabled =
+        group.feishu_notify_enabled !== null ? group.feishu_notify_enabled : 1;
     }
     return group;
   }
@@ -255,6 +303,7 @@ class VariantGroup {
   // 更新变体组
   static async update(id, data) {
     const { name, country, site, brand } = data;
+    // 更新变体组信息时更新 update_time
     await query(
       `UPDATE variant_groups SET name = ?, country = ?, site = ?, brand = ?, update_time = NOW() WHERE id = ?`,
       [name, country, site, brand, id],
@@ -274,12 +323,75 @@ class VariantGroup {
   // 更新变体状态
   static async updateVariantStatus(id, isBroken) {
     const variantStatus = isBroken ? 'BROKEN' : 'NORMAL';
+    // 注意：更新变体状态时不更新 update_time，因为可以通过监控更新时间得知
+    // 先保存当前的 update_time，然后更新字段，最后恢复 update_time，避免 ON UPDATE CURRENT_TIMESTAMP 触发
+    const [group] = await query(
+      `SELECT update_time FROM variant_groups WHERE id = ?`,
+      [id],
+    );
+    const savedUpdateTime = group?.update_time;
+
     await query(
-      `UPDATE variant_groups SET is_broken = ?, variant_status = ?, update_time = NOW() WHERE id = ?`,
+      `UPDATE variant_groups SET is_broken = ?, variant_status = ? WHERE id = ?`,
       [isBroken ? 1 : 0, variantStatus, id],
+    );
+
+    // 如果有保存的 update_time，恢复它
+    if (savedUpdateTime) {
+      await query(`UPDATE variant_groups SET update_time = ? WHERE id = ?`, [
+        savedUpdateTime,
+        id,
+      ]);
+    }
+
+    this.clearCache();
+    return this.findById(id);
+  }
+
+  // 更新监控时间
+  static async updateLastCheckTime(id) {
+    // 注意：更新监控时间时不更新 update_time，因为可以通过监控更新时间得知
+    // 先保存当前的 update_time，然后更新字段，最后恢复 update_time，避免 ON UPDATE CURRENT_TIMESTAMP 触发
+    const [group] = await query(
+      `SELECT update_time FROM variant_groups WHERE id = ?`,
+      [id],
+    );
+    const savedUpdateTime = group?.update_time;
+
+    await query(
+      `UPDATE variant_groups SET last_check_time = NOW() WHERE id = ?`,
+      [id],
+    );
+
+    // 如果有保存的 update_time，恢复它
+    if (savedUpdateTime) {
+      await query(`UPDATE variant_groups SET update_time = ? WHERE id = ?`, [
+        savedUpdateTime,
+        id,
+      ]);
+    }
+
+    this.clearCache();
+    return this.findById(id);
+  }
+
+  // 更新飞书通知开关
+  static async updateFeishuNotify(id, enabled) {
+    // 更新飞书通知开关时更新 update_time
+    await query(
+      `UPDATE variant_groups SET feishu_notify_enabled = ?, update_time = NOW() WHERE id = ?`,
+      [enabled ? 1 : 0, id],
     );
     this.clearCache();
     return this.findById(id);
+  }
+
+  // 更新变体组的更新时间（专门用于ASIN变动时调用）
+  static async updateTimeOnASINChange(id) {
+    await query(`UPDATE variant_groups SET update_time = NOW() WHERE id = ?`, [
+      id,
+    ]);
+    this.clearCache();
   }
 }
 
