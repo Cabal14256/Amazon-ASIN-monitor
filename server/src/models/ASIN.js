@@ -2,6 +2,19 @@ const { query } = require('../config/database');
 const { v4: uuidv4 } = require('uuid');
 const VariantGroup = require('./VariantGroup');
 
+// 转换ASIN类型：将旧格式(MAIN_LINK/SUB_REVIEW)转换为新格式(1/2)
+function normalizeAsinType(asinType) {
+  if (!asinType) return null;
+  const type = String(asinType).trim();
+  // 兼容旧格式
+  if (type === 'MAIN_LINK') return '1';
+  if (type === 'SUB_REVIEW') return '2';
+  // 新格式直接返回
+  if (type === '1' || type === 1) return '1';
+  if (type === '2' || type === 2) return '2';
+  return null;
+}
+
 class ASIN {
   // 查询所有ASIN
   static async findAll(params = {}) {
@@ -43,7 +56,7 @@ class ASIN {
         id: asin.id,
         asin: asin.asin,
         name: asin.name,
-        asinType: asin.asin_type, // 转换为驼峰命名
+        asinType: normalizeAsinType(asin.asin_type), // 转换为驼峰命名并标准化
         country: asin.country,
         site: asin.site,
         brand: asin.brand,

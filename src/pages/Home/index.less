@@ -15,3 +15,37 @@
     overflow-y: auto;
   }
 }
+
+// 移动端响应式优化
+@media (max-width: 768px) {
+  .dashboardContainer {
+    padding: 8px;
+  }
+
+  .alertCard {
+    :global(.ant-card-body) {
+      max-height: 300px;
+    }
+  }
+
+  .timelineCard {
+    :global(.ant-timeline) {
+      max-height: 300px;
+    }
+  }
+
+  // 统计卡片移动端优化
+  :global(.ant-statistic-card-group) {
+    flex-direction: column;
+    
+    :global(.ant-statistic-card) {
+      width: 100%;
+      margin-bottom: 16px;
+    }
+  }
+
+  // 图表容器移动端优化
+  :global(.ant-col) {
+    margin-bottom: 16px;
+  }
+}

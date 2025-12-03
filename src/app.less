@@ -2,9 +2,234 @@
   display: none !important;
 }
 
-.ant-pro-layout-sider-collapsed .ant-pro-layout-sider-footer,
-.ant-pro-layout-sider-collapsed .ant-pro-layout-sider-actions {
-  justify-content: center;
-  padding-inline: 0;
-  display: none;
+// 收起时隐藏侧边栏底部的 footer 和 actions，防止头像和用户名溢出
+// 使用最通用的选择器，直接针对 aside 元素和所有可能的父元素组合
+aside.ant-layout-sider-collapsed .ant-pro-sider-actions,
+aside[class*="collapsed"] .ant-pro-sider-actions,
+.ant-layout-sider-collapsed .ant-pro-sider-actions,
+.ant-pro-layout-sider-collapsed .ant-pro-sider-actions,
+.ant-pro-sider-collapsed .ant-pro-sider-actions,
+[class*="ant-layout-sider"][class*="collapsed"] .ant-pro-sider-actions,
+[class*="ant-pro"][class*="sider"][class*="collapsed"] .ant-pro-sider-actions {
+  display: none !important;
+  visibility: hidden !important;
+  width: 0 !important;
+  height: 0 !important;
+  padding: 0 !important;
+  margin: 0 !important;
+  opacity: 0 !important;
+  overflow: hidden !important;
+  position: absolute !important;
+  left: -9999px !important;
+  top: -9999px !important;
+  pointer-events: none !important;
+  
+  * {
+    display: none !important;
+    visibility: hidden !important;
+    opacity: 0 !important;
+    width: 0 !important;
+    height: 0 !important;
+    pointer-events: none !important;
+  }
+}
+
+// 全局规则：如果侧边栏包含 collapsed 类，则隐藏所有 ant-pro-sider-actions
+// 使用最高优先级的选择器
+aside[class*="collapsed"] .ant-pro-sider-actions,
+aside.ant-layout-sider-collapsed .ant-pro-sider-actions,
+aside.ant-pro-layout-sider-collapsed .ant-pro-sider-actions,
+.ant-layout.ant-layout-has-sider aside[class*="collapsed"] .ant-pro-sider-actions,
+#root aside[class*="collapsed"] .ant-pro-sider-actions {
+  display: none !important;
+  visibility: hidden !important;
+  width: 0 !important;
+  height: 0 !important;
+  padding: 0 !important;
+  margin: 0 !important;
+  opacity: 0 !important;
+  overflow: hidden !important;
+  position: absolute !important;
+  left: -9999px !important;
+  top: -9999px !important;
+  pointer-events: none !important;
+  
+  * {
+    display: none !important;
+    visibility: hidden !important;
+    opacity: 0 !important;
+    width: 0 !important;
+    height: 0 !important;
+    pointer-events: none !important;
+  }
+}
+
+// 使用属性选择器作为备用方案
+aside[class*="collapsed"] [class*="sider-actions"],
+.ant-layout-sider[class*="collapsed"] [class*="sider-actions"] {
+  display: none !important;
+  visibility: hidden !important;
+  width: 0 !important;
+  height: 0 !important;
+  padding: 0 !important;
+  margin: 0 !important;
+  opacity: 0 !important;
+  overflow: hidden !important;
+  position: absolute !important;
+  left: -9999px !important;
+  top: -9999px !important;
+  pointer-events: none !important;
+  
+  * {
+    display: none !important;
+    visibility: hidden !important;
+    opacity: 0 !important;
+    width: 0 !important;
+    height: 0 !important;
+    pointer-events: none !important;
+  }
+}
+
+// 收起时隐藏侧边栏底部的 footer 和 actions，防止头像和用户名溢出
+// 使用多种可能的类名选择器以确保覆盖所有情况
+.ant-pro-layout-sider-collapsed,
+.ant-pro-sider-collapsed,
+aside.ant-layout-sider-collapsed {
+  overflow: hidden !important;
+  
+  // 隐藏 footer 和 actions 容器 - 使用正确的类名
+  .ant-pro-layout-sider-footer,
+  .ant-pro-layout-sider-actions,
+  .ant-pro-sider-actions,
+  .ant-pro-sider-footer,
+  [class*="sider-footer"],
+  [class*="sider-actions"],
+  .ant-layout-sider-footer {
+    display: none !important;
+    visibility: hidden !important;
+    width: 0 !important;
+    height: 0 !important;
+    padding: 0 !important;
+    margin: 0 !important;
+    opacity: 0 !important;
+    overflow: hidden !important;
+    position: absolute !important;
+    left: -9999px !important;
+    top: -9999px !important;
+    pointer-events: none !important;
+  }
+  
+  // 确保 footer 和 actions 内的所有子元素也被隐藏
+  .ant-pro-layout-sider-footer *,
+  .ant-pro-layout-sider-actions *,
+  .ant-pro-sider-actions *,
+  .ant-pro-sider-footer *,
+  [class*="sider-footer"] *,
+  [class*="sider-actions"] *,
+  .ant-layout-sider-footer * {
+    display: none !important;
+    visibility: hidden !important;
+    opacity: 0 !important;
+    width: 0 !important;
+    height: 0 !important;
+    pointer-events: none !important;
+  }
+  
+  // 隐藏侧边栏底部可能包含用户信息的区域
+  > div:last-child {
+    // 如果最后一个子元素包含用户信息，也隐藏它
+    &[class*="footer"],
+    &[class*="actions"] {
+      display: none !important;
+      visibility: hidden !important;
+      pointer-events: none !important;
+    }
+  }
+}
+
+// 确保侧边栏本身在收起时不会溢出
+.ant-pro-layout-sider,
+.ant-layout-sider {
+  &.ant-pro-layout-sider-collapsed,
+  &.ant-layout-sider-collapsed {
+    overflow: hidden !important;
+    max-width: 80px !important;
+  }
+}
+
+// 移动端响应式优化
+@media (max-width: 768px) {
+  // 表格响应式
+  .ant-pro-table {
+    .ant-table-wrapper {
+      overflow-x: auto;
+      -webkit-overflow-scrolling: touch;
+    }
+    
+    // 表格列宽自适应
+    .ant-table {
+      min-width: 800px; // 最小宽度，确保内容不挤压
+    }
+  }
+
+  // 搜索表单响应式
+  .ant-pro-form {
+    .ant-pro-form-list {
+      .ant-col {
+        margin-bottom: 16px;
+      }
+    }
+  }
+
+  // 统计卡片响应式
+  .ant-statistic-card-group {
+    .ant-statistic-card {
+      margin-bottom: 16px;
+    }
+  }
+
+  // 按钮组响应式
+  .ant-space {
+    flex-wrap: wrap;
+    
+    .ant-btn {
+      margin-bottom: 8px;
+    }
+  }
+
+  // 模态框响应式
+  .ant-modal {
+    max-width: 95vw;
+    margin: 10px auto;
+    
+    .ant-modal-content {
+      .ant-modal-body {
+        padding: 16px;
+      }
+    }
+  }
+
+  // 页面容器响应式
+  .ant-pro-page-container {
+    padding: 16px;
+    
+    .ant-pro-page-container-children-content {
+      margin: 16px 0;
+    }
+  }
+
+  // 工具栏响应式
+  .ant-pro-table-list-toolbar {
+    flex-direction: column;
+    align-items: flex-start;
+    
+    .ant-pro-table-list-toolbar-left {
+      width: 100%;
+      margin-bottom: 16px;
+    }
+    
+    .ant-pro-table-list-toolbar-right {
+      width: 100%;
+    }
+  }
 }

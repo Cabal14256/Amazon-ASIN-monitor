@@ -10,6 +10,8 @@ export async function queryMonitorHistory(
     variantGroupId?: string;
     /** ASIN ID */
     asinId?: string;
+    /** ASIN编码（字符串） */
+    asin?: string;
     /** 国家筛选 */
     country?: string;
     /** 检查类型 */
@@ -180,6 +182,125 @@ export async function getPeakHoursStatistics(
 ) {
   return request<API.Result_PeakHoursStatistics_>(
     '/api/v1/monitor-history/statistics/peak-hours',
+    {
+      method: 'GET',
+      params: {
+        ...params,
+      },
+      ...(options || {}),
+    },
+  );
+}
+
+/** 全部国家汇总统计 */
+export async function getAllCountriesSummary(
+  params: {
+    // query
+    /** 开始时间 */
+    startTime?: string;
+    /** 结束时间 */
+    endTime?: string;
+    /** 时间槽粒度：hour/day */
+    timeSlotGranularity?: string;
+  },
+  options?: { [key: string]: any },
+) {
+  return request<API.Result_AllCountriesSummary_>(
+    '/api/v1/monitor-history/statistics/all-countries-summary',
+    {
+      method: 'GET',
+      params: {
+        ...params,
+      },
+      ...(options || {}),
+    },
+  );
+}
+
+/** 区域汇总统计（美国/欧洲） */
+export async function getRegionSummary(
+  params: {
+    // query
+    /** 开始时间 */
+    startTime?: string;
+    /** 结束时间 */
+    endTime?: string;
+    /** 时间槽粒度：hour/day */
+    timeSlotGranularity?: string;
+  },
+  options?: { [key: string]: any },
+) {
+  return request<API.Result_RegionSummary_>(
+    '/api/v1/monitor-history/statistics/region-summary',
+    {
+      method: 'GET',
+      params: {
+        ...params,
+      },
+      ...(options || {}),
+    },
+  );
+}
+
+/** 周期汇总统计 */
+export async function getPeriodSummary(
+  params: {
+    // query
+    /** 国家筛选 */
+    country?: string;
+    /** 站点筛选 */
+    site?: string;
+    /** 品牌筛选 */
+    brand?: string;
+    /** 开始时间 */
+    startTime?: string;
+    /** 结束时间 */
+    endTime?: string;
+    /** 时间槽粒度：hour/day */
+    timeSlotGranularity?: string;
+    /** 当前页 */
+    current?: number;
+    /** 每页数量 */
+    pageSize?: number;
+  },
+  options?: { [key: string]: any },
+) {
+  return request<API.Result_PeriodSummary_>(
+    '/api/v1/monitor-history/statistics/period-summary',
+    {
+      method: 'GET',
+      params: {
+        ...params,
+      },
+      ...(options || {}),
+    },
+  );
+}
+
+/** 按国家统计ASIN当前状态 */
+export async function getASINStatisticsByCountry(
+  options?: { [key: string]: any },
+) {
+  return request<API.Result_CountryStatistics_>(
+    '/api/v1/monitor-history/statistics/asin-by-country',
+    {
+      method: 'GET',
+      ...(options || {}),
+    },
+  );
+}
+
+/** 按变体组统计ASIN当前状态 */
+export async function getASINStatisticsByVariantGroup(
+  params: {
+    // query
+    /** 限制数量 */
+    limit?: number;
+  },
+  options?: { [key: string]: any },
+) {
+  return request<API.Result_VariantGroupStatistics_>(
+    '/api/v1/monitor-history/statistics/asin-by-variant-group',
     {
       method: 'GET',
       params: {

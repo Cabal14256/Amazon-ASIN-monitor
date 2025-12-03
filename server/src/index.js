@@ -15,6 +15,8 @@ const dashboardRoutes = require('./routes/dashboardRoutes');
 const auditLogRoutes = require('./routes/auditLogRoutes');
 const exportRoutes = require('./routes/exportRoutes');
 const systemRoutes = require('./routes/systemRoutes');
+const backupRoutes = require('./routes/backupRoutes');
+const websocketService = require('./services/websocketService');
 const auditLogMiddleware = require('./middleware/auditLog');
 const metricsMiddleware = require('./middleware/metrics');
 const metricsService = require('./services/metricsService');
@@ -57,6 +59,7 @@ app.use('/api/v1', roleRoutes); // 角色和权限管理路由
 app.use('/api/v1', auditLogRoutes); // 审计日志路由
 app.use('/api/v1', exportRoutes); // 导出路由
 app.use('/api/v1', systemRoutes); // 系统级别配置
+app.use('/api/v1', backupRoutes); // 备份恢复路由
 
 app.get('/metrics', async (req, res) => {
   res.set('Content-Type', metricsService.register.contentType);
@@ -94,10 +97,13 @@ async function startServer() {
   // 初始化定时任务
   initScheduler();
 
-  app.listen(PORT, () => {
+  const server = app.listen(PORT, () => {
     console.log(`🚀 服务器运行在 http://localhost:${PORT}`);
     console.log(`📝 API文档: http://localhost:${PORT}/api/v1`);
     console.log(`📊 仪表盘API: http://localhost:${PORT}/api/v1/dashboard`);
+    
+    // 初始化WebSocket服务器
+    websocketService.init(server);
   });
 }
 

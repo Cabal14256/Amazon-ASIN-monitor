@@ -259,6 +259,7 @@ async function sendBatchNotifications(countryResults) {
     success: 0,
     failed: 0,
     skipped: 0,
+    countryResults: {}, // 记录每个国家的通知发送结果
   };
 
   // 国家到区域的映射（用于查找webhook配置）
@@ -300,11 +301,21 @@ async function sendBatchNotifications(countryResults) {
         region,
       };
 
+      // 无论是否有异常都发送通知（无异常时显示"全部正常"）
       const result = await sendNotificationWithRetry(region, notificationData);
       if (result.success) {
         results.success++;
+        results.countryResults[country] = {
+          success: true,
+          skipped: false,
+        };
       } else {
         results.failed++;
+        results.countryResults[country] = {
+          success: false,
+          skipped: false,
+          errorCode: result.errorCode,
+        };
         if (result.errorCode === RATE_LIMIT_CODE) {
           console.warn(`[feishu] 国家 ${country} 限频重试失败`);
           recordRateLimit(country);

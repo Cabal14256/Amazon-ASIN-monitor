@@ -5,6 +5,13 @@ const { authenticateToken, checkPermission } = require('../middleware/auth');
 
 router.use(authenticateToken);
 
+// 导出变体组数据（需要ASIN查看权限）
+router.get(
+  '/export/variant-group',
+  checkPermission('asin:read'),
+  exportController.exportVariantGroupData,
+);
+
 // 导出ASIN数据（需要ASIN查看权限）
 router.get(
   '/export/asin',

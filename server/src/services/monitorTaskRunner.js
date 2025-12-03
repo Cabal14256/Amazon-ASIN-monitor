@@ -6,6 +6,7 @@ const MonitorHistory = require('../models/MonitorHistory');
 const { getMaxConcurrentGroupChecks } = require('../config/monitor-config');
 const Semaphore = require('./semaphore');
 const metricsService = require('./metricsService');
+const websocketService = require('./websocketService');
 
 let monitorSemaphore = new Semaphore(getMaxConcurrentGroupChecks());
 let isMonitorTaskRunning = false;
@@ -140,6 +141,7 @@ async function processCountry(
       groupsList.length,
     );
     let nextGroupIndex = 0;
+    const totalGroups = groupsList.length;
 
     const workers = Array.from({ length: chunkConcurrency }, async () => {
       while (true) {
@@ -150,6 +152,18 @@ async function processCountry(
         const group = groupsList[currentIndex];
         checked++;
         countryResult.totalGroups++;
+
+        // 发送进度更新（每10个变体组更新一次，避免过于频繁）
+        if (checked % 10 === 0 || checked === totalGroups) {
+          websocketService.sendMonitorProgress({
+            status: 'progress',
+            country,
+            current: checked,
+            total: totalGroups,
+            progress: Math.round((checked / totalGroups) * 100),
+            timestamp: new Date().toISOString(),
+          });
+        }
 
         let result;
         const workerStart = process.hrtime();
@@ -322,6 +336,16 @@ async function runMonitorTask(countries, batchConfig = null) {
   let totalBroken = 0;
   const checkTime = new Date(); // 使用 Date 对象而不是字符串
 
+  // 发送任务开始通知
+  websocketService.sendMonitorProgress({
+    status: 'started',
+    countries,
+    batchInfo: batchConfig
+      ? `批次 ${batchConfig.batchIndex + 1}/${batchConfig.totalBatches}`
+      : null,
+    timestamp: checkTime.toISOString(),
+  });
+
   try {
     const stats = await Promise.all(
       countries.map((country) =>
@@ -354,6 +378,41 @@ async function runMonitorTask(countries, batchConfig = null) {
       `📨 通知发送完成: 总计 ${notifyResults.total}, 成功 ${notifyResults.success}, 失败 ${notifyResults.failed}, 跳过 ${notifyResults.skipped}`,
     );
 
+    // 更新已发送通知的监控历史记录状态
+    if (notifyResults.countryResults) {
+      for (const country of countries) {
+        const countryNotifyResult = notifyResults.countryResults[country];
+        const countryResult = countryResults[country];
+        
+        // 只有当通知发送成功且该国家有异常时才更新状态
+        if (
+          countryNotifyResult &&
+          countryNotifyResult.success &&
+          !countryNotifyResult.skipped &&
+          countryResult &&
+          countryResult.brokenGroups > 0
+        ) {
+          try {
+            const updatedCount = await MonitorHistory.updateNotificationStatus(
+              country,
+              checkTime,
+              1, // 标记为已通知
+            );
+            if (updatedCount > 0) {
+              console.log(
+                `✅ 已更新 ${country} 的 ${updatedCount} 条监控历史记录为已通知状态`,
+              );
+            }
+          } catch (error) {
+            console.error(
+              `❌ 更新 ${country} 监控历史记录通知状态失败:`,
+              error.message,
+            );
+          }
+        }
+      }
+    }
+
     const [seconds, nanoseconds] = process.hrtime(startTime);
     const duration = seconds + nanoseconds / 1e9;
 
@@ -374,6 +433,17 @@ async function runMonitorTask(countries, batchConfig = null) {
         2,
       )}秒\n`,
     );
+
+    // 发送任务完成通知
+    websocketService.sendMonitorComplete({
+      success: true,
+      totalChecked,
+      totalBroken,
+      totalNormal: totalChecked - totalBroken,
+      duration: duration.toFixed(2),
+      countryResults,
+      timestamp: new Date().toISOString(),
+    });
 
     return {
       success: true,

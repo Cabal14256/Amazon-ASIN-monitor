@@ -163,10 +163,10 @@ exports.createASIN = async (req, res) => {
       });
     }
     // 验证asinType值
-    if (asinType && !['MAIN_LINK', 'SUB_REVIEW'].includes(asinType)) {
+    if (asinType && !['1', '2'].includes(String(asinType))) {
       return res.status(400).json({
         success: false,
-        errorMessage: 'ASIN类型必须是 MAIN_LINK 或 SUB_REVIEW',
+        errorMessage: 'ASIN类型必须是 1（主链）或 2（副评）',
         errorCode: 400,
       });
     }
@@ -207,10 +207,10 @@ exports.updateASIN = async (req, res) => {
       });
     }
     // 验证asinType值
-    if (asinType && !['MAIN_LINK', 'SUB_REVIEW'].includes(asinType)) {
+    if (asinType && !['1', '2'].includes(String(asinType))) {
       return res.status(400).json({
         success: false,
-        errorMessage: 'ASIN类型必须是 MAIN_LINK 或 SUB_REVIEW',
+        errorMessage: 'ASIN类型必须是 1（主链）或 2（副评）',
         errorCode: 400,
       });
     }
@@ -692,10 +692,10 @@ exports.importFromExcel = async (req, res) => {
       }
 
       // 验证ASIN类型
-      if (asinType && !['MAIN_LINK', 'SUB_REVIEW'].includes(asinType)) {
+      if (asinType && !['1', '2'].includes(String(asinType).trim())) {
         errors.push({
           row: rowNumber,
-          message: `ASIN类型无效: ${asinType}，必须是 MAIN_LINK 或 SUB_REVIEW`,
+          message: `ASIN类型无效: ${asinType}，必须是 1（主链）或 2（副评）`,
         });
         continue;
       }
@@ -721,9 +721,12 @@ exports.importFromExcel = async (req, res) => {
         // 确保ASIN类型正确映射
         let finalAsinType = null;
         if (asinType) {
-          const upperAsinType = asinType.toUpperCase();
-          if (upperAsinType === 'MAIN_LINK' || upperAsinType === 'SUB_REVIEW') {
-            finalAsinType = upperAsinType;
+          const trimmedType = String(asinType).trim();
+          // 支持数字和字符串格式：1/'1' 表示主链，2/'2' 表示副评
+          if (trimmedType === '1' || trimmedType === 1) {
+            finalAsinType = '1';
+          } else if (trimmedType === '2' || trimmedType === 2) {
+            finalAsinType = '2';
           }
         }
 

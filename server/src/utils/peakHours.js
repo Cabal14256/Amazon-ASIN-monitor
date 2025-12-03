@@ -15,17 +15,17 @@ function isPeakHour(date, country) {
 
   switch (country) {
     case 'US':
-      // US: 02-05, 09-11 (北京时间)
-      return (hour >= 2 && hour < 5) || (hour >= 9 && hour < 11);
+      // US: 02-06, 09-12 (北京时间)
+      return (hour >= 2 && hour < 6) || (hour >= 9 && hour < 12);
     case 'UK':
-      // UK: 22-01, 03-05 (北京时间)
-      return hour >= 22 || hour < 1 || (hour >= 3 && hour < 5);
+      // UK: 22-24, 00-02, 03-06 (北京时间)
+      return hour >= 22 || (hour >= 0 && hour < 2) || (hour >= 3 && hour < 6);
     case 'DE':
     case 'FR':
     case 'ES':
     case 'IT':
-      // DE/FR/ES/IT: 20-23, 02-04 (北京时间)
-      return (hour >= 20 && hour < 23) || (hour >= 2 && hour < 4);
+      // DE/FR/ES/IT (EU): 20-24, 02-05 (北京时间)
+      return hour >= 20 || (hour >= 2 && hour < 5);
     default:
       return false;
   }
@@ -40,22 +40,22 @@ function getPeakHours(country) {
   switch (country) {
     case 'US':
       return [
-        { start: 2, end: 5 },
-        { start: 9, end: 11 },
+        { start: 2, end: 6 },
+        { start: 9, end: 12 },
       ];
     case 'UK':
       return [
         { start: 22, end: 24 },
-        { start: 0, end: 1 },
-        { start: 3, end: 5 },
+        { start: 0, end: 2 },
+        { start: 3, end: 6 },
       ];
     case 'DE':
     case 'FR':
     case 'ES':
     case 'IT':
       return [
-        { start: 20, end: 23 },
-        { start: 2, end: 4 },
+        { start: 20, end: 24 },
+        { start: 2, end: 5 },
       ];
     default:
       return [];

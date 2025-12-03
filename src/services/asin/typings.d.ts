@@ -9,7 +9,7 @@ declare namespace API {
   type Country = 'US' | 'UK' | 'DE' | 'FR' | 'IT' | 'ES';
 
   /** ASIN类型枚举 */
-  type ASINType = 'MAIN_LINK' | 'SUB_REVIEW';
+  type ASINType = '1' | '2';
 
   /** ASIN 信息 */
   interface ASINInfo {
@@ -19,7 +19,7 @@ declare namespace API {
     asin?: string;
     /** ASIN 名称 */
     name?: string;
-    /** ASIN类型：MAIN_LINK-主链, SUB_REVIEW-副评 */
+    /** ASIN类型：1-主链, 2-副评 */
     asinType?: ASINType;
     /** 所属国家 */
     country?: Country;
@@ -200,11 +200,19 @@ declare namespace API {
     broken_count?: number;
     /** 正常次数 */
     normal_count?: number;
-    /** 总ASIN数 */
+    /** 所有ASIN异常占比（快照口径，百分比） */
+    ratio_all_asin?: number;
+    /** 所有ASIN异常占比-去重（去重口径，百分比） */
+    ratio_all_time?: number;
+    /** 去重口径总ASIN数 */
+    total_asins_dedup?: number;
+    /** 去重口径异常ASIN数 */
+    broken_asins_dedup?: number;
+    /** 总ASIN数（兼容字段） */
     total_asins?: number;
-    /** 异常ASIN数 */
+    /** 异常ASIN数（兼容字段） */
     broken_asins?: number;
-    /** ASIN异常占比（百分比） */
+    /** ASIN异常占比（兼容字段，百分比） */
     asin_broken_rate?: number;
   }
 
@@ -365,5 +373,142 @@ declare namespace API {
     success?: boolean;
     errorMessage?: string;
     data?: DashboardData;
+  }
+
+  /** 全部国家汇总统计 */
+  interface AllCountriesSummary {
+    /** 时间范围 */
+    timeRange?: string;
+    /** 总数量(监控链接) */
+    totalChecks?: number;
+    /** 所有ASIN异常占比（快照口径，百分比） */
+    ratioAllAsin?: number;
+    /** 所有ASIN异常时长占比（去重口径，百分比） */
+    ratioAllTime?: number;
+    /** 全局高峰异常占比（百分比） */
+    globalPeakRate?: number;
+    /** 全局低峰异常占比（百分比） */
+    globalLowRate?: number;
+    /** 局部高峰异常占比（百分比） */
+    ratioHigh?: number;
+    /** 局部低峰异常占比（百分比） */
+    ratioLow?: number;
+    /** 异常快照数 */
+    brokenCount?: number;
+    /** 去重口径总ASIN数 */
+    totalAsinsDedup?: number;
+    /** 去重口径异常ASIN数 */
+    brokenAsinsDedup?: number;
+    /** 高峰时段异常快照数 */
+    peakBroken?: number;
+    /** 高峰时段快照总数 */
+    peakTotal?: number;
+    /** 低峰时段异常快照数 */
+    lowBroken?: number;
+    /** 低峰时段快照总数 */
+    lowTotal?: number;
+  }
+
+  interface Result_AllCountriesSummary_ {
+    success?: boolean;
+    errorMessage?: string;
+    data?: AllCountriesSummary;
+  }
+
+  /** 区域汇总统计 */
+  interface RegionSummary {
+    /** 区域名称 */
+    region?: string;
+    /** 区域代码 */
+    regionCode?: string;
+    /** 时间范围 */
+    timeRange?: string;
+    /** 总数量(监控链接) */
+    totalChecks?: number;
+    /** 所有ASIN异常占比（快照口径，百分比） */
+    ratioAllAsin?: number;
+    /** 所有ASIN异常时长占比（去重口径，百分比） */
+    ratioAllTime?: number;
+    /** 全局高峰异常占比（百分比） */
+    globalPeakRate?: number;
+    /** 全局低峰异常占比（百分比） */
+    globalLowRate?: number;
+    /** 局部高峰异常占比（百分比） */
+    ratioHigh?: number;
+    /** 局部低峰异常占比（百分比） */
+    ratioLow?: number;
+    /** 异常快照数 */
+    brokenCount?: number;
+    /** 去重口径总ASIN数 */
+    totalAsinsDedup?: number;
+    /** 去重口径异常ASIN数 */
+    brokenAsinsDedup?: number;
+    /** 高峰时段异常快照数 */
+    peakBroken?: number;
+    /** 高峰时段快照总数 */
+    peakTotal?: number;
+    /** 低峰时段异常快照数 */
+    lowBroken?: number;
+    /** 低峰时段快照总数 */
+    lowTotal?: number;
+  }
+
+  interface Result_RegionSummary_ {
+    success?: boolean;
+    errorMessage?: string;
+    data?: RegionSummary[];
+  }
+
+  /** 周期汇总统计 */
+  interface PeriodSummary {
+    /** 时间槽 */
+    timeSlot?: string;
+    /** 国家 */
+    country?: string;
+    /** 站点 */
+    site?: string;
+    /** 品牌 */
+    brand?: string;
+    /** 总数量(监控链接) */
+    totalChecks?: number;
+    /** 所有ASIN异常占比（快照口径，百分比） */
+    ratioAllAsin?: number;
+    /** 所有ASIN异常时长占比（去重口径，百分比） */
+    ratioAllTime?: number;
+    /** 全局高峰异常占比（百分比） */
+    globalPeakRate?: number;
+    /** 全局低峰异常占比（百分比） */
+    globalLowRate?: number;
+    /** 局部高峰异常占比（百分比） */
+    ratioHigh?: number;
+    /** 局部低峰异常占比（百分比） */
+    ratioLow?: number;
+    /** 异常快照数 */
+    brokenCount?: number;
+    /** 去重口径总ASIN数 */
+    totalAsinsDedup?: number;
+    /** 去重口径异常ASIN数 */
+    brokenAsinsDedup?: number;
+    /** 高峰时段异常快照数 */
+    peakBroken?: number;
+    /** 高峰时段快照总数 */
+    peakTotal?: number;
+    /** 低峰时段异常快照数 */
+    lowBroken?: number;
+    /** 低峰时段快照总数 */
+    lowTotal?: number;
+  }
+
+  interface PageInfo_PeriodSummary_ {
+    current?: number;
+    pageSize?: number;
+    total?: number;
+    list?: PeriodSummary[];
+  }
+
+  interface Result_PeriodSummary_ {
+    success?: boolean;
+    errorMessage?: string;
+    data?: PageInfo_PeriodSummary_;
   }
 }

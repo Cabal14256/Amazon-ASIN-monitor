@@ -89,11 +89,11 @@ const ExcelImportModal: React.FC<ExcelImportModalProps> = (props) => {
   };
 
   const downloadTemplate = () => {
-    // 创建模板数据（不包含ASIN名称列）
+      // 创建模板数据（不包含ASIN名称列）
     const templateData = [
       ['变体组名称', '国家', '站点', '品牌', 'ASIN', 'ASIN类型'],
-      ['iPhone 15 Pro 变体组', 'US', '12', 'Apple', 'B0CHX1W1XY', 'MAIN_LINK'],
-      ['iPhone 15 Pro 变体组', 'US', '12', 'Apple', 'B0CHX1W2XY', 'MAIN_LINK'],
+      ['iPhone 15 Pro 变体组', 'US', '12', 'Apple', 'B0CHX1W1XY', '1'],
+      ['iPhone 15 Pro 变体组', 'US', '12', 'Apple', 'B0CHX1W2XY', '1'],
       ['MacBook Pro 变体组', 'UK', '15', 'Apple', 'B09JQL8KP9', ''],
     ];
 
@@ -148,7 +148,7 @@ const ExcelImportModal: React.FC<ExcelImportModalProps> = (props) => {
               <p>4. 国家代码：US, UK, DE, FR, IT, ES</p>
               <p>5. 站点：内部店铺代号（如：12）</p>
               <p>6. 品牌：产品品牌名称（必填）</p>
-              <p>7. ASIN类型：MAIN_LINK（主链）或 SUB_REVIEW（副评），可选</p>
+              <p>7. ASIN类型：1（主链）或 2（副评），可选</p>
               <p>8. 注意：ASIN不需要名称，系统会自动使用ASIN编码作为名称</p>
             </div>
           }

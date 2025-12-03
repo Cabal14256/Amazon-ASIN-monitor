@@ -6,6 +6,7 @@ exports.getMonitorHistory = async (req, res) => {
     const {
       variantGroupId,
       asinId,
+      asin,
       country,
       checkType,
       isBroken,
@@ -18,6 +19,7 @@ exports.getMonitorHistory = async (req, res) => {
     const result = await MonitorHistory.findAll({
       variantGroupId,
       asinId,
+      asin,
       country,
       checkType,
       isBroken,
@@ -253,6 +255,138 @@ exports.triggerManualCheck = async (req, res) => {
     res.status(500).json({
       success: false,
       errorMessage: error.message || '检查失败',
+      errorCode: 500,
+    });
+  }
+};
+
+// 全部国家汇总统计
+exports.getAllCountriesSummary = async (req, res) => {
+  try {
+    const { startTime, endTime, timeSlotGranularity = 'day' } = req.query;
+    const statistics = await MonitorHistory.getAllCountriesSummary({
+      startTime,
+      endTime,
+      timeSlotGranularity,
+    });
+
+    res.json({
+      success: true,
+      data: statistics,
+      errorCode: 0,
+    });
+  } catch (error) {
+    console.error('全部国家汇总统计错误:', error);
+    res.status(500).json({
+      success: false,
+      errorMessage: error.message || '查询失败',
+      errorCode: 500,
+    });
+  }
+};
+
+// 区域汇总统计（美国/欧洲）
+exports.getRegionSummary = async (req, res) => {
+  try {
+    const { startTime, endTime, timeSlotGranularity = 'day' } = req.query;
+    const statistics = await MonitorHistory.getRegionSummary({
+      startTime,
+      endTime,
+      timeSlotGranularity,
+    });
+
+    res.json({
+      success: true,
+      data: statistics,
+      errorCode: 0,
+    });
+  } catch (error) {
+    console.error('区域汇总统计错误:', error);
+    res.status(500).json({
+      success: false,
+      errorMessage: error.message || '查询失败',
+      errorCode: 500,
+    });
+  }
+};
+
+// 周期汇总统计
+exports.getPeriodSummary = async (req, res) => {
+  try {
+    const {
+      country,
+      site,
+      brand,
+      startTime,
+      endTime,
+      timeSlotGranularity = 'day',
+      current = 1,
+      pageSize = 10,
+    } = req.query;
+    const result = await MonitorHistory.getPeriodSummary({
+      country,
+      site,
+      brand,
+      startTime,
+      endTime,
+      timeSlotGranularity,
+      current,
+      pageSize,
+    });
+
+    res.json({
+      success: true,
+      data: result,
+      errorCode: 0,
+    });
+  } catch (error) {
+    console.error('周期汇总统计错误:', error);
+    res.status(500).json({
+      success: false,
+      errorMessage: error.message || '查询失败',
+      errorCode: 500,
+    });
+  }
+};
+
+// 按国家统计ASIN当前状态
+exports.getASINStatisticsByCountry = async (req, res) => {
+  try {
+    const statistics = await MonitorHistory.getASINStatisticsByCountry();
+
+    res.json({
+      success: true,
+      data: statistics,
+      errorCode: 0,
+    });
+  } catch (error) {
+    console.error('按国家统计ASIN当前状态错误:', error);
+    res.status(500).json({
+      success: false,
+      errorMessage: error.message || '查询失败',
+      errorCode: 500,
+    });
+  }
+};
+
+// 按变体组统计ASIN当前状态
+exports.getASINStatisticsByVariantGroup = async (req, res) => {
+  try {
+    const { limit = 10 } = req.query;
+    const statistics = await MonitorHistory.getASINStatisticsByVariantGroup({
+      limit,
+    });
+
+    res.json({
+      success: true,
+      data: statistics,
+      errorCode: 0,
+    });
+  } catch (error) {
+    console.error('按变体组统计ASIN当前状态错误:', error);
+    res.status(500).json({
+      success: false,
+      errorMessage: error.message || '查询失败',
       errorCode: 500,
     });
   }

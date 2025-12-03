@@ -12,8 +12,11 @@ import { Access, history, useAccess } from '@umijs/max';
 import type { MenuProps } from 'antd';
 import { Button, Dropdown, Space, Switch, Tag } from 'antd';
 import dayjs from 'dayjs';
-import React, { useRef, useState } from 'react';
+import React, { useCallback, useMemo, useRef, useState } from 'react';
+import { debounce } from '@/utils/debounce';
+import { exportToExcel } from '@/utils/export';
 import ASINForm from './components/ASINForm';
+import BatchDeleteConfirmModal from './components/BatchDeleteConfirmModal';
 import ExcelImportModal from './components/ExcelImportModal';
 import MoveASINModal from './components/MoveASINModal';
 import VariantGroupForm from './components/VariantGroupForm';
@@ -59,37 +62,38 @@ const ASINManagement: React.FC<unknown> = () => {
   const access = useAccess();
 
   /**
-   * 删除节点
+   * 删除节点（使用useCallback优化）
    */
-  const handleRemove = async (
-    selectedRows: (API.VariantGroup | API.ASINInfo)[],
-  ) => {
-    const hide = message.loading('正在删除');
-    if (!selectedRows || selectedRows.length === 0) return true;
-    try {
-      // 区分变体组和ASIN进行删除
-      for (const row of selectedRows) {
-        if ((row as API.VariantGroup).parentId === undefined) {
-          // 变体组
-          await deleteVariantGroup({
-            groupId: row.id || '',
-          });
-        } else {
-          // ASIN
-          await deleteASIN({
-            asinId: row.id || '',
-          });
+  const handleRemove = useCallback(
+    async (selectedRows: (API.VariantGroup | API.ASINInfo)[]) => {
+      const hide = message.loading('正在删除');
+      if (!selectedRows || selectedRows.length === 0) return true;
+      try {
+        // 区分变体组和ASIN进行删除
+        for (const row of selectedRows) {
+          if ((row as API.VariantGroup).parentId === undefined) {
+            // 变体组
+            await deleteVariantGroup({
+              groupId: row.id || '',
+            });
+          } else {
+            // ASIN
+            await deleteASIN({
+              asinId: row.id || '',
+            });
+          }
         }
+        hide();
+        message.success('删除成功，即将刷新');
+        return true;
+      } catch (error) {
+        hide();
+        message.error('删除失败，请重试');
+        return false;
       }
-      hide();
-      message.success('删除成功，即将刷新');
-      return true;
-    } catch (error) {
-      hide();
-      message.error('删除失败，请重试');
-      return false;
-    }
-  };
+    },
+    [message],
+  );
   const [selectedRowsState, setSelectedRows] = useState<
     (API.VariantGroup | API.ASINInfo)[]
   >([]);
@@ -106,11 +110,12 @@ const ASINManagement: React.FC<unknown> = () => {
   const [moveModalVisible, setMoveModalVisible] = useState(false);
   const [movingASIN, setMovingASIN] = useState<Partial<API.ASINInfo>>();
   const [excelImportModalVisible, setExcelImportModalVisible] = useState(false);
+  const [batchDeleteModalVisible, setBatchDeleteModalVisible] = useState(false);
+  const [batchDeleteLoading, setBatchDeleteLoading] = useState(false);
 
-  // 操作列菜单
-  const getActionMenu = (
-    record: API.VariantGroup | API.ASINInfo,
-  ): MenuProps => {
+  // 操作列菜单（使用useCallback优化）
+  const getActionMenu = useCallback(
+    (record: API.VariantGroup | API.ASINInfo): MenuProps => {
     const isGroup = (record as API.VariantGroup).parentId === undefined;
     const items: MenuProps['items'] = [
       {
@@ -159,10 +164,23 @@ const ASINManagement: React.FC<unknown> = () => {
       }
     }
 
-    return { items };
-  };
+      return { items };
+    },
+    [access.canWriteASIN],
+  );
 
-  const columns: ProColumns<API.VariantGroup | API.ASINInfo>[] = [
+  // 国家选项枚举（使用useMemo优化）
+  const countryValueEnum = useMemo(
+    () =>
+      Object.keys(countryMap).reduce((acc, key) => {
+        acc[key] = { text: countryMap[key].text };
+        return acc;
+      }, {} as Record<string, { text: string }>),
+    [],
+  );
+
+  const columns: ProColumns<API.VariantGroup | API.ASINInfo>[] = useMemo(
+    () => [
     {
       title: '名称/ASIN',
       dataIndex: 'keyword',
@@ -215,10 +233,7 @@ const ASINManagement: React.FC<unknown> = () => {
       dataIndex: 'country',
       width: 120,
       valueType: 'select' as const,
-      valueEnum: Object.keys(countryMap).reduce((acc, key) => {
-        acc[key] = { text: countryMap[key].text };
-        return acc;
-      }, {} as Record<string, { text: string }>),
+      valueEnum: countryValueEnum,
       render: (_: any, record: API.VariantGroup | API.ASINInfo) => {
         const country = record.country || '';
         const countryInfo = countryMap[country];
@@ -271,9 +286,9 @@ const ASINManagement: React.FC<unknown> = () => {
 
         // 对于ASIN，显示ASIN类型
         const asinType = (record as API.ASINInfo).asinType;
-        if (asinType === 'MAIN_LINK') {
+        if (asinType === '1' || asinType === 1) {
           return <Tag color="green">主链</Tag>;
-        } else if (asinType === 'SUB_REVIEW') {
+        } else if (asinType === '2' || asinType === 2) {
           return (
             <Tag
               color="default"
@@ -452,7 +467,9 @@ const ASINManagement: React.FC<unknown> = () => {
         );
       },
     },
-  ];
+  ],
+    [countryValueEnum, access, getActionMenu, handleRemove],
+  );
 
   return (
     <PageContainer
@@ -467,6 +484,7 @@ const ASINManagement: React.FC<unknown> = () => {
         rowKey="id"
         search={{
           labelWidth: 120,
+          debounceTime: 500, // 搜索防抖500ms
         }}
         rowClassName={(record) => {
           // 根据 parentId 判断是变体组还是 ASIN
@@ -517,53 +535,32 @@ const ASINManagement: React.FC<unknown> = () => {
               添加ASIN
             </Button>
           </Access>,
-          <Access key="export" accessible={access.canReadASIN}>
+          <Access key="export-asin" accessible={access.canReadASIN}>
             <Button
               onClick={async () => {
-                try {
-                  const params = new URLSearchParams();
-                  const formValues =
-                    actionRef.current?.getFieldsValue?.() || {};
-                  if (formValues.keyword)
-                    params.append('keyword', formValues.keyword);
-                  if (formValues.country)
-                    params.append('country', formValues.country);
-                  if (formValues.variantStatus)
-                    params.append('variantStatus', formValues.variantStatus);
-
-                  const token = localStorage.getItem('token');
-                  const url = `/api/v1/export/asin?${params.toString()}`;
-
-                  const response = await fetch(url, {
-                    method: 'GET',
-                    headers: {
-                      Authorization: `Bearer ${token}`,
-                    },
-                  });
-
-                  if (response.ok) {
-                    const blob = await response.blob();
-                    const downloadUrl = window.URL.createObjectURL(blob);
-                    const a = document.createElement('a');
-                    a.href = downloadUrl;
-                    a.download = `ASIN数据_${
-                      new Date().toISOString().split('T')[0]
-                    }.xlsx`;
-                    document.body.appendChild(a);
-                    a.click();
-                    document.body.removeChild(a);
-                    window.URL.revokeObjectURL(downloadUrl);
-                    message.success('导出成功');
-                  } else {
-                    message.error('导出失败');
-                  }
-                } catch (error) {
-                  console.error('导出失败:', error);
-                  message.error('导出失败');
-                }
+                const formValues = actionRef.current?.getFieldsValue?.() || {};
+                await exportToExcel('/api/v1/export/asin', {
+                  keyword: formValues.keyword,
+                  country: formValues.country,
+                  variantStatus: formValues.variantStatus,
+                }, 'ASIN数据');
               }}
             >
-              导出Excel
+              导出ASIN
+            </Button>
+          </Access>,
+          <Access key="export-group" accessible={access.canReadASIN}>
+            <Button
+              onClick={async () => {
+                const formValues = actionRef.current?.getFieldsValue?.() || {};
+                await exportToExcel('/api/v1/export/variant-group', {
+                  keyword: formValues.keyword,
+                  country: formValues.country,
+                  variantStatus: formValues.variantStatus,
+                }, '变体组数据');
+              }}
+            >
+              导出变体组
             </Button>
           </Access>,
         ]}
@@ -695,10 +692,9 @@ const ASINManagement: React.FC<unknown> = () => {
             }
           >
             <Button
-              onClick={async () => {
-                await handleRemove(selectedRowsState);
-                setSelectedRows([]);
-                actionRef.current?.reloadAndRest?.();
+              danger
+              onClick={() => {
+                setBatchDeleteModalVisible(true);
               }}
             >
               批量删除
@@ -774,6 +770,27 @@ const ASINManagement: React.FC<unknown> = () => {
           if (actionRef.current) {
             await actionRef.current.reload();
           }
+        }}
+      />
+      <BatchDeleteConfirmModal
+        visible={batchDeleteModalVisible}
+        items={selectedRowsState}
+        loading={batchDeleteLoading}
+        onConfirm={async () => {
+          setBatchDeleteLoading(true);
+          try {
+            const success = await handleRemove(selectedRowsState);
+            if (success) {
+              setBatchDeleteModalVisible(false);
+              setSelectedRows([]);
+              actionRef.current?.reloadAndRest?.();
+            }
+          } finally {
+            setBatchDeleteLoading(false);
+          }
+        }}
+        onCancel={() => {
+          setBatchDeleteModalVisible(false);
         }}
       />
     </PageContainer>

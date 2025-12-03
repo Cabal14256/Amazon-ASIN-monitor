@@ -5,7 +5,7 @@ import {
   ProFormSelect,
   ProFormText,
 } from '@ant-design/pro-components';
-import React, { useEffect, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 
 const { addASIN, modifyASIN, queryVariantGroupList } = services.ASINController;
 
@@ -30,6 +30,7 @@ const ASINForm: React.FC<ASINFormProps> = (props) => {
   const message = useMessage();
   const isEdit = !!values?.id;
   const [variantGroups, setVariantGroups] = useState<API.VariantGroup[]>([]);
+  const submittingRef = useRef(false); // 防重复提交标志
 
   // 加载变体组列表
   const loadVariantGroups = async () => {
@@ -44,33 +45,77 @@ const ASINForm: React.FC<ASINFormProps> = (props) => {
     }
   };
 
+  const loadVariantGroupsMemo = useCallback(async () => {
+    try {
+      const { data } = await queryVariantGroupList({
+        current: 1,
+        pageSize: 1000,
+      });
+      setVariantGroups(data?.list || []);
+    } catch (error) {
+      console.error('加载变体组列表失败:', error);
+    }
+  }, []);
+
   useEffect(() => {
     if (modalVisible && !isEdit) {
-      loadVariantGroups();
+      loadVariantGroupsMemo();
     }
-  }, [modalVisible, isEdit]);
+  }, [modalVisible, isEdit, loadVariantGroupsMemo]);
 
-  const handleSubmit = async (formValues: API.ASINInfoVO) => {
-    try {
-      if (isEdit) {
-        await modifyASIN(
-          {
-            asinId: values.id || '',
-          },
-          formValues,
-        );
-        message.success('更新成功');
-      } else {
-        await addASIN(formValues);
-        message.success('创建成功');
+  const variantGroupOptions = useMemo(
+    () =>
+      variantGroups.map((group) => ({
+        label: `${group.name} (${group.country})`,
+        value: group.id,
+      })),
+    [variantGroups],
+  );
+
+  const initialValues = useMemo(
+    () => ({
+      ...values,
+      parentId: variantGroupId || values?.parentId,
+      country: variantGroupCountry || values?.country,
+      asinType: values?.asinType,
+    }),
+    [values, variantGroupId, variantGroupCountry],
+  );
+
+  const handleSubmit = useCallback(
+    async (formValues: API.ASINInfoVO) => {
+      // 防重复提交
+      if (submittingRef.current) {
+        return false;
       }
-      onSubmit();
-      return true;
-    } catch (error: any) {
-      message.error(error?.errorMessage || (isEdit ? '更新失败' : '创建失败'));
-      return false;
-    }
-  };
+      submittingRef.current = true;
+
+      try {
+        if (isEdit) {
+          await modifyASIN(
+            {
+              asinId: values?.id || '',
+            },
+            formValues,
+          );
+          message.success('更新成功');
+        } else {
+          await addASIN(formValues);
+          message.success('创建成功');
+        }
+        onSubmit();
+        return true;
+      } catch (error: any) {
+        message.error(
+          error?.errorMessage || (isEdit ? '更新失败' : '创建失败'),
+        );
+        return false;
+      } finally {
+        submittingRef.current = false;
+      }
+    },
+    [isEdit, values?.id, onSubmit, message],
+  );
 
   return (
     <ModalForm
@@ -81,12 +126,7 @@ const ASINForm: React.FC<ASINFormProps> = (props) => {
         if (!visible) onCancel();
       }}
       onFinish={handleSubmit}
-      initialValues={{
-        ...values,
-        parentId: variantGroupId || values?.parentId,
-        country: variantGroupCountry || values?.country, // 如果从变体组添加，使用变体组的国家
-        asinType: values?.asinType,
-      }}
+      initialValues={initialValues}
       modalProps={{
         destroyOnHidden: true,
       }}
@@ -97,10 +137,7 @@ const ASINForm: React.FC<ASINFormProps> = (props) => {
         placeholder="请选择变体组"
         rules={[{ required: true, message: '请选择变体组' }]}
         disabled={isEdit || !!variantGroupId} // 编辑时或已指定变体组时禁用
-        options={variantGroups.map((group) => ({
-          label: `${group.name} (${group.country})`,
-          value: group.id,
-        }))}
+        options={variantGroupOptions}
       />
       <ProFormText
         name="asin"
@@ -165,4 +202,4 @@ const ASINForm: React.FC<ASINFormProps> = (props) => {
   );
 };
 
-export default ASINForm;
+export default React.memo(ASINForm);

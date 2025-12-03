@@ -201,10 +201,35 @@ async function checkASINVariants(asin, country, forceRefresh = false) {
           if (!marketplaceId) {
             throw new Error(`无法获取 ${country} 的 Marketplace ID`);
           }
+          
+          // 清理和验证 marketplaceId
+          const cleanMarketplaceId = String(marketplaceId).trim();
+          if (!cleanMarketplaceId || cleanMarketplaceId.length === 0) {
+            throw new Error(`Marketplace ID 无效: ${marketplaceId}`);
+          }
+          
+          // 2022-04-01 版本：确保参数格式完全符合规范
+          // 使用明确的数组格式，确保每个值都正确清理和验证
           params = {
-            marketplaceIds: [marketplaceId],
-            includedData: ['variations'],
+            marketplaceIds: [cleanMarketplaceId],
+            includedData: ['variations'], // 确保小写，符合 API 规范
           };
+          
+          // 验证参数格式
+          if (!Array.isArray(params.marketplaceIds) || params.marketplaceIds.length === 0) {
+            throw new Error('marketplaceIds 必须是非空数组');
+          }
+          if (!Array.isArray(params.includedData) || params.includedData.length === 0) {
+            throw new Error('includedData 必须是非空数组');
+          }
+          
+          // 验证数组中的值
+          if (params.marketplaceIds.some(id => !id || typeof id !== 'string' || id.trim().length === 0)) {
+            throw new Error('marketplaceIds 数组中的值无效');
+          }
+          if (params.includedData.some(data => !data || typeof data !== 'string' || data.trim().length === 0)) {
+            throw new Error('includedData 数组中的值无效');
+          }
         } else {
           // 2020-12-01 版本：使用兼容的参数
           if (!marketplaceId) {
@@ -264,13 +289,54 @@ async function checkASINVariants(asin, country, forceRefresh = false) {
           }
         }
 
-        // 如果是 400 错误，可能是参数问题，尝试下一个版本
+        // 如果是 400 错误，可能是参数问题
         if (
           statusCode === 400 ||
           (error.message && error.message.includes('400'))
         ) {
+          // 对于 2022-04-01 版本，先尝试一次重试（可能是临时问题或参数格式问题）
+          if (version === '2022-04-01') {
+            console.log(
+              `[checkASINVariants] 版本 ${version} 返回 400（Bad Request），尝试重新清理参数后重试一次...`,
+            );
+            
+            try {
+              // 重新清理和构建参数
+              const cleanMarketplaceId = String(marketplaceId).trim();
+              const retryParams = {
+                marketplaceIds: [cleanMarketplaceId],
+                includedData: ['variations'],
+              };
+              
+              console.log(
+                `[checkASINVariants] 重试参数:`,
+                JSON.stringify(retryParams, null, 2),
+              );
+              
+              // 等待一小段时间后重试（避免立即重试）
+              await new Promise((resolve) => setTimeout(resolve, 200));
+              
+              response = await callSPAPI('GET', path, country, retryParams);
+              
+              if (response) {
+                console.log(
+                  `[checkASINVariants] 版本 ${version} 重试成功`,
+                );
+                apiVersion = version;
+                break;
+              }
+            } catch (retryError) {
+              console.log(
+                `[checkASINVariants] 版本 ${version} 重试也失败:`,
+                retryError.message,
+              );
+              // 重试失败，继续尝试下一个版本
+            }
+          }
+          
+          // 如果重试失败或不是 2022-04-01 版本，尝试下一个版本
           console.log(
-            `[checkASINVariants] 版本 ${version} 返回 400（Bad Request），可能是参数不兼容，尝试下一个版本...`,
+            `[checkASINVariants] 版本 ${version} 返回 400（Bad Request），尝试下一个版本...`,
           );
           continue;
         }

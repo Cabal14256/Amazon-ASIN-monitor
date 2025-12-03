@@ -253,7 +253,108 @@ async function exportMonitorHistory(req, res) {
   }
 }
 
+/**
+ * 导出变体组数据为Excel
+ */
+async function exportVariantGroupData(req, res) {
+  try {
+    const { keyword, country, variantStatus } = req.query;
+
+    // 获取所有变体组数据
+    const result = await VariantGroup.findAll({
+      keyword: keyword || '',
+      country: country || '',
+      variantStatus: variantStatus || '',
+      current: 1,
+      pageSize: 10000, // 导出所有数据
+    });
+
+    // 准备Excel数据
+    const excelData = [];
+
+    // 表头
+    excelData.push([
+      '变体组名称',
+      '变体组ID',
+      '国家',
+      '站点',
+      '品牌',
+      '变体状态',
+      'ASIN数量',
+      '异常ASIN数量',
+      '创建时间',
+      '更新时间',
+      '最后检查时间',
+    ]);
+
+    // 遍历变体组
+    for (const group of result.list) {
+      const asinCount = group.children?.length || 0;
+      const brokenAsinCount =
+        group.children?.filter((asin) => asin.isBroken === 1).length || 0;
+
+      excelData.push([
+        group.name || '',
+        group.id || '',
+        group.country || '',
+        group.site || '',
+        group.brand || '',
+        group.isBroken === 1 ? '异常' : '正常',
+        asinCount,
+        brokenAsinCount,
+        group.createTime || '',
+        group.updateTime || '',
+        group.lastCheckTime || '',
+      ]);
+    }
+
+    // 创建工作簿
+    const wb = XLSX.utils.book_new();
+    const ws = XLSX.utils.aoa_to_sheet(excelData);
+
+    // 设置列宽
+    ws['!cols'] = [
+      { wch: 30 }, // 变体组名称
+      { wch: 40 }, // 变体组ID
+      { wch: 10 }, // 国家
+      { wch: 10 }, // 站点
+      { wch: 15 }, // 品牌
+      { wch: 10 }, // 变体状态
+      { wch: 10 }, // ASIN数量
+      { wch: 12 }, // 异常ASIN数量
+      { wch: 20 }, // 创建时间
+      { wch: 20 }, // 更新时间
+      { wch: 20 }, // 最后检查时间
+    ];
+
+    XLSX.utils.book_append_sheet(wb, ws, '变体组数据');
+
+    // 生成Excel文件
+    const excelBuffer = XLSX.write(wb, { type: 'buffer', bookType: 'xlsx' });
+
+    // 设置响应头
+    const filename = `变体组数据_${new Date().toISOString().split('T')[0]}.xlsx`;
+    res.setHeader(
+      'Content-Type',
+      'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+    );
+    res.setHeader(
+      'Content-Disposition',
+      `attachment; filename="${encodeURIComponent(filename)}"`,
+    );
+
+    res.send(excelBuffer);
+  } catch (error) {
+    console.error('导出变体组数据失败:', error);
+    res.status(500).json({
+      success: false,
+      errorMessage: '导出变体组数据失败',
+    });
+  }
+}
+
 module.exports = {
   exportASINData,
   exportMonitorHistory,
+  exportVariantGroupData,
 };

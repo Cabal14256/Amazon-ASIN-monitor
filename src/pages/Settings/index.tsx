@@ -1,4 +1,5 @@
 import services from '@/services/settings';
+import backupServices from '@/services/backup';
 import { useMessage } from '@/utils/message';
 import {
   PageContainer,
@@ -7,7 +8,19 @@ import {
   ProFormSwitch,
   ProFormText,
 } from '@ant-design/pro-components';
-import { Alert, Card, Space, Tabs } from 'antd';
+import {
+  Alert,
+  Button,
+  Card,
+  Modal,
+  Popconfirm,
+  Space,
+  Table,
+  Tabs,
+  Tag,
+  message as antdMessage,
+} from 'antd';
+import dayjs from 'dayjs';
 import React, { useEffect, useState } from 'react';
 
 const { getSPAPIConfigs, updateSPAPIConfig } = services.SPAPIConfigController;
@@ -24,6 +37,11 @@ const SettingsPage: React.FC<unknown> = () => {
   const [spApiForm] = ProForm.useForm();
   const [feishuUSForm] = ProForm.useForm();
   const [feishuEUForm] = ProForm.useForm();
+  const [backups, setBackups] = useState<API.BackupInfo[]>([]);
+  const [backupLoading, setBackupLoading] = useState(false);
+  const [restoreModalVisible, setRestoreModalVisible] = useState(false);
+  const [restoreFilename, setRestoreFilename] = useState<string>('');
+  const [backupForm] = ProForm.useForm();
 
   // 加载配置
   const loadConfigs = async () => {
@@ -134,7 +152,107 @@ const SettingsPage: React.FC<unknown> = () => {
 
   useEffect(() => {
     loadConfigs();
+    loadBackups();
   }, []);
+
+  // 加载备份列表
+  const loadBackups = async () => {
+    setBackupLoading(true);
+    try {
+      const response = await backupServices.listBackups();
+      if (response && typeof response === 'object') {
+        if ('data' in response) {
+          setBackups((response.data as API.BackupInfo[]) || []);
+        } else if (Array.isArray(response)) {
+          setBackups(response);
+        }
+      }
+    } catch (error) {
+      console.error('加载备份列表失败:', error);
+      message.error('加载备份列表失败');
+    } finally {
+      setBackupLoading(false);
+    }
+  };
+
+  // 创建备份
+  const handleCreateBackup = async (values: any) => {
+    try {
+      await backupServices.createBackup({
+        tables: values.tables,
+        description: values.description,
+      });
+      message.success('备份创建成功');
+      backupForm.resetFields();
+      await loadBackups();
+    } catch (error: any) {
+      message.error(error?.errorMessage || '创建备份失败');
+    }
+  };
+
+  // 恢复备份
+  const handleRestoreBackup = async () => {
+    if (!restoreFilename) {
+      message.error('请选择要恢复的备份文件');
+      return;
+    }
+
+    Modal.confirm({
+      title: '确认恢复备份',
+      content: `确定要恢复备份文件 "${restoreFilename}" 吗？此操作将覆盖当前数据库，且不可撤销！`,
+      okText: '确认恢复',
+      okType: 'danger',
+      cancelText: '取消',
+      onOk: async () => {
+        try {
+          await backupServices.restoreBackup({ filename: restoreFilename });
+          message.success('备份恢复成功');
+          setRestoreModalVisible(false);
+          setRestoreFilename('');
+        } catch (error: any) {
+          message.error(error?.errorMessage || '恢复备份失败');
+        }
+      },
+    });
+  };
+
+  // 删除备份
+  const handleDeleteBackup = async (filename: string) => {
+    try {
+      await backupServices.deleteBackup({ filename });
+      message.success('备份删除成功');
+      await loadBackups();
+    } catch (error: any) {
+      message.error(error?.errorMessage || '删除备份失败');
+    }
+  };
+
+  // 下载备份
+  const handleDownloadBackup = async (filename: string) => {
+    try {
+      const blob = await backupServices.downloadBackup({ filename });
+      const downloadUrl = window.URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = downloadUrl;
+      a.download = filename;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      window.URL.revokeObjectURL(downloadUrl);
+      antdMessage.success('下载成功');
+    } catch (error: any) {
+      message.error(error?.errorMessage || '下载备份失败');
+    }
+  };
+
+  // 格式化文件大小
+  const formatFileSize = (bytes: number) => {
+    if (bytes === 0) return '0 B';
+    const k = 1024;
+    const sizes = ['B', 'KB', 'MB', 'GB'];
+    const i = Math.floor(Math.log(bytes) / Math.log(k));
+    return Math.round(bytes / Math.pow(k, i) * 100) / 100 + ' ' + sizes[i];
+  };
 
   // 保存SP-API配置
   const buildConfigEntry = (key: string, value: any, description: string) => ({
@@ -509,6 +627,136 @@ const SettingsPage: React.FC<unknown> = () => {
         </Space>
       ),
     },
+    {
+      key: 'backup',
+      label: '数据备份',
+      children: (
+        <Space direction="vertical" size="large" style={{ width: '100%' }}>
+          <Card title="创建备份">
+            <Alert
+              message="备份说明"
+              description="备份将保存为SQL文件，包含完整的数据库结构和数据。可以选择备份所有表或指定表。"
+              type="info"
+              showIcon
+              style={{ marginBottom: 16 }}
+            />
+            <ProForm
+              form={backupForm}
+              onFinish={handleCreateBackup}
+              submitter={{
+                searchConfig: {
+                  submitText: '创建备份',
+                },
+              }}
+            >
+              <ProFormText
+                name="description"
+                label="备份描述"
+                placeholder="请输入备份描述（可选）"
+                fieldProps={{
+                  style: { width: '100%' },
+                }}
+              />
+            </ProForm>
+          </Card>
+
+          <Card
+            title="备份列表"
+            extra={
+              <Button onClick={loadBackups} loading={backupLoading}>
+                刷新
+              </Button>
+            }
+          >
+            <Table
+              dataSource={backups}
+              loading={backupLoading}
+              rowKey="filename"
+              columns={[
+                {
+                  title: '文件名',
+                  dataIndex: 'filename',
+                  key: 'filename',
+                },
+                {
+                  title: '大小',
+                  dataIndex: 'size',
+                  key: 'size',
+                  render: (size: number) => formatFileSize(size),
+                },
+                {
+                  title: '创建时间',
+                  dataIndex: 'createdAt',
+                  key: 'createdAt',
+                  render: (time: string) =>
+                    dayjs(time).format('YYYY-MM-DD HH:mm:ss'),
+                },
+                {
+                  title: '操作',
+                  key: 'action',
+                  render: (_: any, record: API.BackupInfo) => (
+                    <Space>
+                      <Button
+                        type="link"
+                        onClick={() => handleDownloadBackup(record.filename)}
+                      >
+                        下载
+                      </Button>
+                      <Button
+                        type="link"
+                        onClick={() => {
+                          setRestoreFilename(record.filename);
+                          setRestoreModalVisible(true);
+                        }}
+                      >
+                        恢复
+                      </Button>
+                      <Popconfirm
+                        title="确定要删除这个备份吗？"
+                        onConfirm={() => handleDeleteBackup(record.filename)}
+                        okText="确定"
+                        cancelText="取消"
+                      >
+                        <Button type="link" danger>
+                          删除
+                        </Button>
+                      </Popconfirm>
+                    </Space>
+                  ),
+                },
+              ]}
+              pagination={{
+                pageSize: 10,
+                showSizeChanger: true,
+                showTotal: (total) => `共 ${total} 条`,
+              }}
+            />
+          </Card>
+
+          <Modal
+            title="恢复备份"
+            open={restoreModalVisible}
+            onOk={handleRestoreBackup}
+            onCancel={() => {
+              setRestoreModalVisible(false);
+              setRestoreFilename('');
+            }}
+            okText="确认恢复"
+            okType="danger"
+            cancelText="取消"
+          >
+            <Alert
+              message="警告"
+              description={`确定要恢复备份文件 "${restoreFilename}" 吗？此操作将覆盖当前数据库，且不可撤销！请确保已备份当前数据。`}
+              type="error"
+              showIcon
+              style={{ marginBottom: 16 }}
+            />
+            <p>备份文件：{restoreFilename}</p>
+          </Modal>
+        </Space>
+      ),
+    },
   ];
 
   return (
@@ -522,6 +770,7 @@ const SettingsPage: React.FC<unknown> = () => {
       <Tabs
         items={tabItems}
         activeKey={activeTab}
+        destroyInactiveTabPane
         onChange={(key) => {
           setActiveTab(key);
           // Tab 切换时设置表单值

@@ -10,6 +10,7 @@ import { useSearchParams } from '@umijs/max';
 import { Button, Space, Tag, message } from 'antd';
 import dayjs from 'dayjs';
 import React, { useEffect, useRef, useState } from 'react';
+import { exportToExcel } from '@/utils/export';
 
 const { queryMonitorHistory, getMonitorStatistics, getPeakHoursStatistics } =
   services.MonitorController;
@@ -151,6 +152,9 @@ const MonitorHistoryPage: React.FC<unknown> = () => {
       width: 150,
       hideInTable: type === 'group', // 如果是从变体组查看，隐藏ASIN列
       render: (text: string) => text || '-',
+      fieldProps: {
+        placeholder: '请输入ASIN编码',
+      },
     },
     {
       title: 'ASIN名称',
@@ -282,6 +286,29 @@ const MonitorHistoryPage: React.FC<unknown> = () => {
         headerTitle="监控历史记录"
         actionRef={actionRef}
         rowKey="id"
+        toolBarRender={() => [
+          <Button
+            key="export"
+            onClick={async () => {
+              const formValues = actionRef.current?.getFieldsValue?.() || {};
+              await exportToExcel('/api/v1/export/monitor-history', {
+                country: formValues.country,
+                checkType: formValues.checkType,
+                variantGroupId: type === 'group' ? id : undefined,
+                asinId: type === 'asin' ? id : undefined,
+                startTime: formValues.checkTime?.[0]
+                  ? dayjs(formValues.checkTime[0]).format('YYYY-MM-DD HH:mm:ss')
+                  : undefined,
+                endTime: formValues.checkTime?.[1]
+                  ? dayjs(formValues.checkTime[1]).format('YYYY-MM-DD HH:mm:ss')
+                  : undefined,
+                isBroken: formValues.isBroken,
+              }, '监控历史');
+            }}
+          >
+            导出Excel
+          </Button>,
+        ]}
         search={{
           labelWidth: 100,
           defaultCollapsed: false,
@@ -312,6 +339,10 @@ const MonitorHistoryPage: React.FC<unknown> = () => {
           }
           if (params.isBroken !== undefined && params.isBroken !== '') {
             requestParams.isBroken = params.isBroken;
+          }
+          // 处理ASIN搜索
+          if (params.asin) {
+            requestParams.asin = params.asin;
           }
 
           // 如果URL中有参数，添加到请求中
@@ -379,6 +410,9 @@ const MonitorHistoryPage: React.FC<unknown> = () => {
                   formValues.isBroken !== ''
                 ) {
                   params.append('isBroken', formValues.isBroken);
+                }
+                if (formValues.asin) {
+                  params.append('asin', formValues.asin);
                 }
 
                 // 如果URL中有参数，添加到请求中

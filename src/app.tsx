@@ -9,7 +9,7 @@ import {
 } from '@ant-design/icons';
 import { history, request as umiRequest } from '@umijs/max';
 import { App as AntdApp, Avatar, Badge, Button, Dropdown, Space } from 'antd';
-import React from 'react';
+import React, { useEffect } from 'react';
 
 // 全局初始化数据配置，用于 Layout 用户信息和权限初始化
 // 更多信息见文档：https://umijs.org/docs/api/runtime-config#getinitialstate
@@ -279,12 +279,143 @@ export const layout = ({ initialState, setInitialState }: any) => {
         });
       },
     },
-    childrenRender: (children: React.ReactNode) => (
-      <AntdApp>
-        <GlobalAlert />
-        {children}
-      </AntdApp>
-    ),
+    childrenRender: (children: React.ReactNode) => {
+      // 创建一个组件来处理动态隐藏/显示逻辑
+      const LayoutWrapper = () => {
+        useEffect(() => {
+          const updateSiderActions = () => {
+            const sider = document.querySelector('aside.ant-layout-sider, aside[class*="sider"]');
+            if (sider) {
+              const actions = sider.querySelector('.ant-pro-sider-actions') as HTMLElement;
+              if (actions) {
+                // 检查侧边栏是否收起
+                const isCollapsed = sider.classList.contains('ant-layout-sider-collapsed') ||
+                                   sider.classList.contains('ant-pro-layout-sider-collapsed') ||
+                                   sider.className.includes('collapsed');
+                
+                if (isCollapsed) {
+                  // 收起时隐藏
+                  actions.style.setProperty('display', 'none', 'important');
+                  actions.style.setProperty('visibility', 'hidden', 'important');
+                  actions.style.setProperty('width', '0', 'important');
+                  actions.style.setProperty('height', '0', 'important');
+                  actions.style.setProperty('opacity', '0', 'important');
+                  actions.style.setProperty('pointer-events', 'none', 'important');
+                } else {
+                  // 展开时显示
+                  actions.style.removeProperty('display');
+                  actions.style.removeProperty('visibility');
+                  actions.style.removeProperty('width');
+                  actions.style.removeProperty('height');
+                  actions.style.removeProperty('opacity');
+                  actions.style.removeProperty('pointer-events');
+                }
+              }
+            }
+          };
+
+          // 初始检查
+          updateSiderActions();
+
+          // 监听 DOM 变化
+          const observer = new MutationObserver(() => {
+            updateSiderActions();
+          });
+
+          // 观察整个文档的变化
+          observer.observe(document.body, {
+            childList: true,
+            subtree: true,
+            attributes: true,
+            attributeFilter: ['class'],
+          });
+
+          // 定期检查（作为备用方案）
+          const interval = setInterval(updateSiderActions, 100);
+
+          return () => {
+            observer.disconnect();
+            clearInterval(interval);
+          };
+        }, []);
+
+        return (
+          <AntdApp>
+            <GlobalAlert />
+            {children}
+          </AntdApp>
+        );
+      };
+
+      return <LayoutWrapper />;
+    },
+    // 侧边栏底部用户信息 - 收起时隐藏
+    siderFooterRender: (props: { collapsed?: boolean }) => {
+      // 如果侧边栏收起，不渲染底部用户信息
+      if (props?.collapsed) {
+        return null;
+      }
+
+      const currentUser = initialState?.currentUser;
+      if (!currentUser) {
+        return null;
+      }
+
+      const displayName =
+        currentUser.real_name || currentUser.username || '用户';
+      const roleName = currentUser.role_name || '系统管理员';
+
+      return (
+        <div style={{ padding: '16px', textAlign: 'center' }}>
+          <Space direction="vertical" size="small" style={{ width: '100%' }}>
+            <Avatar style={{ backgroundColor: '#87d068' }}>
+              {displayName.charAt(0).toUpperCase()}
+            </Avatar>
+            <div style={{ fontSize: '12px', color: '#666' }}>
+              {displayName}
+            </div>
+            <div style={{ fontSize: '11px', color: '#999' }}>
+              {roleName}
+            </div>
+          </Space>
+        </div>
+      );
+    },
+    // 侧边栏底部操作区 - 收起时隐藏（这是实际渲染 ant-pro-sider-actions 的配置）
+    siderActionsRender: (props: any) => {
+      // 检查 collapsed 状态，可能在不同的属性中
+      const isCollapsed = props?.collapsed || props?.collapsedWidth !== undefined;
+      
+      // 如果侧边栏收起，不渲染底部操作区
+      if (isCollapsed) {
+        return null;
+      }
+
+      const currentUser = initialState?.currentUser;
+      if (!currentUser) {
+        return null;
+      }
+
+      const displayName =
+        currentUser.real_name || currentUser.username || '用户';
+      const roleName = currentUser.role_name || '系统管理员';
+
+      return (
+        <div style={{ padding: '8px 16px' }}>
+          <Button type="text" block style={{ textAlign: 'left', height: 'auto', padding: '8px' }}>
+            <Space>
+              <Avatar style={{ backgroundColor: '#87d068' }}>
+                {displayName.charAt(0).toUpperCase()}
+              </Avatar>
+              <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-start' }}>
+                <span style={{ fontSize: '14px', lineHeight: '20px' }}>{displayName}</span>
+                <span style={{ fontSize: '12px', color: '#999', lineHeight: '16px' }}>{roleName}</span>
+              </div>
+            </Space>
+          </Button>
+        </div>
+      );
+    },
     // 右上角用户操作区
     actionsRender: () => {
       const currentUser = initialState?.currentUser;

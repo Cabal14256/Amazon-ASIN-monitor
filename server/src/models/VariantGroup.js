@@ -2,6 +2,19 @@ const { query } = require('../config/database');
 const { v4: uuidv4 } = require('uuid');
 const cacheService = require('../services/cacheService');
 
+// 转换ASIN类型：将旧格式(MAIN_LINK/SUB_REVIEW)转换为新格式(1/2)
+function normalizeAsinType(asinType) {
+  if (!asinType) return null;
+  const type = String(asinType).trim();
+  // 兼容旧格式
+  if (type === 'MAIN_LINK') return '1';
+  if (type === 'SUB_REVIEW') return '2';
+  // 新格式直接返回
+  if (type === '1' || type === 1) return '1';
+  if (type === '2' || type === 2) return '2';
+  return null;
+}
+
 class VariantGroup {
   // 查询所有变体组（带分页和筛选）
   static async findAll(params = {}) {
@@ -89,81 +102,80 @@ class VariantGroup {
     const list = await query(sql, queryValues);
     console.log('查询到的变体组数量:', list.length);
 
-    // 为每个变体组查询ASIN列表
-    for (const group of list) {
-      let asinQuery = `
-        SELECT 
+    // 优化：使用批量查询替代N+1查询
+    // 一次性获取所有变体组的ASIN数据，然后在应用层分组
+    if (list.length > 0) {
+      const groupIds = list.map((group) => group.id);
+      // 使用 IN 查询一次性获取所有ASIN
+      const placeholders = groupIds.map(() => '?').join(',');
+      const allAsins = await query(
+        `SELECT 
           id, asin, name, asin_type, country, site, brand, variant_group_id, 
           is_broken, variant_status, create_time, update_time,
           last_check_time, feishu_notify_enabled
-        FROM asins WHERE variant_group_id = ?
-      `;
-      const asinQueryValues = [group.id];
-
-      // 如果有keyword，无论通过什么方式找到变体组（名称、ID或ASIN），都返回该变体组下的所有ASIN
-      // 这样用户可以查看完整的变体组信息
-      // 注意：不再对ASIN进行过滤，因为用户搜索ASIN的目的是找到包含该ASIN的变体组，然后查看该变体组下的所有ASIN
-      if (keyword) {
-        const groupNameMatches =
-          group.name &&
-          group.name.toLowerCase().includes(keyword.toLowerCase());
-        const groupIdMatches =
-          group.id && group.id.toLowerCase().includes(keyword.toLowerCase());
-        console.log(
-          `变体组 ${group.id} (${group.name}): groupNameMatches=${groupNameMatches}, groupIdMatches=${groupIdMatches}`,
-        );
-        // 无论通过什么方式找到变体组，都返回所有ASIN
-        console.log(`变体组 ${group.id} 返回所有ASIN`);
-      }
-
-      asinQuery += ` ORDER BY create_time ASC`;
-
-      console.log('ASIN查询SQL:', asinQuery);
-      console.log('ASIN查询参数:', asinQueryValues);
-
-      const asins = await query(asinQuery, asinQueryValues);
-      console.log(`变体组 ${group.id} 查询到的ASIN数量:`, asins.length);
-      group.children = asins.map((asin) => ({
-        id: asin.id,
-        asin: asin.asin,
-        name: asin.name,
-        asinType: asin.asin_type, // 转换为驼峰命名
-        country: asin.country,
-        site: asin.site,
-        brand: asin.brand,
-        parentId: group.id,
-        isBroken: asin.is_broken,
-        variantStatus: asin.variant_status,
-        createTime: asin.create_time,
-        updateTime: asin.update_time,
-        lastCheckTime: asin.last_check_time,
-        feishuNotifyEnabled:
-          asin.feishu_notify_enabled !== null ? asin.feishu_notify_enabled : 1, // 默认为1
-      }));
-
-      // 根据ASIN的变体状态动态计算变体组状态
-      // 如果至少有一个ASIN的变体状态为异常，则整个变体组显示为异常
-      const hasBrokenASIN = group.children.some(
-        (child) => child.isBroken === 1,
+        FROM asins 
+        WHERE variant_group_id IN (${placeholders})
+        ORDER BY variant_group_id, create_time ASC`,
+        groupIds,
       );
-      if (hasBrokenASIN) {
-        group.is_broken = 1;
-        group.isBroken = 1;
-        group.variant_status = 'BROKEN';
-        group.variantStatus = 'BROKEN';
-      } else {
-        group.is_broken = 0;
-        group.isBroken = 0;
-        group.variant_status = 'NORMAL';
-        group.variantStatus = 'NORMAL';
+
+      // 按 variant_group_id 分组ASIN数据
+      const asinsByGroupId = {};
+      for (const asin of allAsins) {
+        const groupId = asin.variant_group_id;
+        if (!asinsByGroupId[groupId]) {
+          asinsByGroupId[groupId] = [];
+        }
+        asinsByGroupId[groupId].push(asin);
       }
 
-      // 添加字段映射（驼峰命名）
-      group.updateTime = group.update_time;
-      group.createTime = group.create_time;
-      group.lastCheckTime = group.last_check_time;
-      group.feishuNotifyEnabled =
-        group.feishu_notify_enabled !== null ? group.feishu_notify_enabled : 1;
+      // 为每个变体组分配ASIN数据
+      for (const group of list) {
+        const asins = asinsByGroupId[group.id] || [];
+        console.log(`变体组 ${group.id} 查询到的ASIN数量:`, asins.length);
+
+        group.children = asins.map((asin) => ({
+          id: asin.id,
+          asin: asin.asin,
+          name: asin.name,
+          asinType: normalizeAsinType(asin.asin_type), // 转换为驼峰命名并标准化
+          country: asin.country,
+          site: asin.site,
+          brand: asin.brand,
+          parentId: group.id,
+          isBroken: asin.is_broken,
+          variantStatus: asin.variant_status,
+          createTime: asin.create_time,
+          updateTime: asin.update_time,
+          lastCheckTime: asin.last_check_time,
+          feishuNotifyEnabled:
+            asin.feishu_notify_enabled !== null ? asin.feishu_notify_enabled : 1, // 默认为1
+        }));
+
+        // 根据ASIN的变体状态动态计算变体组状态
+        // 如果至少有一个ASIN的变体状态为异常，则整个变体组显示为异常
+        const hasBrokenASIN = group.children.some(
+          (child) => child.isBroken === 1,
+        );
+        if (hasBrokenASIN) {
+          group.is_broken = 1;
+          group.isBroken = 1;
+          group.variant_status = 'BROKEN';
+          group.variantStatus = 'BROKEN';
+        } else {
+          group.is_broken = 0;
+          group.isBroken = 0;
+          group.variant_status = 'NORMAL';
+          group.variantStatus = 'NORMAL';
+        }
+
+        // 添加字段映射（驼峰命名）
+        group.updateTime = group.update_time;
+        group.createTime = group.create_time;
+        group.lastCheckTime = group.last_check_time;
+        group.feishuNotifyEnabled =
+          group.feishu_notify_enabled !== null ? group.feishu_notify_enabled : 1;
+      }
     }
 
     const result = {

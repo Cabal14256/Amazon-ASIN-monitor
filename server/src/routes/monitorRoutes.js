@@ -20,6 +20,26 @@ router.get(
   '/monitor-history/statistics/peak-hours',
   monitorController.getPeakHoursStatistics,
 );
+router.get(
+  '/monitor-history/statistics/all-countries-summary',
+  monitorController.getAllCountriesSummary,
+);
+router.get(
+  '/monitor-history/statistics/region-summary',
+  monitorController.getRegionSummary,
+);
+router.get(
+  '/monitor-history/statistics/period-summary',
+  monitorController.getPeriodSummary,
+);
+router.get(
+  '/monitor-history/statistics/asin-by-country',
+  monitorController.getASINStatisticsByCountry,
+);
+router.get(
+  '/monitor-history/statistics/asin-by-variant-group',
+  monitorController.getASINStatisticsByVariantGroup,
+);
 router.get('/monitor-history/statistics', monitorController.getStatistics);
 router.get('/monitor-history/:id', monitorController.getMonitorHistoryById);
 router.get('/monitor-history', monitorController.getMonitorHistory);

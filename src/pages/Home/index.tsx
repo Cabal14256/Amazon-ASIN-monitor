@@ -15,7 +15,8 @@ import {
 } from 'antd';
 import dayjs from 'dayjs';
 import ReactECharts from 'echarts-for-react';
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
+import { wsClient } from '@/services/websocket';
 import styles from './index.less';
 
 const { getDashboardData } = services.DashboardController;
@@ -50,6 +51,14 @@ const HomePage: React.FC = () => {
   const message = useMessage();
   const [loading, setLoading] = useState(false);
   const [dashboardData, setDashboardData] = useState<API.DashboardData>({});
+  const [wsConnected, setWsConnected] = useState(false);
+  const [monitorProgress, setMonitorProgress] = useState<{
+    status?: string;
+    country?: string;
+    current?: number;
+    total?: number;
+    progress?: number;
+  } | null>(null);
 
   // 加载仪表盘数据
   const loadDashboardData = async () => {
@@ -84,9 +93,59 @@ const HomePage: React.FC = () => {
 
   useEffect(() => {
     loadDashboardData();
-    // 每30秒自动刷新一次
+    // 每30秒自动刷新一次（作为WebSocket的备用）
     const interval = setInterval(loadDashboardData, 30000);
-    return () => clearInterval(interval);
+
+    // 连接WebSocket
+    wsClient.connect();
+    setWsConnected(wsClient.isConnected());
+
+    // 监听WebSocket消息
+    const unsubscribe = wsClient.onMessage((msg) => {
+      if (msg.type === 'connected') {
+        setWsConnected(true);
+      } else if (msg.type === 'monitor_progress') {
+        setMonitorProgress({
+          status: msg.status,
+          country: msg.country,
+          current: msg.current,
+          total: msg.total,
+          progress: msg.progress,
+        });
+        // 如果任务完成，刷新数据
+        if (msg.status === 'completed') {
+          setTimeout(() => {
+            loadDashboardData();
+            setMonitorProgress(null);
+          }, 1000);
+        }
+      } else if (msg.type === 'monitor_complete') {
+        // 任务完成，刷新数据
+        setTimeout(() => {
+          loadDashboardData();
+          setMonitorProgress(null);
+        }, 1000);
+      } else if (msg.type === 'stats_update') {
+        // 统计数据更新
+        if (msg.data) {
+          setDashboardData((prev) => ({
+            ...prev,
+            ...msg.data,
+          }));
+        }
+      }
+    });
+
+    // 检查连接状态
+    const checkConnection = setInterval(() => {
+      setWsConnected(wsClient.isConnected());
+    }, 5000);
+
+    return () => {
+      clearInterval(interval);
+      clearInterval(checkConnection);
+      unsubscribe();
+    };
   }, []);
 
   const { overview, realtimeAlerts, distribution, recentActivities } =
@@ -246,9 +305,20 @@ const HomePage: React.FC = () => {
         breadcrumb: {},
       }}
       extra={[
-        <Button key="refresh" onClick={loadDashboardData} loading={loading}>
-          刷新
-        </Button>,
+        <Space key="status" size="small">
+          <Tag color={wsConnected ? 'success' : 'error'}>
+            {wsConnected ? '实时连接' : '连接断开'}
+          </Tag>
+          {monitorProgress && monitorProgress.status === 'progress' && (
+            <Tag color="processing">
+              检查中: {monitorProgress.country} ({monitorProgress.current}/
+              {monitorProgress.total})
+            </Tag>
+          )}
+          <Button onClick={loadDashboardData} loading={loading}>
+            刷新
+          </Button>
+        </Space>,
       ]}
       loading={loading}
     >
