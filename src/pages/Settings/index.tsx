@@ -17,7 +17,6 @@ import {
   Space,
   Table,
   Tabs,
-  Tag,
   message as antdMessage,
 } from 'antd';
 import dayjs from 'dayjs';
@@ -149,11 +148,6 @@ const SettingsPage: React.FC<unknown> = () => {
       setLoading(false);
     }
   };
-
-  useEffect(() => {
-    loadConfigs();
-    loadBackups();
-  }, []);
 
   // 加载备份列表
   const loadBackups = async () => {

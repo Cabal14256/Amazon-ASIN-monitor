@@ -22,10 +22,8 @@ function escapeSQL(str) {
   if (str === null || str === undefined) {
     return 'NULL';
   }
-  if (typeof str !== 'string') {
-    str = String(str);
-  }
-  return "'" + str.replace(/'/g, "''").replace(/\\/g, '\\\\') + "'";
+  let escapedStr = typeof str !== 'string' ? String(str) : str;
+  return "'" + escapedStr.replace(/'/g, "''").replace(/\\/g, '\\\\') + "'";
 }
 
 /**

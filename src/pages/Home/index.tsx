@@ -15,7 +15,7 @@ import {
 } from 'antd';
 import dayjs from 'dayjs';
 import ReactECharts from 'echarts-for-react';
-import React, { useEffect, useRef, useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import { wsClient } from '@/services/websocket';
 import styles from './index.less';
 

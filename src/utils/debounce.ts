@@ -14,6 +14,7 @@ export function debounce<T extends (...args: any[]) => any>(
   let result: ReturnType<T>;
 
   return function (this: any, ...args: Parameters<T>) {
+    // eslint-disable-next-line @typescript-eslint/no-this-alias
     const context = this;
     const callNow = immediate && !timeout;
 

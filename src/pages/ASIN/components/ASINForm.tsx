@@ -32,19 +32,6 @@ const ASINForm: React.FC<ASINFormProps> = (props) => {
   const [variantGroups, setVariantGroups] = useState<API.VariantGroup[]>([]);
   const submittingRef = useRef(false); // 防重复提交标志
 
-  // 加载变体组列表
-  const loadVariantGroups = async () => {
-    try {
-      const { data } = await queryVariantGroupList({
-        current: 1,
-        pageSize: 1000,
-      });
-      setVariantGroups(data?.list || []);
-    } catch (error) {
-      console.error('加载变体组列表失败:', error);
-    }
-  };
-
   const loadVariantGroupsMemo = useCallback(async () => {
     try {
       const { data } = await queryVariantGroupList({

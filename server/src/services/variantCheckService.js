@@ -314,7 +314,9 @@ async function checkASINVariants(asin, country, forceRefresh = false) {
               );
               
               // 等待一小段时间后重试（避免立即重试）
-              await new Promise((resolve) => setTimeout(resolve, 200));
+              await new Promise((resolve) => {
+                setTimeout(() => resolve(), 200);
+              });
               
               response = await callSPAPI('GET', path, country, retryParams);
               

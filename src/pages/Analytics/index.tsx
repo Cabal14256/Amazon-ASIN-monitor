@@ -23,8 +23,6 @@ import React, { useCallback, useEffect, useMemo, useState } from 'react';
 const { RangePicker } = DatePicker;
 const {
   getStatisticsByTime,
-  getStatisticsByCountry,
-  getStatisticsByVariantGroup,
   getMonitorStatistics,
   getPeakHoursStatistics,
   getAllCountriesSummary,

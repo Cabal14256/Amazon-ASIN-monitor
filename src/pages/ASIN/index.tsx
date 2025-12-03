@@ -13,7 +13,6 @@ import type { MenuProps } from 'antd';
 import { Button, Dropdown, Space, Switch, Tag } from 'antd';
 import dayjs from 'dayjs';
 import React, { useCallback, useMemo, useRef, useState } from 'react';
-import { debounce } from '@/utils/debounce';
 import { exportToExcel } from '@/utils/export';
 import ASINForm from './components/ASINForm';
 import BatchDeleteConfirmModal from './components/BatchDeleteConfirmModal';
