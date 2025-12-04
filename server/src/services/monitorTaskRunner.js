@@ -383,7 +383,7 @@ async function runMonitorTask(countries, batchConfig = null) {
       for (const country of countries) {
         const countryNotifyResult = notifyResults.countryResults[country];
         const countryResult = countryResults[country];
-        
+
         // 只有当通知发送成功且该国家有异常时才更新状态
         if (
           countryNotifyResult &&

@@ -18,9 +18,8 @@ async function loadMonitorConfigFromDatabase() {
       if (!Number.isNaN(parsed) && parsed > 0) {
         monitorConfig.maxConcurrentGroupChecks = limitConcurrency(parsed);
       } else {
-        monitorConfig.maxConcurrentGroupChecks = limitConcurrency(
-          DEFAULT_CONCURRENCY,
-        );
+        monitorConfig.maxConcurrentGroupChecks =
+          limitConcurrency(DEFAULT_CONCURRENCY);
       }
     }
     console.log(
@@ -53,4 +52,3 @@ module.exports = {
   reloadMonitorConfig,
   loadMonitorConfigFromDatabase,
 };
-

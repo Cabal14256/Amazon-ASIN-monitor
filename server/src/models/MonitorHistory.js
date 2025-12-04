@@ -525,7 +525,11 @@ class MonitorHistory {
 
   // 全部国家汇总统计
   static async getAllCountriesSummary(params = {}) {
-    const { startTime = '', endTime = '', timeSlotGranularity = 'day' } = params;
+    const {
+      startTime = '',
+      endTime = '',
+      timeSlotGranularity = 'day',
+    } = params;
 
     const { isPeakHour } = require('../utils/peakHours');
 
@@ -619,9 +623,12 @@ class MonitorHistory {
     });
 
     // 计算所有指标
-    const ratioAllAsin = totalChecks > 0 ? (brokenCount / totalChecks) * 100 : 0;
-    const ratioAllTime = totalAsinsDedup > 0 ? (brokenAsinsDedup / totalAsinsDedup) * 100 : 0;
-    const globalPeakRate = totalChecks > 0 ? (peakBroken / totalChecks) * 100 : 0;
+    const ratioAllAsin =
+      totalChecks > 0 ? (brokenCount / totalChecks) * 100 : 0;
+    const ratioAllTime =
+      totalAsinsDedup > 0 ? (brokenAsinsDedup / totalAsinsDedup) * 100 : 0;
+    const globalPeakRate =
+      totalChecks > 0 ? (peakBroken / totalChecks) * 100 : 0;
     const globalLowRate = totalChecks > 0 ? (lowBroken / totalChecks) * 100 : 0;
     const ratioHigh = peakTotal > 0 ? (peakBroken / peakTotal) * 100 : 0;
     const ratioLow = lowTotal > 0 ? (lowBroken / lowTotal) * 100 : 0;
@@ -648,7 +655,11 @@ class MonitorHistory {
 
   // 区域汇总统计（美国/欧洲）
   static async getRegionSummary(params = {}) {
-    const { startTime = '', endTime = '', timeSlotGranularity = 'day' } = params;
+    const {
+      startTime = '',
+      endTime = '',
+      timeSlotGranularity = 'day',
+    } = params;
 
     const { isPeakHour } = require('../utils/peakHours');
 
@@ -768,12 +779,22 @@ class MonitorHistory {
         }
       });
 
-      const ratioAllAsin = stats.totalChecks > 0 ? (stats.brokenCount / stats.totalChecks) * 100 : 0;
-      const ratioAllTime = totalAsinsDedup > 0 ? (brokenAsinsDedup / totalAsinsDedup) * 100 : 0;
-      const globalPeakRate = stats.totalChecks > 0 ? (stats.peakBroken / stats.totalChecks) * 100 : 0;
-      const globalLowRate = stats.totalChecks > 0 ? (stats.lowBroken / stats.totalChecks) * 100 : 0;
-      const ratioHigh = stats.peakTotal > 0 ? (stats.peakBroken / stats.peakTotal) * 100 : 0;
-      const ratioLow = stats.lowTotal > 0 ? (stats.lowBroken / stats.lowTotal) * 100 : 0;
+      const ratioAllAsin =
+        stats.totalChecks > 0
+          ? (stats.brokenCount / stats.totalChecks) * 100
+          : 0;
+      const ratioAllTime =
+        totalAsinsDedup > 0 ? (brokenAsinsDedup / totalAsinsDedup) * 100 : 0;
+      const globalPeakRate =
+        stats.totalChecks > 0
+          ? (stats.peakBroken / stats.totalChecks) * 100
+          : 0;
+      const globalLowRate =
+        stats.totalChecks > 0 ? (stats.lowBroken / stats.totalChecks) * 100 : 0;
+      const ratioHigh =
+        stats.peakTotal > 0 ? (stats.peakBroken / stats.peakTotal) * 100 : 0;
+      const ratioLow =
+        stats.lowTotal > 0 ? (stats.lowBroken / stats.lowTotal) * 100 : 0;
 
       result.push({
         region: region === 'US' ? '美国' : '欧洲',
@@ -940,12 +961,22 @@ class MonitorHistory {
         }
       });
 
-      const ratioAllAsin = stats.totalChecks > 0 ? (stats.brokenCount / stats.totalChecks) * 100 : 0;
-      const ratioAllTime = totalAsinsDedup > 0 ? (brokenAsinsDedup / totalAsinsDedup) * 100 : 0;
-      const globalPeakRate = stats.totalChecks > 0 ? (stats.peakBroken / stats.totalChecks) * 100 : 0;
-      const globalLowRate = stats.totalChecks > 0 ? (stats.lowBroken / stats.totalChecks) * 100 : 0;
-      const ratioHigh = stats.peakTotal > 0 ? (stats.peakBroken / stats.peakTotal) * 100 : 0;
-      const ratioLow = stats.lowTotal > 0 ? (stats.lowBroken / stats.lowTotal) * 100 : 0;
+      const ratioAllAsin =
+        stats.totalChecks > 0
+          ? (stats.brokenCount / stats.totalChecks) * 100
+          : 0;
+      const ratioAllTime =
+        totalAsinsDedup > 0 ? (brokenAsinsDedup / totalAsinsDedup) * 100 : 0;
+      const globalPeakRate =
+        stats.totalChecks > 0
+          ? (stats.peakBroken / stats.totalChecks) * 100
+          : 0;
+      const globalLowRate =
+        stats.totalChecks > 0 ? (stats.lowBroken / stats.totalChecks) * 100 : 0;
+      const ratioHigh =
+        stats.peakTotal > 0 ? (stats.peakBroken / stats.peakTotal) * 100 : 0;
+      const ratioLow =
+        stats.lowTotal > 0 ? (stats.lowBroken / stats.lowTotal) * 100 : 0;
 
       result.push({
         timeSlot: stats.timeSlot,
@@ -1044,12 +1075,13 @@ class MonitorHistory {
     notificationSent = 1,
   ) {
     // 将 checkTime 转换为 Date 对象（如果还不是）
-    const checkTimeDate = checkTime instanceof Date ? checkTime : new Date(checkTime);
-    
+    const checkTimeDate =
+      checkTime instanceof Date ? checkTime : new Date(checkTime);
+
     // 计算时间范围：从检查时间前1分钟到后2分钟（允许一定的误差）
     const timeStart = new Date(checkTimeDate.getTime() - 60 * 1000); // 前1分钟
     const timeEnd = new Date(checkTimeDate.getTime() + 2 * 60 * 1000); // 后2分钟
-    
+
     // 更新指定国家、时间范围内，异常状态的监控历史记录
     const result = await query(
       `UPDATE monitor_history 
@@ -1059,17 +1091,12 @@ class MonitorHistory {
          AND check_time <= ?
          AND is_broken = 1
          AND notification_sent = 0`,
-      [
-        notificationSent ? 1 : 0,
-        country,
-        timeStart,
-        timeEnd,
-      ],
+      [notificationSent ? 1 : 0, country, timeStart, timeEnd],
     );
-    
+
     // 清除相关缓存
     cacheService.deleteByPrefix('monitorHistoryCount:');
-    
+
     return result.affectedRows || 0;
   }
 }

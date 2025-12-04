@@ -333,7 +333,9 @@ async function exportVariantGroupData(req, res) {
     const excelBuffer = XLSX.write(wb, { type: 'buffer', bookType: 'xlsx' });
 
     // 设置响应头
-    const filename = `变体组数据_${new Date().toISOString().split('T')[0]}.xlsx`;
+    const filename = `变体组数据_${
+      new Date().toISOString().split('T')[0]
+    }.xlsx`;
     res.setHeader(
       'Content-Type',
       'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',

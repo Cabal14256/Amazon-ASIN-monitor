@@ -101,7 +101,7 @@ async function startServer() {
     console.log(`🚀 服务器运行在 http://localhost:${PORT}`);
     console.log(`📝 API文档: http://localhost:${PORT}/api/v1`);
     console.log(`📊 仪表盘API: http://localhost:${PORT}/api/v1/dashboard`);
-    
+
     // 初始化WebSocket服务器
     websocketService.init(server);
   });
