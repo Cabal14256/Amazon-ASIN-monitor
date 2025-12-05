@@ -160,6 +160,7 @@ async function exportMonitorHistory(req, res) {
       '变体组名称',
       'ASIN',
       'ASIN名称',
+      'ASIN类型',
       '国家',
       '检查结果',
       '检查详情',
@@ -199,12 +200,31 @@ async function exportMonitorHistory(req, res) {
         }
       }
 
+      // 将后端格式(1/2)转换为前端显示格式(主链/副评)
+      let asinTypeText = '';
+      if (history.asinType) {
+        const normalizedType =
+          history.asinType === 'MAIN_LINK'
+            ? '1'
+            : history.asinType === 'SUB_REVIEW'
+            ? '2'
+            : history.asinType;
+        if (normalizedType === '1') {
+          asinTypeText = '主链';
+        } else if (normalizedType === '2') {
+          asinTypeText = '副评';
+        } else {
+          asinTypeText = normalizedType;
+        }
+      }
+
       excelData.push([
         checkTimeStr,
         history.checkType === 'GROUP' ? '变体组' : 'ASIN',
         history.variantGroupName || '',
         history.asin || '',
         history.asinName || '',
+        asinTypeText,
         history.country || '',
         history.isBroken === 1 ? '异常' : '正常',
         checkResult,
@@ -222,6 +242,7 @@ async function exportMonitorHistory(req, res) {
       { wch: 30 }, // 变体组名称
       { wch: 15 }, // ASIN
       { wch: 50 }, // ASIN名称
+      { wch: 10 }, // ASIN类型
       { wch: 10 }, // 国家
       { wch: 10 }, // 检查结果
       { wch: 100 }, // 检查详情

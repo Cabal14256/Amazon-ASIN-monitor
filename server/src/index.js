@@ -2,11 +2,17 @@ const express = require('express');
 const cors = require('cors');
 require('dotenv').config();
 const { testConnection } = require('./config/database');
+const {
+  testConnection: testCompetitorConnection,
+} = require('./config/competitor-database');
 const { initScheduler } = require('./services/schedulerService');
 const authRoutes = require('./routes/authRoutes');
 const asinRoutes = require('./routes/asinRoutes');
 const monitorRoutes = require('./routes/monitorRoutes');
 const variantCheckRoutes = require('./routes/variantCheckRoutes');
+const competitorAsinRoutes = require('./routes/competitorAsinRoutes');
+const competitorMonitorRoutes = require('./routes/competitorMonitorRoutes');
+const competitorVariantCheckRoutes = require('./routes/competitorVariantCheckRoutes');
 const feishuRoutes = require('./routes/feishuRoutes');
 const spApiConfigRoutes = require('./routes/spApiConfigRoutes');
 const userRoutes = require('./routes/userRoutes');
@@ -52,6 +58,9 @@ app.use('/api/v1', dashboardRoutes); // 仪表盘路由
 app.use('/api/v1', asinRoutes);
 app.use('/api/v1', monitorRoutes);
 app.use('/api/v1', variantCheckRoutes);
+app.use('/api/v1', competitorAsinRoutes);
+app.use('/api/v1', competitorMonitorRoutes);
+app.use('/api/v1', competitorVariantCheckRoutes);
 app.use('/api/v1', feishuRoutes);
 app.use('/api/v1', spApiConfigRoutes);
 app.use('/api/v1', userRoutes); // 用户管理路由
@@ -92,6 +101,12 @@ async function startServer() {
   if (!dbConnected) {
     console.error('⚠️  警告: 数据库连接失败，请检查配置');
     console.log('💡 提示: 请确保已创建数据库并配置 .env 文件');
+  }
+
+  const competitorDbConnected = await testCompetitorConnection();
+  if (!competitorDbConnected) {
+    console.error('⚠️  警告: 竞品数据库连接失败，请检查配置');
+    console.log('💡 提示: 请确保已创建竞品数据库并配置 .env 文件');
   }
 
   // 初始化定时任务

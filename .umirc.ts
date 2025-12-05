@@ -59,9 +59,23 @@ export default defineConfig({
       icon: 'DatabaseOutlined',
     },
     {
+      name: '竞品ASIN 管理',
+      path: '/competitor-asin',
+      component: './CompetitorASIN',
+      access: 'canReadASIN', // 需要ASIN查看权限
+      icon: 'DatabaseOutlined',
+    },
+    {
       name: '监控历史',
       path: '/monitor-history',
       component: './MonitorHistory',
+      access: 'canReadMonitor', // 需要监控查看权限
+      icon: 'HistoryOutlined',
+    },
+    {
+      name: '竞品监控历史',
+      path: '/competitor-monitor-history',
+      component: './CompetitorMonitorHistory',
       access: 'canReadMonitor', // 需要监控查看权限
       icon: 'HistoryOutlined',
     },

@@ -1,18 +1,21 @@
-const VariantGroup = require('../models/VariantGroup');
-const ASIN = require('../models/ASIN');
-const { checkVariantGroup } = require('./variantCheckService');
-const { sendBatchNotifications } = require('./feishuService');
-const MonitorHistory = require('../models/MonitorHistory');
+const CompetitorVariantGroup = require('../models/CompetitorVariantGroup');
+const CompetitorASIN = require('../models/CompetitorASIN');
+const {
+  checkCompetitorVariantGroup,
+} = require('./competitorVariantCheckService');
+const {
+  sendCompetitorBatchNotifications,
+} = require('./competitorFeishuService');
+const CompetitorMonitorHistory = require('../models/CompetitorMonitorHistory');
 const { getMaxConcurrentGroupChecks } = require('../config/monitor-config');
 const Semaphore = require('./semaphore');
 const metricsService = require('./metricsService');
 const websocketService = require('./websocketService');
 
-let monitorSemaphore = new Semaphore(getMaxConcurrentGroupChecks());
-let isMonitorTaskRunning = false;
-let pendingRunCountries = null;
+let competitorMonitorSemaphore = new Semaphore(getMaxConcurrentGroupChecks());
+let isCompetitorMonitorTaskRunning = false;
+let pendingCompetitorRunCountries = null;
 
-// 单次任务限制处理的变体组数量（防止单次任务过大）
 const MAX_GROUPS_PER_TASK =
   Number(process.env.MONITOR_MAX_GROUPS_PER_TASK) || 0; // 0 表示不限制
 
@@ -25,21 +28,10 @@ const REGION_MAP = {
   ES: 'EU',
 };
 
-function syncSemaphoreLimit() {
+function syncCompetitorSemaphoreLimit() {
   // 获取当前并发数（如果启用了自动调整，这里会触发调整逻辑）
   const currentConcurrency = getMaxConcurrentGroupChecks();
-  monitorSemaphore.setMax(currentConcurrency);
-
-  // 定期输出风控指标（每10次调用输出一次，避免日志过多）
-  if (Math.random() < 0.1) {
-    const riskControlService = require('./riskControlService');
-    const metrics = riskControlService.getMetrics();
-    console.log(
-      `[风控指标] 错误率: ${(metrics.errorRate * 100).toFixed(1)}%, 限流次数: ${
-        metrics.rateLimitCount
-      }, 平均响应时间: ${metrics.avgResponseTime}s`,
-    );
-  }
+  competitorMonitorSemaphore.setMax(currentConcurrency);
 }
 
 function getCountriesToCheck(region, minute) {
@@ -55,7 +47,7 @@ function getCountriesToCheck(region, minute) {
   return countries;
 }
 
-async function processCountry(
+async function processCompetitorCountry(
   countryResults,
   country,
   checkTime,
@@ -67,7 +59,7 @@ async function processCountry(
     brokenGroups: 0,
     brokenGroupNames: [],
     brokenASINs: [],
-    brokenByType: { SP_API_ERROR: 0, NO_VARIANTS: 0 }, // 按类型统计异常
+    brokenByType: { SP_API_ERROR: 0, NO_VARIANTS: 0 },
     checkTime,
   });
 
@@ -76,31 +68,22 @@ async function processCountry(
 
   try {
     let groupsList = [];
-
-    // 如果提供了 batchConfig，使用分批查询
     if (
       batchConfig &&
       batchConfig.batchIndex !== undefined &&
       batchConfig.totalBatches > 1
     ) {
-      console.log(
-        `[processCountry] ${country} 使用分批查询: 批次 ${
-          batchConfig.batchIndex + 1
-        }/${batchConfig.totalBatches}`,
-      );
-      groupsList = await VariantGroup.findByCountryBatch(
+      groupsList = await CompetitorVariantGroup.findByCountryBatch(
         country,
         batchConfig.batchIndex,
         batchConfig.totalBatches,
       );
     } else {
-      // 否则使用分页查询
       const pageSize = 200;
       let page = 1;
       let hasMore = true;
-
       while (hasMore) {
-        const pageGroups = await VariantGroup.findByCountryPage(
+        const pageGroups = await CompetitorVariantGroup.findByCountryPage(
           country,
           page,
           pageSize,
@@ -110,20 +93,14 @@ async function processCountry(
           break;
         }
         groupsList.push(...pageGroups);
-
-        // 如果设置了单次任务限制，检查是否达到限制
         if (
           MAX_GROUPS_PER_TASK > 0 &&
           groupsList.length >= MAX_GROUPS_PER_TASK
         ) {
-          console.log(
-            `[processCountry] ${country} 达到单次任务限制 (${MAX_GROUPS_PER_TASK})，停止加载更多变体组`,
-          );
           groupsList = groupsList.slice(0, MAX_GROUPS_PER_TASK);
           hasMore = false;
           break;
         }
-
         if (pageGroups.length < pageSize) {
           hasMore = false;
           break;
@@ -131,26 +108,16 @@ async function processCountry(
         page++;
       }
     }
-
-    // 如果设置了单次任务限制，截取到限制数量
     if (MAX_GROUPS_PER_TASK > 0 && groupsList.length > MAX_GROUPS_PER_TASK) {
-      console.log(
-        `[processCountry] ${country} 截取到单次任务限制 (${MAX_GROUPS_PER_TASK})`,
-      );
       groupsList = groupsList.slice(0, MAX_GROUPS_PER_TASK);
     }
 
     if (groupsList.length === 0) {
-      console.log(`[processCountry] ${country} 没有需要检查的变体组`);
+      console.log(
+        `[processCompetitorCountry] ${country} 没有需要检查的竞品变体组`,
+      );
       return { checked: 0, broken: 0 };
     }
-
-    console.log(
-      `[processCountry] ${country} 开始检查 ${groupsList.length} 个变体组`,
-    );
-
-    // 在开始处理前同步信号量限制（触发自动调整）
-    syncSemaphoreLimit();
 
     const chunkConcurrency = Math.min(
       Math.max(getMaxConcurrentGroupChecks(), 1),
@@ -169,36 +136,30 @@ async function processCountry(
         checked++;
         countryResult.totalGroups++;
 
-        // 每处理10个变体组后，检查并同步并发数（触发自动调整）
-        if (checked % 10 === 0) {
-          syncSemaphoreLimit();
-        }
-
-        // 发送进度更新（每10个变体组更新一次，避免过于频繁）
-        if (checked % 10 === 0 || checked === totalGroups) {
-          websocketService.sendMonitorProgress({
-            status: 'progress',
-            country,
-            current: checked,
-            total: totalGroups,
-            progress: Math.round((checked / totalGroups) * 100),
-            timestamp: new Date().toISOString(),
-          });
-        }
+        websocketService.sendMonitorProgress({
+          status: 'progress',
+          country,
+          current: checked,
+          total: totalGroups,
+          progress: Math.round((checked / totalGroups) * 100),
+          timestamp: new Date().toISOString(),
+          isCompetitor: true, // 标记为竞品任务
+        });
 
         let result;
         const workerStart = process.hrtime();
-        await monitorSemaphore.acquire();
+        await competitorMonitorSemaphore.acquire();
         try {
-          result = await checkVariantGroup(group.id);
+          result = await checkCompetitorVariantGroup(group.id);
         } finally {
-          monitorSemaphore.release();
+          competitorMonitorSemaphore.release();
         }
         const [seconds, nanoseconds] = process.hrtime(workerStart);
         metricsService.recordVariantGroupCheck({
           region: country,
           durationSec: seconds + nanoseconds / 1e9,
           isBroken: result?.isBroken,
+          isCompetitor: true, // 标记为竞品任务
         });
 
         const brokenASINs = result?.brokenASINs || [];
@@ -211,8 +172,6 @@ async function processCountry(
           broken++;
           countryResult.brokenGroups++;
           countryResult.brokenGroupNames.push(group.name);
-
-          // 累加错误类型统计
           countryResult.brokenByType.SP_API_ERROR +=
             brokenByType.SP_API_ERROR || 0;
           countryResult.brokenByType.NO_VARIANTS +=
@@ -230,17 +189,17 @@ async function processCountry(
           },
         ];
 
-        const fullGroup = await VariantGroup.findById(group.id);
+        const fullGroup = await CompetitorVariantGroup.findById(group.id);
         if (fullGroup && Array.isArray(fullGroup.children)) {
-          // 检查变体组的通知开关（默认为1，即开启）
+          // 竞品监控：飞书通知默认关闭（feishu_notify_enabled默认为0）
           const groupNotifyEnabled =
             fullGroup.feishuNotifyEnabled !== null &&
             fullGroup.feishuNotifyEnabled !== undefined
               ? fullGroup.feishuNotifyEnabled !== 0
-              : true; // 默认为开启
+              : false; // 默认为关闭（竞品）
 
           for (const asinInfo of fullGroup.children) {
-            await ASIN.updateLastCheckTime(asinInfo.id);
+            await CompetitorASIN.updateLastCheckTime(asinInfo.id);
 
             // 同时检查变体组和ASIN的通知开关
             // 只有当两者都开启时，才发送通知
@@ -248,7 +207,7 @@ async function processCountry(
               asinInfo.feishuNotifyEnabled !== null &&
               asinInfo.feishuNotifyEnabled !== undefined
                 ? asinInfo.feishuNotifyEnabled !== 0
-                : true; // 默认为开启
+                : false; // 默认为关闭（竞品）
 
             if (
               groupNotifyEnabled &&
@@ -271,7 +230,7 @@ async function processCountry(
                 name: asinInfo.name || '',
                 groupName: group.name,
                 brand: asinInfo.brand || '',
-                errorType, // 添加错误类型
+                errorType,
               });
             }
 
@@ -291,26 +250,26 @@ async function processCountry(
         }
 
         try {
-          await MonitorHistory.bulkCreate(historyEntries);
+          await CompetitorMonitorHistory.bulkCreate(historyEntries);
         } catch (historyError) {
-          console.error(`  ⚠️  批量记录监控历史失败:`, historyError.message);
+          console.error(
+            `  ⚠️  批量记录竞品监控历史失败:`,
+            historyError.message,
+          );
         }
       }
     });
 
     await Promise.all(workers);
-
-    // 分批查询模式下不需要分页循环
   } catch (error) {
-    console.error(`❌ 处理国家 ${country} 失败:`, error.message);
-    // 即使出错也返回统计信息
+    console.error(`❌ 处理竞品国家 ${country} 失败:`, error.message);
     return { checked, broken };
   }
 
   return { checked, broken };
 }
 
-async function runMonitorTask(countries, batchConfig = null) {
+async function runCompetitorMonitorTask(countries, batchConfig = null) {
   if (!countries || countries.length === 0) {
     return {
       success: false,
@@ -321,26 +280,26 @@ async function runMonitorTask(countries, batchConfig = null) {
     };
   }
 
-  if (isMonitorTaskRunning) {
-    pendingRunCountries = Array.from(
-      new Set([...(pendingRunCountries || []), ...countries]),
+  if (isCompetitorMonitorTaskRunning) {
+    pendingCompetitorRunCountries = Array.from(
+      new Set([...(pendingCompetitorRunCountries || []), ...countries]),
     );
     console.log(
-      `⏳ 上一个监控任务仍在运行，已缓存下一次执行的国家: ${pendingRunCountries.join(
+      `⏳ 上一个竞品监控任务仍在运行，已缓存下一次执行的国家: ${pendingCompetitorRunCountries.join(
         ', ',
       )}`,
     );
     return {
       success: false,
-      error: '上一个监控任务仍在运行',
+      error: '上一个竞品监控任务仍在运行',
       totalChecked: 0,
       totalBroken: 0,
       countryResults: {},
     };
   }
 
-  isMonitorTaskRunning = true;
-  syncSemaphoreLimit();
+  isCompetitorMonitorTaskRunning = true;
+  syncCompetitorSemaphoreLimit();
 
   const batchInfo = batchConfig
     ? ` (批次 ${batchConfig.batchIndex + 1}/${batchConfig.totalBatches})`
@@ -348,16 +307,15 @@ async function runMonitorTask(countries, batchConfig = null) {
   console.log(
     `\n⏰ [${new Date().toLocaleString(
       'zh-CN',
-    )}] 开始执行监控任务，国家: ${countries.join(', ')}${batchInfo}`,
+    )}] 开始执行竞品监控任务，国家: ${countries.join(', ')}${batchInfo}`,
   );
 
   const startTime = process.hrtime();
   const countryResults = {};
   let totalChecked = 0;
   let totalBroken = 0;
-  const checkTime = new Date(); // 使用 Date 对象而不是字符串
+  const checkTime = new Date();
 
-  // 发送任务开始通知
   websocketService.sendMonitorProgress({
     status: 'started',
     countries,
@@ -365,12 +323,18 @@ async function runMonitorTask(countries, batchConfig = null) {
       ? `批次 ${batchConfig.batchIndex + 1}/${batchConfig.totalBatches}`
       : null,
     timestamp: checkTime.toISOString(),
+    isCompetitor: true, // 标记为竞品任务
   });
 
   try {
     const stats = await Promise.all(
       countries.map((country) =>
-        processCountry(countryResults, country, checkTime, batchConfig),
+        processCompetitorCountry(
+          countryResults,
+          country,
+          checkTime,
+          batchConfig,
+        ),
       ),
     );
 
@@ -379,7 +343,6 @@ async function runMonitorTask(countries, batchConfig = null) {
       totalBroken += broken;
     });
 
-    // 汇总所有国家的异常类型统计
     const totalBrokenByType = {
       SP_API_ERROR: 0,
       NO_VARIANTS: 0,
@@ -393,19 +356,19 @@ async function runMonitorTask(countries, batchConfig = null) {
       }
     });
 
-    console.log(`\n📨 开始发送飞书通知...`);
-    const notifyResults = await sendBatchNotifications(countryResults);
+    console.log(`\n📨 开始发送竞品飞书通知...`);
+    const notifyResults = await sendCompetitorBatchNotifications(
+      countryResults,
+    );
     console.log(
-      `📨 通知发送完成: 总计 ${notifyResults.total}, 成功 ${notifyResults.success}, 失败 ${notifyResults.failed}, 跳过 ${notifyResults.skipped}`,
+      `📨 竞品通知发送完成: 总计 ${notifyResults.total}, 成功 ${notifyResults.success}, 失败 ${notifyResults.failed}, 跳过 ${notifyResults.skipped}`,
     );
 
-    // 更新已发送通知的监控历史记录状态
     if (notifyResults.countryResults) {
       for (const country of countries) {
         const countryNotifyResult = notifyResults.countryResults[country];
         const countryResult = countryResults[country];
 
-        // 只有当通知发送成功且该国家有异常时才更新状态
         if (
           countryNotifyResult &&
           countryNotifyResult.success &&
@@ -414,19 +377,20 @@ async function runMonitorTask(countries, batchConfig = null) {
           countryResult.brokenGroups > 0
         ) {
           try {
-            const updatedCount = await MonitorHistory.updateNotificationStatus(
-              country,
-              checkTime,
-              1, // 标记为已通知
-            );
+            const updatedCount =
+              await CompetitorMonitorHistory.updateNotificationStatus(
+                country,
+                checkTime,
+                1,
+              );
             if (updatedCount > 0) {
               console.log(
-                `✅ 已更新 ${country} 的 ${updatedCount} 条监控历史记录为已通知状态`,
+                `✅ 已更新 ${country} 的 ${updatedCount} 条竞品监控历史记录为已通知状态`,
               );
             }
           } catch (error) {
             console.error(
-              `❌ 更新 ${country} 监控历史记录通知状态失败:`,
+              `❌ 更新 ${country} 竞品监控历史记录通知状态失败:`,
               error.message,
             );
           }
@@ -437,7 +401,6 @@ async function runMonitorTask(countries, batchConfig = null) {
     const [seconds, nanoseconds] = process.hrtime(startTime);
     const duration = seconds + nanoseconds / 1e9;
 
-    // 构建异常分类信息
     const errorTypeInfo = [];
     if (totalBrokenByType.SP_API_ERROR > 0) {
       errorTypeInfo.push(`SP-API错误: ${totalBrokenByType.SP_API_ERROR} 个`);
@@ -450,12 +413,11 @@ async function runMonitorTask(countries, batchConfig = null) {
       errorTypeInfo.length > 0 ? ` (${errorTypeInfo.join(', ')})` : '';
 
     console.log(
-      `\n✅ 监控任务完成: 检查 ${totalChecked} 个变体组, 异常 ${totalBroken} 个${errorTypeText}, 耗时 ${duration.toFixed(
+      `\n✅ 竞品监控任务完成: 检查 ${totalChecked} 个变体组, 异常 ${totalBroken} 个${errorTypeText}, 耗时 ${duration.toFixed(
         2,
       )}秒\n`,
     );
 
-    // 发送任务完成通知
     websocketService.sendMonitorComplete({
       success: true,
       totalChecked,
@@ -464,6 +426,7 @@ async function runMonitorTask(countries, batchConfig = null) {
       duration: duration.toFixed(2),
       countryResults,
       timestamp: new Date().toISOString(),
+      isCompetitor: true, // 标记为竞品任务
     });
 
     return {
@@ -477,10 +440,10 @@ async function runMonitorTask(countries, batchConfig = null) {
       checkTime: checkTime.toISOString(),
     };
   } catch (error) {
-    console.error(`❌ 监控任务执行失败:`, error);
+    console.error(`❌ 竞品监控任务执行失败:`, error);
     return {
       success: false,
-      error: error.message || '监控任务执行失败',
+      error: error.message || '竞品监控任务执行失败',
       totalChecked,
       totalBroken,
       totalNormal: totalChecked - totalBroken,
@@ -488,32 +451,35 @@ async function runMonitorTask(countries, batchConfig = null) {
       duration: 0,
     };
   } finally {
-    isMonitorTaskRunning = false;
+    isCompetitorMonitorTaskRunning = false;
     const [seconds, nanoseconds] = process.hrtime(startTime);
     metricsService.recordSchedulerRun({
-      type: 'monitor_task',
+      type: 'competitor_monitor_task', // 自定义类型用于竞品
       durationSec: seconds + nanoseconds / 1e9,
     });
-    if (pendingRunCountries && pendingRunCountries.length > 0) {
-      const nextCountries = pendingRunCountries;
-      pendingRunCountries = null;
-      await runMonitorTask(nextCountries);
+    if (
+      pendingCompetitorRunCountries &&
+      pendingCompetitorRunCountries.length > 0
+    ) {
+      const nextCountries = pendingCompetitorRunCountries;
+      pendingCompetitorRunCountries = null;
+      await runCompetitorMonitorTask(nextCountries);
     }
   }
 }
 
-async function triggerManualCheck(countries = null) {
+async function triggerCompetitorManualCheck(countries = null) {
   if (countries && Array.isArray(countries)) {
-    return await runMonitorTask(countries);
+    return await runCompetitorMonitorTask(countries);
   } else {
     const allCountries = Object.keys(REGION_MAP);
-    return await runMonitorTask(allCountries);
+    return await runCompetitorMonitorTask(allCountries);
   }
 }
 
 module.exports = {
   REGION_MAP,
-  runMonitorTask,
-  triggerManualCheck,
+  runCompetitorMonitorTask,
+  triggerCompetitorManualCheck,
   getCountriesToCheck,
 };

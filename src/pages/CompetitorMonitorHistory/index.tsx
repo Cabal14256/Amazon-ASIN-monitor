@@ -163,38 +163,6 @@ const MonitorHistoryPage: React.FC<unknown> = () => {
       render: (text: string) => text || '-',
     },
     {
-      title: 'ASIN类型',
-      dataIndex: 'asinType',
-      width: 100,
-      hideInTable: type === 'group',
-      valueType: 'select' as const,
-      valueEnum: {
-        '1': { text: '主链', status: 'Success' },
-        '2': { text: '副评', status: 'Default' },
-      },
-      render: (_: any, record: API.MonitorHistory) => {
-        if (!record.asinType) return '-';
-        // 将后端格式(1/2)转换为前端显示格式(主链/副评)
-        // 兼容旧格式 MAIN_LINK/SUB_REVIEW
-        const normalizedType =
-          record.asinType === 'MAIN_LINK'
-            ? '1'
-            : record.asinType === 'SUB_REVIEW'
-            ? '2'
-            : record.asinType;
-        const typeMap: Record<string, { text: string; color: string }> = {
-          '1': { text: '主链', color: 'green' },
-          '2': { text: '副评', color: 'blue' },
-        };
-        const typeInfo = typeMap[normalizedType];
-        return typeInfo ? (
-          <Tag color={typeInfo.color}>{typeInfo.text}</Tag>
-        ) : (
-          normalizedType
-        );
-      },
-    },
-    {
       title: '所属国家',
       dataIndex: 'country',
       width: 120,

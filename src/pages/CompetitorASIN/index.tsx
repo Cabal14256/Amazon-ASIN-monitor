@@ -1,8 +1,8 @@
-import services from '@/services/asin';
-import variantCheckServices from '@/services/variantCheck';
-import { exportToExcel } from '@/utils/export';
+import {
+  default as services,
+  default as variantCheckServices,
+} from '@/services/competitor';
 import { useMessage } from '@/utils/message';
-import { MoreOutlined } from '@ant-design/icons';
 import {
   ActionType,
   FooterToolbar,
@@ -12,9 +12,10 @@ import {
 } from '@ant-design/pro-components';
 import { Access, history, useAccess } from '@umijs/max';
 import type { MenuProps } from 'antd';
-import { Button, Dropdown, Switch, Tag } from 'antd';
+import { Button, Dropdown, Space, Switch, Tag } from 'antd';
 import dayjs from 'dayjs';
 import React, { useCallback, useMemo, useRef, useState } from 'react';
+// 竞品监控不需要导出功能，已移除
 import ASINForm from './components/ASINForm';
 import BatchDeleteConfirmModal from './components/BatchDeleteConfirmModal';
 import ExcelImportModal from './components/ExcelImportModal';
@@ -23,14 +24,14 @@ import VariantGroupForm from './components/VariantGroupForm';
 import './index.less';
 
 const {
-  queryVariantGroupList,
-  deleteVariantGroup,
-  deleteASIN,
-  updateASINFeishuNotify,
-  updateVariantGroupFeishuNotify,
-} = services.ASINController;
-const { checkVariantGroup, checkASIN } =
-  variantCheckServices.VariantCheckController;
+  queryCompetitorVariantGroupList,
+  deleteCompetitorVariantGroup,
+  deleteCompetitorASIN,
+  updateCompetitorASINFeishuNotify,
+  updateCompetitorVariantGroupFeishuNotify,
+} = services.CompetitorASINController;
+const { checkCompetitorVariantGroup, checkCompetitorASIN } =
+  variantCheckServices.CompetitorVariantCheckController;
 
 // 国家选项映射
 const countryMap: Record<
@@ -45,7 +46,7 @@ const countryMap: Record<
   ES: { text: '西班牙', color: 'magenta', region: 'EU' },
 };
 
-const ASINManagement: React.FC<unknown> = () => {
+const CompetitorASINManagement: React.FC<unknown> = () => {
   const message = useMessage();
   const actionRef = useRef<ActionType>();
   const requestCacheRef = useRef<
@@ -73,12 +74,12 @@ const ASINManagement: React.FC<unknown> = () => {
         for (const row of selectedRows) {
           if ((row as API.VariantGroup).parentId === undefined) {
             // 变体组
-            await deleteVariantGroup({
+            await deleteCompetitorVariantGroup({
               groupId: row.id || '',
             });
           } else {
             // ASIN
-            await deleteASIN({
+            await deleteCompetitorASIN({
               asinId: row.id || '',
             });
           }
@@ -112,6 +113,62 @@ const ASINManagement: React.FC<unknown> = () => {
   const [excelImportModalVisible, setExcelImportModalVisible] = useState(false);
   const [batchDeleteModalVisible, setBatchDeleteModalVisible] = useState(false);
   const [batchDeleteLoading, setBatchDeleteLoading] = useState(false);
+
+  // 操作列菜单（使用useCallback优化）
+  const getActionMenu = useCallback(
+    (record: API.VariantGroup | API.ASINInfo): MenuProps => {
+      const isGroup = (record as API.VariantGroup).parentId === undefined;
+      const items: MenuProps['items'] = [
+        {
+          key: 'monitor',
+          label: '查看监控历史',
+          onClick: () => {
+            const id = record.id || '';
+            const type = isGroup ? 'group' : 'asin';
+            // 跳转到监控历史页面，带参数
+            history.push(`/competitor-monitor-history?type=${type}&id=${id}`);
+          },
+        },
+      ];
+
+      // 只有有编辑权限的用户才能看到编辑和移动选项
+      if (access.canWriteASIN) {
+        items.unshift({
+          key: 'edit',
+          label: '编辑',
+          onClick: () => {
+            if (isGroup) {
+              setEditingVariantGroup(record as API.VariantGroup);
+              setVariantGroupModalVisible(true);
+            } else {
+              setEditingASIN(record as API.ASINInfo);
+              setAsinModalVisible(true);
+            }
+          },
+        });
+
+        // 仅对ASIN显示移动到选项
+        if (!isGroup) {
+          items.push(
+            {
+              type: 'divider' as const,
+            },
+            {
+              key: 'move',
+              label: '移动到...',
+              onClick: () => {
+                setMovingASIN(record as API.ASINInfo);
+                setMoveModalVisible(true);
+              },
+            },
+          );
+        }
+      }
+
+      return { items };
+    },
+    [access.canWriteASIN],
+  );
 
   // 国家选项枚举（使用useMemo优化）
   const countryValueEnum = useMemo(
@@ -190,16 +247,7 @@ const ASINManagement: React.FC<unknown> = () => {
           );
         },
       },
-      {
-        title: '站点',
-        dataIndex: 'site',
-        width: 150,
-        hideInSearch: true,
-        render: (_: any, record: API.VariantGroup | API.ASINInfo) => {
-          const text = record.site;
-          return text || '-';
-        },
-      },
+      // 竞品监控不需要站点列，已移除
       {
         title: '品牌',
         dataIndex: 'brand',
@@ -272,40 +320,21 @@ const ASINManagement: React.FC<unknown> = () => {
         width: 180,
         valueType: 'dateTime',
         hideInSearch: true,
+      },
+      {
+        title: '监控更新时间',
+        dataIndex: 'lastCheckTime',
+        width: 180,
+        valueType: 'dateTime',
+        hideInSearch: true,
         render: (_: any, record: API.VariantGroup | API.ASINInfo) => {
           const isGroup = (record as API.VariantGroup).parentId === undefined;
-          const updateTime = record.updateTime;
           const lastCheckTime = isGroup
             ? (record as API.VariantGroup).lastCheckTime
             : (record as API.ASINInfo).lastCheckTime;
-
-          return (
-            <div
-              style={{
-                display: 'flex',
-                flexDirection: 'column',
-                gap: '4px',
-                lineHeight: '1.5',
-              }}
-            >
-              <div>
-                <span style={{ color: '#666', fontSize: '12px' }}>更新：</span>
-                <span style={{ fontSize: '12px' }}>
-                  {updateTime
-                    ? dayjs(updateTime).format('YYYY-MM-DD HH:mm:ss')
-                    : '-'}
-                </span>
-              </div>
-              <div>
-                <span style={{ color: '#666', fontSize: '12px' }}>监控：</span>
-                <span style={{ fontSize: '12px' }}>
-                  {lastCheckTime
-                    ? dayjs(lastCheckTime).format('YYYY-MM-DD HH:mm:ss')
-                    : '-'}
-                </span>
-              </div>
-            </div>
-          );
+          // 使用 dayjs 格式化，确保时区与更新时间一致
+          if (!lastCheckTime) return '-';
+          return dayjs(lastCheckTime).format('YYYY-MM-DD HH:mm:ss');
         },
       },
       {
@@ -325,13 +354,13 @@ const ASINManagement: React.FC<unknown> = () => {
                 try {
                   if (isGroup) {
                     const group = record as API.VariantGroup;
-                    await updateVariantGroupFeishuNotify(
+                    await updateCompetitorVariantGroupFeishuNotify(
                       { groupId: group.id },
                       { enabled: checked },
                     );
                   } else {
                     const asin = record as API.ASINInfo;
-                    await updateASINFeishuNotify(
+                    await updateCompetitorASINFeishuNotify(
                       { asinId: asin.id },
                       { enabled: checked },
                     );
@@ -354,147 +383,99 @@ const ASINManagement: React.FC<unknown> = () => {
         title: '操作',
         dataIndex: 'option',
         valueType: 'option',
-        width: 80,
+        width: 280,
         fixed: 'right',
         render: (_: any, record: API.VariantGroup | API.ASINInfo) => {
           const isGroup = (record as API.VariantGroup).parentId === undefined;
-
-          // 构建完整的操作菜单
-          const menuItems: MenuProps['items'] = [];
-
-          // 编辑选项（有权限时）
-          if (access.canWriteASIN) {
-            menuItems.push({
-              key: 'edit',
-              label: '编辑',
-              onClick: () => {
-                if (isGroup) {
-                  setEditingVariantGroup(record as API.VariantGroup);
-                  setVariantGroupModalVisible(true);
-                } else {
-                  setEditingASIN(record as API.ASINInfo);
-                  setAsinModalVisible(true);
-                }
-              },
-            });
-          }
-
-          // 立即检查
-          menuItems.push({
-            key: 'check',
-            label: '立即检查',
-            onClick: async () => {
-              const hide = message.loading('正在检查...', 0);
-              try {
-                if (isGroup) {
-                  await checkVariantGroup({
-                    groupId: record.id || '',
-                    forceRefresh: true,
-                  });
-                  message.success('检查完成');
-                } else {
-                  await checkASIN({
-                    asinId: record.id || '',
-                    forceRefresh: true,
-                  });
-                  message.success('检查完成');
-                }
-                if (actionRef.current) {
-                  await actionRef.current.reload();
-                }
-              } catch (error: any) {
-                message.error(error?.errorMessage || '检查失败');
-              } finally {
-                hide();
-              }
-            },
-          });
-
-          // 查看监控历史
-          menuItems.push({
-            key: 'monitor',
-            label: '查看监控历史',
-            onClick: () => {
-              const id = record.id || '';
-              const type = isGroup ? 'group' : 'asin';
-              history.push(`/monitor-history?type=${type}&id=${id}`);
-            },
-          });
-
-          // 添加ASIN（仅变体组，有权限时）
-          if (access.canWriteASIN && isGroup) {
-            menuItems.push({
-              key: 'addAsin',
-              label: '添加ASIN',
-              onClick: () => {
-                setEditingASIN(undefined);
-                setSelectedVariantGroupId(record.id);
-                setSelectedVariantGroupCountry(
-                  (record as API.VariantGroup).country,
-                );
-                setAsinModalVisible(true);
-              },
-            });
-          }
-
-          // 移动到...（仅ASIN，有权限时）
-          if (access.canWriteASIN && !isGroup) {
-            menuItems.push({
-              type: 'divider' as const,
-            });
-            menuItems.push({
-              key: 'move',
-              label: '移动到...',
-              onClick: () => {
-                setMovingASIN(record as API.ASINInfo);
-                setMoveModalVisible(true);
-              },
-            });
-          }
-
-          // 删除（有权限时）
-          if (access.canWriteASIN) {
-            menuItems.push({
-              type: 'divider' as const,
-            });
-            menuItems.push({
-              key: 'delete',
-              label: '删除',
-              danger: true,
-              onClick: async () => {
-                const success = await handleRemove([record]);
-                if (success) {
-                  actionRef.current?.reloadAndRest?.();
-                }
-              },
-            });
-          }
-
           return (
-            <Dropdown menu={{ items: menuItems }} trigger={['click']}>
+            <Space>
+              <Dropdown menu={getActionMenu(record)} trigger={['click']}>
+                <Button type="link" size="small">
+                  操作
+                </Button>
+              </Dropdown>
               <Button
-                type="text"
+                type="link"
                 size="small"
-                icon={<MoreOutlined />}
-                style={{ padding: '0 4px' }}
-              />
-            </Dropdown>
+                onClick={async () => {
+                  const hide = message.loading('正在检查...', 0);
+                  try {
+                    if (isGroup) {
+                      // 立即检查时强制刷新，不使用缓存
+                      await checkCompetitorVariantGroup({
+                        groupId: record.id || '',
+                        forceRefresh: true,
+                      });
+                      message.success('检查完成');
+                    } else {
+                      // 立即检查时强制刷新，不使用缓存
+                      await checkCompetitorASIN({
+                        asinId: record.id || '',
+                        forceRefresh: true,
+                      });
+                      message.success('检查完成');
+                    }
+                    // 刷新表格
+                    if (actionRef.current) {
+                      await actionRef.current.reload();
+                    }
+                  } catch (error: any) {
+                    message.error(error?.errorMessage || '检查失败');
+                  } finally {
+                    hide();
+                  }
+                }}
+              >
+                立即检查
+              </Button>
+              <Access accessible={access.canWriteASIN}>
+                {isGroup && (
+                  <Button
+                    type="link"
+                    size="small"
+                    onClick={() => {
+                      setEditingASIN(undefined);
+                      setSelectedVariantGroupId(record.id);
+                      setSelectedVariantGroupCountry(
+                        (record as API.VariantGroup).country,
+                      );
+                      setAsinModalVisible(true);
+                    }}
+                  >
+                    添加ASIN
+                  </Button>
+                )}
+                <Button
+                  type="link"
+                  size="small"
+                  danger
+                  onClick={async () => {
+                    const success = await handleRemove([record]);
+                    if (success) {
+                      actionRef.current?.reloadAndRest?.();
+                    }
+                  }}
+                >
+                  删除
+                </Button>
+              </Access>
+            </Space>
           );
         },
       },
     ],
-    [countryValueEnum, access, handleRemove, message],
+    [countryValueEnum, access, getActionMenu, handleRemove],
   );
 
   return (
     <PageContainer
       header={{
-        title: 'ASIN 管理',
+        title: '竞品ASIN 管理',
         breadcrumb: {},
       }}
     >
       <ProTable<API.VariantGroup | API.ASINInfo>
-        headerTitle="变体组列表"
+        headerTitle="竞品变体组列表"
         actionRef={actionRef}
         rowKey="id"
         search={{
@@ -550,42 +531,7 @@ const ASINManagement: React.FC<unknown> = () => {
               添加ASIN
             </Button>
           </Access>,
-          <Access key="export-asin" accessible={access.canReadASIN}>
-            <Button
-              onClick={async () => {
-                const formValues = actionRef.current?.getFieldsValue?.() || {};
-                await exportToExcel(
-                  '/api/v1/export/asin',
-                  {
-                    keyword: formValues.keyword,
-                    country: formValues.country,
-                    variantStatus: formValues.variantStatus,
-                  },
-                  'ASIN数据',
-                );
-              }}
-            >
-              导出ASIN
-            </Button>
-          </Access>,
-          <Access key="export-group" accessible={access.canReadASIN}>
-            <Button
-              onClick={async () => {
-                const formValues = actionRef.current?.getFieldsValue?.() || {};
-                await exportToExcel(
-                  '/api/v1/export/variant-group',
-                  {
-                    keyword: formValues.keyword,
-                    country: formValues.country,
-                    variantStatus: formValues.variantStatus,
-                  },
-                  '变体组数据',
-                );
-              }}
-            >
-              导出变体组
-            </Button>
-          </Access>,
+          // 竞品监控不需要导出功能，已移除
         ]}
         request={async (params) => {
           const cacheKey = JSON.stringify({
@@ -615,7 +561,7 @@ const ASINManagement: React.FC<unknown> = () => {
               country,
               variantStatus,
             });
-            const response = await queryVariantGroupList({
+            const response = await queryCompetitorVariantGroupList({
               current: current || 1,
               pageSize: pageSize || 10,
               keyword: keyword || '', // 确保keyword有值
@@ -820,4 +766,4 @@ const ASINManagement: React.FC<unknown> = () => {
   );
 };
 
-export default ASINManagement;
+export default CompetitorASINManagement;

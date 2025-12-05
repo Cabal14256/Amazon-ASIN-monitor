@@ -6,6 +6,7 @@ const MonitorHistory = require('../models/MonitorHistory');
 const cacheService = require('./cacheService');
 const htmlScraperService = require('./htmlScraperService');
 const SPAPIConfig = require('../models/SPAPIConfig');
+const riskControlService = require('./riskControlService');
 
 /**
  * 每次最多同时检查的 ASIN 数（降低并发以减少限流风险）
@@ -131,12 +132,25 @@ function setVariantResultCache(asin, country, result) {
  * errorType: 'SP_API_ERROR' - SP-API调用错误, 'NO_VARIANTS' - ASIN无变体（正常情况）
  */
 async function checkASINVariants(asin, country, forceRefresh = false) {
+  const startTime = Date.now();
+  let isRateLimit = false;
+  let isSpApiError = false;
+  let success = false;
+
   try {
     // 如果 forceRefresh 为 true，跳过缓存
     if (!forceRefresh) {
       const cached = getCachedVariantResult(asin, country);
       if (cached) {
         console.log(`[checkASINVariants] 使用缓存结果: ${asin} (${country})`);
+        // 缓存命中，记录为成功
+        const responseTime = (Date.now() - startTime) / 1000;
+        riskControlService.recordCheck({
+          success: true,
+          isRateLimit: false,
+          isSpApiError: false,
+          responseTime,
+        });
         return cached;
       }
     } else {
@@ -370,8 +384,11 @@ async function checkASINVariants(asin, country, forceRefresh = false) {
         // 其他错误（如 429、500 等），也尝试下一个版本
         if (
           statusCode === 429 ||
-          (error.message && error.message.includes('429'))
+          (error.message && error.message.includes('429')) ||
+          error.message.includes('QuotaExceeded') ||
+          error.message.includes('TooManyRequests')
         ) {
+          isRateLimit = true; // 标记为限流错误
           console.log(
             `[checkASINVariants] 版本 ${version} 返回 429（限流），尝试下一个版本...`,
           );
@@ -453,6 +470,17 @@ async function checkASINVariants(asin, country, forceRefresh = false) {
         console.log(
           `[checkASINVariants] HTML抓取成功: hasVariants=${hasVariants}, variantCount=${variantCount}`,
         );
+
+        // 记录成功（HTML抓取成功）
+        const responseTime = (Date.now() - startTime) / 1000;
+        success = true;
+        riskControlService.recordCheck({
+          success: true,
+          isRateLimit: false,
+          isSpApiError: false,
+          responseTime,
+        });
+
         return result;
       } catch (htmlError) {
         console.error(`[checkASINVariants] HTML抓取也失败:`, htmlError.message);
@@ -627,6 +655,17 @@ async function checkASINVariants(asin, country, forceRefresh = false) {
       };
       // 使用清理后的 ASIN 存储缓存
       setVariantResultCache(cleanASIN, country, resultPayload);
+
+      // 记录成功（有变体或无变体都是成功，只是结果不同）
+      const responseTime = (Date.now() - startTime) / 1000;
+      success = true;
+      riskControlService.recordCheck({
+        success: true,
+        isRateLimit: false,
+        isSpApiError: false,
+        responseTime,
+      });
+
       return resultPayload;
     }
 
@@ -642,6 +681,17 @@ async function checkASINVariants(asin, country, forceRefresh = false) {
     };
     // 使用清理后的 ASIN 存储缓存
     setVariantResultCache(cleanASIN, country, resultPayload);
+
+    // 记录成功（无变体也是成功）
+    const responseTime = (Date.now() - startTime) / 1000;
+    success = true;
+    riskControlService.recordCheck({
+      success: true,
+      isRateLimit: false,
+      isSpApiError: false,
+      responseTime,
+    });
+
     return resultPayload;
   } catch (error) {
     console.error(`检查ASIN ${asin} 变体失败:`, error.message);
@@ -649,6 +699,15 @@ async function checkASINVariants(asin, country, forceRefresh = false) {
     // 如果是404错误，说明ASIN不存在或无法访问（可能是ASIN不存在，也可能是SP-API版本不支持）
     // 这种情况下，我们标记为 SP-API 错误，因为可能是API调用问题
     if (error.message.includes('404') || error.message.includes('NotFound')) {
+      const responseTime = (Date.now() - startTime) / 1000;
+      isSpApiError = true;
+      riskControlService.recordCheck({
+        success: false,
+        isRateLimit: false,
+        isSpApiError: true,
+        responseTime,
+      });
+
       return {
         hasVariants: false,
         variantCount: 0,
@@ -683,6 +742,23 @@ async function checkASINVariants(asin, country, forceRefresh = false) {
       error.message.includes('503') ||
       error.statusCode
     ) {
+      const responseTime = (Date.now() - startTime) / 1000;
+      const isRateLimitError =
+        error.message.includes('429') ||
+        error.message.includes('QuotaExceeded') ||
+        error.message.includes('TooManyRequests') ||
+        error.statusCode === 429;
+
+      isRateLimit = isRateLimitError;
+      isSpApiError = !isRateLimitError; // 限流错误不算SP-API错误，是单独的类型
+
+      riskControlService.recordCheck({
+        success: false,
+        isRateLimit: isRateLimitError,
+        isSpApiError: !isRateLimitError,
+        responseTime,
+      });
+
       return {
         hasVariants: false,
         variantCount: 0,

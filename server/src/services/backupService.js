@@ -22,19 +22,21 @@ function escapeSQL(str) {
   if (str === null || str === undefined) {
     return 'NULL';
   }
-  let escapedStr = typeof str !== 'string' ? String(str) : str;
-  return "'" + escapedStr.replace(/'/g, "''").replace(/\\/g, '\\\\') + "'";
+  let strValue = str;
+  if (typeof strValue !== 'string') {
+    strValue = String(strValue);
+  }
+  return "'" + strValue.replace(/'/g, "''").replace(/\\/g, '\\\\') + "'";
 }
 
 /**
  * 生成表的 CREATE TABLE 语句
  */
 async function getTableCreateStatement(connection, tableName) {
-  const [rows] = await connection.execute(
-    `SHOW CREATE TABLE \`${tableName}\``
-  );
+  const [rows] = await connection.execute(`SHOW CREATE TABLE \`${tableName}\``);
   // MySQL 返回的字段名可能是 'Create Table' 或 'CREATE TABLE'，需要兼容处理
-  const createTable = rows[0]['Create Table'] || rows[0]['CREATE TABLE'] || rows[0].createTable;
+  const createTable =
+    rows[0]['Create Table'] || rows[0]['CREATE TABLE'] || rows[0].createTable;
   if (!createTable) {
     throw new Error(`无法获取表 ${tableName} 的创建语句`);
   }
@@ -52,10 +54,12 @@ async function getTableData(connection, tableName) {
 
   // 获取列名
   const [columns] = await connection.execute(
-    `SHOW COLUMNS FROM \`${tableName}\``
+    `SHOW COLUMNS FROM \`${tableName}\``,
   );
   // MySQL 返回的字段名可能是 'Field' 或 'FIELD'，需要兼容处理
-  const columnNames = columns.map(col => col.Field || col.FIELD || col.field).filter(Boolean);
+  const columnNames = columns
+    .map((col) => col.Field || col.FIELD || col.field)
+    .filter(Boolean);
 
   // 生成 INSERT 语句
   let sql = `\n-- Dumping data for table \`${tableName}\`\n\n`;
@@ -66,8 +70,8 @@ async function getTableData(connection, tableName) {
   const batchSize = 100;
   for (let i = 0; i < rows.length; i += batchSize) {
     const batch = rows.slice(i, i + batchSize);
-    const values = batch.map(row => {
-      const rowValues = columnNames.map(col => {
+    const values = batch.map((row) => {
+      const rowValues = columnNames.map((col) => {
         const value = row[col];
         if (value === null || value === undefined) {
           return 'NULL';
@@ -88,7 +92,9 @@ async function getTableData(connection, tableName) {
       });
       return `(${rowValues.join(',')})`;
     });
-    sql += `INSERT INTO \`${tableName}\` (\`${columnNames.join('`, `')}\`) VALUES ${values.join(',')};\n`;
+    sql += `INSERT INTO \`${tableName}\` (\`${columnNames.join(
+      '`, `',
+    )}\`) VALUES ${values.join(',')};\n`;
   }
 
   sql += `/*!40000 ALTER TABLE \`${tableName}\` ENABLE KEYS */;\n`;
@@ -107,10 +113,7 @@ async function createBackup(options = {}) {
 
   await ensureBackupDir();
 
-  const timestamp = new Date()
-    .toISOString()
-    .replace(/[:.]/g, '-')
-    .slice(0, 19);
+  const timestamp = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
   const filename = `backup_${timestamp}.sql`;
   const filepath = path.join(BACKUP_DIR, filename);
 
@@ -135,20 +138,20 @@ async function createBackup(options = {}) {
       const placeholders = tables.map(() => '?').join(',');
       const [existingTables] = await connection.execute(
         `SELECT TABLE_NAME as table_name FROM information_schema.tables WHERE table_schema = DATABASE() AND TABLE_NAME IN (${placeholders})`,
-        tables
+        tables,
       );
       tablesToBackup = existingTables
-        .map(t => t.table_name || t.TABLE_NAME)
-        .filter(name => name); // 过滤掉 undefined 和 null
+        .map((t) => t.table_name || t.TABLE_NAME)
+        .filter((name) => name); // 过滤掉 undefined 和 null
       sqlContent += `-- Tables: ${tablesToBackup.join(', ')}\n\n`;
     } else {
       // 备份所有表
       const [allTables] = await connection.execute(
-        `SELECT TABLE_NAME as table_name FROM information_schema.tables WHERE table_schema = DATABASE() AND table_type = 'BASE TABLE' ORDER BY TABLE_NAME`
+        `SELECT TABLE_NAME as table_name FROM information_schema.tables WHERE table_schema = DATABASE() AND table_type = 'BASE TABLE' ORDER BY TABLE_NAME`,
       );
       tablesToBackup = allTables
-        .map(t => t.table_name || t.TABLE_NAME)
-        .filter(name => name); // 过滤掉 undefined 和 null
+        .map((t) => t.table_name || t.TABLE_NAME)
+        .filter((name) => name); // 过滤掉 undefined 和 null
       sqlContent += `-- Full database backup (${tablesToBackup.length} tables)\n\n`;
     }
 
@@ -164,16 +167,19 @@ async function createBackup(options = {}) {
         console.warn(`跳过无效的表名: ${tableName}`);
         continue;
       }
-      
+
       console.log(`正在备份表: ${tableName}`);
-      
+
       try {
         // 生成 CREATE TABLE 语句
         sqlContent += `\n-- --------------------------------------------------------\n`;
         sqlContent += `-- Table structure for table \`${tableName}\`\n`;
         sqlContent += `-- --------------------------------------------------------\n\n`;
         sqlContent += `DROP TABLE IF EXISTS \`${tableName}\`;\n`;
-        const createTable = await getTableCreateStatement(connection, tableName);
+        const createTable = await getTableCreateStatement(
+          connection,
+          tableName,
+        );
         sqlContent += createTable + '\n\n';
 
         // 生成 INSERT 语句
@@ -249,7 +255,10 @@ async function restoreBackup(filepath) {
       const nextChar = sqlContent[i + 1];
 
       // 处理字符串
-      if ((char === "'" || char === '"') && (i === 0 || sqlContent[i - 1] !== '\\')) {
+      if (
+        (char === "'" || char === '"') &&
+        (i === 0 || sqlContent[i - 1] !== '\\')
+      ) {
         if (!inString) {
           inString = true;
           stringChar = char;
@@ -273,10 +282,10 @@ async function restoreBackup(filepath) {
 
     // 执行所有 SQL 语句
     console.log(`开始恢复备份，共 ${statements.length} 条 SQL 语句`);
-    
+
     // 禁用外键检查
     await connection.execute('SET FOREIGN_KEY_CHECKS = 0');
-    
+
     for (let i = 0; i < statements.length; i++) {
       const statement = statements[i].trim();
       if (statement && !statement.startsWith('--')) {
@@ -287,9 +296,14 @@ async function restoreBackup(filepath) {
           }
         } catch (error) {
           // 忽略某些错误（如表已存在等）
-          if (!error.message.includes('already exists') && 
-              !error.message.includes('Unknown table')) {
-            console.warn(`执行语句时出错 (${i + 1}/${statements.length}):`, error.message);
+          if (
+            !error.message.includes('already exists') &&
+            !error.message.includes('Unknown table')
+          ) {
+            console.warn(
+              `执行语句时出错 (${i + 1}/${statements.length}):`,
+              error.message,
+            );
             console.warn(`语句: ${statement.substring(0, 100)}...`);
           }
         }
@@ -298,7 +312,7 @@ async function restoreBackup(filepath) {
 
     // 启用外键检查
     await connection.execute('SET FOREIGN_KEY_CHECKS = 1');
-    
+
     console.log('备份恢复完成');
   } catch (error) {
     console.error('恢复失败:', error);
@@ -356,9 +370,13 @@ async function deleteBackup(filename) {
   if (!/^backup_[0-9T-]+\.sql$/.test(filename)) {
     throw new Error('无效的文件名');
   }
-  
+
   // 额外的安全检查：防止路径遍历攻击
-  if (filename.includes('..') || filename.includes('/') || filename.includes('\\')) {
+  if (
+    filename.includes('..') ||
+    filename.includes('/') ||
+    filename.includes('\\')
+  ) {
     throw new Error('无效的文件名：包含非法字符');
   }
 
@@ -385,9 +403,13 @@ async function getBackupFile(filename) {
   if (!/^backup_[0-9T-]+\.sql$/.test(filename)) {
     throw new Error('无效的文件名');
   }
-  
+
   // 额外的安全检查：防止路径遍历攻击
-  if (filename.includes('..') || filename.includes('/') || filename.includes('\\')) {
+  if (
+    filename.includes('..') ||
+    filename.includes('/') ||
+    filename.includes('\\')
+  ) {
     throw new Error('无效的文件名：包含非法字符');
   }
 
@@ -410,4 +432,3 @@ module.exports = {
   deleteBackup,
   getBackupFile,
 };
-

@@ -1,5 +1,5 @@
-import services from '@/services/settings';
 import backupServices from '@/services/backup';
+import services from '@/services/settings';
 import { useMessage } from '@/utils/message';
 import {
   PageContainer,
@@ -102,10 +102,10 @@ const SettingsPage: React.FC<unknown> = () => {
 
         spApiFormValues[config.configKey] = value;
       });
-      // 只在当前 tab 是 sp-api 时设置值
-      if (activeTab === 'sp-api') {
+      // 设置SP-API表单值（无论当前tab是什么，都设置，以便切换tab时能显示）
+      setTimeout(() => {
         spApiForm.setFieldsValue(spApiFormValues);
-      }
+      }, 0);
 
       // 设置飞书表单值
       const usConfig = feishuData.find(
@@ -115,32 +115,19 @@ const SettingsPage: React.FC<unknown> = () => {
         (c: API.FeishuConfig) => c.country === 'EU',
       );
 
-      // 调试日志
-      console.log('[Settings] 飞书配置数据:', {
-        feishuData,
-        usConfig,
-        euConfig,
-        activeTab,
-      });
-
-      // 只在当前 tab 是 feishu 时设置值
-      if (activeTab === 'feishu') {
-        // 使用 setTimeout 确保表单已经渲染
-        setTimeout(() => {
-          const usValues = {
-            webhookUrl: usConfig?.webhookUrl || '',
-            enabled: usConfig?.enabled === 1,
-          };
-          const euValues = {
-            webhookUrl: euConfig?.webhookUrl || '',
-            enabled: euConfig?.enabled === 1,
-          };
-          console.log('[Settings] 设置US表单值:', usValues);
-          console.log('[Settings] 设置EU表单值:', euValues);
-          feishuUSForm.setFieldsValue(usValues);
-          feishuEUForm.setFieldsValue(euValues);
-        }, 100);
-      }
+      // 设置飞书表单值（无论当前tab是什么，都设置，以便切换tab时能显示）
+      setTimeout(() => {
+        const usValues = {
+          webhookUrl: usConfig?.webhookUrl || '',
+          enabled: usConfig?.enabled === 1,
+        };
+        const euValues = {
+          webhookUrl: euConfig?.webhookUrl || '',
+          enabled: euConfig?.enabled === 1,
+        };
+        feishuUSForm.setFieldsValue(usValues);
+        feishuEUForm.setFieldsValue(euValues);
+      }, 0);
     } catch (error) {
       console.error('加载配置失败:', error);
       message.error('加载配置失败');
@@ -168,6 +155,12 @@ const SettingsPage: React.FC<unknown> = () => {
       setBackupLoading(false);
     }
   };
+
+  // 页面加载时获取配置
+  useEffect(() => {
+    loadConfigs();
+    loadBackups();
+  }, []);
 
   // 创建备份
   const handleCreateBackup = async (values: any) => {
@@ -245,7 +238,7 @@ const SettingsPage: React.FC<unknown> = () => {
     const k = 1024;
     const sizes = ['B', 'KB', 'MB', 'GB'];
     const i = Math.floor(Math.log(bytes) / Math.log(k));
-    return Math.round(bytes / Math.pow(k, i) * 100) / 100 + ' ' + sizes[i];
+    return Math.round((bytes / Math.pow(k, i)) * 100) / 100 + ' ' + sizes[i];
   };
 
   // 保存SP-API配置
@@ -771,9 +764,34 @@ const SettingsPage: React.FC<unknown> = () => {
           if (key === 'sp-api' && spApiConfigs.length > 0) {
             const spApiFormValues: any = {};
             spApiConfigs.forEach((config: API.SPAPIConfig) => {
-              if (config.configKey) {
-                spApiFormValues[config.configKey] = config.configValue || '';
+              if (!config.configKey) {
+                return;
               }
+
+              let value: any;
+              if (config.configKey === 'MONITOR_MAX_CONCURRENT_GROUP_CHECKS') {
+                value = config.configValue
+                  ? Math.min(
+                      Number(config.configValue),
+                      MONITOR_CONCURRENCY_LIMIT,
+                    )
+                  : undefined;
+              } else if (
+                config.configKey === 'SP_API_USE_AWS_SIGNATURE' ||
+                config.configKey === 'ENABLE_HTML_SCRAPER_FALLBACK' ||
+                config.configKey === 'ENABLE_LEGACY_CLIENT_FALLBACK'
+              ) {
+                // 布尔值字段：转换为布尔类型
+                value =
+                  config.configValue === 'true' ||
+                  config.configValue === true ||
+                  config.configValue === '1' ||
+                  config.configValue === 1;
+              } else {
+                value = config.configValue || '';
+              }
+
+              spApiFormValues[config.configKey] = value;
             });
             setTimeout(() => {
               spApiForm.setFieldsValue(spApiFormValues);
