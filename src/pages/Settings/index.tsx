@@ -4,7 +4,6 @@ import { useMessage } from '@/utils/message';
 import {
   PageContainer,
   ProForm,
-  ProFormDigit,
   ProFormSwitch,
   ProFormText,
 } from '@ant-design/pro-components';
@@ -24,8 +23,6 @@ import React, { useEffect, useState } from 'react';
 
 const { getSPAPIConfigs, updateSPAPIConfig } = services.SPAPIConfigController;
 const { getFeishuConfigs, upsertFeishuConfig } = services.FeishuController;
-
-const MONITOR_CONCURRENCY_LIMIT = 10;
 
 const SettingsPage: React.FC<unknown> = () => {
   const message = useMessage();
@@ -81,11 +78,7 @@ const SettingsPage: React.FC<unknown> = () => {
         }
 
         let value: any;
-        if (config.configKey === 'MONITOR_MAX_CONCURRENT_GROUP_CHECKS') {
-          value = config.configValue
-            ? Math.min(Number(config.configValue), MONITOR_CONCURRENCY_LIMIT)
-            : undefined;
-        } else if (
+        if (
           config.configKey === 'SP_API_USE_AWS_SIGNATURE' ||
           config.configKey === 'ENABLE_HTML_SCRAPER_FALLBACK' ||
           config.configKey === 'ENABLE_LEGACY_CLIENT_FALLBACK'
@@ -253,11 +246,6 @@ const SettingsPage: React.FC<unknown> = () => {
     try {
       const configs = [
         buildConfigEntry(
-          'MONITOR_MAX_CONCURRENT_GROUP_CHECKS',
-          values.MONITOR_MAX_CONCURRENT_GROUP_CHECKS ?? 3,
-          '每次最多同时检查的变体组数量',
-        ),
-        buildConfigEntry(
           'SP_API_US_LWA_CLIENT_ID',
           values.SP_API_US_LWA_CLIENT_ID,
           'US 区域 LWA Client ID',
@@ -374,41 +362,6 @@ const SettingsPage: React.FC<unknown> = () => {
               },
             }}
           >
-            <ProForm.Group title="监控并发配置">
-              <ProFormDigit
-                name="MONITOR_MAX_CONCURRENT_GROUP_CHECKS"
-                label="并发变体组数"
-                min={1}
-                max={MONITOR_CONCURRENCY_LIMIT}
-                extra={`每次监控任务最多同时检查的变体组数量（建议 ≤ ${MONITOR_CONCURRENCY_LIMIT}）`}
-                fieldProps={{
-                  style: { width: '100%' },
-                }}
-                rules={[
-                  {
-                    required: true,
-                    type: 'number',
-                    message: '请输入大于0的值',
-                  },
-                  {
-                    validator: (_, value) => {
-                      if (!value) {
-                        return Promise.resolve();
-                      }
-                      if (value > MONITOR_CONCURRENCY_LIMIT) {
-                        return Promise.reject(
-                          new Error(
-                            `建议不超过 ${MONITOR_CONCURRENCY_LIMIT}，避免 SP-API 请求过载`,
-                          ),
-                        );
-                      }
-                      return Promise.resolve();
-                    },
-                  },
-                ]}
-              />
-            </ProForm.Group>
-
             <ProForm.Group title="US区域 LWA 配置">
               <ProFormText
                 name="SP_API_US_LWA_CLIENT_ID"
@@ -769,14 +722,7 @@ const SettingsPage: React.FC<unknown> = () => {
               }
 
               let value: any;
-              if (config.configKey === 'MONITOR_MAX_CONCURRENT_GROUP_CHECKS') {
-                value = config.configValue
-                  ? Math.min(
-                      Number(config.configValue),
-                      MONITOR_CONCURRENCY_LIMIT,
-                    )
-                  : undefined;
-              } else if (
+              if (
                 config.configKey === 'SP_API_USE_AWS_SIGNATURE' ||
                 config.configKey === 'ENABLE_HTML_SCRAPER_FALLBACK' ||
                 config.configKey === 'ENABLE_LEGACY_CLIENT_FALLBACK'

@@ -1,18 +1,16 @@
-import services from '@/services/asin';
+import services from '@/services/competitor';
 import {
   ActionType,
   PageContainer,
   ProColumns,
   ProTable,
-  StatisticCard,
 } from '@ant-design/pro-components';
 import { useSearchParams } from '@umijs/max';
-import { Button, Space, Tag, message } from 'antd';
+import { Button, message, Tag } from 'antd';
 import dayjs from 'dayjs';
-import React, { useEffect, useRef, useState } from 'react';
+import React, { useRef } from 'react';
 
-const { queryMonitorHistory, getMonitorStatistics, getPeakHoursStatistics } =
-  services.MonitorController;
+const { queryCompetitorMonitorHistory } = services.CompetitorMonitorController;
 
 // 国家选项映射
 const countryMap: Record<
@@ -27,56 +25,15 @@ const countryMap: Record<
   ES: { text: '西班牙', color: 'magenta', region: 'EU' },
 };
 
-const MonitorHistoryPage: React.FC<unknown> = () => {
+const CompetitorMonitorHistoryPage: React.FC<unknown> = () => {
   const actionRef = useRef<ActionType>();
   const [searchParams] = useSearchParams();
-  const [statistics, setStatistics] = useState<API.MonitorStatistics>({});
-  const [peakHoursStatistics, setPeakHoursStatistics] =
-    useState<API.PeakHoursStatistics>({});
-  const [selectedCountry, setSelectedCountry] = useState<string>('');
 
   // 从URL参数获取筛选条件
   const type = searchParams.get('type') || '';
   const id = searchParams.get('id') || '';
 
-  // 加载统计信息
-  const loadStatistics = async (country?: string) => {
-    try {
-      const params: any = {};
-      if (type === 'group' && id) {
-        params.variantGroupId = id;
-      } else if (type === 'asin' && id) {
-        params.asinId = id;
-      }
-      const { data } = await getMonitorStatistics(params);
-      setStatistics(data || {});
-
-      // 如果有国家筛选，加载高峰期统计
-      const countryToUse = country || selectedCountry;
-      if (countryToUse) {
-        try {
-          const peakData = await getPeakHoursStatistics({
-            country: countryToUse,
-          });
-          const peakStats =
-            peakData && typeof peakData === 'object' && !('success' in peakData)
-              ? peakData
-              : (peakData as any)?.data || {};
-          setPeakHoursStatistics(peakStats);
-        } catch (error) {
-          console.error('加载高峰期统计失败:', error);
-        }
-      } else {
-        setPeakHoursStatistics({});
-      }
-    } catch (error) {
-      console.error('加载统计信息失败:', error);
-    }
-  };
-
-  useEffect(() => {
-    loadStatistics();
-  }, [type, id]);
+  // 竞品监控不需要数据分析功能，已移除统计相关代码
 
   const columns: ProColumns<API.MonitorHistory>[] = [
     {
@@ -215,74 +172,12 @@ const MonitorHistoryPage: React.FC<unknown> = () => {
   return (
     <PageContainer
       header={{
-        title: '监控历史',
+        title: '竞品监控历史',
         breadcrumb: {},
       }}
     >
-      {/* 统计卡片 */}
-      <Space
-        direction="vertical"
-        size="large"
-        style={{ width: '100%', marginBottom: 16 }}
-      >
-        <StatisticCard.Group>
-          <StatisticCard
-            statistic={{
-              title: '总检查次数',
-              value: statistics.totalChecks || 0,
-            }}
-          />
-          <StatisticCard
-            statistic={{
-              title: '正常次数',
-              value: statistics.normalCount || 0,
-              status: 'success',
-            }}
-          />
-          <StatisticCard
-            statistic={{
-              title: '异常次数',
-              value: statistics.brokenCount || 0,
-              status: 'error',
-            }}
-          />
-          <StatisticCard
-            statistic={{
-              title: '监控对象数',
-              value: (statistics.groupCount || 0) + (statistics.asinCount || 0),
-            }}
-          />
-          {selectedCountry && peakHoursStatistics.peakTotal !== undefined && (
-            <>
-              <StatisticCard
-                statistic={{
-                  title: '高峰期异常率',
-                  value: peakHoursStatistics.peakTotal
-                    ? `${(peakHoursStatistics.peakRate || 0).toFixed(2)}%`
-                    : '0%',
-                  description: `高峰期: ${
-                    peakHoursStatistics.peakBroken || 0
-                  }/${peakHoursStatistics.peakTotal || 0}`,
-                }}
-              />
-              <StatisticCard
-                statistic={{
-                  title: '低峰期异常率',
-                  value: peakHoursStatistics.offPeakTotal
-                    ? `${(peakHoursStatistics.offPeakRate || 0).toFixed(2)}%`
-                    : '0%',
-                  description: `低峰期: ${
-                    peakHoursStatistics.offPeakBroken || 0
-                  }/${peakHoursStatistics.offPeakTotal || 0}`,
-                }}
-              />
-            </>
-          )}
-        </StatisticCard.Group>
-      </Space>
-
       <ProTable<API.MonitorHistory>
-        headerTitle="监控历史记录"
+        headerTitle="竞品监控历史记录"
         actionRef={actionRef}
         rowKey="id"
         search={{
@@ -306,9 +201,6 @@ const MonitorHistoryPage: React.FC<unknown> = () => {
           // 处理其他筛选条件
           if (params.country) {
             requestParams.country = params.country;
-            setSelectedCountry(params.country);
-          } else {
-            setSelectedCountry('');
           }
           if (params.checkType) {
             requestParams.checkType = params.checkType;
@@ -333,14 +225,9 @@ const MonitorHistoryPage: React.FC<unknown> = () => {
             // 这里可以根据需要处理排序逻辑
           }
 
-          const { data, success } = await queryMonitorHistory(requestParams);
-
-          // 如果筛选了国家，加载高峰期统计
-          if (params.country) {
-            loadStatistics(params.country);
-          } else {
-            setPeakHoursStatistics({});
-          }
+          const response = await queryCompetitorMonitorHistory(requestParams);
+          const data = response.data || response;
+          const success = response.success !== false;
 
           return {
             data: data?.list || [],
@@ -399,7 +286,7 @@ const MonitorHistoryPage: React.FC<unknown> = () => {
                 }
 
                 const token = localStorage.getItem('token');
-                const url = `/api/v1/export/monitor-history?${params.toString()}`;
+                const url = `/api/v1/export/competitor-monitor-history?${params.toString()}`;
 
                 const response = await fetch(url, {
                   method: 'GET',
@@ -413,7 +300,7 @@ const MonitorHistoryPage: React.FC<unknown> = () => {
                   const downloadUrl = window.URL.createObjectURL(blob);
                   const a = document.createElement('a');
                   a.href = downloadUrl;
-                  a.download = `监控历史_${
+                  a.download = `竞品监控历史_${
                     new Date().toISOString().split('T')[0]
                   }.xlsx`;
                   document.body.appendChild(a);
@@ -438,4 +325,4 @@ const MonitorHistoryPage: React.FC<unknown> = () => {
   );
 };
 
-export default MonitorHistoryPage;
+export default CompetitorMonitorHistoryPage;
