@@ -18,9 +18,11 @@ npm install
 
 ### 2. 配置数据库
 
-复制 `.env.example` 为 `.env` 并修改配置：
+复制 `env.template` 或 `.env.example` 为 `.env` 并修改配置：
 
 ```bash
+cp env.template .env
+# 或者
 cp .env.example .env
 ```
 
