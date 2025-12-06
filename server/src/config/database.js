@@ -1,5 +1,6 @@
 const mysql = require('mysql2/promise');
 require('dotenv').config();
+const logger = require('../utils/logger');
 
 // 数据库连接配置
 const dbConfig = {
@@ -13,8 +14,6 @@ const dbConfig = {
   waitForConnections: true,
   connectionLimit: Number(process.env.DB_CONNECTION_LIMIT) || 20,
   queueLimit: 100,
-  acquireTimeout: 60000,
-  reconnect: true,
 };
 
 // 创建连接池

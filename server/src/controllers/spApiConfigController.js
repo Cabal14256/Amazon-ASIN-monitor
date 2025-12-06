@@ -11,6 +11,7 @@ const {
 const rateLimiter = require('../services/rateLimiter');
 const errorStatsService = require('../services/errorStatsService');
 const riskControlService = require('../services/riskControlService');
+const logger = require('../utils/logger');
 
 // 获取所有SP-API配置
 exports.getSPAPIConfigs = async (req, res) => {
@@ -22,7 +23,7 @@ exports.getSPAPIConfigs = async (req, res) => {
       errorCode: 0,
     });
   } catch (error) {
-    console.error('获取SP-API配置错误:', error);
+    logger.error('获取SP-API配置错误:', error);
     res.status(500).json({
       success: false,
       errorMessage: error.message || '获取失败',
@@ -49,7 +50,7 @@ exports.getSPAPIConfigByKey = async (req, res) => {
       errorCode: 0,
     });
   } catch (error) {
-    console.error('获取SP-API配置错误:', error);
+    logger.error('获取SP-API配置错误:', error);
     res.status(500).json({
       success: false,
       errorMessage: error.message || '获取失败',
@@ -77,40 +78,40 @@ exports.updateSPAPIConfig = async (req, res) => {
     // 重新加载SP-API配置
     try {
       await reloadSPAPIConfig();
-      console.log('✅ SP-API配置已重新加载');
+      logger.info('✅ SP-API配置已重新加载');
     } catch (reloadError) {
-      console.error('⚠️ 重新加载SP-API配置失败:', reloadError);
+      logger.error('⚠️ 重新加载SP-API配置失败:', reloadError);
     }
 
     // 重新加载AWS签名配置
     try {
       await loadUseAwsSignatureConfig();
-      console.log('✅ AWS签名配置已重新加载');
+      logger.info('✅ AWS签名配置已重新加载');
     } catch (awsError) {
-      console.error('⚠️ 重新加载AWS签名配置失败:', awsError);
+      logger.error('⚠️ 重新加载AWS签名配置失败:', awsError);
     }
 
     // 重新加载HTML抓取兜底配置
     try {
       await reloadHtmlScraperFallbackConfig();
-      console.log('✅ HTML抓取兜底配置已重新加载');
+      logger.info('✅ HTML抓取兜底配置已重新加载');
     } catch (htmlError) {
-      console.error('⚠️ 重新加载HTML抓取兜底配置失败:', htmlError);
+      logger.error('⚠️ 重新加载HTML抓取兜底配置失败:', htmlError);
     }
 
     // 重新加载旧客户端备用配置
     try {
       await reloadLegacyClientFallbackConfig();
-      console.log('✅ 旧客户端备用配置已重新加载');
+      logger.info('✅ 旧客户端备用配置已重新加载');
     } catch (legacyError) {
-      console.error('⚠️ 重新加载旧客户端备用配置失败:', legacyError);
+      logger.error('⚠️ 重新加载旧客户端备用配置失败:', legacyError);
     }
 
     try {
       await reloadMonitorConfig();
-      console.log('✅ 监控并发配置已重新加载');
+      logger.info('✅ 监控并发配置已重新加载');
     } catch (monitorError) {
-      console.error('⚠️ 重新加载监控并发配置失败:', monitorError);
+      logger.error('⚠️ 重新加载监控并发配置失败:', monitorError);
     }
 
     res.json({
@@ -119,7 +120,7 @@ exports.updateSPAPIConfig = async (req, res) => {
       errorCode: 0,
     });
   } catch (error) {
-    console.error('更新SP-API配置错误:', error);
+    logger.error('更新SP-API配置错误:', error);
     res.status(500).json({
       success: false,
       errorMessage: error.message || '更新失败',
@@ -206,7 +207,7 @@ exports.getSPAPIConfigForDisplay = async (req, res) => {
       errorCode: 0,
     });
   } catch (error) {
-    console.error('获取SP-API配置错误:', error);
+    logger.error('获取SP-API配置错误:', error);
     res.status(500).json({
       success: false,
       errorMessage: error.message || '获取失败',
@@ -238,3 +239,56 @@ function getConfigDescription(key) {
   };
   return descriptions[key] || key;
 }
+
+// 获取限流器状态
+exports.getRateLimiterStatus = async (req, res) => {
+  try {
+    const { region } = req.query;
+    if (region) {
+      const status = rateLimiter.getStatus(region);
+      res.json({
+        success: true,
+        data: { [region]: status },
+        errorCode: 0,
+      });
+    } else {
+      const usStatus = rateLimiter.getStatus('US');
+      const euStatus = rateLimiter.getStatus('EU');
+      res.json({
+        success: true,
+        data: {
+          US: usStatus,
+          EU: euStatus,
+        },
+        errorCode: 0,
+      });
+    }
+  } catch (error) {
+    logger.error('获取限流器状态错误:', error);
+    res.status(500).json({
+      success: false,
+      errorMessage: error.message || '获取失败',
+      errorCode: 500,
+    });
+  }
+};
+
+// 获取错误统计
+exports.getErrorStats = async (req, res) => {
+  try {
+    const { hours = 1 } = req.query;
+    const stats = errorStatsService.getErrorStats({ hours: Number(hours) });
+    res.json({
+      success: true,
+      data: stats,
+      errorCode: 0,
+    });
+  } catch (error) {
+    logger.error('获取错误统计错误:', error);
+    res.status(500).json({
+      success: false,
+      errorMessage: error.message || '获取失败',
+      errorCode: 500,
+    });
+  }
+};
