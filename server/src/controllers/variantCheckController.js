@@ -1,4 +1,5 @@
 const variantCheckService = require('../services/variantCheckService');
+const { PRIORITY } = require('../services/rateLimiter');
 
 // 检查变体组
 exports.checkVariantGroup = async (req, res) => {

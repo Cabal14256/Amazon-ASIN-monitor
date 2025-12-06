@@ -92,6 +92,84 @@ class CacheService {
       }
     }
   }
+
+  /**
+   * 获取所有缓存键（用于缓存预热）
+   * @param {string} prefix - 键前缀（可选）
+   * @returns {Array<string>}
+   */
+  getKeys(prefix = null) {
+    const keys = Array.from(this.store.keys());
+    if (prefix) {
+      return keys.filter((key) => key.startsWith(prefix));
+    }
+    return keys;
+  }
+
+  /**
+   * 获取缓存条目的过期时间
+   * @param {string} key - 缓存键
+   * @returns {number|null} 过期时间戳，如果不存在则返回null
+   */
+  getExpiry(key) {
+    const entry = this.store.get(key);
+    if (!entry) {
+      return null;
+    }
+    return entry.expiry;
+  }
+
+  /**
+   * 获取剩余时间（毫秒）
+   * @param {string} key - 缓存键
+   * @returns {number|null} 剩余时间（毫秒），如果不存在或已过期则返回null
+   */
+  getTimeToExpiry(key) {
+    const expiry = this.getExpiry(key);
+    if (!expiry) {
+      return null;
+    }
+    const remaining = expiry - Date.now();
+    return remaining > 0 ? remaining : null;
+  }
+
+  /**
+   * 获取内存统计信息
+   * @returns {Object} 内存统计
+   */
+  getMemoryStats() {
+    const now = Date.now();
+    let expiredCount = 0;
+    let activeCount = 0;
+    let totalSize = 0;
+
+    for (const [key, entry] of this.store) {
+      if (now > entry.expiry) {
+        expiredCount++;
+      } else {
+        activeCount++;
+        // 估算每个条目的内存大小（粗略估算）
+        const keySize = key.length * 2; // UTF-16编码，每个字符2字节
+        const valueSize = JSON.stringify(entry.value).length * 2;
+        totalSize += keySize + valueSize + 100; // 加上对象开销
+      }
+    }
+
+    const memoryUsage = process.memoryUsage();
+    const memoryMB = memoryUsage.heapUsed / 1024 / 1024;
+    const cacheMemoryMB = totalSize / 1024 / 1024;
+
+    return {
+      totalEntries: this.store.size,
+      activeEntries: activeCount,
+      expiredEntries: expiredCount,
+      maxEntries: this.maxEntries,
+      usagePercent: ((this.store.size / this.maxEntries) * 100).toFixed(2),
+      estimatedCacheMemoryMB: cacheMemoryMB.toFixed(2),
+      totalHeapMemoryMB: memoryMB.toFixed(2),
+      cacheMemoryPercent: ((cacheMemoryMB / memoryMB) * 100).toFixed(2),
+    };
+  }
 }
 
 module.exports = new CacheService();

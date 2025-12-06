@@ -303,6 +303,66 @@ function resetMetrics() {
   console.log('[风控服务] 指标已重置');
 }
 
+/**
+ * 动态调整限流器参数（根据限流统计）
+ * @param {string} region - 区域代码 ('US' 或 'EU')
+ */
+function adjustRateLimiter(region) {
+  const rateLimiter = require('./rateLimiter');
+  const errorRate = getRecentErrorRate(50);
+  const rateLimitCount = getRecentRateLimitCount();
+
+  // 调用限流器的动态调整函数
+  const adjustment = rateLimiter.adjustRateLimit(
+    region,
+    rateLimitCount,
+    errorRate,
+  );
+
+  if (adjustment.adjusted) {
+    console.log(
+      `[风控服务] ${region}区域限流器已调整: ${adjustment.previousPerMinute}/分钟 -> ${adjustment.newPerMinute}/分钟`,
+    );
+  }
+
+  return adjustment;
+}
+
+/**
+ * 定期检查和调整限流器（每5分钟检查一次）
+ */
+let rateLimiterAdjustmentInterval = null;
+
+function startRateLimiterAutoAdjustment() {
+  // 如果已有定时器，先清除
+  if (rateLimiterAdjustmentInterval) {
+    clearInterval(rateLimiterAdjustmentInterval);
+  }
+
+  // 每5分钟检查一次
+  rateLimiterAdjustmentInterval = setInterval(() => {
+    try {
+      adjustRateLimiter('US');
+      adjustRateLimiter('EU');
+    } catch (error) {
+      console.error('[风控服务] 自动调整限流器失败:', error.message);
+    }
+  }, 5 * 60 * 1000); // 5分钟
+
+  console.log('[风控服务] 限流器自动调整已启动（每5分钟检查一次）');
+}
+
+function stopRateLimiterAutoAdjustment() {
+  if (rateLimiterAdjustmentInterval) {
+    clearInterval(rateLimiterAdjustmentInterval);
+    rateLimiterAdjustmentInterval = null;
+    console.log('[风控服务] 限流器自动调整已停止');
+  }
+}
+
+// 启动自动调整
+startRateLimiterAutoAdjustment();
+
 module.exports = {
   recordCheck,
   calculateOptimalConcurrency,
@@ -312,5 +372,8 @@ module.exports = {
   getRecentErrorRate,
   getRecentRateLimitCount,
   getAverageResponseTime,
+  adjustRateLimiter,
+  startRateLimiterAutoAdjustment,
+  stopRateLimiterAutoAdjustment,
   ADJUSTMENT_CONFIG,
 };

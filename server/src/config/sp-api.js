@@ -2,6 +2,16 @@ require('dotenv').config();
 const crypto = require('crypto');
 const https = require('https');
 const SPAPIConfig = require('../models/SPAPIConfig');
+const logger = require('../utils/logger');
+
+// 创建全局HTTP连接池（keep-alive）
+const httpsAgent = new https.Agent({
+  keepAlive: true,
+  maxSockets: 50, // 最大连接数
+  maxFreeSockets: 10, // 最大空闲连接数
+  timeout: 60000, // 连接超时（毫秒）
+  keepAliveMsecs: 1000, // keep-alive间隔
+});
 
 const COUNTRY_REGION_MAP = {
   US: 'US',
@@ -107,13 +117,13 @@ async function loadUseAwsSignatureConfig() {
         process.env.SP_API_USE_AWS_SIGNATURE === 'true' ||
         process.env.SP_API_USE_AWS_SIGNATURE === '1';
     }
-    console.log(
+    logger.info(
       `[SP-API配置] USE_AWS_SIGNATURE: ${USE_AWS_SIGNATURE} (${
         USE_AWS_SIGNATURE ? '启用AWS签名' : '简化模式，无需AWS签名'
       })`,
     );
   } catch (error) {
-    console.error(
+    logger.error(
       '[SP-API配置] 加载 USE_AWS_SIGNATURE 配置失败:',
       error.message,
     );
@@ -186,12 +196,9 @@ async function loadConfigFromDatabase() {
     }
 
     clearAccessTokenCache();
-    console.log('✅ SP-API配置已从数据库加载');
+    logger.info('✅ SP-API配置已从数据库加载');
   } catch (error) {
-    console.error(
-      '⚠️ 从数据库加载SP-API配置失败，使用环境变量:',
-      error.message,
-    );
+    logger.error('⚠️ 从数据库加载SP-API配置失败，使用环境变量:', error.message);
   }
 }
 
@@ -243,7 +250,7 @@ async function getAccessToken(region) {
     },
   };
 
-  console.log(`[getAccessToken] 正在获取 ${normalizedRegion} 区域访问令牌...`);
+  logger.info(`[getAccessToken] 正在获取 ${normalizedRegion} 区域访问令牌...`);
 
   return new Promise((resolve, reject) => {
     const req = https.request(options, (res) => {
@@ -263,7 +270,7 @@ async function getAccessToken(region) {
                 token: response.access_token,
                 expiresAt: Date.now() + (expiresIn - 60) * 1000,
               };
-              console.log(
+              logger.info(
                 `[getAccessToken] ${normalizedRegion} 访问令牌获取成功，长度: ${response.access_token.length}`,
               );
               resolve(response.access_token);
@@ -280,7 +287,7 @@ async function getAccessToken(region) {
             reject(new Error(`解析访问令牌响应失败: ${e.message} - ${data}`));
           }
         } else {
-          console.error(
+          logger.error(
             `[getAccessToken] 获取访问令牌失败: ${res.statusCode} - ${data}`,
           );
           reject(new Error(`获取访问令牌失败: ${res.statusCode} - ${data}`));
@@ -430,7 +437,7 @@ async function callSPAPIInternal(
   }
 
   const accessToken = await getAccessToken(region);
-  console.log(
+  logger.info(
     `[callSPAPI] ${region} 区域 Access Token 获取成功，长度: ${accessToken.length}`,
   );
 
@@ -440,17 +447,17 @@ async function callSPAPIInternal(
     url = `${endpoint}${path}`;
   } else if (params && Object.keys(params).length > 0) {
     const queryParts = [];
-    
+
     // 检测 API 版本（从 path 中提取）
     const pathMatch = path.match(/\/catalog\/(\d{4}-\d{2}-\d{2})\//);
     const apiVersion = pathMatch ? pathMatch[1] : null;
     const is2022Version = apiVersion === '2022-04-01';
-    
+
     // 对于 2022-04-01 版本，按照固定顺序处理参数（某些 API 版本可能对顺序敏感）
     // 标准顺序：marketplaceIds 在前，includedData 在后
     const paramOrder = ['marketplaceIds', 'includedData'];
     const processedKeys = new Set();
-    
+
     // 先处理固定顺序的参数（针对 2022-04-01 版本）
     if (is2022Version) {
       for (const key of paramOrder) {
@@ -481,7 +488,7 @@ async function callSPAPIInternal(
         }
       }
     }
-    
+
     // 处理其他参数（按字母顺序，或对于非 2022 版本，按原始顺序）
     for (const [key, value] of Object.entries(params)) {
       if (!processedKeys.has(key)) {
@@ -503,21 +510,23 @@ async function callSPAPIInternal(
         }
       }
     }
-    
+
     const queryString = queryParts.join('&');
     url = `${endpoint}${path}${queryString ? '?' + queryString : ''}`;
-    console.log(`[callSPAPI] 参数对象:`, JSON.stringify(params, null, 2));
-    console.log(`[callSPAPI] 构建的查询字符串: ${queryString}`);
-    console.log(`[callSPAPI] 完整请求URL: ${url}`);
+    logger.info(`[callSPAPI] 参数对象:`, JSON.stringify(params, null, 2));
+    logger.info(`[callSPAPI] 构建的查询字符串: ${queryString}`);
+    logger.info(`[callSPAPI] 完整请求URL: ${url}`);
     if (is2022Version) {
-      console.log(`[callSPAPI] 2022-04-01 版本特殊处理: 参数已按固定顺序排列并清理`);
+      logger.info(
+        `[callSPAPI] 2022-04-01 版本特殊处理: 参数已按固定顺序排列并清理`,
+      );
     }
   } else {
     url = `${endpoint}${path}`;
   }
 
-  console.log(`[callSPAPI] 请求URL: ${url}`);
-  console.log(
+  logger.info(`[callSPAPI] 请求URL: ${url}`);
+  logger.info(
     `[callSPAPI] 请求方法: ${method}, 国家: ${country}, 区域: ${region}`,
   );
   const urlObj = new URL(url);
@@ -531,7 +540,7 @@ async function callSPAPIInternal(
     headers['content-type'] = 'application/json';
   }
 
-  console.log(`[callSPAPI] 请求头（签名前）:`, {
+  logger.info(`[callSPAPI] 请求头（签名前）:`, {
     host: headers.host,
     'x-amz-access-token': headers['x-amz-access-token']
       ? `${headers['x-amz-access-token'].substring(0, 20)}...`
@@ -571,10 +580,10 @@ async function callSPAPIInternal(
     };
   } else {
     // 简化模式：不需要 AWS 签名
-    console.log(`[callSPAPI] 使用简化模式（无需AWS签名）`);
+    logger.info(`[callSPAPI] 使用简化模式（无需AWS签名）`);
   }
 
-  console.log(`[callSPAPI] 最终请求头:`, {
+  logger.info(`[callSPAPI] 最终请求头:`, {
     host: finalHeaders.host,
     'x-amz-access-token': finalHeaders['x-amz-access-token']
       ? `${finalHeaders['x-amz-access-token'].substring(0, 20)}...`
@@ -591,6 +600,7 @@ async function callSPAPIInternal(
       path: urlObj.pathname + (urlObj.search || ''),
       method: method,
       headers: finalHeaders,
+      agent: httpsAgent, // 使用连接池
     };
 
     const req = https.request(options, (res) => {
@@ -599,44 +609,50 @@ async function callSPAPIInternal(
         data += chunk;
       });
       res.on('end', () => {
-        console.log(`[callSPAPI] 响应状态码: ${res.statusCode}`);
-        console.log(`[callSPAPI] 响应数据长度: ${data ? data.length : 0}`);
+        logger.info(`[callSPAPI] 响应状态码: ${res.statusCode}`);
+        logger.info(`[callSPAPI] 响应数据长度: ${data ? data.length : 0}`);
 
         if (res.statusCode >= 200 && res.statusCode < 300) {
           try {
             const response = data ? JSON.parse(data) : {};
-            console.log(`[callSPAPI] 响应解析成功:`, {
+            logger.info(`[callSPAPI] 响应解析成功:`, {
               hasItems: !!response.items,
               itemsCount: response.items ? response.items.length : 0,
               keys: Object.keys(response),
             });
             const responseStr = JSON.stringify(response);
             if (responseStr.length < 1000) {
-              console.log(`[callSPAPI] 完整响应内容:`, responseStr);
+              logger.info(`[callSPAPI] 完整响应内容:`, responseStr);
             } else {
-              console.log(
+              logger.info(
                 `[callSPAPI] 响应内容（前500字符）:`,
                 responseStr.substring(0, 500),
               );
             }
             resolve(response);
           } catch (e) {
-            console.log(`[callSPAPI] 响应解析失败，返回原始数据:`, e.message);
+            logger.info(`[callSPAPI] 响应解析失败，返回原始数据:`, e.message);
             resolve(data || {});
           }
         } else {
           const errorMsg = data || `HTTP ${res.statusCode}`;
-          console.error(`[callSPAPI] 请求失败:`, {
+          logger.error(`[callSPAPI] 请求失败:`, {
             statusCode: res.statusCode,
             errorMsg: errorMsg.substring(0, 500),
           });
 
-          // 创建错误对象，包含状态码和错误信息
+          // 创建错误对象，包含状态码、错误信息和响应头
           const error = new Error(
             `SP-API调用失败: ${res.statusCode} - ${errorMsg}`,
           );
           error.statusCode = res.statusCode;
           error.responseData = data;
+          // 保存响应头信息，特别是Retry-After头
+          error.headers = res.headers || {};
+          error.response = {
+            headers: res.headers || {},
+            statusCode: res.statusCode,
+          };
           reject(error);
         }
       });
@@ -681,7 +697,7 @@ async function callSPAPI(
       if (attempt > 0) {
         // 计算指数退避延迟：initialDelay * 2^(attempt-1)
         const delay = initialDelay * Math.pow(2, attempt - 1);
-        console.log(
+        logger.info(
           `[callSPAPI] 第 ${attempt} 次重试，延迟 ${delay}ms 后重试...`,
         );
         await new Promise((resolve) => {
@@ -704,7 +720,7 @@ async function callSPAPI(
             error.message.includes('TooManyRequests')));
 
       if (isRateLimitError && attempt < maxRetries) {
-        console.log(
+        logger.info(
           `[callSPAPI] 遇到限流错误（429/QuotaExceeded），将进行第 ${
             attempt + 1
           } 次重试（最多 ${maxRetries} 次）`,
@@ -713,7 +729,7 @@ async function callSPAPI(
       } else {
         // 不是限流错误，或者已达到最大重试次数，直接抛出错误
         if (isRateLimitError && attempt >= maxRetries) {
-          console.error(
+          logger.error(
             `[callSPAPI] 达到最大重试次数（${maxRetries}），放弃重试`,
           );
         }

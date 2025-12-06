@@ -1,6 +1,7 @@
 const express = require('express');
 const cors = require('cors');
 require('dotenv').config();
+const logger = require('./utils/logger');
 const { testConnection } = require('./config/database');
 const {
   testConnection: testCompetitorConnection,
@@ -37,16 +38,37 @@ app.use(
     credentials: true,
   }),
 );
+// 响应压缩（如果安装了compression包）
+try {
+  const compression = require('compression');
+  app.use(
+    compression({
+      threshold: 1024, // 只压缩大于1KB的响应
+      level: 6, // 压缩级别
+    }),
+  );
+} catch (error) {
+  // compression包未安装，跳过
+}
+
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 
 // Prometheus 监控
 app.use(metricsMiddleware);
 
+// API限流（应用到所有API路由）
+try {
+  const { apiLimiter } = require('./middleware/rateLimit');
+  app.use('/api/v1/', apiLimiter);
+} catch (error) {
+  // 限流中间件加载失败，继续运行
+}
+
 // 健康检查
-app.get('/health', (req, res) => {
-  res.json({ status: 'ok', message: 'Server is running' });
-});
+const healthController = require('./controllers/healthController');
+app.get('/health', healthController.getHealth);
+app.get('/api/v1/health', healthController.getHealth);
 
 // API路由
 app.use('/api/v1', authRoutes); // 认证路由（放在最前面，登录不需要认证）
@@ -86,7 +108,7 @@ app.use((req, res) => {
 
 // 错误处理
 app.use((err, req, res, next) => {
-  console.error('服务器错误:', err);
+  logger.error('服务器错误:', err);
   res.status(500).json({
     success: false,
     errorMessage: err.message || '服务器内部错误',
@@ -99,23 +121,23 @@ async function startServer() {
   // 测试数据库连接
   const dbConnected = await testConnection();
   if (!dbConnected) {
-    console.error('⚠️  警告: 数据库连接失败，请检查配置');
-    console.log('💡 提示: 请确保已创建数据库并配置 .env 文件');
+    logger.error('⚠️  警告: 数据库连接失败，请检查配置');
+    logger.info('💡 提示: 请确保已创建数据库并配置 .env 文件');
   }
 
   const competitorDbConnected = await testCompetitorConnection();
   if (!competitorDbConnected) {
-    console.error('⚠️  警告: 竞品数据库连接失败，请检查配置');
-    console.log('💡 提示: 请确保已创建竞品数据库并配置 .env 文件');
+    logger.error('⚠️  警告: 竞品数据库连接失败，请检查配置');
+    logger.info('💡 提示: 请确保已创建竞品数据库并配置 .env 文件');
   }
 
   // 初始化定时任务
   initScheduler();
 
   const server = app.listen(PORT, () => {
-    console.log(`🚀 服务器运行在 http://localhost:${PORT}`);
-    console.log(`📝 API文档: http://localhost:${PORT}/api/v1`);
-    console.log(`📊 仪表盘API: http://localhost:${PORT}/api/v1/dashboard`);
+    logger.info(`🚀 服务器运行在 http://localhost:${PORT}`);
+    logger.info(`📝 API文档: http://localhost:${PORT}/api/v1`);
+    logger.info(`📊 仪表盘API: http://localhost:${PORT}/api/v1/dashboard`);
 
     // 初始化WebSocket服务器
     websocketService.init(server);

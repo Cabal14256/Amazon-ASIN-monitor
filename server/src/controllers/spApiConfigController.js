@@ -8,6 +8,9 @@ const {
   reloadHtmlScraperFallbackConfig,
   reloadLegacyClientFallbackConfig,
 } = require('../services/variantCheckService');
+const rateLimiter = require('../services/rateLimiter');
+const errorStatsService = require('../services/errorStatsService');
+const riskControlService = require('../services/riskControlService');
 
 // 获取所有SP-API配置
 exports.getSPAPIConfigs = async (req, res) => {

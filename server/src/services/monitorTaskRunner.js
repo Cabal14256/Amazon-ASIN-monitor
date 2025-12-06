@@ -1,6 +1,12 @@
 const VariantGroup = require('../models/VariantGroup');
 const ASIN = require('../models/ASIN');
-const { checkVariantGroup } = require('./variantCheckService');
+const {
+  checkVariantGroup,
+  checkASINVariants,
+} = require('./variantCheckService');
+const cacheService = require('./cacheService');
+const { PRIORITY } = require('./rateLimiter');
+const logger = require('../utils/logger');
 const { sendBatchNotifications } = require('./feishuService');
 const MonitorHistory = require('../models/MonitorHistory');
 const { getMaxConcurrentGroupChecks } = require('../config/monitor-config');
@@ -34,7 +40,7 @@ function syncSemaphoreLimit() {
   if (Math.random() < 0.1) {
     const riskControlService = require('./riskControlService');
     const metrics = riskControlService.getMetrics();
-    console.log(
+    logger.info(
       `[风控指标] 错误率: ${(metrics.errorRate * 100).toFixed(1)}%, 限流次数: ${
         metrics.rateLimitCount
       }, 平均响应时间: ${metrics.avgResponseTime}s`,
@@ -53,6 +59,67 @@ function getCountriesToCheck(region, minute) {
     }
   }
   return countries;
+}
+
+/**
+ * 缓存预热：提前刷新即将过期的缓存
+ * @param {string} country - 国家代码
+ */
+async function prewarmCache(country) {
+  try {
+    const CACHE_PREFIX = `variant:${country}:`;
+    const PREWARM_THRESHOLD_MS = 5 * 60 * 1000; // 5分钟阈值
+
+    const cacheKeys = cacheService.getKeys(CACHE_PREFIX);
+    const asinsToRefresh = [];
+
+    // 找出缓存剩余时间少于5分钟的ASIN
+    for (const key of cacheKeys) {
+      const remaining = cacheService.getTimeToExpiry(key);
+      if (remaining !== null && remaining < PREWARM_THRESHOLD_MS) {
+        // 从key中提取ASIN: variant:country:ASIN
+        const parts = key.split(':');
+        if (parts.length === 3 && parts[0] === 'variant') {
+          const asin = parts[2];
+          asinsToRefresh.push(asin);
+        }
+      }
+    }
+
+    if (asinsToRefresh.length === 0) {
+      return;
+    }
+
+    logger.info(
+      `[缓存预热] ${country} 发现 ${asinsToRefresh.length} 个ASIN缓存即将过期，开始预热...`,
+    );
+
+    // 分批预热（每批最多10个，使用低优先级）
+    const BATCH_SIZE = 10;
+    for (let i = 0; i < asinsToRefresh.length; i += BATCH_SIZE) {
+      const batch = asinsToRefresh.slice(i, i + BATCH_SIZE);
+      await Promise.all(
+        batch.map((asin) =>
+          checkASINVariants(asin, country, false, PRIORITY.BATCH).catch(
+            (error) => {
+              logger.error(`[缓存预热] 预热ASIN ${asin} 失败:`, error.message);
+            },
+          ),
+        ),
+      );
+
+      // 批次间稍作延迟，避免过于频繁
+      if (i + BATCH_SIZE < asinsToRefresh.length) {
+        await new Promise((resolve) => {
+          void setTimeout(resolve, 1000);
+        });
+      }
+    }
+
+    logger.info(`[缓存预热] ${country} 缓存预热完成`);
+  } catch (error) {
+    logger.error(`[缓存预热] ${country} 缓存预热失败:`, error.message);
+  }
 }
 
 async function processCountry(
@@ -75,6 +142,9 @@ async function processCountry(
   let broken = 0;
 
   try {
+    // 在开始处理前进行缓存预热
+    await prewarmCache(country);
+
     let groupsList = [];
 
     // 如果提供了 batchConfig，使用分批查询
@@ -83,7 +153,7 @@ async function processCountry(
       batchConfig.batchIndex !== undefined &&
       batchConfig.totalBatches > 1
     ) {
-      console.log(
+      logger.info(
         `[processCountry] ${country} 使用分批查询: 批次 ${
           batchConfig.batchIndex + 1
         }/${batchConfig.totalBatches}`,
@@ -116,7 +186,7 @@ async function processCountry(
           MAX_GROUPS_PER_TASK > 0 &&
           groupsList.length >= MAX_GROUPS_PER_TASK
         ) {
-          console.log(
+          logger.info(
             `[processCountry] ${country} 达到单次任务限制 (${MAX_GROUPS_PER_TASK})，停止加载更多变体组`,
           );
           groupsList = groupsList.slice(0, MAX_GROUPS_PER_TASK);
@@ -134,18 +204,18 @@ async function processCountry(
 
     // 如果设置了单次任务限制，截取到限制数量
     if (MAX_GROUPS_PER_TASK > 0 && groupsList.length > MAX_GROUPS_PER_TASK) {
-      console.log(
+      logger.info(
         `[processCountry] ${country} 截取到单次任务限制 (${MAX_GROUPS_PER_TASK})`,
       );
       groupsList = groupsList.slice(0, MAX_GROUPS_PER_TASK);
     }
 
     if (groupsList.length === 0) {
-      console.log(`[processCountry] ${country} 没有需要检查的变体组`);
+      logger.info(`[processCountry] ${country} 没有需要检查的变体组`);
       return { checked: 0, broken: 0 };
     }
 
-    console.log(
+    logger.info(
       `[processCountry] ${country} 开始检查 ${groupsList.length} 个变体组`,
     );
 
@@ -293,7 +363,7 @@ async function processCountry(
         try {
           await MonitorHistory.bulkCreate(historyEntries);
         } catch (historyError) {
-          console.error(`  ⚠️  批量记录监控历史失败:`, historyError.message);
+          logger.error(`  ⚠️  批量记录监控历史失败:`, historyError.message);
         }
       }
     });
@@ -302,7 +372,7 @@ async function processCountry(
 
     // 分批查询模式下不需要分页循环
   } catch (error) {
-    console.error(`❌ 处理国家 ${country} 失败:`, error.message);
+    logger.error(`❌ 处理国家 ${country} 失败:`, error.message);
     // 即使出错也返回统计信息
     return { checked, broken };
   }
@@ -325,7 +395,7 @@ async function runMonitorTask(countries, batchConfig = null) {
     pendingRunCountries = Array.from(
       new Set([...(pendingRunCountries || []), ...countries]),
     );
-    console.log(
+    logger.info(
       `⏳ 上一个监控任务仍在运行，已缓存下一次执行的国家: ${pendingRunCountries.join(
         ', ',
       )}`,
@@ -345,7 +415,7 @@ async function runMonitorTask(countries, batchConfig = null) {
   const batchInfo = batchConfig
     ? ` (批次 ${batchConfig.batchIndex + 1}/${batchConfig.totalBatches})`
     : '';
-  console.log(
+  logger.info(
     `\n⏰ [${new Date().toLocaleString(
       'zh-CN',
     )}] 开始执行监控任务，国家: ${countries.join(', ')}${batchInfo}`,
@@ -393,9 +463,9 @@ async function runMonitorTask(countries, batchConfig = null) {
       }
     });
 
-    console.log(`\n📨 开始发送飞书通知...`);
+    logger.info(`\n📨 开始发送飞书通知...`);
     const notifyResults = await sendBatchNotifications(countryResults);
-    console.log(
+    logger.info(
       `📨 通知发送完成: 总计 ${notifyResults.total}, 成功 ${notifyResults.success}, 失败 ${notifyResults.failed}, 跳过 ${notifyResults.skipped}`,
     );
 
@@ -420,12 +490,12 @@ async function runMonitorTask(countries, batchConfig = null) {
               1, // 标记为已通知
             );
             if (updatedCount > 0) {
-              console.log(
+              logger.info(
                 `✅ 已更新 ${country} 的 ${updatedCount} 条监控历史记录为已通知状态`,
               );
             }
           } catch (error) {
-            console.error(
+            logger.error(
               `❌ 更新 ${country} 监控历史记录通知状态失败:`,
               error.message,
             );
@@ -449,7 +519,7 @@ async function runMonitorTask(countries, batchConfig = null) {
     const errorTypeText =
       errorTypeInfo.length > 0 ? ` (${errorTypeInfo.join(', ')})` : '';
 
-    console.log(
+    logger.info(
       `\n✅ 监控任务完成: 检查 ${totalChecked} 个变体组, 异常 ${totalBroken} 个${errorTypeText}, 耗时 ${duration.toFixed(
         2,
       )}秒\n`,
@@ -477,7 +547,7 @@ async function runMonitorTask(countries, batchConfig = null) {
       checkTime: checkTime.toISOString(),
     };
   } catch (error) {
-    console.error(`❌ 监控任务执行失败:`, error);
+    logger.error(`❌ 监控任务执行失败:`, error);
     return {
       success: false,
       error: error.message || '监控任务执行失败',

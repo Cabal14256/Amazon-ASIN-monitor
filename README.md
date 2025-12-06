@@ -393,9 +393,10 @@ sudo ./deploy.sh
 
 - 前端静态文件：`/opt/amazon-asin-monitor/dist`
 - API 反向代理：`/api` -> `http://127.0.0.1:3001/api/v1`
+- WebSocket 代理：`/ws` -> `http://127.0.0.1:3001/ws`（用于实时监控进度推送）
 - SPA 路由支持：`try_files $uri $uri/ /index.html;`
 
-完整配置示例见 `nginx.conf.example`。
+**重要**：WebSocket 配置需要设置较长的超时时间（建议 7 天），以保持长连接。完整配置示例见 `nginx.conf.example`。
 
 ## 📡 API 文档
 

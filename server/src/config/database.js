@@ -11,8 +11,10 @@ const dbConfig = {
   charset: 'utf8mb4',
   timezone: '+08:00',
   waitForConnections: true,
-  connectionLimit: 10,
-  queueLimit: 0,
+  connectionLimit: Number(process.env.DB_CONNECTION_LIMIT) || 20,
+  queueLimit: 100,
+  acquireTimeout: 60000,
+  reconnect: true,
 };
 
 // 创建连接池
@@ -22,11 +24,11 @@ const pool = mysql.createPool(dbConfig);
 async function testConnection() {
   try {
     const connection = await pool.getConnection();
-    console.log('✅ 数据库连接成功');
+    logger.info('✅ 数据库连接成功');
     connection.release();
     return true;
   } catch (error) {
-    console.error('❌ 数据库连接失败:', error.message);
+    logger.error('❌ 数据库连接失败:', error.message);
     return false;
   }
 }
@@ -37,8 +39,43 @@ async function query(sql, params = []) {
     const [results] = await pool.execute(sql, params);
     return results;
   } catch (error) {
-    console.error('数据库查询错误:', error);
+    logger.error('数据库查询错误:', error);
     throw error;
+  }
+}
+
+/**
+ * 获取连接池状态
+ * @returns {Object} 连接池状态
+ */
+function getPoolStatus() {
+  try {
+    // mysql2/promise的pool对象结构可能不同，使用安全的方式获取状态
+    const poolInternal = pool.pool || pool;
+    const allConnections = poolInternal._allConnections || [];
+    const freeConnections = poolInternal._freeConnections || [];
+    const connectionQueue = poolInternal._connectionQueue || [];
+
+    return {
+      totalConnections: allConnections.length,
+      freeConnections: freeConnections.length,
+      activeConnections: allConnections.length - freeConnections.length,
+      queueLength: connectionQueue.length,
+      config: {
+        connectionLimit: dbConfig.connectionLimit,
+        queueLimit: dbConfig.queueLimit,
+      },
+    };
+  } catch (error) {
+    logger.warn('获取连接池状态失败:', error.message);
+    return {
+      status: 'error',
+      error: error.message,
+      config: {
+        connectionLimit: dbConfig.connectionLimit,
+        queueLimit: dbConfig.queueLimit,
+      },
+    };
   }
 }
 
@@ -46,4 +83,5 @@ module.exports = {
   pool,
   query,
   testConnection,
+  getPoolStatus,
 };

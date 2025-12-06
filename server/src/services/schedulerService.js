@@ -19,56 +19,105 @@ function initScheduler() {
     }）`,
   );
 
-  cron.schedule('* * * * *', () => {
+  // US区域：每小时整点和30分执行
+  cron.schedule('0,30 * * * *', () => {
     const now = new Date();
     const minute = now.getMinutes();
     const hour = now.getHours();
 
     // --- Standard Monitor Task ---
     const usCountries = getCountriesToCheck('US', minute);
-    const euCountries = getCountriesToCheck('EU', minute);
-    const allCountries = [...usCountries, ...euCountries];
 
-    if (allCountries.length > 0) {
+    if (usCountries.length > 0) {
       // 如果启用分批处理，计算当前批次
       if (TOTAL_BATCHES > 1) {
         // 基于小时和分钟计算批次索引（0 到 TOTAL_BATCHES-1）
         // 使用 (hour * 60 + minute) % TOTAL_BATCHES 来分散批次
         const batchIndex = (hour * 60 + minute) % TOTAL_BATCHES;
         console.log(
-          `[定时任务] 标准监控当前批次: ${batchIndex + 1}/${TOTAL_BATCHES}`,
+          `[定时任务] 标准监控（US）当前批次: ${
+            batchIndex + 1
+          }/${TOTAL_BATCHES}`,
         );
-        monitorTaskQueue.enqueue(allCountries, {
+        monitorTaskQueue.enqueue(usCountries, {
           batchIndex,
           totalBatches: TOTAL_BATCHES,
         });
       } else {
         // 不分批，直接处理所有国家
-        monitorTaskQueue.enqueue(allCountries);
+        monitorTaskQueue.enqueue(usCountries);
       }
     }
 
     // --- Competitor Monitor Task ---
     // 竞品监控使用相同的时间表
     const competitorUsCountries = getCountriesToCheck('US', minute);
-    const competitorEuCountries = getCountriesToCheck('EU', minute);
-    const allCompetitorCountries = [
-      ...competitorUsCountries,
-      ...competitorEuCountries,
-    ];
 
-    if (allCompetitorCountries.length > 0) {
+    if (competitorUsCountries.length > 0) {
       if (TOTAL_BATCHES > 1) {
         const batchIndex = (hour * 60 + minute) % TOTAL_BATCHES;
         console.log(
-          `[定时任务] 竞品监控当前批次: ${batchIndex + 1}/${TOTAL_BATCHES}`,
+          `[定时任务] 竞品监控（US）当前批次: ${
+            batchIndex + 1
+          }/${TOTAL_BATCHES}`,
         );
-        competitorMonitorTaskQueue.enqueue(allCompetitorCountries, {
+        competitorMonitorTaskQueue.enqueue(competitorUsCountries, {
           batchIndex,
           totalBatches: TOTAL_BATCHES,
         });
       } else {
-        competitorMonitorTaskQueue.enqueue(allCompetitorCountries);
+        competitorMonitorTaskQueue.enqueue(competitorUsCountries);
+      }
+    }
+  });
+
+  // EU区域：每小时整点执行
+  cron.schedule('0 * * * *', () => {
+    const now = new Date();
+    const minute = now.getMinutes();
+    const hour = now.getHours();
+
+    // --- Standard Monitor Task ---
+    const euCountries = getCountriesToCheck('EU', minute);
+
+    if (euCountries.length > 0) {
+      // 如果启用分批处理，计算当前批次
+      if (TOTAL_BATCHES > 1) {
+        // 基于小时和分钟计算批次索引（0 到 TOTAL_BATCHES-1）
+        const batchIndex = (hour * 60 + minute) % TOTAL_BATCHES;
+        console.log(
+          `[定时任务] 标准监控（EU）当前批次: ${
+            batchIndex + 1
+          }/${TOTAL_BATCHES}`,
+        );
+        monitorTaskQueue.enqueue(euCountries, {
+          batchIndex,
+          totalBatches: TOTAL_BATCHES,
+        });
+      } else {
+        // 不分批，直接处理所有国家
+        monitorTaskQueue.enqueue(euCountries);
+      }
+    }
+
+    // --- Competitor Monitor Task ---
+    // 竞品监控使用相同的时间表
+    const competitorEuCountries = getCountriesToCheck('EU', minute);
+
+    if (competitorEuCountries.length > 0) {
+      if (TOTAL_BATCHES > 1) {
+        const batchIndex = (hour * 60 + minute) % TOTAL_BATCHES;
+        console.log(
+          `[定时任务] 竞品监控（EU）当前批次: ${
+            batchIndex + 1
+          }/${TOTAL_BATCHES}`,
+        );
+        competitorMonitorTaskQueue.enqueue(competitorEuCountries, {
+          batchIndex,
+          totalBatches: TOTAL_BATCHES,
+        });
+      } else {
+        competitorMonitorTaskQueue.enqueue(competitorEuCountries);
       }
     }
   });
