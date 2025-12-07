@@ -399,6 +399,9 @@ const ASINManagement: React.FC<unknown> = () => {
                   });
                   message.success('检查完成');
                 }
+                // 清除前端缓存，确保获取最新数据
+                requestCacheRef.current.clear();
+                // 刷新列表显示最新结果
                 if (actionRef.current) {
                   await actionRef.current.reload();
                 }
