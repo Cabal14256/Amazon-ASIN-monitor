@@ -31,7 +31,12 @@ class User {
 
   // 查询所有用户（分页）
   static async findAll(params = {}) {
-    const { username = '', status = '', current = 1, pageSize = 10 } = params;
+    const {
+      username: searchUsername = '',
+      status = '',
+      current = 1,
+      pageSize = 10,
+    } = params;
 
     let sql = `
       SELECT id, username, real_name, status, last_login_time, last_login_ip, create_time, update_time
@@ -40,9 +45,9 @@ class User {
     `;
     const conditions = [];
 
-    if (username) {
+    if (searchUsername) {
       sql += ` AND username LIKE ?`;
-      conditions.push(`%${username}%`);
+      conditions.push(`%${searchUsername}%`);
     }
 
     if (status !== '') {
