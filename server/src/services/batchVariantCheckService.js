@@ -10,6 +10,7 @@
 
 const { callSPAPI, getMarketplaceId } = require('../config/sp-api');
 const rateLimiter = require('./rateLimiter');
+const operationIdentifier = require('./spApiOperationIdentifier');
 
 // searchCatalogItems的rate limit: 2 req/s, burst = 2
 const BATCH_SEARCH_RATE_LIMIT_PER_SECOND = 2;
@@ -58,16 +59,6 @@ async function batchCheckASINsBySearch(asins, country) {
     const batchASINs = cleanASINs.slice(i, i + BATCH_SIZE);
 
     try {
-      // 等待限流（searchCatalogItems: 2 req/s = 500ms间隔）
-      if (i > 0) {
-        await new Promise((resolve) => {
-          void setTimeout(resolve, 500);
-        });
-      }
-
-      // 通过令牌桶获取令牌
-      await rateLimiter.acquire(region);
-
       // 构建searchCatalogItems的请求体
       // 根据SP-API文档，searchCatalogItems使用POST，body包含identifiers数组
       const identifiers = batchASINs.map((asin) => ({
@@ -83,14 +74,29 @@ async function batchCheckASINsBySearch(asins, country) {
         includedData: ['summaries'], // 先只获取summary，减少数据量
       };
 
+      // 识别operation
+      const operation = operationIdentifier.identifyOperation('POST', path);
       console.log(
         `[batchCheckASINsBySearch] 查询批次 ${
           Math.floor(i / BATCH_SIZE) + 1
-        }，ASIN数量: ${batchASINs.length}`,
+        }，ASIN数量: ${batchASINs.length}，operation: ${
+          operation || 'unknown'
+        }`,
       );
 
-      // 调用searchCatalogItems（POST方法）
-      const response = await callSPAPI('POST', path, country, {}, body);
+      // 通过令牌桶获取令牌（使用operation级别的限流器）
+      await rateLimiter.acquire(
+        region,
+        1,
+        rateLimiter.PRIORITY.BATCH,
+        operation,
+      );
+
+      // 调用searchCatalogItems（POST方法），传递operation参数
+      const response = await callSPAPI('POST', path, country, {}, body, {
+        operation: operation,
+        maxRetries: 3,
+      });
 
       if (response && response.items) {
         // 处理返回的items

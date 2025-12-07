@@ -9,6 +9,7 @@ const SPAPIConfig = require('../models/SPAPIConfig');
 const riskControlService = require('./riskControlService');
 const rateLimiter = require('./rateLimiter');
 const { PRIORITY } = rateLimiter;
+const operationIdentifier = require('./spApiOperationIdentifier');
 const logger = require('../utils/logger');
 
 /**
@@ -209,9 +210,6 @@ async function doCheckASINVariants(
     // EU区域：UK, DE, FR, IT, ES -> EU
     const region = country === 'US' ? 'US' : 'EU';
 
-    // 通过令牌桶获取令牌（等待令牌可用后再执行请求，使用优先级）
-    await rateLimiter.acquire(region, 1, priority);
-
     // 指数退避重试函数（用于429限流错误，支持Retry-After头解析）
     const retryWithBackoff = async (fn, maxRetries = 3) => {
       for (let attempt = 0; attempt < maxRetries; attempt++) {
@@ -287,6 +285,12 @@ async function doCheckASINVariants(
     const apiVersion = '2022-04-01';
     const path = `/catalog/${apiVersion}/items/${cleanASIN}`;
 
+    // 识别operation
+    const operation = operationIdentifier.identifyOperation('GET', path);
+    logger.info(
+      `[checkASINVariants] 识别的operation: ${operation || 'unknown'}`,
+    );
+
     // 验证和清理 marketplaceId
     if (!marketplaceId) {
       throw new Error(`无法获取 ${country} 的 Marketplace ID`);
@@ -319,10 +323,14 @@ async function doCheckASINVariants(
     logger.info(`[checkASINVariants] 使用API版本: ${apiVersion}`);
     logger.info(`[checkASINVariants] 请求路径: ${path}`);
 
+    // 通过令牌桶获取令牌（使用operation级别的限流器）
+    await rateLimiter.acquire(region, 1, priority, operation);
+
     try {
-      // 对于429错误，使用指数退避重试
-      response = await retryWithBackoff(async () => {
-        return await callSPAPI('GET', path, country, params);
+      // 调用SP-API，传递operation参数（callSPAPI内部已处理Retry-After，所以retryWithBackoff可能不再需要）
+      response = await callSPAPI('GET', path, country, params, null, {
+        operation: operation,
+        maxRetries: 3,
       });
 
       if (response) {

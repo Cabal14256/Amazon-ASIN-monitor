@@ -1,13 +1,39 @@
 /**
  * SP-API 令牌桶限流器
  * 实现每分钟和每小时的速率限制，防止超过SP-API的配额限制
+ * 支持operation级别的限流管理
  */
+
+const logger = require('../utils/logger');
 
 // 请求优先级定义
 const PRIORITY = {
   MANUAL: 1, // 手动查询（最高优先级）
   SCHEDULED: 2, // 定时任务（中等优先级）
   BATCH: 3, // 批量查询（低优先级）
+};
+
+// Operation默认配置（基于SP-API文档）
+const DEFAULT_OPERATION_CONFIGS = {
+  getCatalogItem: {
+    rate: 1, // 1 req/s
+    burst: 2, // 瞬时最多2个请求
+    perMinute: 60,
+    perHour: 1000,
+  },
+  searchCatalogItems: {
+    rate: 2, // 2 req/s
+    burst: 2, // 瞬时最多2个请求
+    perMinute: 120,
+    perHour: 2000,
+  },
+  // 通用默认配置（用于未识别的operation）
+  default: {
+    rate: 1,
+    burst: 2,
+    perMinute: 60,
+    perHour: 1000,
+  },
 };
 
 /**
@@ -231,10 +257,17 @@ class MultiLevelRateLimiter {
   }
 }
 
-// 为每个区域创建独立的限流器
+// 为每个区域创建独立的限流器（向后兼容，区域级别）
 const rateLimiters = {
   US: null,
   EU: null,
+};
+
+// 为每个operation创建独立的限流器（新功能）
+// 结构: { region: { operation: MultiLevelRateLimiter } }
+const operationRateLimiters = {
+  US: {},
+  EU: {},
 };
 
 /**
@@ -276,25 +309,138 @@ function getRateLimiter(region) {
 }
 
 /**
- * 获取令牌（根据区域）
+ * 获取operation限流器
+ * @param {string} region - 区域代码
+ * @param {string} operation - Operation名称（可选）
+ * @returns {MultiLevelRateLimiter} 限流器实例
+ */
+function getOperationRateLimiter(region, operation = null) {
+  const normalizedRegion = region === 'US' ? 'US' : 'EU';
+
+  // 如果没有指定operation，返回区域级别的限流器（向后兼容）
+  if (!operation) {
+    return getRateLimiter(normalizedRegion);
+  }
+
+  // 获取或创建operation级别的限流器
+  if (!operationRateLimiters[normalizedRegion][operation]) {
+    // 获取operation的配置
+    const opConfig =
+      DEFAULT_OPERATION_CONFIGS[operation] || DEFAULT_OPERATION_CONFIGS.default;
+
+    // 创建新的限流器
+    operationRateLimiters[normalizedRegion][operation] =
+      new MultiLevelRateLimiter({
+        perMinute: opConfig.perMinute,
+        perHour: opConfig.perHour,
+        rate: opConfig.rate,
+        burst: opConfig.burst,
+      });
+
+    logger.info(
+      `[RateLimiter] 创建operation限流器: ${normalizedRegion}/${operation} (rate: ${opConfig.rate}/s, burst: ${opConfig.burst})`,
+    );
+  }
+
+  return operationRateLimiters[normalizedRegion][operation];
+}
+
+/**
+ * 更新operation的rate配置（从响应头自动发现）
+ * @param {string} region - 区域代码
+ * @param {string} operation - Operation名称
+ * @param {number} rateLimit - 从响应头发现的rate limit（requests/second）
+ */
+function updateOperationRateLimit(region, operation, rateLimit) {
+  if (!region || !operation || !rateLimit || rateLimit <= 0) {
+    return;
+  }
+
+  const normalizedRegion = region === 'US' ? 'US' : 'EU';
+
+  // 获取或创建限流器
+  const limiter = getOperationRateLimiter(normalizedRegion, operation);
+
+  // 根据rate limit计算perMinute和perHour
+  // rate limit是每秒的请求数，我们需要转换为每分钟和每小时
+  const newPerMinute = Math.floor(rateLimit * 60);
+  const newPerHour = Math.floor(rateLimit * 3600);
+
+  // 获取当前配置
+  const currentPerMinute = limiter.minuteLimiter.capacity;
+  const currentPerHour = limiter.hourLimiter.capacity;
+
+  // 如果配置发生变化，更新限流器
+  if (newPerMinute !== currentPerMinute || newPerHour !== currentPerHour) {
+    logger.info(
+      `[RateLimiter] 更新operation配额: ${normalizedRegion}/${operation} (${currentPerMinute}/min -> ${newPerMinute}/min, ${currentPerHour}/hour -> ${newPerHour}/hour)`,
+    );
+
+    // 重新创建限流器（保持令牌状态可能比较复杂，所以直接重建）
+    operationRateLimiters[normalizedRegion][operation] =
+      new MultiLevelRateLimiter({
+        perMinute: newPerMinute,
+        perHour: newPerHour,
+        rate: rateLimit,
+        burst: DEFAULT_OPERATION_CONFIGS[operation]?.burst || 2,
+      });
+  }
+}
+
+/**
+ * 获取令牌（根据区域和operation）
  * @param {string} region - 区域代码
  * @param {number} tokens - 需要的令牌数量，默认1
  * @param {number} priority - 优先级（PRIORITY.MANUAL=1, PRIORITY.SCHEDULED=2, PRIORITY.BATCH=3），默认2
+ * @param {string} operation - Operation名称（可选，如果提供则使用operation级别的限流器）
  * @returns {Promise<void>}
  */
-async function acquire(region, tokens = 1, priority = PRIORITY.SCHEDULED) {
-  const limiter = getRateLimiter(region);
+async function acquire(
+  region,
+  tokens = 1,
+  priority = PRIORITY.SCHEDULED,
+  operation = null,
+) {
+  const limiter = getOperationRateLimiter(region, operation);
   await limiter.acquire(tokens, priority);
 }
 
 /**
  * 获取限流器状态
  * @param {string} region - 区域代码
+ * @param {string} operation - Operation名称（可选）
  * @returns {Object}
  */
-function getStatus(region) {
-  const limiter = getRateLimiter(region);
+function getStatus(region, operation = null) {
+  const limiter = getOperationRateLimiter(region, operation);
   return limiter.getStatus();
+}
+
+/**
+ * 获取所有operation限流器状态
+ * @param {string} region - 区域代码（可选，如果不提供则返回所有区域）
+ * @returns {Object} 所有operation的状态信息
+ */
+function getAllOperationStatus(region = null) {
+  const regions = region ? [region] : ['US', 'EU'];
+  const status = {};
+
+  for (const reg of regions) {
+    const normalizedRegion = reg === 'US' ? 'US' : 'EU';
+    status[normalizedRegion] = {};
+
+    // 区域级别限流器状态
+    status[normalizedRegion]._region =
+      getRateLimiter(normalizedRegion).getStatus();
+
+    // Operation级别限流器状态
+    const opLimiters = operationRateLimiters[normalizedRegion];
+    for (const [op, limiter] of Object.entries(opLimiters)) {
+      status[normalizedRegion][op] = limiter.getStatus();
+    }
+  }
+
+  return status;
 }
 
 /**
@@ -374,11 +520,15 @@ initializeRateLimiters();
 module.exports = {
   acquire,
   getStatus,
+  getAllOperationStatus,
   getRateLimiter,
+  getOperationRateLimiter,
+  updateOperationRateLimit,
   initializeRateLimiters,
   adjustRateLimit,
   PRIORITY,
   TokenBucket,
   MultiLevelRateLimiter,
   PriorityQueue,
+  DEFAULT_OPERATION_CONFIGS,
 };
