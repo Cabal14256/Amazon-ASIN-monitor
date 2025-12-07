@@ -11,36 +11,17 @@ const rateLimiter = require('./rateLimiter');
 const { PRIORITY } = rateLimiter;
 const operationIdentifier = require('./spApiOperationIdentifier');
 const logger = require('../utils/logger');
+const { parseVariantRelationships } = require('../utils/variantParser');
 
 /**
  * 每次最多同时检查的 ASIN 数（降低并发以减少限流风险）
+ * 可以根据实际情况调整
  */
 const MAX_CONCURRENT_ASIN_CHECKS = 3;
 
-// 缓存时间配置（统一使用12分钟，保证数据准确性）
-const VARIANT_CACHE_TTL_MS = 12 * 60 * 1000; // 12分钟缓存
-
-// 请求去重：存储正在进行的请求，防止重复请求
-const pendingRequests = new Map(); // key: "asin:country" -> Promise
-const MAX_PENDING_REQUESTS = 1000; // 最大pending请求数
-const PENDING_REQUEST_TIMEOUT = 5 * 60 * 1000; // 5分钟超时
-
-// 定期清理过期的pending请求
-setInterval(() => {
-  const now = Date.now();
-  for (const [key, promise] of pendingRequests.entries()) {
-    // 如果请求已经完成或超时，从Map中移除
-    // 注意：这里无法直接检查Promise状态，所以依赖请求完成时的清理
-  }
-  // 如果Map大小超过限制，清理最旧的请求
-  if (pendingRequests.size > MAX_PENDING_REQUESTS) {
-    const oldestKey = Array.from(pendingRequests.keys())[0];
-    pendingRequests.delete(oldestKey);
-    logger.warn(
-      `[pendingRequests] 清理最旧的请求: ${oldestKey}, 当前大小: ${pendingRequests.size}`,
-    );
-  }
-}, 10 * 60 * 1000); // 每10分钟清理一次
+// 用于控制并发的简单队列
+let currentRunningTasks = 0;
+const taskQueue = [];
 
 // HTML 抓取兜底开关
 let ENABLE_HTML_SCRAPER_FALLBACK = false;
@@ -48,108 +29,166 @@ let ENABLE_HTML_SCRAPER_FALLBACK = false;
 // 旧客户端备用开关
 let ENABLE_LEGACY_CLIENT_FALLBACK = false;
 
+// 用于去重请求的 Map
+const pendingRequests = new Map();
+const MAX_PENDING_REQUESTS = 1000; // 防止无限增长
+
 /**
- * 从数据库或环境变量加载 HTML 抓取兜底配置
+ * 简单的并发控制执行器
+ * @param {Function} taskFn - 异步任务函数
+ * @returns {Promise<any>}
  */
-async function loadHtmlScraperFallbackConfig() {
+async function runWithConcurrencyLimit(taskFn) {
+  if (currentRunningTasks >= MAX_CONCURRENT_ASIN_CHECKS) {
+    // 超过并发限制，将任务加入队列
+    return new Promise((resolve, reject) => {
+      taskQueue.push({ taskFn, resolve, reject });
+    });
+  }
+
+  currentRunningTasks += 1;
   try {
-    const config = await SPAPIConfig.findByKey('ENABLE_HTML_SCRAPER_FALLBACK');
+    const result = await taskFn();
+    return result;
+  } finally {
+    currentRunningTasks -= 1;
+    // 从队列中取出下一个任务执行
+    if (taskQueue.length > 0) {
+      const next = taskQueue.shift();
+      runWithConcurrencyLimit(next.taskFn)
+        .then(next.resolve)
+        .catch(next.reject);
+    }
+  }
+}
+
+/**
+ * 从缓存中获取变体检查结果
+ * @param {string} asin - ASIN
+ * @param {string} country - 国家代码
+ * @returns {Promise<any|null>}
+ */
+async function getCachedVariantResult(asin, country) {
+  const key = getVariantCacheKey(asin, country);
+  const cached = await cacheService.get(key);
+  if (cached) {
+    try {
+      return JSON.parse(cached);
+    } catch (e) {
+      logger.warn(`[getCachedVariantResult] 缓存解析失败: ${e.message}`);
+      return null;
+    }
+  }
+  return null;
+}
+
+/**
+ * 设置变体检查结果缓存
+ * @param {string} asin - ASIN
+ * @param {string} country - 国家代码
+ * @param {any} result - 缓存结果
+ * @param {number} ttlSeconds - 缓存时间（秒）
+ */
+async function setVariantResultCache(asin, country, result, ttlSeconds = 600) {
+  const key = getVariantCacheKey(asin, country);
+  try {
+    await cacheService.set(key, JSON.stringify(result), ttlSeconds);
+  } catch (error) {
+    logger.error(`[setVariantResultCache] 设置缓存失败: ${error.message}`);
+  }
+}
+
+/**
+ * 根据ASIN和国家构建缓存键
+ * @param {string} asin - ASIN
+ * @param {string} country - 国家代码
+ * @returns {string}
+ */
+function getVariantCacheKey(asin, country) {
+  const cleanASIN = asin ? asin.trim().toUpperCase() : asin;
+  return `variant:${country}:${cleanASIN}`;
+}
+
+/**
+ * 通用布尔配置加载函数
+ * @param {string} configKey - 数据库配置键
+ * @param {string} envKey - 环境变量键
+ * @param {boolean} defaultValue - 默认值
+ * @param {string} logPrefix - 日志前缀
+ * @returns {Promise<boolean>} 配置值
+ */
+async function loadBooleanConfig(
+  configKey,
+  envKey,
+  defaultValue = false,
+  logPrefix = '[变体检查]',
+) {
+  try {
+    const config = await SPAPIConfig.findByKey(configKey);
     if (
       config &&
       config.config_value !== null &&
       config.config_value !== undefined
     ) {
-      ENABLE_HTML_SCRAPER_FALLBACK =
+      return (
         config.config_value === 'true' ||
         config.config_value === true ||
-        config.config_value === '1';
+        config.config_value === '1'
+      );
     } else {
       // 从环境变量读取
-      ENABLE_HTML_SCRAPER_FALLBACK =
-        process.env.ENABLE_HTML_SCRAPER_FALLBACK === 'true' ||
-        process.env.ENABLE_HTML_SCRAPER_FALLBACK === '1';
+      return process.env[envKey] === 'true' || process.env[envKey] === '1';
     }
-    logger.info(
-      `[变体检查] ENABLE_HTML_SCRAPER_FALLBACK: ${ENABLE_HTML_SCRAPER_FALLBACK}`,
-    );
   } catch (error) {
-    logger.error(
-      '[变体检查] 加载 ENABLE_HTML_SCRAPER_FALLBACK 配置失败:',
-      error.message,
-    );
-    ENABLE_HTML_SCRAPER_FALLBACK = false; // 默认关闭
+    logger.error(`${logPrefix} 加载 ${configKey} 配置失败:`, error.message);
+    return defaultValue;
   }
 }
 
 /**
- * 从数据库或环境变量加载旧客户端备用配置
- */
-async function loadLegacyClientFallbackConfig() {
-  try {
-    const config = await SPAPIConfig.findByKey('ENABLE_LEGACY_CLIENT_FALLBACK');
-    if (
-      config &&
-      config.config_value !== null &&
-      config.config_value !== undefined
-    ) {
-      ENABLE_LEGACY_CLIENT_FALLBACK =
-        config.config_value === 'true' ||
-        config.config_value === true ||
-        config.config_value === '1';
-    } else {
-      // 从环境变量读取
-      ENABLE_LEGACY_CLIENT_FALLBACK =
-        process.env.ENABLE_LEGACY_CLIENT_FALLBACK === 'true' ||
-        process.env.ENABLE_LEGACY_CLIENT_FALLBACK === '1';
-    }
-    logger.info(
-      `[变体检查] ENABLE_LEGACY_CLIENT_FALLBACK: ${ENABLE_LEGACY_CLIENT_FALLBACK}`,
-    );
-  } catch (error) {
-    logger.error(
-      '[变体检查] 加载 ENABLE_LEGACY_CLIENT_FALLBACK 配置失败:',
-      error.message,
-    );
-    ENABLE_LEGACY_CLIENT_FALLBACK = false; // 默认关闭
-  }
-}
-
-/**
- * 重新加载 HTML 抓取兜底配置（供外部调用）
+ * 重新加载 HTML 抓取兜底配置
  */
 async function reloadHtmlScraperFallbackConfig() {
   await loadHtmlScraperFallbackConfig();
+}
+
+/**
+ * 重新加载旧客户端备用配置
+ */
+async function reloadLegacyClientFallbackConfig() {
+  await loadLegacyClientFallbackConfig();
+}
+
+async function loadHtmlScraperFallbackConfig() {
+  ENABLE_HTML_SCRAPER_FALLBACK = await loadBooleanConfig(
+    'ENABLE_HTML_SCRAPER_FALLBACK',
+    'ENABLE_HTML_SCRAPER_FALLBACK',
+    false,
+    '[变体检查]',
+  );
+  logger.info(
+    `[变体检查] ENABLE_HTML_SCRAPER_FALLBACK: ${ENABLE_HTML_SCRAPER_FALLBACK}`,
+  );
+}
+
+async function loadLegacyClientFallbackConfig() {
+  ENABLE_LEGACY_CLIENT_FALLBACK = await loadBooleanConfig(
+    'ENABLE_LEGACY_CLIENT_FALLBACK',
+    'ENABLE_LEGACY_CLIENT_FALLBACK',
+    false,
+    '[变体检查]',
+  );
+  logger.info(
+    `[变体检查] ENABLE_LEGACY_CLIENT_FALLBACK: ${ENABLE_LEGACY_CLIENT_FALLBACK}`,
+  );
 }
 
 // 初始化时加载配置
 loadHtmlScraperFallbackConfig();
 loadLegacyClientFallbackConfig();
 
-function getVariantCacheKey(asin, country) {
-  // 统一使用大写的 ASIN 作为缓存键，避免大小写不一致导致缓存失效
-  const cleanASIN = asin ? asin.trim().toUpperCase() : asin;
-  return `variant:${country}:${cleanASIN}`;
-}
-
-function getCachedVariantResult(asin, country) {
-  const key = getVariantCacheKey(asin, country);
-  return cacheService.get(key);
-}
-
-function setVariantResultCache(asin, country, result) {
-  const key = getVariantCacheKey(asin, country);
-  // 统一使用12分钟缓存时间，保证数据准确性
-  cacheService.set(key, result, VARIANT_CACHE_TTL_MS);
-}
-
 /**
- * 实际执行ASIN变体检查的内部函数
- * @param {string} asin - ASIN编码
- * @param {string} country - 国家代码
- * @param {boolean} forceRefresh - 是否强制刷新
- * @param {number} priority - 请求优先级（PRIORITY.MANUAL=1, PRIORITY.SCHEDULED=2, PRIORITY.BATCH=3），默认2
- * @returns {Promise<{hasVariants: boolean, variantCount: number, details: any, errorType?: string}>}
- * errorType: 'SP_API_ERROR' - SP-API调用错误, 'NO_VARIANTS' - ASIN无变体（正常情况）
+ * 核心：执行单个 ASIN 的变体检查（包含缓存与重试逻辑）
  */
 async function doCheckASINVariants(
   asin,
@@ -165,11 +204,12 @@ async function doCheckASINVariants(
   try {
     // 如果 forceRefresh 为 true，跳过缓存
     if (!forceRefresh) {
-      const cached = getCachedVariantResult(asin, country);
+      const cached = await getCachedVariantResult(asin, country);
       if (cached) {
         logger.info(`[checkASINVariants] 使用缓存结果: ${asin} (${country})`);
         // 缓存命中，记录为成功
         const responseTime = (Date.now() - startTime) / 1000;
+        success = true;
         riskControlService.recordCheck({
           success: true,
           isRateLimit: false,
@@ -186,100 +226,20 @@ async function doCheckASINVariants(
 
     // ASIN 格式验证
     if (!asin || typeof asin !== 'string' || asin.trim().length === 0) {
-      throw new Error('ASIN 不能为空');
+      throw new Error('ASIN不能为空');
     }
 
-    // 清理 ASIN（去除空格，转换为大写）
     const cleanASIN = asin.trim().toUpperCase();
 
-    // 验证 ASIN 格式（Amazon ASIN 通常是 10 位字符，以 B 开头）
-    if (!/^[A-Z0-9]{10}$/.test(cleanASIN)) {
-      logger.warn(
-        `[checkASINVariants] ASIN 格式可能不正确: ${cleanASIN}，但继续尝试调用 API`,
-      );
+    if (!country || typeof country !== 'string') {
+      throw new Error('country 参数无效');
     }
 
     const marketplaceId = getMarketplaceId(country);
+    if (!marketplaceId) {
+      throw new Error(`无法获取 ${country} 的 Marketplace ID`);
+    }
 
-    logger.info(
-      `[checkASINVariants] 调用SP-API检查ASIN ${cleanASIN}，国家: ${country}，Marketplace ID: ${marketplaceId}`,
-    );
-
-    // 获取区域代码（US或EU），用于令牌桶限流
-    // US区域：US
-    // EU区域：UK, DE, FR, IT, ES -> EU
-    const region = country === 'US' ? 'US' : 'EU';
-
-    // 指数退避重试函数（用于429限流错误，支持Retry-After头解析）
-    const retryWithBackoff = async (fn, maxRetries = 3) => {
-      for (let attempt = 0; attempt < maxRetries; attempt++) {
-        try {
-          return await fn();
-        } catch (error) {
-          const statusCode =
-            error.statusCode || error.message.match(/\d{3}/)?.[0];
-
-          // 只有429错误才重试
-          if (statusCode === 429 || error.message.includes('429')) {
-            if (attempt < maxRetries - 1) {
-              // 优先使用Retry-After响应头（如果存在）
-              let waitTime = null;
-              const retryAfter =
-                error.response?.headers?.['retry-after'] ||
-                error.response?.headers?.['Retry-After'] ||
-                error.headers?.['retry-after'] ||
-                error.headers?.['Retry-After'];
-
-              if (retryAfter) {
-                // Retry-After可能是秒数（数字）或HTTP日期字符串
-                const retryAfterNum = parseInt(retryAfter, 10);
-                if (!isNaN(retryAfterNum)) {
-                  // 数字格式：直接使用（秒转毫秒）
-                  waitTime = retryAfterNum * 1000;
-                  logger.info(
-                    `[checkASINVariants] 429限流错误，Retry-After头指定等待 ${waitTime}ms 后重试 (${
-                      attempt + 1
-                    }/${maxRetries})`,
-                  );
-                } else {
-                  // HTTP日期格式：计算时间差
-                  const retryDate = new Date(retryAfter);
-                  if (!isNaN(retryDate.getTime())) {
-                    waitTime = Math.max(0, retryDate.getTime() - Date.now());
-                    logger.info(
-                      `[checkASINVariants] 429限流错误，Retry-After头指定等待 ${waitTime}ms 后重试 (${
-                        attempt + 1
-                      }/${maxRetries})`,
-                    );
-                  }
-                }
-              }
-
-              // 如果没有Retry-After头或解析失败，使用指数退避作为兜底
-              if (waitTime === null || waitTime <= 0) {
-                waitTime = Math.min(1000 * Math.pow(2, attempt), 10000); // 最多10秒
-                logger.info(
-                  `[checkASINVariants] 429限流错误，使用指数退避等待 ${waitTime}ms 后重试 (${
-                    attempt + 1
-                  }/${maxRetries})`,
-                );
-              }
-
-              // 限制最大等待时间为60秒
-              waitTime = Math.min(waitTime, 60000);
-
-              await new Promise((resolve) => {
-                void setTimeout(resolve, waitTime);
-              });
-              continue;
-            }
-          }
-          throw error;
-        }
-      }
-    };
-
-    // 统一使用 2022-04-01 版本，不再尝试多版本回退
     let response = null;
     let lastError = null;
     const apiVersion = '2022-04-01';
@@ -292,10 +252,6 @@ async function doCheckASINVariants(
     );
 
     // 验证和清理 marketplaceId
-    if (!marketplaceId) {
-      throw new Error(`无法获取 ${country} 的 Marketplace ID`);
-    }
-
     const cleanMarketplaceId = String(marketplaceId).trim();
     if (!cleanMarketplaceId || cleanMarketplaceId.length === 0) {
       throw new Error(`Marketplace ID 无效: ${marketplaceId}`);
@@ -303,7 +259,7 @@ async function doCheckASINVariants(
 
     const params = {
       marketplaceIds: [cleanMarketplaceId],
-      includedData: ['variations'],
+      includedData: ['summaries', 'relationships'],
     };
 
     // 验证参数格式
@@ -324,116 +280,77 @@ async function doCheckASINVariants(
     logger.info(`[checkASINVariants] 请求路径: ${path}`);
 
     // 通过令牌桶获取令牌（使用operation级别的限流器）
-    await rateLimiter.acquire(region, 1, priority, operation);
+    await rateLimiter.acquire(country, 1, priority, operation);
 
     try {
-      // 调用SP-API，传递operation参数（callSPAPI内部已处理Retry-After，所以retryWithBackoff可能不再需要）
+      // 调用SP-API，传递operation参数
       response = await callSPAPI('GET', path, country, params, null, {
         operation: operation,
         maxRetries: 3,
       });
-
-      if (response) {
-        logger.info(`[checkASINVariants] API版本 ${apiVersion} 调用成功`);
-      }
-    } catch (error) {
-      lastError = error;
-      const statusCode = error.statusCode || error.message.match(/\d{3}/)?.[0];
-
-      logger.warn(
-        `[checkASINVariants] API版本 ${apiVersion} 调用失败:`,
-        error.message,
+      logger.info(
+        `[checkASINVariants] API版本 ${apiVersion} 调用成功，状态码: ${
+          response?._spApiHeaders?.statusCode || 'unknown'
+        }`,
       );
+    } catch (error) {
+      logger.warn(
+        `[checkASINVariants] API版本 ${apiVersion} 调用失败: ${error.message}`,
+      );
+      lastError = error;
 
-      // 记录详细的错误信息
-      if (error.responseData) {
-        try {
-          const errorData =
-            typeof error.responseData === 'string'
-              ? JSON.parse(error.responseData)
-              : error.responseData;
-          logger.debug(
-            `[checkASINVariants] 错误详情:`,
-            JSON.stringify(errorData, null, 2),
-          );
-        } catch (e) {
-          logger.debug(`[checkASINVariants] 错误响应数据:`, error.responseData);
-        }
-      }
-
-      // 429限流错误：已在retryWithBackoff中处理，如果仍然失败，标记为限流
+      // 如果是 4xx 级别错误（如 400 InvalidInput），则不再重试，进入兜底逻辑
       if (
-        statusCode === 429 ||
-        error.message.includes('429') ||
-        error.message.includes('QuotaExceeded') ||
-        error.message.includes('TooManyRequests')
+        error.statusCode &&
+        Number(error.statusCode) >= 400 &&
+        Number(error.statusCode) < 500
       ) {
-        isRateLimit = true;
         logger.warn(
-          `[checkASINVariants] API版本 ${apiVersion} 返回 429（限流），重试后仍失败，进入兜底逻辑`,
+          `[checkASINVariants] API版本 ${apiVersion} 返回 ${error.statusCode}，进入兜底逻辑`,
         );
-      } else if (
-        statusCode === 400 ||
-        (error.message && error.message.includes('400'))
-      ) {
-        // 400错误：参数问题，直接进入兜底
-        logger.warn(
-          `[checkASINVariants] API版本 ${apiVersion} 返回 400（Bad Request），进入兜底逻辑`,
-        );
-      } else if (
-        statusCode === 404 ||
-        (error.message && error.message.includes('404'))
-      ) {
-        // 404错误：ASIN不存在，直接进入兜底
-        logger.warn(
-          `[checkASINVariants] API版本 ${apiVersion} 返回 404（Not Found），进入兜底逻辑`,
-        );
+        response = null;
       } else {
-        // 其他错误：直接进入兜底
-        logger.warn(
-          `[checkASINVariants] API版本 ${apiVersion} 返回其他错误，进入兜底逻辑`,
-        );
+        throw error;
       }
     }
 
-    // 如果 SP-API 调用失败，尝试旧客户端备用
+    // 如果新版API没有拿到有效数据，尝试旧版SP-API（legacy client）
     if (!response && ENABLE_LEGACY_CLIENT_FALLBACK) {
-      logger.info(`[checkASINVariants] SP-API调用失败，尝试旧客户端备用...`);
+      logger.warn(
+        '[checkASINVariants] 新版SP-API失败，尝试旧版SP-API（legacy client）...',
+      );
       try {
-        // 使用相同的路径和参数
+        const legacyPath = `/catalog/2022-04-01/items/${cleanASIN}`;
         const legacyParams = {
           marketplaceIds: [cleanMarketplaceId],
-          includedData: ['variations'],
+          includedData: ['summaries', 'relationships'],
         };
-        response = await callLegacySPAPI('GET', path, country, legacyParams);
-
-        if (response) {
-          logger.info(`[checkASINVariants] 旧客户端调用成功`);
-        }
-      } catch (legacyError) {
-        logger.error(
-          `[checkASINVariants] 旧客户端也失败:`,
-          legacyError.message,
+        response = await callLegacySPAPI(
+          'GET',
+          legacyPath,
+          country,
+          legacyParams,
         );
-        // 继续尝试 HTML 抓取
+        logger.info('[checkASINVariants] 旧SP-API调用成功');
+      } catch (legacyError) {
+        logger.error('[checkASINVariants] 旧客户端也失败:', legacyError);
+        lastError = legacyError;
       }
     }
 
-    // 如果 SP-API 和旧客户端都失败，尝试 HTML 抓取兜底
+    // 如果所有 SP-API 调用都失败，且开启了 HTML 抓取兜底，则尝试 HTML 抓取
     if (!response && ENABLE_HTML_SCRAPER_FALLBACK) {
-      logger.info(
-        `[checkASINVariants] SP-API和旧客户端都失败，尝试HTML抓取兜底...`,
-      );
       try {
-        const htmlResult = await htmlScraperService.checkASINVariantsByHTML(
+        logger.info(
+          `[checkASINVariants] SP-API调用失败，尝试HTML抓取兜底ASIN ${cleanASIN} (${country})...`,
+        );
+        const htmlResult = await htmlScraperService.checkASINVariantsHTML(
           cleanASIN,
           country,
         );
 
-        // 将 HTML 抓取结果转换为标准格式
         const variantASINs = htmlResult.details.variantAsins || [];
-        const parentASIN = htmlResult.details.parentAsin;
-
+        const parentASIN = htmlResult.details.parentAsin || null;
         const hasVariants = htmlResult.hasVariants;
         const variantCount = variantASINs.length;
 
@@ -441,22 +358,28 @@ async function doCheckASINVariants(
           hasVariants,
           variantCount,
           details: {
-            asin,
+            asin: cleanASIN,
+            title: htmlResult.details.title || '',
+            brand: htmlResult.details.brand || null,
             parentAsin: parentASIN,
-            variantASINs,
+            variations: variantASINs.map((asin) => ({
+              asin,
+              title: '',
+            })),
+            relationships: [],
+          },
+          meta: {
             source: 'html_scraper',
             apiVersion: null,
           },
         };
 
-        // 缓存结果（使用清理后的 ASIN）
-        setVariantResultCache(cleanASIN, country, result);
+        await setVariantResultCache(cleanASIN, country, result);
 
         logger.info(
           `[checkASINVariants] HTML抓取成功: hasVariants=${hasVariants}, variantCount=${variantCount}`,
         );
 
-        // 记录成功（HTML抓取成功）
         const responseTime = (Date.now() - startTime) / 1000;
         success = true;
         riskControlService.recordCheck({
@@ -469,7 +392,6 @@ async function doCheckASINVariants(
         return result;
       } catch (htmlError) {
         logger.error(`[checkASINVariants] HTML抓取也失败:`, htmlError.message);
-        // HTML 抓取失败，抛出最后一个 SP-API 错误
         if (lastError) {
           throw lastError;
         }
@@ -477,33 +399,18 @@ async function doCheckASINVariants(
       }
     }
 
-    // 如果所有方法都失败，抛出错误
+    // 如果response仍然为空，说明所有兜底都失败
     if (!response) {
-      if (lastError) {
-        throw lastError;
-      }
-      throw new Error('SP-API调用失败，且备用方案未启用或失败');
+      throw lastError || new Error('SP-API响应为空且未使用HTML兜底');
     }
 
-    // 解析响应
-    logger.debug(`[checkASINVariants] SP-API响应:`, {
-      hasResponse: !!response,
-      hasItems: !!(response && response.items),
-      itemsCount: response && response.items ? response.items.length : 0,
-      responseKeys: response ? Object.keys(response) : [],
-    });
-
-    // SP-API返回格式可能有两种：
-    // 1. v2022-04-01: { items: [{ asin, variations: [...] }] }
-    // 2. v2020-12-01: { asin: "...", summaries: [...], variations: [...] } (直接返回item对象)
+    // 解析新版API返回的数据结构
     let item = null;
 
     if (response && response.items && response.items.length > 0) {
-      // v2022-04-01 格式
-      item = response.items[0];
+      item = response.items[0]; // 2022-04-01 结构
     } else if (response && response.asin) {
-      // v2020-12-01 格式：直接返回item对象
-      item = response;
+      item = response; // 2020-12-01 结构
     }
 
     if (item) {
@@ -517,77 +424,22 @@ async function doCheckASINVariants(
         summariesCount: item.summaries ? item.summaries.length : 0,
       });
 
-      // 检查是否有变体关系
-      // SP-API返回的variations格式: [{marketplaceId, asins: [...], variationType}]
-      // 每个元素代表一个变体组，asins数组包含实际的变体ASIN列表
-      const variations = item.variations || [];
-
-      // 提取所有变体ASIN和变体类型信息
-      // SP-API的variations格式说明：
-      // - 如果 variationType: "CHILD"，表示当前ASIN是子变体，asins数组中的ASIN是父变体ASIN
-      // - 如果 variationType: "PARENT"，表示当前ASIN是父变体，asins数组中的ASIN是子变体ASIN
-      const variantASINs = [];
-      let parentASIN = null;
-      let isChild = false;
-      let isParent = false;
-
-      variations.forEach((variationGroup) => {
-        // 检查变体类型
-        if (variationGroup.variationType === 'CHILD') {
-          isChild = true;
-          // 如果当前ASIN是子变体，asins数组中的ASIN就是父变体ASIN
-          if (
-            variationGroup.asins &&
-            Array.isArray(variationGroup.asins) &&
-            variationGroup.asins.length > 0
-          ) {
-            parentASIN = variationGroup.asins[0]; // 通常只有一个父变体
-            // 父变体ASIN也加入到variantASINs中，用于统计
-            variantASINs.push(...variationGroup.asins);
-          }
-        } else if (variationGroup.variationType === 'PARENT') {
-          isParent = true;
-          // 如果当前ASIN是父变体，asins数组中的ASIN是子变体ASIN
-          if (variationGroup.asins && Array.isArray(variationGroup.asins)) {
-            variantASINs.push(...variationGroup.asins);
-          }
-          // 当前ASIN就是父变体
-          parentASIN = item.asin;
-        } else {
-          // 未知类型，直接添加asins
-          if (variationGroup.asins && Array.isArray(variationGroup.asins)) {
-            variantASINs.push(...variationGroup.asins);
-          }
-        }
-      });
+      // 检查是否有变体关系（兼容 2022-04-01 relationships 结构 + 旧 variations 结构）
+      const {
+        variantASINs,
+        parentASIN,
+        isChild,
+        isParent,
+        variationRelations,
+      } = parseVariantRelationships(item);
 
       const hasVariants = variantASINs.length > 0;
 
-      // 如果没有variations字段，尝试检查relationships中的VARIATION关系
-      const relationships = item.relationships || [];
-      const variationRelations = relationships.filter(
-        (rel) => rel.type === 'VARIATION' || rel.type === 'VARIANT',
-      );
-
-      // 如果还没有找到父变体，尝试从relationships中查找
-      if (!parentASIN && isChild && relationships.length > 0) {
-        // 查找PARENT类型的relationship
-        const parentRelation = relationships.find(
-          (rel) => rel.type === 'PARENT' || rel.relationshipType === 'PARENT',
-        );
-        if (parentRelation && parentRelation.asin) {
-          parentASIN = parentRelation.asin;
-        } else if (parentRelation && parentRelation.parentAsin) {
-          parentASIN = parentRelation.parentAsin;
-        }
-      }
-
       const finalHasVariants = hasVariants || variationRelations.length > 0;
-      // variantCount是实际的变体ASIN数量
       const variantCount = variantASINs.length || variationRelations.length;
 
-      // 输出详细的变体检查结果
-      logger.debug(`\n========== ASIN变体检查结果 ==========`);
+      logger.debug(`
+========== ASIN变体检查结果 ==========`);
       logger.debug(`ASIN: ${item.asin}`);
       logger.debug(`是否有变体: ${finalHasVariants ? '✅ 是' : '❌ 否'}`);
 
@@ -598,32 +450,21 @@ async function doCheckASINVariants(
           }`,
         );
         logger.debug(`变体ASIN数量: ${variantCount}`);
+
         if (variantASINs.length > 0) {
-          if (isChild) {
-            // 如果是子变体，variantASINs中包含的是父变体ASIN
-            logger.debug(`父变体ASIN: ${variantASINs.join(', ')}`);
-          } else if (isParent) {
-            // 如果是父变体，variantASINs中包含的是子变体ASIN
-            logger.debug(`子变体ASIN列表: ${variantASINs.join(', ')}`);
-          } else {
-            logger.debug(`变体ASIN列表: ${variantASINs.join(', ')}`);
-          }
+          logger.debug(`变体ASIN列表: ${variantASINs.join(', ')}`);
         }
+
         if (parentASIN) {
-          logger.debug(`✅ 父变体ASIN: ${parentASIN}`);
-        } else if (isChild) {
-          logger.debug(`⚠️  注意: 当前ASIN是子变体，但未找到父变体ASIN`);
+          logger.debug(`父ASIN: ${parentASIN}`);
         }
       } else {
-        logger.debug(`说明: 该ASIN没有变体关系`);
+        logger.debug('说明: 该ASIN没有变体关系');
       }
-      logger.debug(`=====================================\n`);
 
-      const resultPayload = {
+      const result = {
         hasVariants: finalHasVariants,
         variantCount,
-        // 如果有变体，不需要 errorType；如果没有变体，标记为 NO_VARIANTS
-        errorType: finalHasVariants ? undefined : 'NO_VARIANTS',
         details: {
           asin: item.asin,
           title:
@@ -631,158 +472,65 @@ async function doCheckASINVariants(
             item.summaries?.[0]?.title ||
             item.attributes?.item_name?.[0]?.value ||
             '',
+          brand:
+            item.summaries?.[0]?.brand ||
+            item.summaries?.[0]?.manufacturer ||
+            null,
+          parentAsin: parentASIN || null,
           variations: variantASINs.map((asin) => ({
-            asin: asin,
+            asin,
             title: '',
           })),
           relationships: variationRelations,
         },
+        meta: {
+          source: 'spapi',
+          apiVersion,
+        },
       };
-      // 使用清理后的 ASIN 存储缓存
-      setVariantResultCache(cleanASIN, country, resultPayload);
 
-      // 记录成功（有变体或无变体都是成功，只是结果不同）
+      await setVariantResultCache(cleanASIN, country, result);
+
       const responseTime = (Date.now() - startTime) / 1000;
       success = true;
       riskControlService.recordCheck({
         success: true,
-        isRateLimit: false,
-        isSpApiError: false,
+        isRateLimit,
+        isSpApiError,
         responseTime,
       });
 
-      return resultPayload;
+      return result;
     }
 
-    // 如果没有找到变体，返回无变体（这是正常情况，不是错误）
-    const resultPayload = {
-      hasVariants: false,
-      variantCount: 0,
-      errorType: 'NO_VARIANTS', // 标识为无变体（正常情况）
-      details: {
-        asin: cleanASIN,
-        message: '未找到变体信息',
-      },
-    };
-    // 使用清理后的 ASIN 存储缓存
-    setVariantResultCache(cleanASIN, country, resultPayload);
-
-    // 记录成功（无变体也是成功）
+    throw new Error('未能解析SP-API响应中的item');
+  } catch (error) {
     const responseTime = (Date.now() - startTime) / 1000;
-    success = true;
+    success = false;
+    isRateLimit = !!(
+      error.statusCode === 429 ||
+      error.code === 'TooManyRequestsException' ||
+      error.code === 'RequestThrottled'
+    );
+    isSpApiError = !isRateLimit;
+
     riskControlService.recordCheck({
-      success: true,
-      isRateLimit: false,
-      isSpApiError: false,
+      success,
+      isRateLimit,
+      isSpApiError,
       responseTime,
     });
 
-    return resultPayload;
-  } catch (error) {
-    logger.error(`检查ASIN ${asin} 变体失败:`, error.message);
-
-    // 记录错误统计
-    const region = country === 'US' ? 'US' : 'EU';
-    errorStatsService.recordErrorAuto(error, region);
-
-    // 如果是404错误，说明ASIN不存在或无法访问（可能是ASIN不存在，也可能是SP-API版本不支持）
-    // 这种情况下，我们标记为 SP-API 错误，因为可能是API调用问题
-    if (error.message.includes('404') || error.message.includes('NotFound')) {
-      const responseTime = (Date.now() - startTime) / 1000;
-      isSpApiError = true;
-      riskControlService.recordCheck({
-        success: false,
-        isRateLimit: false,
-        isSpApiError: true,
-        responseTime,
-      });
-
-      return {
-        hasVariants: false,
-        variantCount: 0,
-        errorType: 'SP_API_ERROR', // 标记为SP-API错误
-        details: {
-          asin,
-          error: 'ASIN不存在或无法访问（可能是SP-API调用失败）',
-          errorMessage: error.message,
-        },
-      };
-    }
-
-    // 如果是认证错误，抛出异常（这是配置问题，不是ASIN问题）
-    if (
-      error.message.includes('401') ||
-      error.message.includes('Unauthorized')
-    ) {
-      throw new Error('SP-API认证失败，请检查配置');
-    }
-
-    // 如果是权限错误，抛出异常（这是配置问题，不是ASIN问题）
-    if (error.message.includes('403') || error.message.includes('Forbidden')) {
-      throw new Error('SP-API权限不足，请检查IAM角色配置');
-    }
-
-    // 其他SP-API错误（400, 429, 500等），标记为SP-API错误
-    if (
-      error.message.includes('SP-API') ||
-      error.message.includes('400') ||
-      error.message.includes('429') ||
-      error.message.includes('500') ||
-      error.message.includes('503') ||
-      error.statusCode
-    ) {
-      const responseTime = (Date.now() - startTime) / 1000;
-      const isRateLimitError =
-        error.message.includes('429') ||
-        error.message.includes('QuotaExceeded') ||
-        error.message.includes('TooManyRequests') ||
-        error.statusCode === 429;
-
-      isRateLimit = isRateLimitError;
-      isSpApiError = !isRateLimitError; // 限流错误不算SP-API错误，是单独的类型
-
-      riskControlService.recordCheck({
-        success: false,
-        isRateLimit: isRateLimitError,
-        isSpApiError: !isRateLimitError,
-        responseTime,
-      });
-
-      return {
-        hasVariants: false,
-        variantCount: 0,
-        errorType: 'SP_API_ERROR', // 标记为SP-API错误
-        details: {
-          asin,
-          error: 'SP-API调用失败',
-          errorMessage: error.message,
-          statusCode: error.statusCode,
-        },
-      };
-    }
-
-    // 未知错误，也标记为SP-API错误
-    return {
-      hasVariants: false,
-      variantCount: 0,
-      errorType: 'SP_API_ERROR',
-      details: {
-        asin,
-        error: '检查失败',
-        errorMessage: error.message,
-      },
-    };
+    logger.error(
+      `[checkASINVariants] 检查ASIN ${asin} (${country}) 时发生错误:`,
+      error.message || error,
+    );
+    throw error;
   }
 }
 
 /**
- * 检查单个ASIN的变体关系（带请求去重和优先级支持）
- * @param {string} asin - ASIN编码
- * @param {string} country - 国家代码
- * @param {boolean} forceRefresh - 是否强制刷新
- * @param {number} priority - 请求优先级（PRIORITY.MANUAL=1, PRIORITY.SCHEDULED=2, PRIORITY.BATCH=3），默认2
- * @returns {Promise<{hasVariants: boolean, variantCount: number, details: any, errorType?: string}>}
- * errorType: 'SP_API_ERROR' - SP-API调用错误, 'NO_VARIANTS' - ASIN无变体（正常情况）
+ * 对外暴露的检查方法（带请求去重）
  */
 async function checkASINVariants(
   asin,
@@ -790,10 +538,8 @@ async function checkASINVariants(
   forceRefresh = false,
   priority = PRIORITY.SCHEDULED,
 ) {
-  // 构建请求去重的缓存键
   const cacheKey = `${asin}:${country}`;
 
-  // 如果Map大小超过限制，清理最旧的请求
   if (pendingRequests.size > MAX_PENDING_REQUESTS) {
     const oldestKey = Array.from(pendingRequests.keys())[0];
     pendingRequests.delete(oldestKey);
@@ -802,31 +548,16 @@ async function checkASINVariants(
     );
   }
 
-  // 如果已有相同请求在进行且不强制刷新，等待该请求完成
-  if (pendingRequests.has(cacheKey) && !forceRefresh) {
+  let requestPromise = pendingRequests.get(cacheKey);
+
+  if (requestPromise && !forceRefresh) {
     logger.info(
       `[checkASINVariants] 检测到重复请求，等待已有请求完成: ${asin} (${country})`,
     );
-    try {
-      return await pendingRequests.get(cacheKey);
-    } catch (error) {
-      // 如果已有请求失败，继续执行新请求
-      logger.warn(
-        `[checkASINVariants] 已有请求失败，执行新请求: ${asin} (${country})`,
-      );
-    }
-  }
-
-  // 创建新的请求Promise（传入优先级）
-  const requestPromise = doCheckASINVariants(
-    asin,
-    country,
-    forceRefresh,
-    priority,
-  );
-
-  // 将请求Promise存储到Map中（仅在非强制刷新时）
-  if (!forceRefresh) {
+  } else {
+    requestPromise = runWithConcurrencyLimit(() =>
+      doCheckASINVariants(asin, country, forceRefresh, priority),
+    );
     pendingRequests.set(cacheKey, requestPromise);
   }
 
@@ -834,7 +565,6 @@ async function checkASINVariants(
     const result = await requestPromise;
     return result;
   } finally {
-    // 请求完成后从Map中移除
     if (pendingRequests.get(cacheKey) === requestPromise) {
       pendingRequests.delete(cacheKey);
     }
@@ -843,8 +573,6 @@ async function checkASINVariants(
 
 /**
  * 检查变体组的所有ASIN
- * @param {string} variantGroupId - 变体组ID
- * @returns {Promise<{isBroken: boolean, brokenASINs: Array, details: any}>}
  */
 async function checkVariantGroup(variantGroupId, forceRefresh = false) {
   try {
@@ -855,267 +583,166 @@ async function checkVariantGroup(variantGroupId, forceRefresh = false) {
 
     const asins = group.children || [];
     if (asins.length === 0) {
-      // 没有ASIN，视为异常
       return {
         isBroken: true,
         brokenASINs: [],
-        brokenByType: { SP_API_ERROR: 0, NO_VARIANTS: 0 },
-        details: {
-          message: '变体组中没有ASIN',
-        },
+        details: { results: [] },
       };
     }
 
-    const checkResults = new Array(asins.length);
+    const country = group.country || 'US';
     const brokenASINs = [];
-    const concurrencyLimit = Math.min(MAX_CONCURRENT_ASIN_CHECKS, asins.length);
-    let nextIndex = 0;
+    const results = [];
 
-    const workerTasks = Array.from({ length: concurrencyLimit }, async () => {
-      while (true) {
-        const currentIndex = nextIndex++;
-        if (currentIndex >= asins.length) {
-          break;
+    for (const asinEntry of asins) {
+      const asin = asinEntry.asin || asinEntry;
+      const asinId = asinEntry.id;
+
+      try {
+        const result = await checkASINVariants(asin, country, forceRefresh);
+        const isBroken =
+          !result.hasVariants ||
+          !result.variantCount ||
+          result.variantCount === 0;
+
+        // 更新数据库中ASIN的is_broken状态和检查时间
+        if (asinId) {
+          await ASIN.updateVariantStatus(asinId, isBroken);
+          await ASIN.updateLastCheckTime(asinId);
         }
 
-        const asin = asins[currentIndex];
-        try {
-          // 变体组检查使用SCHEDULED优先级（中等优先级）
-          const result = await checkASINVariants(
-            asin.asin,
-            asin.country,
-            forceRefresh,
-            PRIORITY.SCHEDULED,
-          );
-          const hasVariants = result.hasVariants;
-          const errorType =
-            result.errorType || (hasVariants ? undefined : 'NO_VARIANTS');
-
-          checkResults[currentIndex] = {
-            asin: asin.asin,
-            hasVariants,
-            variantCount: result.variantCount,
-            errorType, // 记录错误类型
-          };
-
-          if (!hasVariants) {
-            brokenASINs.push({
-              asin: asin.asin,
-              errorType, // 记录错误类型
-            });
-          }
-
-          await ASIN.updateVariantStatus(asin.id, !hasVariants);
-        } catch (error) {
-          logger.error(`检查ASIN ${asin.asin} 失败:`, error);
-          checkResults[currentIndex] = {
-            asin: asin.asin,
-            error: error.message,
-            errorType: 'SP_API_ERROR', // 异常情况标记为SP-API错误
-          };
-          brokenASINs.push({
-            asin: asin.asin,
-            errorType: 'SP_API_ERROR', // 异常情况标记为SP-API错误
-          });
+        if (isBroken) {
+          brokenASINs.push(asin);
         }
+
+        results.push({
+          asin,
+          country,
+          isBroken,
+          details: result,
+        });
+      } catch (error) {
+        logger.error(
+          `[checkVariantGroup] 检查ASIN ${asin} (${country}) 失败:`,
+          error.message || error,
+        );
+        brokenASINs.push(asin);
+
+        // 即使检查失败，也要更新ASIN状态为异常
+        if (asinId) {
+          await ASIN.updateVariantStatus(asinId, true);
+          await ASIN.updateLastCheckTime(asinId);
+        }
+
+        results.push({
+          asin,
+          country,
+          isBroken: true,
+          error: error.message || String(error),
+        });
       }
-    });
+    }
 
-    await Promise.all(workerTasks);
-
-    // 判断变体组是否异常（如果有任何一个ASIN异常，则整个组异常）
     const isBroken = brokenASINs.length > 0;
 
-    // 更新变体组状态
     await VariantGroup.updateVariantStatus(variantGroupId, isBroken);
-
-    // 更新变体组的监控更新时间
     await VariantGroup.updateLastCheckTime(variantGroupId);
 
-    // 重新查询变体组状态确保准确性
-    const updatedGroup = await VariantGroup.findById(variantGroupId);
-    if (updatedGroup) {
-      // 如果状态不一致，再次更新
-      const actualIsBroken = updatedGroup.isBroken === 1;
-      if (actualIsBroken !== isBroken) {
-        await VariantGroup.updateVariantStatus(variantGroupId, actualIsBroken);
+    // 清除所有相关ASIN的变体检查结果缓存，确保前端获取最新数据
+    for (const asinEntry of asins) {
+      const asin = asinEntry.asin || asinEntry;
+      if (asin) {
+        const cacheKey = getVariantCacheKey(asin, country);
+        cacheService.delete(cacheKey);
       }
     }
 
-    // 记录监控历史
-    const checkTime = new Date();
-    await MonitorHistory.create({
-      variantGroupId,
-      checkType: 'GROUP',
-      country: group.country,
-      isBroken: isBroken ? 1 : 0,
-      checkTime,
-      checkResult: JSON.stringify({
-        totalASINs: asins.length,
-        brokenCount: brokenASINs.length,
-        results: checkResults,
-      }),
-    });
+    // 再次清除变体组缓存，确保前端获取最新数据
+    VariantGroup.clearCache();
 
-    // 记录每个ASIN的检查历史
-    if (group.children && group.children.length > 0) {
-      const asinHistoryEntries = group.children.map((asinInfo) => ({
-        asinId: asinInfo.id,
-        variantGroupId,
-        checkType: 'ASIN',
-        country: asinInfo.country,
-        isBroken: asinInfo.isBroken === 1 ? 1 : 0,
-        checkResult: JSON.stringify({
-          asin: asinInfo.asin,
-          isBroken: asinInfo.isBroken === 1,
-        }),
-        checkTime,
-      }));
-      await MonitorHistory.bulkCreate(asinHistoryEntries);
+    const updatedGroup = await VariantGroup.findById(variantGroupId);
+    let groupStatus = null;
+
+    if (updatedGroup) {
+      groupStatus = {
+        id: updatedGroup._id,
+        name: updatedGroup.name,
+        is_broken: updatedGroup.is_broken,
+        last_check_time: updatedGroup.last_check_time,
+      };
     }
-
-    // 统计不同类型的异常
-    const brokenByType = {
-      SP_API_ERROR: 0,
-      NO_VARIANTS: 0,
-    };
-    brokenASINs.forEach((item) => {
-      const errorType =
-        typeof item === 'string'
-          ? 'NO_VARIANTS'
-          : item.errorType || 'NO_VARIANTS';
-      brokenByType[errorType] = (brokenByType[errorType] || 0) + 1;
-    });
 
     return {
       isBroken,
-      brokenASINs: brokenASINs.map((item) =>
-        typeof item === 'string'
-          ? { asin: item, errorType: 'NO_VARIANTS' }
-          : item,
-      ),
-      brokenByType, // 按类型统计的异常数量
+      brokenASINs,
+      groupStatus,
       details: {
-        totalASINs: asins.length,
-        brokenCount: brokenASINs.length,
-        results: checkResults,
+        results,
       },
     };
   } catch (error) {
-    logger.error(`检查变体组 ${variantGroupId} 失败:`, error);
+    logger.error(
+      `[checkVariantGroup] 检查变体组 ${variantGroupId} 失败:`,
+      error.message || error,
+    );
     throw error;
   }
 }
 
 /**
- * 检查单个ASIN
- * @param {string} asinId - ASIN ID
- * @returns {Promise<{isBroken: boolean, details: any}>}
+ * 检查单个ASIN（提供给外部调用）
  */
 async function checkSingleASIN(asinId, forceRefresh = false) {
-  let asin = null;
   try {
-    asin = await ASIN.findById(asinId);
-    if (!asin) {
-      throw new Error('ASIN不存在');
+    const asinRecord = await ASIN.findById(asinId);
+    if (!asinRecord) {
+      throw new Error('ASIN记录不存在');
     }
 
-    // 单个ASIN检查（通常来自手动触发）使用MANUAL优先级（最高优先级）
-    const result = await checkASINVariants(
-      asin.asin,
-      asin.country,
-      forceRefresh,
-      PRIORITY.MANUAL,
-    );
-    const isBroken = !result.hasVariants;
+    const asin = asinRecord.asin;
+    const country = asinRecord.country || 'US';
 
-    // 更新ASIN状态
+    const result = await checkASINVariants(asin, country, forceRefresh);
+
+    const isBroken =
+      !result.hasVariants || !result.variantCount || result.variantCount === 0;
+
+    // 更新数据库中ASIN的is_broken状态和检查时间
     await ASIN.updateVariantStatus(asinId, isBroken);
+    await ASIN.updateLastCheckTime(asinId);
 
-    // 如果ASIN属于某个变体组，同步更新变体组状态
-    if (asin.variantGroupId) {
-      // 重新查询变体组，获取所有ASIN的最新状态
-      const group = await VariantGroup.findById(asin.variantGroupId);
-      if (group && group.children && group.children.length > 0) {
-        // 检查变体组中是否有任何ASIN异常
-        const hasBrokenASIN = group.children.some(
-          (child) => child.isBroken === 1,
-        );
-        // 更新变体组状态
-        await VariantGroup.updateVariantStatus(
-          asin.variantGroupId,
-          hasBrokenASIN,
-        );
-      }
+    // 清除该ASIN的变体检查结果缓存，确保前端获取最新数据
+    const cacheKey = getVariantCacheKey(asin, country);
+    cacheService.delete(cacheKey);
+
+    // 如果ASIN属于某个变体组，清除变体组缓存
+    if (asinRecord.variantGroupId) {
+      VariantGroup.clearCache();
     }
 
-    // 记录监控历史
     await MonitorHistory.create({
       asinId,
-      variantGroupId: asin.variantGroupId,
-      checkType: 'ASIN',
-      country: asin.country,
-      isBroken: isBroken ? 1 : 0,
-      checkTime: new Date(),
-      checkResult: JSON.stringify(result.details),
+      asin,
+      country,
+      is_broken: isBroken ? 1 : 0,
+      checked_at: new Date(),
+      raw_result: result,
     });
 
     return {
       isBroken,
-      details: result.details,
+      brokenASINs: isBroken ? [asin] : [],
+      details: result,
     };
   } catch (error) {
-    logger.error(`检查ASIN ${asinId} 失败:`, error);
-    // 检查失败时，标记ASIN为异常状态
-    if (asin) {
-      try {
-        await ASIN.updateVariantStatus(asinId, true);
-        // 如果ASIN属于某个变体组，同步更新变体组状态
-        if (asin.variantGroupId) {
-          const group = await VariantGroup.findById(asin.variantGroupId);
-          if (group && group.children && group.children.length > 0) {
-            const hasBrokenASIN = group.children.some(
-              (child) => child.isBroken === 1,
-            );
-            await VariantGroup.updateVariantStatus(
-              asin.variantGroupId,
-              hasBrokenASIN,
-            );
-          }
-        }
-        // 记录检查失败的历史
-        await MonitorHistory.create({
-          asinId,
-          variantGroupId: asin.variantGroupId,
-          checkType: 'ASIN',
-          country: asin.country,
-          isBroken: 1,
-          checkTime: new Date(),
-          checkResult: JSON.stringify({
-            error: error.message,
-            checkFailed: true,
-          }),
-        });
-      } catch (updateError) {
-        logger.error(`更新ASIN ${asinId} 状态失败:`, updateError);
-      }
-    }
+    logger.error(
+      `[checkSingleASIN] 检查单个ASIN失败: ${asinId}`,
+      error.message || error,
+    );
     throw error;
   }
 }
 
-/**
- * 重新加载旧客户端备用配置（供外部调用）
- */
-async function reloadLegacyClientFallbackConfig() {
-  await loadLegacyClientFallbackConfig();
-}
-
-/**
- * 获取Marketplace ID
- * @param {string} country - 国家代码
- * @returns {string} Marketplace ID
- */
 module.exports = {
   checkASINVariants,
   checkVariantGroup,
@@ -1123,5 +750,5 @@ module.exports = {
   reloadHtmlScraperFallbackConfig,
   reloadLegacyClientFallbackConfig,
   MAX_CONCURRENT_ASIN_CHECKS,
-  doCheckASINVariants, // 导出内部函数供批量查询使用
+  doCheckASINVariants,
 };

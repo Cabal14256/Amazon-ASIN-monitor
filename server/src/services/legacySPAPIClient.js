@@ -12,6 +12,7 @@ const {
   getRegionByCountry,
   SP_API_CONFIG,
 } = require('../config/sp-api');
+const logger = require('../utils/logger');
 
 /**
  * 使用旧客户端方式调用 SP-API
@@ -43,7 +44,7 @@ async function callLegacySPAPI(
     }
 
     const accessToken = await getAccessToken(region);
-    console.log(
+    logger.info(
       `[Legacy SP-API] ${region} 区域 Access Token 获取成功，长度: ${accessToken.length}`,
     );
 
@@ -68,8 +69,8 @@ async function callLegacySPAPI(
       url = `${endpoint}${path}`;
     }
 
-    console.log(`[Legacy SP-API] 请求URL: ${url}`);
-    console.log(
+    logger.info(`[Legacy SP-API] 请求URL: ${url}`);
+    logger.info(
       `[Legacy SP-API] 请求方法: ${method}, 国家: ${country}, 区域: ${region}`,
     );
 
@@ -86,7 +87,7 @@ async function callLegacySPAPI(
       headers['content-type'] = 'application/json';
     }
 
-    console.log(`[Legacy SP-API] 请求头:`, {
+    logger.info(`[Legacy SP-API] 请求头:`, {
       'x-amz-access-token': headers['x-amz-access-token']
         ? `${headers['x-amz-access-token'].substring(0, 20)}...`
         : 'missing',
@@ -106,22 +107,22 @@ async function callLegacySPAPI(
           data += chunk;
         });
         res.on('end', () => {
-          console.log(`[Legacy SP-API] 响应状态码: ${res.statusCode}`);
-          console.log(
+          logger.info(`[Legacy SP-API] 响应状态码: ${res.statusCode}`);
+          logger.info(
             `[Legacy SP-API] 响应数据长度: ${data ? data.length : 0}`,
           );
 
           if (res.statusCode >= 200 && res.statusCode < 300) {
             try {
               const response = data ? JSON.parse(data) : {};
-              console.log(`[Legacy SP-API] 响应解析成功:`, {
+              logger.info(`[Legacy SP-API] 响应解析成功:`, {
                 hasItems: !!response.items,
                 itemsCount: response.items ? response.items.length : 0,
                 keys: Object.keys(response),
               });
               resolve(response);
             } catch (e) {
-              console.log(
+              logger.info(
                 `[Legacy SP-API] 响应解析失败，返回原始数据:`,
                 e.message,
               );
@@ -129,7 +130,7 @@ async function callLegacySPAPI(
             }
           } else {
             const errorMsg = data || `HTTP ${res.statusCode}`;
-            console.error(`[Legacy SP-API] 请求失败:`, {
+            logger.error(`[Legacy SP-API] 请求失败:`, {
               statusCode: res.statusCode,
               errorMsg: errorMsg.substring(0, 500),
             });
@@ -154,7 +155,7 @@ async function callLegacySPAPI(
       req.end();
     });
   } catch (error) {
-    console.error('[Legacy SP-API] 调用错误:', error);
+    logger.error('[Legacy SP-API] 调用错误:', error);
     throw error;
   }
 }

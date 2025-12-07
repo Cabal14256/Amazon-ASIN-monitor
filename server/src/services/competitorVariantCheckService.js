@@ -210,25 +210,28 @@ async function checkCompetitorVariantGroup(
             asin.country,
             forceRefresh,
           );
-          const hasVariants = result.hasVariants;
+          const isBroken =
+            !result.hasVariants ||
+            !result.variantCount ||
+            result.variantCount === 0;
           const errorType =
-            result.errorType || (hasVariants ? undefined : 'NO_VARIANTS');
+            result.errorType || (isBroken ? 'NO_VARIANTS' : undefined);
 
           checkResults[currentIndex] = {
             asin: asin.asin,
-            hasVariants,
+            hasVariants: result.hasVariants,
             variantCount: result.variantCount,
             errorType, // 记录错误类型
           };
 
-          if (!hasVariants) {
+          if (isBroken) {
             brokenASINs.push({
               asin: asin.asin,
               errorType, // 记录错误类型
             });
           }
 
-          await CompetitorASIN.updateVariantStatus(asin.id, !hasVariants);
+          await CompetitorASIN.updateVariantStatus(asin.id, isBroken);
         } catch (error) {
           console.error(`检查竞品ASIN ${asin.asin} 失败:`, error);
           checkResults[currentIndex] = {
@@ -351,7 +354,8 @@ async function checkSingleCompetitorASIN(asinId, forceRefresh = false) {
       asin.country,
       forceRefresh,
     );
-    const isBroken = !result.hasVariants;
+    const isBroken =
+      !result.hasVariants || !result.variantCount || result.variantCount === 0;
 
     // 更新ASIN状态
     await CompetitorASIN.updateVariantStatus(asinId, isBroken);

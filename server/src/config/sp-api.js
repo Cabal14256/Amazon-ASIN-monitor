@@ -473,20 +473,16 @@ async function callSPAPIInternal(
           processedKeys.add(key);
           const value = params[key];
           if (Array.isArray(value) && value.length > 0) {
-            // SP-API Catalog Items API 要求数组参数使用重复键的格式（标准 REST API 格式）
-            // 例如：marketplaceIds=ATVPDKIKX0DER&includedData=variations
-            // 对于数组，每个值作为单独的键值对
             const validValues = value.filter(
               (v) => v !== null && v !== undefined && v !== '',
             );
             if (validValues.length > 0) {
-              // 使用重复键格式：key=value1&key=value2
-              // 对于 2022-04-01 版本，确保值正确编码和格式化（去除首尾空格）
-              validValues.forEach((v) => {
-                const cleanValue = String(v).trim();
-                const encodedValue = encodeURIComponent(cleanValue);
-                queryParts.push(`${key}=${encodedValue}`);
-              });
+              // SP-API 要求 array(csv)：用逗号拼成一个参数
+              const cleanJoined = validValues
+                .map((v) => String(v).trim())
+                .join(',');
+              const encodedValue = encodeURIComponent(cleanJoined);
+              queryParts.push(`${key}=${encodedValue}`);
             }
           } else if (value !== null && value !== undefined && value !== '') {
             const cleanValue = String(value).trim();
@@ -505,11 +501,12 @@ async function callSPAPIInternal(
             (v) => v !== null && v !== undefined && v !== '',
           );
           if (validValues.length > 0) {
-            validValues.forEach((v) => {
-              const cleanValue = String(v).trim();
-              const encodedValue = encodeURIComponent(cleanValue);
-              queryParts.push(`${key}=${encodedValue}`);
-            });
+            // SP-API 要求 array(csv)：用逗号拼成一个参数
+            const cleanJoined = validValues
+              .map((v) => String(v).trim())
+              .join(',');
+            const encodedValue = encodeURIComponent(cleanJoined);
+            queryParts.push(`${key}=${encodedValue}`);
           }
         } else if (value !== null && value !== undefined && value !== '') {
           const cleanValue = String(value).trim();
@@ -828,13 +825,6 @@ async function callSPAPI(
         body,
         operation,
       );
-
-      // 分析响应头（如果成功）
-      try {
-        responseAnalyzer.analyzeResponse(result, operation);
-      } catch (analyzerError) {
-        logger.warn(`[callSPAPI] 分析响应头失败:`, analyzerError.message);
-      }
 
       return result;
     } catch (error) {

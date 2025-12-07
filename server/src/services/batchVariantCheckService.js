@@ -11,6 +11,8 @@
 const { callSPAPI, getMarketplaceId } = require('../config/sp-api');
 const rateLimiter = require('./rateLimiter');
 const operationIdentifier = require('./spApiOperationIdentifier');
+const logger = require('../utils/logger');
+const { parseVariantRelationships } = require('../utils/variantParser');
 
 // searchCatalogItems的rate limit: 2 req/s, burst = 2
 const BATCH_SEARCH_RATE_LIMIT_PER_SECOND = 2;
@@ -44,7 +46,7 @@ async function batchCheckASINsBySearch(asins, country) {
     return new Map();
   }
 
-  console.log(
+  logger.info(
     `[batchCheckASINsBySearch] 批量查询 ${cleanASINs.length} 个ASIN，国家: ${country}`,
   );
 
@@ -71,12 +73,12 @@ async function batchCheckASINsBySearch(asins, country) {
       const body = {
         identifiers: identifiers,
         marketplaceIds: [marketplaceId],
-        includedData: ['summaries'], // 先只获取summary，减少数据量
+        includedData: ['summaries', 'relationships'], // 获取summary和relationships，用于判断变体
       };
 
       // 识别operation
       const operation = operationIdentifier.identifyOperation('POST', path);
-      console.log(
+      logger.info(
         `[batchCheckASINsBySearch] 查询批次 ${
           Math.floor(i / BATCH_SIZE) + 1
         }，ASIN数量: ${batchASINs.length}，operation: ${
@@ -104,14 +106,20 @@ async function batchCheckASINsBySearch(asins, country) {
           const asin = item.asin?.toUpperCase();
           if (!asin) continue;
 
-          // 从summary中判断是否有变体（通过parentAsin）
-          const parentAsin = item.summaries?.[0]?.parentAsin || null;
-          const hasVariants = !!(parentAsin || item.variations?.length > 0);
+          // ========= 从 relationships 里判断是否有变体 =========
+          const {
+            variantASINs,
+            parentASIN: parentAsin,
+            isChild,
+            isParent,
+          } = parseVariantRelationships(item, asin);
+
+          const hasVariants = variantASINs.length > 0 || isChild || isParent;
 
           results.set(asin, {
             asin: asin,
-            hasVariants: hasVariants,
-            parentAsin: parentAsin,
+            hasVariants,
+            parentAsin,
             source: 'batch_search',
           });
         }
@@ -130,7 +138,7 @@ async function batchCheckASINsBySearch(asins, country) {
         }
       }
     } catch (error) {
-      console.error(`[batchCheckASINsBySearch] 批次查询失败:`, error.message);
+      logger.error(`[batchCheckASINsBySearch] 批次查询失败:`, error.message);
       // 批次失败，标记所有ASIN为查询失败
       for (const asin of batchASINs) {
         results.set(asin, {
