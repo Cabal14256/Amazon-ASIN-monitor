@@ -3,6 +3,8 @@
  * 根据环境变量控制日志级别，减少生产环境日志
  */
 
+const { getUTC8ISOString } = require('./dateTime');
+
 const LOG_LEVELS = {
   DEBUG: 0,
   INFO: 1,
@@ -30,7 +32,7 @@ function log(level, message, ...args) {
   }
 
   if (levelValue >= LOG_LEVEL) {
-    const timestamp = new Date().toISOString();
+    const timestamp = getUTC8ISOString();
     const prefix = `[${timestamp}] [${level.toUpperCase()}]`;
 
     switch (level.toUpperCase()) {
