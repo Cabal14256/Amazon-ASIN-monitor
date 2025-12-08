@@ -26,7 +26,7 @@ CREATE TABLE IF NOT EXISTS `competitor_variant_groups` (
 -- 竞品ASIN表
 CREATE TABLE IF NOT EXISTS `competitor_asins` (
   `id` VARCHAR(50) PRIMARY KEY COMMENT 'ASIN ID',
-  `asin` VARCHAR(20) NOT NULL UNIQUE COMMENT 'ASIN编码',
+  `asin` VARCHAR(20) NOT NULL COMMENT 'ASIN编码',
   `name` VARCHAR(500) COMMENT 'ASIN名称',
   `asin_type` VARCHAR(20) DEFAULT NULL COMMENT 'ASIN类型: MAIN_LINK-主链, SUB_REVIEW-副评',
   `country` VARCHAR(10) NOT NULL COMMENT '所属国家',
@@ -46,6 +46,7 @@ CREATE TABLE IF NOT EXISTS `competitor_asins` (
   INDEX `idx_is_broken` (`is_broken`),
   INDEX `idx_last_check_time` (`last_check_time`),
   INDEX `idx_feishu_notify_enabled` (`feishu_notify_enabled`),
+  UNIQUE INDEX `uk_asin_country` (`asin`, `country`) COMMENT 'ASIN和国家复合唯一索引，允许同一ASIN在不同国家存在',
   FOREIGN KEY (`variant_group_id`) REFERENCES `competitor_variant_groups`(`id`) ON DELETE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='竞品ASIN表';
 

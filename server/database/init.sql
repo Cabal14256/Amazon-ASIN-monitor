@@ -32,7 +32,7 @@ CREATE TABLE IF NOT EXISTS `variant_groups` (
 -- ASIN表
 CREATE TABLE IF NOT EXISTS `asins` (
   `id` VARCHAR(50) PRIMARY KEY COMMENT 'ASIN ID',
-  `asin` VARCHAR(20) NOT NULL UNIQUE COMMENT 'ASIN编码',
+  `asin` VARCHAR(20) NOT NULL COMMENT 'ASIN编码',
   `name` VARCHAR(500) COMMENT 'ASIN名称',
   `asin_type` VARCHAR(20) DEFAULT NULL COMMENT 'ASIN类型: MAIN_LINK-主链, SUB_REVIEW-副评',
   `country` VARCHAR(10) NOT NULL COMMENT '所属国家',
@@ -55,6 +55,7 @@ CREATE TABLE IF NOT EXISTS `asins` (
   INDEX `idx_last_check_time` (`last_check_time`),
   INDEX `idx_feishu_notify_enabled` (`feishu_notify_enabled`),
   INDEX `idx_variant_group_country_broken` (`variant_group_id`, `country`, `is_broken`),
+  UNIQUE INDEX `uk_asin_country` (`asin`, `country`) COMMENT 'ASIN和国家复合唯一索引，允许同一ASIN在不同国家存在',
   FOREIGN KEY (`variant_group_id`) REFERENCES `variant_groups`(`id`) ON DELETE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='ASIN表';
 
@@ -62,7 +63,10 @@ CREATE TABLE IF NOT EXISTS `asins` (
 CREATE TABLE IF NOT EXISTS `monitor_history` (
   `id` BIGINT AUTO_INCREMENT PRIMARY KEY COMMENT '历史记录ID',
   `variant_group_id` VARCHAR(50) COMMENT '变体组ID',
+  `variant_group_name` VARCHAR(255) COMMENT '变体组名称快照（记录时的变体组名称）',
   `asin_id` VARCHAR(50) COMMENT 'ASIN ID',
+  `asin_code` VARCHAR(20) COMMENT 'ASIN编码快照（记录时的ASIN编码）',
+  `asin_name` VARCHAR(500) COMMENT 'ASIN名称快照（记录时的ASIN名称）',
   `check_type` VARCHAR(20) DEFAULT 'GROUP' COMMENT '检查类型: GROUP-变体组, ASIN-单个ASIN',
   `country` VARCHAR(10) NOT NULL COMMENT '国家',
   `is_broken` TINYINT(1) DEFAULT 0 COMMENT '检查结果: 0-正常, 1-异常',
@@ -72,6 +76,7 @@ CREATE TABLE IF NOT EXISTS `monitor_history` (
   `create_time` DATETIME DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
   INDEX `idx_variant_group_id` (`variant_group_id`),
   INDEX `idx_asin_id` (`asin_id`),
+  INDEX `idx_asin_code` (`asin_code`),
   INDEX `idx_check_time` (`check_time`),
   INDEX `idx_country` (`country`),
   INDEX `idx_country_check_time` (`country`, `check_time`),
