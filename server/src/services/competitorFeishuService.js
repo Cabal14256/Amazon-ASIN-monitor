@@ -1,5 +1,6 @@
 const axios = require('axios');
 const CompetitorFeishuConfig = require('../models/CompetitorFeishuConfig');
+const { getUTC8LocaleString } = require('../utils/dateTime');
 
 const RATE_LIMIT_CODE = 11232;
 const REQUEST_INTERVAL_MS = 500;
@@ -167,7 +168,7 @@ function buildCompetitorFeishuCard(data) {
 
   // 如果有countryDisplay（包含多个国家），使用它；否则使用区域名称
   const countryName = data.countryDisplay || countryMap[country] || country;
-  const timeStr = checkTime || new Date().toLocaleString('zh-CN');
+  const timeStr = checkTime || getUTC8LocaleString();
 
   // 统计异常类型
   const spApiErrorCount = brokenByType?.SP_API_ERROR || 0;

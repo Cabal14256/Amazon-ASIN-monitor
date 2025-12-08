@@ -1,5 +1,6 @@
 const axios = require('axios');
 const FeishuConfig = require('../models/FeishuConfig');
+const { getUTC8LocaleString } = require('../utils/dateTime');
 
 const RATE_LIMIT_CODE = 11232;
 const REQUEST_INTERVAL_MS = 500;
@@ -165,7 +166,12 @@ function buildFeishuCard(data) {
 
   // 如果有countryDisplay（包含多个国家），使用它；否则使用区域名称
   const countryName = data.countryDisplay || countryMap[country] || country;
-  const timeStr = checkTime || new Date().toLocaleString('zh-CN');
+  // 确保时间格式为 UTC+8，如果 checkTime 是 Date 对象则转换，否则使用当前时间
+  const timeStr = checkTime
+    ? checkTime instanceof Date
+      ? getUTC8LocaleString(checkTime)
+      : checkTime
+    : getUTC8LocaleString();
 
   // 统计异常类型
   const spApiErrorCount = brokenByType?.SP_API_ERROR || 0;
@@ -246,6 +252,62 @@ function buildFeishuCard(data) {
       },
     ],
   };
+}
+
+/**
+ * 发送单个国家的飞书通知
+ * @param {string} country - 国家代码
+ * @param {Object} countryData - 该国家的检查结果数据
+ * @returns {Promise<{success: boolean, skipped: boolean, errorCode?: number}>}
+ */
+async function sendSingleCountryNotification(country, countryData) {
+  // 国家到区域的映射（用于查找webhook配置）
+  const countryToRegionMap = {
+    US: 'US',
+    UK: 'EU',
+    DE: 'EU',
+    FR: 'EU',
+    IT: 'EU',
+    ES: 'EU',
+  };
+
+  // 国家名称映射
+  const countryNameMap = {
+    US: '美国',
+    UK: '英国',
+    DE: '德国',
+    FR: '法国',
+    IT: '意大利',
+    ES: '西班牙',
+  };
+
+  const region = countryToRegionMap[country] || country;
+  const countryName = countryNameMap[country] || country;
+  const notificationData = {
+    ...countryData,
+    country,
+    countryDisplay: `${countryName}(${country})`,
+    region,
+  };
+
+  // 无论是否有异常都发送通知（无异常时显示"全部正常"）
+  const result = await sendNotificationWithRetry(region, notificationData);
+  if (result.success) {
+    return {
+      success: true,
+      skipped: false,
+    };
+  } else {
+    if (result.errorCode === RATE_LIMIT_CODE) {
+      console.warn(`[feishu] 国家 ${country} 限频重试失败`);
+      recordRateLimit(country);
+    }
+    return {
+      success: false,
+      skipped: false,
+      errorCode: result.errorCode,
+    };
+  }
 }
 
 /**
@@ -336,5 +398,6 @@ async function sendBatchNotifications(countryResults) {
 module.exports = {
   sendFeishuNotification,
   sendBatchNotifications,
+  sendSingleCountryNotification,
   buildFeishuCard,
 };
