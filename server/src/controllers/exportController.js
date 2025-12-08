@@ -2,6 +2,7 @@ const XLSX = require('xlsx');
 const VariantGroup = require('../models/VariantGroup');
 const ASIN = require('../models/ASIN');
 const MonitorHistory = require('../models/MonitorHistory');
+const { getUTC8String } = require('../utils/dateTime');
 
 /**
  * 导出ASIN数据为Excel
@@ -102,7 +103,7 @@ async function exportASINData(req, res) {
     const excelBuffer = XLSX.write(wb, { type: 'buffer', bookType: 'xlsx' });
 
     // 设置响应头
-    const filename = `ASIN数据_${new Date().toISOString().split('T')[0]}.xlsx`;
+    const filename = `ASIN数据_${getUTC8String('YYYY-MM-DD')}.xlsx`;
     res.setHeader(
       'Content-Type',
       'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
@@ -254,7 +255,7 @@ async function exportMonitorHistory(req, res) {
     const excelBuffer = XLSX.write(wb, { type: 'buffer', bookType: 'xlsx' });
 
     // 设置响应头
-    const filename = `监控历史_${new Date().toISOString().split('T')[0]}.xlsx`;
+    const filename = `监控历史_${getUTC8String('YYYY-MM-DD')}.xlsx`;
     res.setHeader(
       'Content-Type',
       'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
@@ -354,9 +355,7 @@ async function exportVariantGroupData(req, res) {
     const excelBuffer = XLSX.write(wb, { type: 'buffer', bookType: 'xlsx' });
 
     // 设置响应头
-    const filename = `变体组数据_${
-      new Date().toISOString().split('T')[0]
-    }.xlsx`;
+    const filename = `变体组数据_${getUTC8String('YYYY-MM-DD')}.xlsx`;
     res.setHeader(
       'Content-Type',
       'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',

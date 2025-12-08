@@ -8,6 +8,7 @@ const rateLimiter = require('../services/rateLimiter');
 const cacheService = require('../services/cacheService');
 const errorStatsService = require('../services/errorStatsService');
 const riskControlService = require('../services/riskControlService');
+const { getUTC8ISOString } = require('../utils/dateTime');
 
 /**
  * 获取系统健康状态
@@ -16,7 +17,7 @@ exports.getHealth = async (req, res) => {
   try {
     const health = {
       status: 'ok',
-      timestamp: new Date().toISOString(),
+      timestamp: getUTC8ISOString(),
       uptime: process.uptime(),
     };
 
@@ -118,7 +119,7 @@ exports.getHealth = async (req, res) => {
   } catch (error) {
     res.status(500).json({
       status: 'error',
-      timestamp: new Date().toISOString(),
+      timestamp: getUTC8ISOString(),
       error: error.message,
     });
   }

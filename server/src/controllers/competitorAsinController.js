@@ -677,9 +677,10 @@ exports.importCompetitorFromExcel = async (req, res) => {
         continue;
       }
 
-      // 按变体组名称分组
-      if (!groupMap.has(groupName)) {
-        groupMap.set(groupName, {
+      // 按变体组名称和国家分组（同一名称不同国家需要分开处理）
+      const groupKey = `${groupName}_${country}`;
+      if (!groupMap.has(groupKey)) {
+        groupMap.set(groupKey, {
           name: groupName,
           country,
           brand,
@@ -687,7 +688,7 @@ exports.importCompetitorFromExcel = async (req, res) => {
         });
       }
 
-      const group = groupMap.get(groupName);
+      const group = groupMap.get(groupKey);
       // 检查ASIN是否已存在
       if (!group.asins.find((a) => a.asin === asin)) {
         // ASIN名称不需要，保留空值（使用null）
@@ -723,11 +724,11 @@ exports.importCompetitorFromExcel = async (req, res) => {
     let successCount = 0;
     let failedCount = 0;
 
-    for (const [groupName, groupData] of groupMap.entries()) {
+    for (const [groupKey, groupData] of groupMap.entries()) {
       try {
         // 检查变体组是否已存在（按名称和国家）
         const existingGroups = await CompetitorVariantGroup.findAll({
-          keyword: groupName,
+          keyword: groupData.name,
           country: groupData.country,
           current: 1,
           pageSize: 1,
@@ -750,8 +751,11 @@ exports.importCompetitorFromExcel = async (req, res) => {
         // 批量创建ASIN
         for (const asinData of groupData.asins) {
           try {
-            // 检查ASIN是否已存在
-            const existingASIN = await CompetitorASIN.findByASIN(asinData.asin);
+            // 检查ASIN是否已存在（同一国家）
+            const existingASIN = await CompetitorASIN.findByASIN(
+              asinData.asin,
+              groupData.country,
+            );
             if (!existingASIN) {
               await CompetitorASIN.create({
                 asin: asinData.asin,
@@ -763,11 +767,11 @@ exports.importCompetitorFromExcel = async (req, res) => {
               });
               successCount++;
             } else {
-              // ASIN已存在，跳过
+              // ASIN在该国家已存在，跳过
               failedCount++;
               errors.push({
                 row: 0,
-                message: `ASIN ${asinData.asin} 已存在，跳过`,
+                message: `ASIN ${asinData.asin} 在国家 ${groupData.country} 中已存在，跳过`,
               });
             }
           } catch (asinError) {
@@ -782,7 +786,7 @@ exports.importCompetitorFromExcel = async (req, res) => {
         failedCount += groupData.asins.length;
         errors.push({
           row: 0,
-          message: `创建变体组 ${groupName} 失败: ${groupError.message}`,
+          message: `创建变体组 ${groupData.name} (${groupData.country}) 失败: ${groupError.message}`,
         });
       }
     }
