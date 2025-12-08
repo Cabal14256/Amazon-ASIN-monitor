@@ -1,6 +1,11 @@
 const { pool } = require('../config/database');
 const fs = require('fs').promises;
 const path = require('path');
+const {
+  getUTC8ISOString,
+  getUTC8String,
+  toUTC8ISOString,
+} = require('../utils/dateTime');
 
 // 备份文件存储目录
 const BACKUP_DIR = path.join(__dirname, '../../backups');
@@ -113,7 +118,7 @@ async function createBackup(options = {}) {
 
   await ensureBackupDir();
 
-  const timestamp = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
+  const timestamp = getUTC8String('YYYY-MM-DD-HH-mm-ss');
   const filename = `backup_${timestamp}.sql`;
   const filepath = path.join(BACKUP_DIR, filename);
 
@@ -123,7 +128,7 @@ async function createBackup(options = {}) {
     connection = await pool.getConnection();
 
     // 添加备份元数据
-    let sqlContent = `-- Backup created at: ${new Date().toISOString()}\n`;
+    let sqlContent = `-- Backup created at: ${getUTC8ISOString()}\n`;
     if (description) {
       sqlContent += `-- Description: ${description}\n`;
     }
@@ -204,7 +209,7 @@ async function createBackup(options = {}) {
       filename,
       filepath,
       size: stats.size,
-      createdAt: new Date().toISOString(),
+      createdAt: getUTC8ISOString(),
     };
   } catch (error) {
     console.error('备份失败:', error);
@@ -343,8 +348,8 @@ async function listBackups() {
           filename: file,
           filepath,
           size: stats.size,
-          createdAt: stats.birthtime.toISOString(),
-          modifiedAt: stats.mtime.toISOString(),
+          createdAt: toUTC8ISOString(stats.birthtime),
+          modifiedAt: toUTC8ISOString(stats.mtime),
         });
       }
     }

@@ -14,12 +14,13 @@ const PRIORITY = {
 };
 
 // Operation默认配置（基于SP-API文档）
+// 降低速率限制以减少429错误
 const DEFAULT_OPERATION_CONFIGS = {
   getCatalogItem: {
-    rate: 1, // 1 req/s
-    burst: 2, // 瞬时最多2个请求
-    perMinute: 60,
-    perHour: 1000,
+    rate: 0.5, // 0.5 req/s（更保守的速率）
+    burst: 1, // 瞬时最多1个请求（降低瞬时突发）
+    perMinute: 30, // 降低每分钟限制
+    perHour: 500, // 降低每小时限制
   },
   searchCatalogItems: {
     rate: 2, // 2 req/s
@@ -29,10 +30,10 @@ const DEFAULT_OPERATION_CONFIGS = {
   },
   // 通用默认配置（用于未识别的operation）
   default: {
-    rate: 1,
-    burst: 2,
-    perMinute: 60,
-    perHour: 1000,
+    rate: 0.5, // 与getCatalogItem保持一致
+    burst: 1, // 与getCatalogItem保持一致
+    perMinute: 30, // 与getCatalogItem保持一致
+    perHour: 500, // 与getCatalogItem保持一致
   },
 };
 
