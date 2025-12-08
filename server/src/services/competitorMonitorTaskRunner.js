@@ -11,6 +11,11 @@ const { getMaxConcurrentGroupChecks } = require('../config/monitor-config');
 const Semaphore = require('./semaphore');
 const metricsService = require('./metricsService');
 const websocketService = require('./websocketService');
+const {
+  getUTC8ISOString,
+  getUTC8LocaleString,
+  toUTC8ISOString,
+} = require('../utils/dateTime');
 
 let competitorMonitorSemaphore = new Semaphore(getMaxConcurrentGroupChecks());
 let isCompetitorMonitorTaskRunning = false;
@@ -142,7 +147,7 @@ async function processCompetitorCountry(
           current: checked,
           total: totalGroups,
           progress: Math.round((checked / totalGroups) * 100),
-          timestamp: new Date().toISOString(),
+          timestamp: getUTC8ISOString(),
           isCompetitor: true, // 标记为竞品任务
         });
 
@@ -305,9 +310,9 @@ async function runCompetitorMonitorTask(countries, batchConfig = null) {
     ? ` (批次 ${batchConfig.batchIndex + 1}/${batchConfig.totalBatches})`
     : '';
   console.log(
-    `\n⏰ [${new Date().toLocaleString(
-      'zh-CN',
-    )}] 开始执行竞品监控任务，国家: ${countries.join(', ')}${batchInfo}`,
+    `\n⏰ [${getUTC8LocaleString()}] 开始执行竞品监控任务，国家: ${countries.join(
+      ', ',
+    )}${batchInfo}`,
   );
 
   const startTime = process.hrtime();
@@ -322,7 +327,7 @@ async function runCompetitorMonitorTask(countries, batchConfig = null) {
     batchInfo: batchConfig
       ? `批次 ${batchConfig.batchIndex + 1}/${batchConfig.totalBatches}`
       : null,
-    timestamp: checkTime.toISOString(),
+    timestamp: toUTC8ISOString(checkTime),
     isCompetitor: true, // 标记为竞品任务
   });
 
@@ -425,7 +430,7 @@ async function runCompetitorMonitorTask(countries, batchConfig = null) {
       totalNormal: totalChecked - totalBroken,
       duration: duration.toFixed(2),
       countryResults,
-      timestamp: new Date().toISOString(),
+      timestamp: getUTC8ISOString(),
       isCompetitor: true, // 标记为竞品任务
     });
 
@@ -437,7 +442,7 @@ async function runCompetitorMonitorTask(countries, batchConfig = null) {
       countryResults,
       notifyResults,
       duration,
-      checkTime: checkTime.toISOString(),
+      checkTime: toUTC8ISOString(checkTime),
     };
   } catch (error) {
     console.error(`❌ 竞品监控任务执行失败:`, error);

@@ -16,6 +16,7 @@ const { parseVariantRelationships } = require('../utils/variantParser');
 /**
  * 每次最多同时检查的 ASIN 数（降低并发以减少限流风险）
  * 可以根据实际情况调整
+ * 已从5降低到3，与竞品监控服务保持一致
  */
 const MAX_CONCURRENT_ASIN_CHECKS = 3;
 
@@ -187,6 +188,157 @@ async function loadLegacyClientFallbackConfig() {
 loadHtmlScraperFallbackConfig();
 loadLegacyClientFallbackConfig();
 
+// 区域映射（用于延后队列）
+const REGION_MAP = {
+  US: 'US',
+  UK: 'EU',
+  DE: 'EU',
+  FR: 'EU',
+  IT: 'EU',
+  ES: 'EU',
+};
+
+/**
+ * 获取国家对应的区域
+ * @param {string} country - 国家代码
+ * @returns {string} 区域代码
+ */
+function getRegionByCountry(country) {
+  return REGION_MAP[country] || 'US';
+}
+
+/**
+ * 将失败的ASIN加入延后队列
+ * @param {string} asin - ASIN
+ * @param {string} country - 国家代码
+ * @param {string} region - 区域代码（可选，如果不提供则根据country计算）
+ * @param {Error|string} error - 错误信息
+ */
+function deferASINCheck(asin, country, region = null, error = null) {
+  const cleanASIN = asin ? asin.trim().toUpperCase() : asin;
+  const regionCode = region || getRegionByCountry(country);
+  const cacheKey = `deferred:${regionCode}:${country}:${cleanASIN}`;
+
+  const deferredData = {
+    asin: cleanASIN,
+    country,
+    region: regionCode,
+    error: error ? error.message || String(error) : 'Unknown error',
+    deferredAt: Date.now(),
+    retryCount: 0,
+  };
+
+  // 存储到缓存，TTL设为1小时（3600000毫秒）
+  cacheService.set(cacheKey, JSON.stringify(deferredData), 3600000);
+
+  logger.info(
+    `[延后队列] ASIN ${cleanASIN} (${country}, region: ${regionCode}) 已加入延后队列: ${deferredData.error}`,
+  );
+}
+
+/**
+ * 获取指定region和country的延后ASIN列表
+ * @param {string} region - 区域代码
+ * @param {string} country - 国家代码（可选，如果不提供则返回该region所有国家的ASIN）
+ * @returns {Array<Object>} 延后ASIN列表
+ */
+function getDeferredASINs(region, country = null) {
+  const deferredASINs = [];
+  const prefix = country
+    ? `deferred:${region}:${country}:`
+    : `deferred:${region}:`;
+
+  const allKeys = cacheService.getKeys(prefix);
+
+  for (const key of allKeys) {
+    // 跳过countries标记键
+    if (key.endsWith(':countries')) {
+      continue;
+    }
+
+    const cached = cacheService.get(key);
+    if (cached) {
+      try {
+        const data = JSON.parse(cached);
+        deferredASINs.push(data);
+      } catch (e) {
+        logger.warn(`[延后队列] 解析延后ASIN数据失败: ${key}`, e.message);
+      }
+    }
+  }
+
+  return deferredASINs;
+}
+
+/**
+ * 清除已处理的延后ASIN
+ * @param {string} region - 区域代码
+ * @param {string} country - 国家代码（可选，如果不提供则清除该region所有国家的ASIN）
+ */
+function clearDeferredASINs(region, country = null) {
+  const prefix = country
+    ? `deferred:${region}:${country}:`
+    : `deferred:${region}:`;
+
+  const allKeys = cacheService.getKeys(prefix);
+  let clearedCount = 0;
+
+  for (const key of allKeys) {
+    // 跳过countries标记键
+    if (key.endsWith(':countries')) {
+      continue;
+    }
+
+    cacheService.delete(key);
+    clearedCount++;
+  }
+
+  if (clearedCount > 0) {
+    logger.info(
+      `[延后队列] 已清除 ${clearedCount} 个延后ASIN (region: ${region}${
+        country ? `, country: ${country}` : ''
+      })`,
+    );
+  }
+}
+
+/**
+ * 标记region的某个国家已完成处理
+ * @param {string} region - 区域代码
+ * @param {string} country - 国家代码
+ */
+function markCountryCompleted(region, country) {
+  const cacheKey = `deferred:${region}:countries`;
+  const existing = cacheService.get(cacheKey);
+  let countries = existing ? JSON.parse(existing) : [];
+
+  if (!countries.includes(country)) {
+    countries.push(country);
+    // TTL设为1小时
+    cacheService.set(cacheKey, JSON.stringify(countries), 3600000);
+  }
+}
+
+/**
+ * 获取region已处理完成的国家列表
+ * @param {string} region - 区域代码
+ * @returns {Array<string>} 已完成的国家列表
+ */
+function getCompletedCountries(region) {
+  const cacheKey = `deferred:${region}:countries`;
+  const existing = cacheService.get(cacheKey);
+  return existing ? JSON.parse(existing) : [];
+}
+
+/**
+ * 清除region的国家完成标记
+ * @param {string} region - 区域代码
+ */
+function clearCompletedCountries(region) {
+  const cacheKey = `deferred:${region}:countries`;
+  cacheService.delete(cacheKey);
+}
+
 /**
  * 核心：执行单个 ASIN 的变体检查（包含缓存与重试逻辑）
  */
@@ -259,6 +411,8 @@ async function doCheckASINVariants(
 
     const params = {
       marketplaceIds: [cleanMarketplaceId],
+      // 根据Amazon SP-API文档，includedData的有效值不包括'variations'
+      // 变体信息包含在'relationships'中
       includedData: ['summaries', 'relationships'],
     };
 
@@ -323,6 +477,8 @@ async function doCheckASINVariants(
         const legacyPath = `/catalog/2022-04-01/items/${cleanASIN}`;
         const legacyParams = {
           marketplaceIds: [cleanMarketplaceId],
+          // 根据Amazon SP-API文档，includedData的有效值不包括'variations'
+          // 变体信息包含在'relationships'中
           includedData: ['summaries', 'relationships'],
         };
         response = await callLegacySPAPI(
@@ -392,16 +548,34 @@ async function doCheckASINVariants(
         return result;
       } catch (htmlError) {
         logger.error(`[checkASINVariants] HTML抓取也失败:`, htmlError.message);
-        if (lastError) {
-          throw lastError;
-        }
-        throw htmlError;
+        lastError = htmlError;
       }
     }
 
     // 如果response仍然为空，说明所有兜底都失败
     if (!response) {
-      throw lastError || new Error('SP-API响应为空且未使用HTML兜底');
+      const finalError =
+        lastError || new Error('SP-API响应为空且未使用HTML兜底');
+      const region = getRegionByCountry(country);
+
+      // 将ASIN加入延后队列
+      deferASINCheck(cleanASIN, country, region, finalError);
+
+      // 创建一个特殊的错误对象，标记为已延后
+      const deferredError = new Error(
+        `ASIN检查失败，已加入延后队列: ${finalError.message}`,
+      );
+      deferredError.isDeferred = true;
+      deferredError.originalError = finalError;
+      deferredError.asin = cleanASIN;
+      deferredError.country = country;
+      deferredError.region = region;
+
+      logger.warn(
+        `[checkASINVariants] ASIN ${cleanASIN} (${country}) 所有检查方法都失败，已加入延后队列`,
+      );
+
+      throw deferredError;
     }
 
     // 解析新版API返回的数据结构
@@ -424,6 +598,20 @@ async function doCheckASINVariants(
         summariesCount: item.summaries ? item.summaries.length : 0,
       });
 
+      // ⭐ 优先从 summaries.parentAsin 获取父ASIN（借鉴老项目经验）
+      let parentASINFromSummaries = null;
+      if (Array.isArray(item.summaries) && item.summaries.length > 0) {
+        parentASINFromSummaries = item.summaries[0].parentAsin || null;
+        if (parentASINFromSummaries) {
+          parentASINFromSummaries = String(parentASINFromSummaries)
+            .trim()
+            .toUpperCase();
+          logger.debug(
+            `[checkASINVariants] 从 summaries.parentAsin 获取到父ASIN: ${parentASINFromSummaries}`,
+          );
+        }
+      }
+
       // 检查是否有变体关系（兼容 2022-04-01 relationships 结构 + 旧 variations 结构）
       const {
         variantASINs,
@@ -432,6 +620,9 @@ async function doCheckASINVariants(
         isParent,
         variationRelations,
       } = parseVariantRelationships(item);
+
+      // 如果 parseVariantRelationships 没有获取到父ASIN，使用从 summaries 获取的
+      const finalParentASIN = parentASIN || parentASINFromSummaries;
 
       const hasVariants = variantASINs.length > 0;
 
@@ -455,8 +646,8 @@ async function doCheckASINVariants(
           logger.debug(`变体ASIN列表: ${variantASINs.join(', ')}`);
         }
 
-        if (parentASIN) {
-          logger.debug(`父ASIN: ${parentASIN}`);
+        if (finalParentASIN) {
+          logger.debug(`父ASIN: ${finalParentASIN}`);
         }
       } else {
         logger.debug('说明: 该ASIN没有变体关系');
@@ -476,7 +667,7 @@ async function doCheckASINVariants(
             item.summaries?.[0]?.brand ||
             item.summaries?.[0]?.manufacturer ||
             null,
-          parentAsin: parentASIN || null,
+          parentAsin: finalParentASIN || null,
           variations: variantASINs.map((asin) => ({
             asin,
             title: '',
@@ -622,24 +813,43 @@ async function checkVariantGroup(variantGroupId, forceRefresh = false) {
           details: result,
         });
       } catch (error) {
-        logger.error(
-          `[checkVariantGroup] 检查ASIN ${asin} (${country}) 失败:`,
-          error.message || error,
-        );
-        brokenASINs.push(asin);
+        // 检查是否是延后错误
+        if (error.isDeferred) {
+          logger.warn(
+            `[checkVariantGroup] ASIN ${asin} (${country}) 检查失败，已加入延后队列，等待后续重试`,
+          );
+          // 延后的ASIN不立即标记为broken，等待延后队列重试
+          // 但仍更新检查时间
+          if (asinId) {
+            await ASIN.updateLastCheckTime(asinId);
+          }
+          results.push({
+            asin,
+            country,
+            isBroken: false, // 暂时不标记为broken
+            isDeferred: true,
+            error: error.message || String(error),
+          });
+        } else {
+          logger.error(
+            `[checkVariantGroup] 检查ASIN ${asin} (${country}) 失败:`,
+            error.message || error,
+          );
+          brokenASINs.push(asin);
 
-        // 即使检查失败，也要更新ASIN状态为异常
-        if (asinId) {
-          await ASIN.updateVariantStatus(asinId, true);
-          await ASIN.updateLastCheckTime(asinId);
+          // 即使检查失败，也要更新ASIN状态为异常
+          if (asinId) {
+            await ASIN.updateVariantStatus(asinId, true);
+            await ASIN.updateLastCheckTime(asinId);
+          }
+
+          results.push({
+            asin,
+            country,
+            isBroken: true,
+            error: error.message || String(error),
+          });
         }
-
-        results.push({
-          asin,
-          country,
-          isBroken: true,
-          error: error.message || String(error),
-        });
       }
     }
 
@@ -716,17 +926,29 @@ async function checkSingleASIN(asinId, forceRefresh = false) {
     cacheService.delete(cacheKey);
 
     // 如果ASIN属于某个变体组，清除变体组缓存
+    let variantGroupName = null;
     if (asinRecord.variantGroupId) {
       VariantGroup.clearCache();
+      // 获取变体组名称用于快照
+      const variantGroup = await VariantGroup.findById(
+        asinRecord.variantGroupId,
+      );
+      if (variantGroup) {
+        variantGroupName = variantGroup.name || null;
+      }
     }
 
     await MonitorHistory.create({
       asinId,
-      asin,
+      asinCode: asinRecord.asin || null,
+      asinName: asinRecord.name || null,
+      variantGroupId: asinRecord.variantGroupId || null,
+      variantGroupName: variantGroupName,
+      checkType: 'ASIN',
       country,
-      is_broken: isBroken ? 1 : 0,
-      checked_at: new Date(),
-      raw_result: result,
+      isBroken: isBroken ? 1 : 0,
+      checkTime: new Date(),
+      checkResult: result,
     });
 
     return {
@@ -751,4 +973,11 @@ module.exports = {
   reloadLegacyClientFallbackConfig,
   MAX_CONCURRENT_ASIN_CHECKS,
   doCheckASINVariants,
+  // 延后队列相关函数
+  getDeferredASINs,
+  clearDeferredASINs,
+  markCountryCompleted,
+  getCompletedCountries,
+  clearCompletedCountries,
+  getRegionByCountry,
 };

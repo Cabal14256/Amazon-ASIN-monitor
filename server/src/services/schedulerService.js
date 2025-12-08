@@ -11,6 +11,9 @@ const { runCompetitorMonitorTask } = require('./competitorMonitorTaskRunner');
 // 分批处理配置
 const TOTAL_BATCHES = Number(process.env.MONITOR_BATCH_COUNT) || 1; // 默认不分批
 
+// EU国家检查顺序：UK, DE, FR, ES, IT
+const EU_COUNTRIES_ORDER = ['UK', 'DE', 'FR', 'ES', 'IT'];
+
 function initScheduler() {
   console.log('🕐 初始化定时任务...');
   console.log(
@@ -72,6 +75,7 @@ function initScheduler() {
   });
 
   // EU区域：每小时整点执行
+  // EU国家按顺序依次检查：UK, DE, FR, ES, IT
   cron.schedule('0 * * * *', () => {
     const now = new Date();
     const minute = now.getMinutes();
@@ -80,7 +84,12 @@ function initScheduler() {
     // --- Standard Monitor Task ---
     const euCountries = getCountriesToCheck('EU', minute);
 
-    if (euCountries.length > 0) {
+    // 按指定顺序排序EU国家
+    const orderedEuCountries = EU_COUNTRIES_ORDER.filter((country) =>
+      euCountries.includes(country),
+    );
+
+    if (orderedEuCountries.length > 0) {
       // 如果启用分批处理，计算当前批次
       if (TOTAL_BATCHES > 1) {
         // 基于小时和分钟计算批次索引（0 到 TOTAL_BATCHES-1）
@@ -90,21 +99,35 @@ function initScheduler() {
             batchIndex + 1
           }/${TOTAL_BATCHES}`,
         );
-        monitorTaskQueue.enqueue(euCountries, {
-          batchIndex,
-          totalBatches: TOTAL_BATCHES,
+        // 按顺序依次加入队列，每个国家单独一个任务
+        orderedEuCountries.forEach((country, index) => {
+          setTimeout(() => {
+            monitorTaskQueue.enqueue([country], {
+              batchIndex,
+              totalBatches: TOTAL_BATCHES,
+            });
+          }, index * 1000); // 每个国家间隔1秒加入队列
         });
       } else {
-        // 不分批，直接处理所有国家
-        monitorTaskQueue.enqueue(euCountries);
+        // 不分批，按顺序依次加入队列
+        orderedEuCountries.forEach((country, index) => {
+          setTimeout(() => {
+            monitorTaskQueue.enqueue([country]);
+          }, index * 1000); // 每个国家间隔1秒加入队列
+        });
       }
     }
 
     // --- Competitor Monitor Task ---
-    // 竞品监控使用相同的时间表
+    // 竞品监控使用相同的时间表，也按顺序执行
     const competitorEuCountries = getCountriesToCheck('EU', minute);
 
-    if (competitorEuCountries.length > 0) {
+    // 按指定顺序排序EU国家
+    const orderedCompetitorEuCountries = EU_COUNTRIES_ORDER.filter((country) =>
+      competitorEuCountries.includes(country),
+    );
+
+    if (orderedCompetitorEuCountries.length > 0) {
       if (TOTAL_BATCHES > 1) {
         const batchIndex = (hour * 60 + minute) % TOTAL_BATCHES;
         console.log(
@@ -112,12 +135,22 @@ function initScheduler() {
             batchIndex + 1
           }/${TOTAL_BATCHES}`,
         );
-        competitorMonitorTaskQueue.enqueue(competitorEuCountries, {
-          batchIndex,
-          totalBatches: TOTAL_BATCHES,
+        // 按顺序依次加入队列，每个国家单独一个任务
+        orderedCompetitorEuCountries.forEach((country, index) => {
+          setTimeout(() => {
+            competitorMonitorTaskQueue.enqueue([country], {
+              batchIndex,
+              totalBatches: TOTAL_BATCHES,
+            });
+          }, index * 1000); // 每个国家间隔1秒加入队列
         });
       } else {
-        competitorMonitorTaskQueue.enqueue(competitorEuCountries);
+        // 不分批，按顺序依次加入队列
+        orderedCompetitorEuCountries.forEach((country, index) => {
+          setTimeout(() => {
+            competitorMonitorTaskQueue.enqueue([country]);
+          }, index * 1000); // 每个国家间隔1秒加入队列
+        });
       }
     }
   });
@@ -125,7 +158,33 @@ function initScheduler() {
   console.log('✅ 定时任务已启动');
   console.log('📅 执行时间:');
   console.log('   - 美国区域 (US): 每小时整点和30分');
-  console.log('   - 欧洲区域 (UK, DE, FR, IT, ES): 每小时整点');
+  console.log(
+    '   - 欧洲区域 (EU): 每小时整点，按顺序依次检查: UK → DE → FR → ES → IT',
+  );
+
+  // ⭐ 新增：启动时立即执行一次监控（借鉴老项目经验）
+  // 暂时注释掉，后续再启用
+  // if (process.env.MONITOR_RUN_ON_STARTUP !== '0') {
+  //   (async () => {
+  //     console.log('🚀 启动后立即执行一次监控...');
+  //     const { runMonitorTask } = require('./monitorTaskRunner');
+  //
+  //     // 默认只执行US，可通过环境变量配置
+  //     const startupCountries = process.env.MONITOR_STARTUP_COUNTRIES
+  //       ? process.env.MONITOR_STARTUP_COUNTRIES.split(',').map(c => c.trim().toUpperCase())
+  //       : ['US'];
+  //
+  //     try {
+  //       await runMonitorTask(startupCountries);
+  //       console.log('✅ 启动时监控执行完成');
+  //     } catch (error) {
+  //       console.error('❌ 启动时监控执行失败:', error.message);
+  //       // 不抛出错误，避免影响服务启动
+  //     }
+  //   })();
+  // } else {
+  //   console.log('ℹ️  启动时监控已禁用（MONITOR_RUN_ON_STARTUP=0）');
+  // }
 }
 
 module.exports = {

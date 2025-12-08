@@ -3,16 +3,30 @@ const ASIN = require('../models/ASIN');
 const {
   checkVariantGroup,
   checkASINVariants,
+  getDeferredASINs,
+  clearDeferredASINs,
+  markCountryCompleted,
+  getCompletedCountries,
+  clearCompletedCountries,
+  getRegionByCountry,
 } = require('./variantCheckService');
 const cacheService = require('./cacheService');
 const { PRIORITY } = require('./rateLimiter');
 const logger = require('../utils/logger');
-const { sendBatchNotifications } = require('./feishuService');
+const {
+  sendBatchNotifications,
+  sendSingleCountryNotification,
+} = require('./feishuService');
 const MonitorHistory = require('../models/MonitorHistory');
 const { getMaxConcurrentGroupChecks } = require('../config/monitor-config');
 const Semaphore = require('./semaphore');
 const metricsService = require('./metricsService');
 const websocketService = require('./websocketService');
+const {
+  getUTC8ISOString,
+  getUTC8LocaleString,
+  toUTC8ISOString,
+} = require('../utils/dateTime');
 
 let monitorSemaphore = new Semaphore(getMaxConcurrentGroupChecks());
 let isMonitorTaskRunning = false;
@@ -252,7 +266,7 @@ async function processCountry(
             current: checked,
             total: totalGroups,
             progress: Math.round((checked / totalGroups) * 100),
-            timestamp: new Date().toISOString(),
+            timestamp: getUTC8ISOString(),
           });
         }
 
@@ -289,9 +303,13 @@ async function processCountry(
             brokenByType.NO_VARIANTS || 0;
         }
 
+        const fullGroup = await VariantGroup.findById(group.id);
+        const variantGroupName = fullGroup?.name || group.name || null;
+
         const historyEntries = [
           {
             variantGroupId: group.id,
+            variantGroupName: variantGroupName,
             checkType: 'GROUP',
             country: group.country,
             isBroken: result?.isBroken ? 1 : 0,
@@ -300,7 +318,6 @@ async function processCountry(
           },
         ];
 
-        const fullGroup = await VariantGroup.findById(group.id);
         if (fullGroup && Array.isArray(fullGroup.children)) {
           // 检查变体组的通知开关（默认为1，即开启）
           const groupNotifyEnabled =
@@ -347,7 +364,10 @@ async function processCountry(
 
             historyEntries.push({
               asinId: asinInfo.id,
+              asinCode: asinInfo.asin || null,
+              asinName: asinInfo.name || null,
               variantGroupId: group.id,
+              variantGroupName: variantGroupName,
               checkType: 'ASIN',
               country: asinInfo.country,
               isBroken: asinInfo.isBroken === 1 ? 1 : 0,
@@ -377,7 +397,137 @@ async function processCountry(
     return { checked, broken };
   }
 
+  // 标记该国家已完成处理
+  const region = REGION_MAP[country] || 'US';
+  markCountryCompleted(region, country);
+
   return { checked, broken };
+}
+
+/**
+ * 检查region的所有国家是否都已完成处理
+ * @param {string} region - 区域代码（US或EU）
+ * @param {Array<string>} completedCountries - 已完成的国家列表
+ * @returns {boolean} 是否所有国家都已完成
+ */
+function checkRegionCountriesCompleted(region, completedCountries) {
+  // 获取该region的所有国家
+  const regionCountries = Object.keys(REGION_MAP).filter(
+    (country) => REGION_MAP[country] === region,
+  );
+
+  // 检查所有国家是否都在已完成列表中
+  return regionCountries.every((country) =>
+    completedCountries.includes(country),
+  );
+}
+
+/**
+ * 处理延后队列中的ASIN
+ * @param {string} region - 区域代码
+ * @param {string} country - 国家代码（用于日志）
+ * @returns {Object} 处理结果统计
+ */
+async function processDeferredASINs(region, country) {
+  const deferredASINs = getDeferredASINs(region);
+
+  if (deferredASINs.length === 0) {
+    logger.info(`[延后队列] ${region}区域没有需要处理的延后ASIN`);
+    return {
+      total: 0,
+      success: 0,
+      failed: 0,
+    };
+  }
+
+  logger.info(
+    `[延后队列] 开始处理 ${region}区域的 ${deferredASINs.length} 个延后ASIN`,
+  );
+
+  let successCount = 0;
+  let failedCount = 0;
+
+  // 按国家分组处理
+  const asinsByCountry = {};
+  for (const deferred of deferredASINs) {
+    if (!asinsByCountry[deferred.country]) {
+      asinsByCountry[deferred.country] = [];
+    }
+    asinsByCountry[deferred.country].push(deferred);
+  }
+
+  // 逐个处理延后ASIN
+  for (const [deferredCountry, asins] of Object.entries(asinsByCountry)) {
+    logger.info(
+      `[延后队列] 处理 ${deferredCountry} 的 ${asins.length} 个延后ASIN`,
+    );
+
+    for (const deferred of asins) {
+      // 检查重试次数，最多重试1次
+      if (deferred.retryCount >= 1) {
+        logger.warn(
+          `[延后队列] ASIN ${deferred.asin} (${deferred.country}) 已达到最大重试次数，跳过`,
+        );
+        failedCount++;
+        continue;
+      }
+
+      try {
+        // 重试检查ASIN
+        logger.info(
+          `[延后队列] 重试检查 ASIN ${deferred.asin} (${deferred.country})`,
+        );
+
+        const result = await checkASINVariants(
+          deferred.asin,
+          deferred.country,
+          true, // forceRefresh = true，强制刷新
+          PRIORITY.SCHEDULED,
+        );
+
+        // 检查是否成功
+        if (result && result.hasVariants !== undefined) {
+          successCount++;
+          logger.info(
+            `[延后队列] ASIN ${deferred.asin} (${deferred.country}) 重试成功`,
+          );
+        } else {
+          failedCount++;
+          logger.warn(
+            `[延后队列] ASIN ${deferred.asin} (${deferred.country}) 重试失败：结果无效`,
+          );
+        }
+      } catch (error) {
+        // 如果错误标记为已延后，说明再次失败，直接标记为失败，不再加入队列
+        if (error.isDeferred) {
+          failedCount++;
+          logger.warn(
+            `[延后队列] ASIN ${deferred.asin} (${deferred.country}) 重试再次失败，已标记为最终失败: ${error.message}`,
+          );
+        } else {
+          failedCount++;
+          logger.error(
+            `[延后队列] ASIN ${deferred.asin} (${deferred.country}) 重试失败:`,
+            error.message,
+          );
+        }
+      }
+    }
+  }
+
+  // 清除已处理的延后ASIN
+  clearDeferredASINs(region);
+  clearCompletedCountries(region);
+
+  logger.info(
+    `[延后队列] ${region}区域延后队列处理完成: 总计 ${deferredASINs.length}, 成功 ${successCount}, 失败 ${failedCount}`,
+  );
+
+  return {
+    total: deferredASINs.length,
+    success: successCount,
+    failed: failedCount,
+  };
 }
 
 async function runMonitorTask(countries, batchConfig = null) {
@@ -416,9 +566,9 @@ async function runMonitorTask(countries, batchConfig = null) {
     ? ` (批次 ${batchConfig.batchIndex + 1}/${batchConfig.totalBatches})`
     : '';
   logger.info(
-    `\n⏰ [${new Date().toLocaleString(
-      'zh-CN',
-    )}] 开始执行监控任务，国家: ${countries.join(', ')}${batchInfo}`,
+    `\n⏰ [${getUTC8LocaleString()}] 开始执行监控任务，国家: ${countries.join(
+      ', ',
+    )}${batchInfo}`,
   );
 
   const startTime = process.hrtime();
@@ -434,20 +584,116 @@ async function runMonitorTask(countries, batchConfig = null) {
     batchInfo: batchConfig
       ? `批次 ${batchConfig.batchIndex + 1}/${batchConfig.totalBatches}`
       : null,
-    timestamp: checkTime.toISOString(),
+    timestamp: toUTC8ISOString(checkTime),
   });
 
   try {
-    const stats = await Promise.all(
-      countries.map((country) =>
-        processCountry(countryResults, country, checkTime, batchConfig),
-      ),
-    );
+    // 串行处理每个国家：检查完一个国家就发送该国家的飞书通知，然后继续下一个
+    const notifyResults = {
+      total: 0,
+      success: 0,
+      failed: 0,
+      skipped: 0,
+      countryResults: {},
+    };
 
-    stats.forEach(({ checked, broken }) => {
+    // 处理延后队列的region集合
+    const processedRegions = new Set();
+
+    // 串行处理每个国家
+    for (const country of countries) {
+      // 处理当前国家
+      const { checked, broken } = await processCountry(
+        countryResults,
+        country,
+        checkTime,
+        batchConfig,
+      );
       totalChecked += checked;
       totalBroken += broken;
-    });
+
+      // 立即发送该国家的飞书通知
+      logger.info(`\n📨 开始发送 ${country} 的飞书通知...`);
+      const countryNotifyResult = await sendSingleCountryNotification(
+        country,
+        countryResults[country],
+      );
+      notifyResults.total++;
+      if (countryNotifyResult.success) {
+        notifyResults.success++;
+        notifyResults.countryResults[country] = countryNotifyResult;
+        logger.info(`✅ ${country} 的飞书通知发送成功`);
+      } else {
+        notifyResults.failed++;
+        notifyResults.countryResults[country] = countryNotifyResult;
+        logger.warn(
+          `❌ ${country} 的飞书通知发送失败${
+            countryNotifyResult.errorCode
+              ? ` (错误码: ${countryNotifyResult.errorCode})`
+              : ''
+          }`,
+        );
+      }
+
+      // 更新已发送通知的监控历史记录状态（仅当通知发送成功且该国家有异常时）
+      if (
+        countryNotifyResult.success &&
+        !countryNotifyResult.skipped &&
+        countryResults[country] &&
+        countryResults[country].brokenGroups > 0
+      ) {
+        try {
+          const updatedCount = await MonitorHistory.updateNotificationStatus(
+            country,
+            checkTime,
+            1, // 标记为已通知
+          );
+          if (updatedCount > 0) {
+            logger.info(
+              `✅ 已更新 ${country} 的 ${updatedCount} 条监控历史记录为已通知状态`,
+            );
+          }
+        } catch (error) {
+          logger.error(
+            `❌ 更新 ${country} 监控历史记录通知状态失败:`,
+            error.message,
+          );
+        }
+      }
+
+      // 处理延后队列：检查当前国家所属region的所有国家是否都已完成
+      const region = REGION_MAP[country] || 'US';
+
+      // 避免重复处理同一个region
+      if (!processedRegions.has(region)) {
+        const completedCountries = getCompletedCountries(region);
+        const allCompleted = checkRegionCountriesCompleted(
+          region,
+          completedCountries,
+        );
+
+        // 如果所有国家都已完成，或者US区域（只有一个国家），处理延后队列
+        if (allCompleted || (region === 'US' && country === 'US')) {
+          processedRegions.add(region);
+          logger.info(
+            `[延后队列] ${region}区域的所有国家都已完成，开始处理延后队列`,
+          );
+          try {
+            const deferredResult = await processDeferredASINs(region, country);
+            if (deferredResult.total > 0) {
+              logger.info(
+                `[延后队列] ${region}区域处理结果: 总计 ${deferredResult.total}, 成功 ${deferredResult.success}, 失败 ${deferredResult.failed}`,
+              );
+            }
+          } catch (deferredError) {
+            logger.error(
+              `[延后队列] 处理 ${region}区域延后队列失败:`,
+              deferredError.message,
+            );
+          }
+        }
+      }
+    }
 
     // 汇总所有国家的异常类型统计
     const totalBrokenByType = {
@@ -463,46 +709,9 @@ async function runMonitorTask(countries, batchConfig = null) {
       }
     });
 
-    logger.info(`\n📨 开始发送飞书通知...`);
-    const notifyResults = await sendBatchNotifications(countryResults);
     logger.info(
-      `📨 通知发送完成: 总计 ${notifyResults.total}, 成功 ${notifyResults.success}, 失败 ${notifyResults.failed}, 跳过 ${notifyResults.skipped}`,
+      `\n📨 所有国家通知发送完成: 总计 ${notifyResults.total}, 成功 ${notifyResults.success}, 失败 ${notifyResults.failed}, 跳过 ${notifyResults.skipped}`,
     );
-
-    // 更新已发送通知的监控历史记录状态
-    if (notifyResults.countryResults) {
-      for (const country of countries) {
-        const countryNotifyResult = notifyResults.countryResults[country];
-        const countryResult = countryResults[country];
-
-        // 只有当通知发送成功且该国家有异常时才更新状态
-        if (
-          countryNotifyResult &&
-          countryNotifyResult.success &&
-          !countryNotifyResult.skipped &&
-          countryResult &&
-          countryResult.brokenGroups > 0
-        ) {
-          try {
-            const updatedCount = await MonitorHistory.updateNotificationStatus(
-              country,
-              checkTime,
-              1, // 标记为已通知
-            );
-            if (updatedCount > 0) {
-              logger.info(
-                `✅ 已更新 ${country} 的 ${updatedCount} 条监控历史记录为已通知状态`,
-              );
-            }
-          } catch (error) {
-            logger.error(
-              `❌ 更新 ${country} 监控历史记录通知状态失败:`,
-              error.message,
-            );
-          }
-        }
-      }
-    }
 
     const [seconds, nanoseconds] = process.hrtime(startTime);
     const duration = seconds + nanoseconds / 1e9;
@@ -533,7 +742,7 @@ async function runMonitorTask(countries, batchConfig = null) {
       totalNormal: totalChecked - totalBroken,
       duration: duration.toFixed(2),
       countryResults,
-      timestamp: new Date().toISOString(),
+      timestamp: getUTC8ISOString(),
     });
 
     return {
@@ -544,7 +753,7 @@ async function runMonitorTask(countries, batchConfig = null) {
       countryResults,
       notifyResults,
       duration,
-      checkTime: checkTime.toISOString(),
+      checkTime: toUTC8ISOString(checkTime),
     };
   } catch (error) {
     logger.error(`❌ 监控任务执行失败:`, error);
