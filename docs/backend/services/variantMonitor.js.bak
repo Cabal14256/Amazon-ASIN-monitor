@@ -1,0 +1,159 @@
+// variantMonitor.js
+
+require('dotenv').config();
+const https = require('https');
+const cron = require('node-cron');
+const SellingPartnerAPI = require('amazon-sp-api');
+const db = require('../utils/db');
+
+/**
+ * 初始化 SP-API 客户端
+ */
+const sp = new SellingPartnerAPI({
+  region: 'na',
+  refresh_token: process.env.SP_API_REFRESH_TOKEN,
+  credentials: {
+    SELLING_PARTNER_APP_CLIENT_ID: process.env.SP_API_CLIENT_ID,
+    SELLING_PARTNER_APP_CLIENT_SECRET: process.env.SP_API_CLIENT_SECRET,
+    AWS_ACCESS_KEY_ID: process.env.AWS_ACCESS_KEY_ID,
+    AWS_SECRET_ACCESS_KEY: process.env.AWS_SECRET_ACCESS_KEY,
+    role_arn: process.env.SP_API_ROLE_ARN
+  },
+  auto_request_tokens: true,
+  auto_request_threshold: 60,
+  rate_limit: {
+    retry: true,
+    retry_count: 3,
+    retry_delay: 2000
+  }
+});
+
+/**
+ * 从数据库加载所有 ASIN
+ */
+async function loadAsinsFromDB() {
+  try {
+    const [rows] = await db.query('SELECT asin FROM asins');
+    return rows.map(row => row.asin);
+  } catch (err) {
+    console.error('加载 ASIN 时出错：', err);
+    return [];
+  }
+}
+
+/**
+ * UTF-8 编码处理，兼容飞书接口
+ */
+function ensureUtf8(str) {
+  if (typeof str !== 'string') str = String(str);
+  return Buffer.from(str, 'utf-8').toString('utf-8');
+}
+
+/**
+ * 发送文本消息到飞书群机器人
+ */
+async function sendToFeishu(text) {
+  const url = new URL(process.env.FEISHU_WEBHOOK_URL);
+  const body = JSON.stringify({ msg_type: 'text', content: { text: ensureUtf8(text) } });
+
+  const options = {
+    hostname: url.hostname,
+    port: 443,
+    path: url.pathname,
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json; charset=utf-8',
+      'Content-Length': Buffer.byteLength(body)
+    }
+  };
+
+  return new Promise((resolve, reject) => {
+    const req = https.request(options, (res) => {
+      let data = '';
+      res.on('data', chunk => data += chunk.toString());
+      res.on('end', () => {
+        console.log('? 飞书响应:', res.statusCode, data);
+        resolve(data);
+      });
+    });
+    req.on('error', reject);
+    req.write(body);
+    req.end();
+  });
+}
+
+/**
+ * 获取单个 ASIN 的变体数据
+ */
+async function getVariantData(asin) {
+  try {
+    const result = await sp.callAPI({
+      operation: 'getCatalogItem',
+      endpoint: 'catalogItems',
+      path: { asin },
+      query: {
+        marketplaceIds: [process.env.SP_API_MARKETPLACE_ID],
+        includedData: ['variations', 'attributes']
+      }
+    });
+
+    const variations = result.variations?.[0]?.asins || [];
+    const brand = result.attributes?.brand?.[0] || '未知';
+    return { variations, brand };
+  } catch (error) {
+    console.error(`? 获取 ASIN ${asin} 数据失败:`, error);
+    return { variations: [], brand: '未知' };
+  }
+}
+
+/**
+ * 主监控逻辑函数
+ */
+async function monitorAsins(alertAll = false) {
+  const asinList = await loadAsinsFromDB();
+
+  if (!asinList.length) {
+    console.warn('?? 未获取到 ASIN 列表，跳过本轮监控');
+    return;
+  }
+
+  const now = new Date().toLocaleString('zh-CN', { timeZone: 'Asia/Shanghai', hour12: false });
+  const header = `[${now}] 变体监控启动`;
+  await sendToFeishu(header);
+
+  for (const asin of asinList) {
+    const { variations, brand } = await getVariantData(asin);
+    const brandName = typeof brand === 'object' ? brand.value : brand;
+    const hasVariations = variations.length > 0;
+
+    const msg = hasVariations
+      ? `? 品牌：${brandName} 商品 ${asin} 存在变体，共 ${variations.length} 个：${variations.join(', ')}`
+      : `?? 品牌：${brandName} 商品 ${asin} 没有变体`;
+
+    if (!hasVariations || alertAll) {
+      await sendToFeishu(msg);
+    }
+  }
+}
+
+/**
+ * 定时任务注册
+ */
+function registerMonitorJobs() {
+  // 启动时执行一次完整监控
+  monitorAsins(true);
+
+  // 每小时第 30 分：仅提醒无变体的 ASIN
+  cron.schedule('30 * * * *', () => {
+    console.log('\n? 每小时监控启动（仅无变体提醒）...');
+    monitorAsins(false);
+  });
+
+  // 每 5 小时第 30 分：汇总所有 ASIN 状态
+  cron.schedule('30 */5 * * *', () => {
+    console.log('\n?? 汇总监控启动（所有 ASIN 状态）...');
+    monitorAsins(true);
+  });
+}
+
+module.exports = { registerMonitorJobs };

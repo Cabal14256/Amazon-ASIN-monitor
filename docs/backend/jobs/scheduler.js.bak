@@ -1,0 +1,12 @@
+// jobs/scheduler.js
+
+// 引入变体监控任务注册函数
+const { registerMonitorJobs } = require('../services/variantMonitor');
+
+// 初始化所有定时任务
+function initSchedulers() {
+  console.log('? 定时任务调度器启动...');
+  registerMonitorJobs(); // 注册变体监控任务（如有更多任务也可集中在这里注册）
+}
+
+initSchedulers();

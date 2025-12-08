@@ -1,0 +1,35 @@
+{
+  "merchantToken": "YOUR_MERCHANT_TOKEN",
+  "applicationId": "amzn1.application-oa2-client.228ad26654ed47148a6d924c527647b6",
+  "requestId": "361335a7-50e4-462e-8ae4-7f390ec94394",
+  "timestamp": "2025-08-11T07:10:39.294Z",
+  "apiOperation": "getCatalogItem",
+  "sandbox": false,
+  "requestUrl": "",
+  "requestHeaders": {},
+  "requestQuery": {
+    "marketplaceIds": [
+      "ATVPDKIKX0DER"
+    ],
+    "includedData": [
+      "variations",
+      "attributes"
+    ]
+  },
+  "responseHeaders": {
+    "server": "Server",
+    "date": "Mon, 11 Aug 2025 07:10:39 GMT",
+    "content-type": "application/json",
+    "content-length": "5670",
+    "connection": "keep-alive",
+    "x-amz-rid": "KAM75T835ZDTR7KNKSHQ",
+    "x-amzn-ratelimit-limit": "2.0",
+    "x-amzn-requestid": "361335a7-50e4-462e-8ae4-7f390ec94394",
+    "x-amz-apigw-id": "OPF361335a750e4",
+    "x-amzn-trace-id": "Root=1-6899976f-361335a750e4462e",
+    "vary": "accept-encoding,Content-Type,Accept-Encoding,User-Agent",
+    "strict-transport-security": "max-age=47474747; includeSubDomains; preload"
+  },
+  "variationsArray": [],
+  "apiRawVariations": []
+}
