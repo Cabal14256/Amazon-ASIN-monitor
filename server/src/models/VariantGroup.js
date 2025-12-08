@@ -62,8 +62,24 @@ class VariantGroup {
 
     if (variantStatus) {
       const isBroken = variantStatus === 'BROKEN' ? 1 : 0;
-      sql += ` AND vg.is_broken = ?`;
-      queryValues.push(isBroken);
+      // 使用子查询检查变体组是否有指定状态的ASIN
+      // 对于"异常"：至少有一个ASIN的is_broken=1
+      // 对于"正常"：所有ASIN的is_broken=0（或没有ASIN）
+      if (isBroken === 1) {
+        // 筛选异常：至少有一个异常的ASIN
+        sql += ` AND EXISTS (
+          SELECT 1 FROM asins a2 
+          WHERE a2.variant_group_id = vg.id 
+          AND a2.is_broken = 1
+        )`;
+      } else {
+        // 筛选正常：没有异常的ASIN（所有ASIN都是正常的，或者没有ASIN）
+        sql += ` AND NOT EXISTS (
+          SELECT 1 FROM asins a2 
+          WHERE a2.variant_group_id = vg.id 
+          AND a2.is_broken = 1
+        )`;
+      }
     }
 
     sql += ` GROUP BY vg.id`;
@@ -83,8 +99,24 @@ class VariantGroup {
     }
     if (variantStatus) {
       const isBroken = variantStatus === 'BROKEN' ? 1 : 0;
-      countSql += ` AND vg.is_broken = ?`;
-      countValues.push(isBroken);
+      // 使用子查询检查变体组是否有指定状态的ASIN
+      // 对于"异常"：至少有一个ASIN的is_broken=1
+      // 对于"正常"：所有ASIN的is_broken=0（或没有ASIN）
+      if (isBroken === 1) {
+        // 筛选异常：至少有一个异常的ASIN
+        countSql += ` AND EXISTS (
+          SELECT 1 FROM asins a2 
+          WHERE a2.variant_group_id = vg.id 
+          AND a2.is_broken = 1
+        )`;
+      } else {
+        // 筛选正常：没有异常的ASIN（所有ASIN都是正常的，或者没有ASIN）
+        countSql += ` AND NOT EXISTS (
+          SELECT 1 FROM asins a2 
+          WHERE a2.variant_group_id = vg.id 
+          AND a2.is_broken = 1
+        )`;
+      }
     }
 
     const countResult = await query(countSql, countValues);
@@ -149,7 +181,9 @@ class VariantGroup {
           updateTime: asin.update_time,
           lastCheckTime: asin.last_check_time,
           feishuNotifyEnabled:
-            asin.feishu_notify_enabled !== null ? asin.feishu_notify_enabled : 1, // 默认为1
+            asin.feishu_notify_enabled !== null
+              ? asin.feishu_notify_enabled
+              : 1, // 默认为1
         }));
 
         // 根据ASIN的变体状态动态计算变体组状态
@@ -174,7 +208,9 @@ class VariantGroup {
         group.createTime = group.create_time;
         group.lastCheckTime = group.last_check_time;
         group.feishuNotifyEnabled =
-          group.feishu_notify_enabled !== null ? group.feishu_notify_enabled : 1;
+          group.feishu_notify_enabled !== null
+            ? group.feishu_notify_enabled
+            : 1;
       }
     }
 

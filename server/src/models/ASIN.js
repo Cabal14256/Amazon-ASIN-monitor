@@ -91,8 +91,15 @@ class ASIN {
     return this.findById(asinId);
   }
 
-  // 根据ASIN编码查询
-  static async findByASIN(asin) {
+  // 根据ASIN编码查询（可选：同时查询国家）
+  static async findByASIN(asin, country = null) {
+    if (country) {
+      const [result] = await query(
+        `SELECT * FROM asins WHERE asin = ? AND country = ?`,
+        [asin, country],
+      );
+      return result;
+    }
     const [result] = await query(`SELECT * FROM asins WHERE asin = ?`, [asin]);
     return result;
   }
@@ -102,10 +109,10 @@ class ASIN {
     const id = uuidv4();
     const { asin, name, country, site, brand, variantGroupId, asinType } = data;
 
-    // 检查ASIN是否已存在
-    const existing = await this.findByASIN(asin);
+    // 检查ASIN是否已存在（同一国家）
+    const existing = await this.findByASIN(asin, country);
     if (existing) {
-      throw new Error('ASIN已存在');
+      throw new Error(`ASIN ${asin} 在国家 ${country} 中已存在`);
     }
 
     await query(

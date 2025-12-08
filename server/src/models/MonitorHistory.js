@@ -20,9 +20,10 @@ class MonitorHistory {
     let sql = `
       SELECT 
         mh.*,
-        vg.name as variant_group_name,
-        a.asin,
-        a.name as asin_name
+        COALESCE(mh.variant_group_name, vg.name) as variant_group_name,
+        COALESCE(mh.asin_code, a.asin) as asin,
+        COALESCE(mh.asin_name, a.name) as asin_name,
+        a.asin_type as asin_type
       FROM monitor_history mh
       LEFT JOIN variant_groups vg ON vg.id = mh.variant_group_id
       LEFT JOIN asins a ON a.id = mh.asin_id
@@ -41,13 +42,19 @@ class MonitorHistory {
     }
 
     if (asin) {
-      sql += ` AND a.asin LIKE ?`;
+      // 优先在快照字段中搜索，如果没有则搜索关联表
+      sql += ` AND (COALESCE(mh.asin_code, a.asin) LIKE ?)`;
       conditions.push(`%${asin}%`);
     }
 
     if (country) {
-      sql += ` AND mh.country = ?`;
-      conditions.push(country);
+      if (country === 'EU') {
+        // EU汇总：包含所有欧洲国家
+        sql += ` AND mh.country IN ('UK', 'DE', 'FR', 'IT', 'ES')`;
+      } else {
+        sql += ` AND mh.country = ?`;
+        conditions.push(country);
+      }
     }
 
     if (checkType) {
@@ -105,6 +112,7 @@ class MonitorHistory {
       notificationSent: item.notification_sent,
       variantGroupName: item.variant_group_name,
       asinName: item.asin_name,
+      asinType: item.asin_type,
       createTime: item.create_time,
     }));
 
@@ -121,9 +129,10 @@ class MonitorHistory {
     const [history] = await query(
       `SELECT 
         mh.*,
-        vg.name as variant_group_name,
-        a.asin,
-        a.name as asin_name
+        COALESCE(mh.variant_group_name, vg.name) as variant_group_name,
+        COALESCE(mh.asin_code, a.asin) as asin,
+        COALESCE(mh.asin_name, a.name) as asin_name,
+        a.asin_type as asin_type
       FROM monitor_history mh
       LEFT JOIN variant_groups vg ON vg.id = mh.variant_group_id
       LEFT JOIN asins a ON a.id = mh.asin_id
@@ -141,6 +150,7 @@ class MonitorHistory {
         notificationSent: history.notification_sent,
         variantGroupName: history.variant_group_name,
         asinName: history.asin_name,
+        asinType: history.asin_type,
         createTime: history.create_time,
       };
     }
@@ -151,7 +161,10 @@ class MonitorHistory {
   static async create(data) {
     const {
       variantGroupId,
+      variantGroupName,
       asinId,
+      asinCode,
+      asinName,
       checkType,
       country,
       isBroken,
@@ -161,11 +174,14 @@ class MonitorHistory {
 
     const result = await query(
       `INSERT INTO monitor_history 
-       (variant_group_id, asin_id, check_type, country, is_broken, check_time, check_result) 
-       VALUES (?, ?, ?, ?, ?, ?, ?)`,
+       (variant_group_id, variant_group_name, asin_id, asin_code, asin_name, check_type, country, is_broken, check_time, check_result) 
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [
         variantGroupId || null,
+        variantGroupName || null,
         asinId || null,
+        asinCode || null,
+        asinName || null,
         checkType || 'GROUP',
         country,
         isBroken ? 1 : 0,
@@ -186,10 +202,13 @@ class MonitorHistory {
     const placeholders = [];
     const values = [];
     for (const entry of entries) {
-      placeholders.push('(?, ?, ?, ?, ?, ?, ?)');
+      placeholders.push('(?, ?, ?, ?, ?, ?, ?, ?, ?, ?)');
       values.push(
         entry.variantGroupId || null,
+        entry.variantGroupName || null,
         entry.asinId || null,
+        entry.asinCode || null,
+        entry.asinName || null,
         entry.checkType || 'GROUP',
         entry.country || null,
         entry.isBroken ? 1 : 0,
@@ -199,7 +218,7 @@ class MonitorHistory {
     }
 
     const sql = `INSERT INTO monitor_history 
-      (variant_group_id, asin_id, check_type, country, is_broken, check_time, check_result) 
+      (variant_group_id, variant_group_name, asin_id, asin_code, asin_name, check_type, country, is_broken, check_time, check_result) 
       VALUES ${placeholders.join(', ')}`;
 
     await query(sql, values);
@@ -239,8 +258,13 @@ class MonitorHistory {
     }
 
     if (country) {
-      sql += ` AND country = ?`;
-      conditions.push(country);
+      if (country === 'EU') {
+        // EU汇总：包含所有欧洲国家
+        sql += ` AND country IN ('UK', 'DE', 'FR', 'IT', 'ES')`;
+      } else {
+        sql += ` AND country = ?`;
+        conditions.push(country);
+      }
     }
 
     if (startTime) {
@@ -291,8 +315,13 @@ class MonitorHistory {
     const conditions = [];
 
     if (country) {
-      whereClause += ` AND country = ?`;
-      conditions.push(country);
+      if (country === 'EU') {
+        // EU汇总：包含所有欧洲国家
+        whereClause += ` AND country IN ('UK', 'DE', 'FR', 'IT', 'ES')`;
+      } else {
+        whereClause += ` AND country = ?`;
+        conditions.push(country);
+      }
     }
 
     if (startTime) {
@@ -433,9 +462,13 @@ class MonitorHistory {
         check_time,
         is_broken
       FROM monitor_history
-      WHERE country = ?
+      WHERE ${
+        country === 'EU'
+          ? "country IN ('UK', 'DE', 'FR', 'IT', 'ES')"
+          : 'country = ?'
+      }
     `;
-    const conditions = [country];
+    const conditions = country === 'EU' ? [] : [country];
 
     if (startTime) {
       sql += ` AND check_time >= ?`;
@@ -501,8 +534,13 @@ class MonitorHistory {
     const conditions = [];
 
     if (country) {
-      sql += ` AND mh.country = ?`;
-      conditions.push(country);
+      if (country === 'EU') {
+        // EU汇总：包含所有欧洲国家
+        sql += ` AND mh.country IN ('UK', 'DE', 'FR', 'IT', 'ES')`;
+      } else {
+        sql += ` AND mh.country = ?`;
+        conditions.push(country);
+      }
     }
 
     if (startTime) {
@@ -846,8 +884,13 @@ class MonitorHistory {
     const conditions = [];
 
     if (country) {
-      whereClause += ` AND mh.country = ?`;
-      conditions.push(country);
+      if (country === 'EU') {
+        // EU汇总：包含所有欧洲国家
+        whereClause += ` AND mh.country IN ('UK', 'DE', 'FR', 'IT', 'ES')`;
+      } else {
+        whereClause += ` AND mh.country = ?`;
+        conditions.push(country);
+      }
     }
 
     if (startTime) {
