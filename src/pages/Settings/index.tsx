@@ -19,7 +19,7 @@ import {
   message as antdMessage,
 } from 'antd';
 import dayjs from 'dayjs';
-import React, { useEffect, useState } from 'react';
+import React, { useCallback, useEffect, useState } from 'react';
 
 const { getSPAPIConfigs, updateSPAPIConfig } = services.SPAPIConfigController;
 const { getFeishuConfigs, upsertFeishuConfig } = services.FeishuController;
@@ -234,94 +234,52 @@ const SettingsPage: React.FC<unknown> = () => {
     return Math.round((bytes / Math.pow(k, i)) * 100) / 100 + ' ' + sizes[i];
   };
 
-  // 保存SP-API配置
-  const buildConfigEntry = (key: string, value: any, description: string) => ({
-    configKey: key,
-    configValue:
-      value !== undefined && value !== null ? String(value) : undefined,
-    description,
-  });
-
-  const handleSaveSPAPIConfig = async (values: any) => {
-    try {
-      const configs = [
-        buildConfigEntry(
-          'SP_API_US_LWA_CLIENT_ID',
-          values.SP_API_US_LWA_CLIENT_ID,
-          'US 区域 LWA Client ID',
-        ),
-        buildConfigEntry(
-          'SP_API_US_LWA_CLIENT_SECRET',
-          values.SP_API_US_LWA_CLIENT_SECRET,
-          'US 区域 LWA Client Secret',
-        ),
-        buildConfigEntry(
-          'SP_API_US_REFRESH_TOKEN',
-          values.SP_API_US_REFRESH_TOKEN,
-          'US 区域 Refresh Token',
-        ),
-        buildConfigEntry(
-          'SP_API_EU_LWA_CLIENT_ID',
-          values.SP_API_EU_LWA_CLIENT_ID,
-          'EU 区域 LWA Client ID',
-        ),
-        buildConfigEntry(
-          'SP_API_EU_LWA_CLIENT_SECRET',
-          values.SP_API_EU_LWA_CLIENT_SECRET,
-          'EU 区域 LWA Client Secret',
-        ),
-        buildConfigEntry(
-          'SP_API_EU_REFRESH_TOKEN',
-          values.SP_API_EU_REFRESH_TOKEN,
-          'EU 区域 Refresh Token',
-        ),
-        buildConfigEntry(
-          'SP_API_ACCESS_KEY_ID',
-          values.SP_API_ACCESS_KEY_ID,
-          'AWS Access Key ID（US+EU共用）',
-        ),
-        buildConfigEntry(
-          'SP_API_SECRET_ACCESS_KEY',
-          values.SP_API_SECRET_ACCESS_KEY,
-          'AWS Secret Access Key（US+EU共用）',
-        ),
-        buildConfigEntry(
-          'SP_API_ROLE_ARN',
-          values.SP_API_ROLE_ARN,
-          'AWS IAM Role ARN（US+EU共用）',
-        ),
-        buildConfigEntry(
-          'SP_API_USE_AWS_SIGNATURE',
-          values.SP_API_USE_AWS_SIGNATURE ? 'true' : 'false',
-          '是否启用AWS签名（简化模式：关闭，标准模式：开启）',
-        ),
-        buildConfigEntry(
-          'ENABLE_HTML_SCRAPER_FALLBACK',
-          values.ENABLE_HTML_SCRAPER_FALLBACK ? 'true' : 'false',
-          '是否启用HTML抓取兜底（SP-API失败时使用）',
-        ),
-        buildConfigEntry(
-          'ENABLE_LEGACY_CLIENT_FALLBACK',
-          values.ENABLE_LEGACY_CLIENT_FALLBACK ? 'true' : 'false',
-          '是否启用旧客户端备用（SP-API失败时使用）',
-        ),
-        buildConfigEntry(
-          'ENABLE_LEGACY_CLIENT_FALLBACK',
-          values.ENABLE_LEGACY_CLIENT_FALLBACK ? 'true' : 'false',
-          '是否启用旧客户端备用（SP-API失败时使用）',
-        ),
-      ].map((entry) => ({
-        ...entry,
-        configValue: entry.configValue ?? '',
-      }));
-
-      await updateSPAPIConfig({ configs });
-      message.success('SP-API配置已保存并重新加载');
-      await loadConfigs();
-    } catch (error: any) {
-      message.error(error?.errorMessage || '保存失败');
-    }
+  // 配置项描述映射
+  const configDescriptions: Record<string, string> = {
+    SP_API_US_LWA_CLIENT_ID: 'US 区域 LWA Client ID',
+    SP_API_US_LWA_CLIENT_SECRET: 'US 区域 LWA Client Secret',
+    SP_API_US_REFRESH_TOKEN: 'US 区域 Refresh Token',
+    SP_API_EU_LWA_CLIENT_ID: 'EU 区域 LWA Client ID',
+    SP_API_EU_LWA_CLIENT_SECRET: 'EU 区域 LWA Client Secret',
+    SP_API_EU_REFRESH_TOKEN: 'EU 区域 Refresh Token',
+    SP_API_ACCESS_KEY_ID: 'AWS Access Key ID（US+EU共用）',
+    SP_API_SECRET_ACCESS_KEY: 'AWS Secret Access Key（US+EU共用）',
+    SP_API_ROLE_ARN: 'AWS IAM Role ARN（US+EU共用）',
+    SP_API_USE_AWS_SIGNATURE:
+      '是否启用AWS签名（简化模式：关闭，标准模式：开启）',
+    ENABLE_HTML_SCRAPER_FALLBACK: '是否启用HTML抓取兜底（SP-API失败时使用）',
+    ENABLE_LEGACY_CLIENT_FALLBACK: '是否启用旧客户端备用（SP-API失败时使用）',
   };
+
+  // 保存指定配置组的配置项
+  const saveConfigGroup = useCallback(
+    async (configKeys: string[], formValues: any) => {
+      try {
+        const configs = configKeys.map((key) => {
+          let value = formValues[key];
+          if (
+            key === 'SP_API_USE_AWS_SIGNATURE' ||
+            key === 'ENABLE_HTML_SCRAPER_FALLBACK' ||
+            key === 'ENABLE_LEGACY_CLIENT_FALLBACK'
+          ) {
+            value = value ? 'true' : 'false';
+          }
+          return {
+            configKey: key,
+            configValue:
+              value !== undefined && value !== null ? String(value) : '',
+            description: configDescriptions[key] || '',
+          };
+        });
+        await updateSPAPIConfig({ configs });
+        message.success('配置已保存');
+        await loadConfigs();
+      } catch (error: any) {
+        message.error(error?.errorMessage || '保存失败');
+      }
+    },
+    [message],
+  );
 
   // 保存飞书配置
   const handleSaveFeishuConfig = async (region: 'US' | 'EU', values: any) => {
@@ -343,26 +301,28 @@ const SettingsPage: React.FC<unknown> = () => {
       key: 'sp-api',
       label: 'SP-API配置',
       children: (
-        <Card>
-          <Alert
-            message="SP-API配置说明"
-            description="修改配置后会自动重新加载，无需重启服务。如果LWA Token失效，请及时更新Refresh Token。"
-            type="info"
-            showIcon
-            style={{ marginBottom: 24 }}
-          />
-          <ProForm
-            form={spApiForm}
-            onFinish={handleSaveSPAPIConfig}
-            submitter={{
-              resetButtonProps: {
-                onClick: () => {
-                  loadConfigs(); // 自定义重置行为：重新加载配置
+        <Space direction="vertical" size="large" style={{ width: '100%' }}>
+          <Card title="US区域 LWA 配置">
+            <ProForm
+              form={spApiForm}
+              onFinish={async (values) => {
+                await saveConfigGroup(
+                  [
+                    'SP_API_US_LWA_CLIENT_ID',
+                    'SP_API_US_LWA_CLIENT_SECRET',
+                    'SP_API_US_REFRESH_TOKEN',
+                  ],
+                  values,
+                );
+              }}
+              submitter={{
+                resetButtonProps: {
+                  onClick: () => {
+                    loadConfigs();
+                  },
                 },
-              },
-            }}
-          >
-            <ProForm.Group title="US区域 LWA 配置">
+              }}
+            >
               <ProFormText
                 name="SP_API_US_LWA_CLIENT_ID"
                 label="LWA Client ID"
@@ -390,9 +350,30 @@ const SettingsPage: React.FC<unknown> = () => {
                   style: { width: '100%' },
                 }}
               />
-            </ProForm.Group>
+            </ProForm>
+          </Card>
 
-            <ProForm.Group title="EU区域 LWA 配置">
+          <Card title="EU区域 LWA 配置">
+            <ProForm
+              form={spApiForm}
+              onFinish={async (values) => {
+                await saveConfigGroup(
+                  [
+                    'SP_API_EU_LWA_CLIENT_ID',
+                    'SP_API_EU_LWA_CLIENT_SECRET',
+                    'SP_API_EU_REFRESH_TOKEN',
+                  ],
+                  values,
+                );
+              }}
+              submitter={{
+                resetButtonProps: {
+                  onClick: () => {
+                    loadConfigs();
+                  },
+                },
+              }}
+            >
               <ProFormText
                 name="SP_API_EU_LWA_CLIENT_ID"
                 label="LWA Client ID"
@@ -420,9 +401,30 @@ const SettingsPage: React.FC<unknown> = () => {
                   style: { width: '100%' },
                 }}
               />
-            </ProForm.Group>
+            </ProForm>
+          </Card>
 
-            <ProForm.Group title="共享 AWS IAM 配置">
+          <Card title="共享 AWS IAM 配置">
+            <ProForm
+              form={spApiForm}
+              onFinish={async (values) => {
+                await saveConfigGroup(
+                  [
+                    'SP_API_ACCESS_KEY_ID',
+                    'SP_API_SECRET_ACCESS_KEY',
+                    'SP_API_ROLE_ARN',
+                  ],
+                  values,
+                );
+              }}
+              submitter={{
+                resetButtonProps: {
+                  onClick: () => {
+                    loadConfigs();
+                  },
+                },
+              }}
+            >
               <ProFormText
                 name="SP_API_ACCESS_KEY_ID"
                 label="AWS Access Key ID"
@@ -454,9 +456,23 @@ const SettingsPage: React.FC<unknown> = () => {
                   style: { width: '100%' },
                 }}
               />
-            </ProForm.Group>
+            </ProForm>
+          </Card>
 
-            <ProForm.Group title="SP-API 调用模式">
+          <Card title="SP-API 调用模式">
+            <ProForm
+              form={spApiForm}
+              onFinish={async (values) => {
+                await saveConfigGroup(['SP_API_USE_AWS_SIGNATURE'], values);
+              }}
+              submitter={{
+                resetButtonProps: {
+                  onClick: () => {
+                    loadConfigs();
+                  },
+                },
+              }}
+            >
               <ProFormSwitch
                 name="SP_API_USE_AWS_SIGNATURE"
                 label="启用 AWS 签名"
@@ -464,9 +480,29 @@ const SettingsPage: React.FC<unknown> = () => {
                 unCheckedChildren="简化模式"
                 extra="简化模式：无需 AWS 签名，仅使用 Access Token。标准模式：需要完整的 AWS 签名（需要 Access Key 和 Secret Key）。"
               />
-            </ProForm.Group>
+            </ProForm>
+          </Card>
 
-            <ProForm.Group title="降级策略">
+          <Card title="降级策略">
+            <ProForm
+              form={spApiForm}
+              onFinish={async (values) => {
+                await saveConfigGroup(
+                  [
+                    'ENABLE_LEGACY_CLIENT_FALLBACK',
+                    'ENABLE_HTML_SCRAPER_FALLBACK',
+                  ],
+                  values,
+                );
+              }}
+              submitter={{
+                resetButtonProps: {
+                  onClick: () => {
+                    loadConfigs();
+                  },
+                },
+              }}
+            >
               <ProFormSwitch
                 name="ENABLE_LEGACY_CLIENT_FALLBACK"
                 label="启用旧客户端备用"
@@ -489,9 +525,9 @@ const SettingsPage: React.FC<unknown> = () => {
                   />
                 }
               />
-            </ProForm.Group>
-          </ProForm>
-        </Card>
+            </ProForm>
+          </Card>
+        </Space>
       ),
     },
     {

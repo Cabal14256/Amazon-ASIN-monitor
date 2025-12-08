@@ -35,6 +35,7 @@ const {
 // 国家选项映射
 const countryMap: Record<string, string> = {
   US: '美国',
+  EU: '欧洲汇总',
   UK: '英国',
   DE: '德国',
   FR: '法国',
@@ -95,13 +96,20 @@ const AnalyticsPageContent: React.FC<unknown> = () => {
   const [groupBy, setGroupBy] = useState<string>('hour');
   const [loading, setLoading] = useState(false);
   // 三个表格各自的时间槽粒度
-  const [allCountriesTimeSlot, setAllCountriesTimeSlot] = useState<string>('hour');
+  const [allCountriesTimeSlot, setAllCountriesTimeSlot] =
+    useState<string>('hour');
   const [regionTimeSlot, setRegionTimeSlot] = useState<string>('hour');
   const [periodTimeSlot, setPeriodTimeSlot] = useState<string>('hour');
   // 三个图表各自的数量/百分比模式
-  const [countryBarValueMode, setCountryBarValueMode] = useState<'count' | 'percent'>('count');
-  const [countryPieValueMode, setCountryPieValueMode] = useState<'count' | 'percent'>('count');
-  const [variantGroupValueMode, setVariantGroupValueMode] = useState<'count' | 'percent'>('count');
+  const [countryBarValueMode, setCountryBarValueMode] = useState<
+    'count' | 'percent'
+  >('count');
+  const [countryPieValueMode, setCountryPieValueMode] = useState<
+    'count' | 'percent'
+  >('count');
+  const [variantGroupValueMode, setVariantGroupValueMode] = useState<
+    'count' | 'percent'
+  >('count');
 
   // 统计数据
   const [timeStatistics, setTimeStatistics] = useState<API.TimeStatistics[]>(
@@ -160,7 +168,10 @@ const AnalyticsPageContent: React.FC<unknown> = () => {
         getASINStatisticsByCountry(),
         getASINStatisticsByVariantGroup({ limit: 10 }),
         getMonitorStatistics(params),
-        getAllCountriesSummary({ ...params, timeSlotGranularity: allCountriesTimeSlot }),
+        getAllCountriesSummary({
+          ...params,
+          timeSlotGranularity: allCountriesTimeSlot,
+        }),
         getRegionSummary({ ...params, timeSlotGranularity: regionTimeSlot }),
         getPeriodSummary({
           ...params,
@@ -234,21 +245,32 @@ const AnalyticsPageContent: React.FC<unknown> = () => {
 
       // 处理汇总表格数据
       const allCountriesStats =
-        allCountriesData && typeof allCountriesData === 'object' && !('success' in allCountriesData)
+        allCountriesData &&
+        typeof allCountriesData === 'object' &&
+        !('success' in allCountriesData)
           ? allCountriesData
           : (allCountriesData as any)?.data || null;
       setAllCountriesSummary(allCountriesStats);
 
       const regionStats =
-        regionData && typeof regionData === 'object' && !('success' in regionData)
+        regionData &&
+        typeof regionData === 'object' &&
+        !('success' in regionData)
           ? regionData
           : (regionData as any)?.data || [];
       setRegionSummary(regionStats);
 
       const periodStats =
-        periodData && typeof periodData === 'object' && !('success' in periodData)
+        periodData &&
+        typeof periodData === 'object' &&
+        !('success' in periodData)
           ? periodData
-          : (periodData as any)?.data || { list: [], total: 0, current: 1, pageSize: 10 };
+          : (periodData as any)?.data || {
+              list: [],
+              total: 0,
+              current: 1,
+              pageSize: 10,
+            };
       setPeriodSummary(periodStats);
     } catch (error) {
       console.error('加载统计数据失败:', error);
@@ -260,9 +282,6 @@ const AnalyticsPageContent: React.FC<unknown> = () => {
     dateRange,
     country,
     groupBy,
-    allCountriesTimeSlot,
-    regionTimeSlot,
-    periodTimeSlot,
     periodFilter,
     periodSummary.current,
     periodSummary.pageSize,
@@ -323,12 +342,16 @@ const AnalyticsPageContent: React.FC<unknown> = () => {
           if (row.type === '所有ASIN异常占比') {
             return {
               ...row,
-              labelValue: `${ratioAllAsin.toFixed(2)}% (${brokenCount}/${totalChecks} 快照)`,
+              labelValue: `${ratioAllAsin.toFixed(
+                2,
+              )}% (${brokenCount}/${totalChecks} 快照)`,
             };
           } else {
             return {
               ...row,
-              labelValue: `${ratioAllTime.toFixed(2)}% (${brokenAsinsDedup}/${totalAsinsDedup} ASIN)`,
+              labelValue: `${ratioAllTime.toFixed(
+                2,
+              )}% (${brokenAsinsDedup}/${totalAsinsDedup} ASIN)`,
             };
           }
         });
@@ -337,16 +360,37 @@ const AnalyticsPageContent: React.FC<unknown> = () => {
 
   const lineTypes = ['所有ASIN异常占比', '所有ASIN异常占比-去重'] as const;
   const lineColorMap: Record<string, string> = {
-    '所有ASIN异常占比': '#ff4d4f',
+    所有ASIN异常占比: '#ff4d4f',
     '所有ASIN异常占比-去重': '#1890ff',
   };
-  const countryColorMap: Record<string, string> = {
-    异常: '#ff4d4f',
-    正常: '#52c41a',
+
+  // 国家颜色映射（用于饼图和柱状图）
+  const countryColorPalette: Record<
+    string,
+    { normal: string; broken: string }
+  > = {
+    美国: { normal: '#52c41a', broken: '#ff4d4f' },
+    欧洲汇总: { normal: '#73d13d', broken: '#ff7875' },
+    英国: { normal: '#95de64', broken: '#ffa39e' },
+    德国: { normal: '#b7eb8f', broken: '#ffccc7' },
+    法国: { normal: '#d9f7be', broken: '#ffe7e6' },
+    意大利: { normal: '#f6ffed', broken: '#fff1f0' },
+    西班牙: { normal: '#e6f7ff', broken: '#ffadd2' },
   };
-  const pieColorMap: Record<string, string> = {
-    ...countryColorMap,
-  };
+
+  // 饼图颜色数组（为每个国家分配不同颜色）
+  const pieColorArray = [
+    '#1890ff', // 蓝色
+    '#52c41a', // 绿色
+    '#faad14', // 橙色
+    '#f5222d', // 红色
+    '#722ed1', // 紫色
+    '#13c2c2', // 青色
+    '#eb2f96', // 粉红色
+    '#fa8c16', // 橙红色
+    '#2f54eb', // 深蓝色
+    '#a0d911', // 黄绿色
+  ];
 
   // 高峰期背景区域（仅在按小时分组且选择了国家时显示）
   const peakHoursMarkAreas = useMemo(() => {
@@ -438,7 +482,9 @@ const AnalyticsPageContent: React.FC<unknown> = () => {
         yAxisIndex: 0, // 都使用左侧Y轴
         // 只在第一个系列添加高峰期背景
         markArea:
-          index === 0 && peakHoursMarkAreas.areas && peakHoursMarkAreas.areas.length > 0
+          index === 0 &&
+          peakHoursMarkAreas.areas &&
+          peakHoursMarkAreas.areas.length > 0
             ? {
                 itemStyle: {
                   color: peakHoursMarkAreas.color,
@@ -494,6 +540,33 @@ const AnalyticsPageContent: React.FC<unknown> = () => {
           axisLabel: {
             formatter: '{value}%',
           },
+        },
+      ],
+      dataZoom: [
+        {
+          type: 'slider',
+          show: true,
+          xAxisIndex: [0],
+          start: 0,
+          end: 100,
+          height: 30,
+          bottom: 10,
+          handleIcon:
+            'path://M30.9,53.2C16.8,53.2,5.3,41.7,5.3,27.6S16.8,2,30.9,2C45,2,56.4,13.5,56.4,27.6S45,53.2,30.9,53.2z M30.9,3.5C17.6,3.5,6.8,14.4,6.8,27.6c0,13.3,10.8,24.1,24.1,24.1C44.2,51.7,55,40.9,55,27.6C54.9,14.4,44.1,3.5,30.9,3.5z M36.9,35.8c0,0.6-0.4,1-1,1H26.8c-0.6,0-1-0.4-1-1V19.5c0-0.6,0.4-1,1-1h9.2c0.6,0,1,0.4,1,1V35.8z',
+          handleSize: '80%',
+          handleStyle: {
+            color: '#fff',
+            shadowBlur: 3,
+            shadowColor: 'rgba(0, 0, 0, 0.6)',
+            shadowOffsetX: 2,
+            shadowOffsetY: 2,
+          },
+        },
+        {
+          type: 'inside',
+          xAxisIndex: [0],
+          start: 0,
+          end: 100,
         },
       ],
       series,
@@ -635,6 +708,7 @@ const AnalyticsPageContent: React.FC<unknown> = () => {
     const categories = Array.from(
       new Set(countryColumnDisplayData.map((item) => item.country)),
     );
+    // 按类型分组，但为每个国家使用不同颜色
     const series = ['异常', '正常'].map((type) => ({
       name: type,
       type: 'bar',
@@ -642,8 +716,16 @@ const AnalyticsPageContent: React.FC<unknown> = () => {
       emphasis: {
         focus: 'series',
       },
+      // 为每个国家分配不同颜色
       itemStyle: {
-        color: countryColorMap[type] || '#52c41a',
+        color: (params: any) => {
+          const countryName = categories[params.dataIndex];
+          const colorConfig = countryColorPalette[countryName] || {
+            normal: '#52c41a',
+            broken: '#ff4d4f',
+          };
+          return type === '异常' ? colorConfig.broken : colorConfig.normal;
+        },
       },
       data: categories.map((country) => {
         const cell = countryColumnDisplayData.find(
@@ -669,7 +751,11 @@ const AnalyticsPageContent: React.FC<unknown> = () => {
               const rawValue =
                 Number(param?.data?.rawValue ?? param?.value) || 0;
               const value = Number(param?.data?.value ?? param?.value) || 0;
-              const formatted = formatTooltipValue(countryBarValueMode, value, rawValue);
+              const formatted = formatTooltipValue(
+                countryBarValueMode,
+                value,
+                rawValue,
+              );
               return `
                 <div style="display:flex;justify-content:space-between">
                   <span>${param.seriesName}</span>
@@ -723,7 +809,11 @@ const AnalyticsPageContent: React.FC<unknown> = () => {
         formatter: (param: any) => {
           const value = Number(param.value) || 0;
           const rawValue = Number(param.data?.rawValue) || value;
-          const formatted = formatTooltipValue(countryPieValueMode, value, rawValue);
+          const formatted = formatTooltipValue(
+            countryPieValueMode,
+            value,
+            rawValue,
+          );
           return `${param.name}<br/>${formatted}`;
         },
       },
@@ -744,7 +834,14 @@ const AnalyticsPageContent: React.FC<unknown> = () => {
             length2: 6,
           },
           data,
-          color: Object.values(pieColorMap),
+          // 为每个国家分配不同颜色
+          itemStyle: {
+            color: (params: any) => {
+              const countryName = params.name;
+              const index = data.findIndex((d: any) => d.name === countryName);
+              return pieColorArray[index % pieColorArray.length];
+            },
+          },
         },
       ],
     };
@@ -767,7 +864,11 @@ const AnalyticsPageContent: React.FC<unknown> = () => {
           const point = Array.isArray(params) ? params[0] : params;
           const rawValue = Number(point?.data?.rawValue ?? point?.value) || 0;
           const value = Number(point?.data?.value ?? point?.value) || 0;
-          const formatted = formatTooltipValue(variantGroupValueMode, value, rawValue);
+          const formatted = formatTooltipValue(
+            variantGroupValueMode,
+            value,
+            rawValue,
+          );
           return `
             <div>${point?.seriesName}</div>
             <div>${formatted}</div>`;
@@ -1104,7 +1205,9 @@ const AnalyticsPageContent: React.FC<unknown> = () => {
                   onChange={(value) => {
                     setAllCountriesTimeSlot(value);
                     // 重新加载该表格数据
-                    const startTime = dateRange[0].format('YYYY-MM-DD HH:mm:ss');
+                    const startTime = dateRange[0].format(
+                      'YYYY-MM-DD HH:mm:ss',
+                    );
                     const endTime = dateRange[1].format('YYYY-MM-DD HH:mm:ss');
                     getAllCountriesSummary({
                       startTime,
@@ -1112,7 +1215,9 @@ const AnalyticsPageContent: React.FC<unknown> = () => {
                       timeSlotGranularity: value,
                     }).then((result: any) => {
                       const allCountriesStats =
-                        result && typeof result === 'object' && !('success' in result)
+                        result &&
+                        typeof result === 'object' &&
+                        !('success' in result)
                           ? result
                           : result?.data || null;
                       setAllCountriesSummary(allCountriesStats);
@@ -1205,7 +1310,9 @@ const AnalyticsPageContent: React.FC<unknown> = () => {
                   onChange={(value) => {
                     setRegionTimeSlot(value);
                     // 重新加载该表格数据
-                    const startTime = dateRange[0].format('YYYY-MM-DD HH:mm:ss');
+                    const startTime = dateRange[0].format(
+                      'YYYY-MM-DD HH:mm:ss',
+                    );
                     const endTime = dateRange[1].format('YYYY-MM-DD HH:mm:ss');
                     getRegionSummary({
                       startTime,
@@ -1213,7 +1320,9 @@ const AnalyticsPageContent: React.FC<unknown> = () => {
                       timeSlotGranularity: value,
                     }).then((result: any) => {
                       const regionStats =
-                        result && typeof result === 'object' && !('success' in result)
+                        result &&
+                        typeof result === 'object' &&
+                        !('success' in result)
                           ? result
                           : result?.data || [];
                       setRegionSummary(regionStats);
@@ -1237,7 +1346,9 @@ const AnalyticsPageContent: React.FC<unknown> = () => {
                     dataIndex: 'region',
                     key: 'region',
                     render: (text: string, record: API.RegionSummary) => (
-                      <Tag color={record.regionCode === 'US' ? 'blue' : 'green'}>
+                      <Tag
+                        color={record.regionCode === 'US' ? 'blue' : 'green'}
+                      >
                         {text}
                       </Tag>
                     ),
@@ -1350,7 +1461,9 @@ const AnalyticsPageContent: React.FC<unknown> = () => {
                   onChange={(value) => {
                     setPeriodTimeSlot(value);
                     // 重新加载该表格数据
-                    const startTime = dateRange[0].format('YYYY-MM-DD HH:mm:ss');
+                    const startTime = dateRange[0].format(
+                      'YYYY-MM-DD HH:mm:ss',
+                    );
                     const endTime = dateRange[1].format('YYYY-MM-DD HH:mm:ss');
                     getPeriodSummary({
                       startTime,
@@ -1361,9 +1474,16 @@ const AnalyticsPageContent: React.FC<unknown> = () => {
                       pageSize: periodSummary.pageSize,
                     }).then((result: any) => {
                       const periodStats =
-                        result && typeof result === 'object' && !('success' in result)
+                        result &&
+                        typeof result === 'object' &&
+                        !('success' in result)
                           ? result
-                          : result?.data || { list: [], total: 0, current: periodSummary.current, pageSize: periodSummary.pageSize };
+                          : result?.data || {
+                              list: [],
+                              total: 0,
+                              current: periodSummary.current,
+                              pageSize: periodSummary.pageSize,
+                            };
                       setPeriodSummary(periodStats);
                     });
                   }}
@@ -1398,7 +1518,9 @@ const AnalyticsPageContent: React.FC<unknown> = () => {
                     };
                     setPeriodSummary(newSummary);
                     // 重新加载数据
-                    const startTime = dateRange[0].format('YYYY-MM-DD HH:mm:ss');
+                    const startTime = dateRange[0].format(
+                      'YYYY-MM-DD HH:mm:ss',
+                    );
                     const endTime = dateRange[1].format('YYYY-MM-DD HH:mm:ss');
                     getPeriodSummary({
                       startTime,
@@ -1409,9 +1531,16 @@ const AnalyticsPageContent: React.FC<unknown> = () => {
                       pageSize: size || 10,
                     }).then((result: any) => {
                       const periodStats =
-                        result && typeof result === 'object' && !('success' in result)
+                        result &&
+                        typeof result === 'object' &&
+                        !('success' in result)
                           ? result
-                          : result?.data || { list: [], total: 0, current: page, pageSize: size || 10 };
+                          : result?.data || {
+                              list: [],
+                              total: 0,
+                              current: page,
+                              pageSize: size || 10,
+                            };
                       setPeriodSummary(periodStats);
                     });
                   },

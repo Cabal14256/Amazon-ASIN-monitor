@@ -85,6 +85,10 @@ const ASINManagement: React.FC<unknown> = () => {
         }
         hide();
         message.success('删除成功，即将刷新');
+        // 清除缓存
+        requestCacheRef.current.clear();
+        // 刷新表格
+        actionRef.current?.reload();
         return true;
       } catch (error) {
         hide();
@@ -339,9 +343,10 @@ const ASINManagement: React.FC<unknown> = () => {
                   message.success(
                     checked ? '已开启飞书通知' : '已关闭飞书通知',
                   );
-                  if (actionRef.current) {
-                    await actionRef.current.reload();
-                  }
+                  // 清除缓存
+                  requestCacheRef.current.clear();
+                  // 刷新表格
+                  actionRef.current?.reload();
                 } catch (error: any) {
                   message.error(error?.errorMessage || '更新失败');
                 }
@@ -401,10 +406,8 @@ const ASINManagement: React.FC<unknown> = () => {
                 }
                 // 清除前端缓存，确保获取最新数据
                 requestCacheRef.current.clear();
-                // 刷新列表显示最新结果
-                if (actionRef.current) {
-                  await actionRef.current.reload();
-                }
+                // 刷新表格
+                actionRef.current?.reload();
               } catch (error: any) {
                 message.error(error?.errorMessage || '检查失败');
               } finally {
@@ -465,10 +468,7 @@ const ASINManagement: React.FC<unknown> = () => {
               label: '删除',
               danger: true,
               onClick: async () => {
-                const success = await handleRemove([record]);
-                if (success) {
-                  actionRef.current?.reloadAndRest?.();
-                }
+                await handleRemove([record]);
               },
             });
           }
@@ -737,11 +737,10 @@ const ASINManagement: React.FC<unknown> = () => {
         onSubmit={async () => {
           setVariantGroupModalVisible(false);
           setEditingVariantGroup(undefined);
-          // 确保表格刷新
+          // 清除缓存
           requestCacheRef.current.clear();
-          if (actionRef.current) {
-            await actionRef.current.reload();
-          }
+          // 刷新表格
+          actionRef.current?.reload();
         }}
         values={editingVariantGroup}
       />
@@ -758,11 +757,10 @@ const ASINManagement: React.FC<unknown> = () => {
           setEditingASIN(undefined);
           setSelectedVariantGroupId(undefined);
           setSelectedVariantGroupCountry(undefined);
-          // 确保表格刷新
+          // 清除缓存
           requestCacheRef.current.clear();
-          if (actionRef.current) {
-            await actionRef.current.reload();
-          }
+          // 刷新表格
+          actionRef.current?.reload();
         }}
         values={editingASIN}
         variantGroupId={selectedVariantGroupId}
@@ -780,9 +778,8 @@ const ASINManagement: React.FC<unknown> = () => {
           setMoveModalVisible(false);
           setMovingASIN(undefined);
           requestCacheRef.current.clear();
-          if (actionRef.current) {
-            await actionRef.current.reload();
-          }
+          // 刷新表格
+          actionRef.current?.reload();
         }}
       />
       <ExcelImportModal
@@ -793,9 +790,8 @@ const ASINManagement: React.FC<unknown> = () => {
         onSuccess={async () => {
           setExcelImportModalVisible(false);
           requestCacheRef.current.clear();
-          if (actionRef.current) {
-            await actionRef.current.reload();
-          }
+          // 刷新表格
+          actionRef.current?.reload();
         }}
       />
       <BatchDeleteConfirmModal
@@ -809,7 +805,7 @@ const ASINManagement: React.FC<unknown> = () => {
             if (success) {
               setBatchDeleteModalVisible(false);
               setSelectedRows([]);
-              actionRef.current?.reloadAndRest?.();
+              // handleRemove中已经刷新了表格，这里不需要重复刷新
             }
           } finally {
             setBatchDeleteLoading(false);
