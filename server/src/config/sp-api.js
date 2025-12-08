@@ -540,6 +540,7 @@ async function callSPAPIInternal(
     host: urlObj.hostname,
     'x-amz-access-token': accessToken,
     'user-agent': 'Amazon-ASIN-Monitor/1.0 (Language=Node.js)',
+    accept: 'application/json', // Amazon SP-API 需要 Accept 头
   };
   if (body) {
     headers['content-type'] = 'application/json';
@@ -585,6 +586,9 @@ async function callSPAPIInternal(
     };
   } else {
     // 简化模式：不需要 AWS 签名
+    // 确保不包含 authorization 和 x-amz-date 字段
+    delete finalHeaders.authorization;
+    delete finalHeaders['x-amz-date'];
     logger.info(`[callSPAPI] 使用简化模式（无需AWS签名）`);
   }
 
@@ -593,10 +597,11 @@ async function callSPAPIInternal(
     'x-amz-access-token': finalHeaders['x-amz-access-token']
       ? `${finalHeaders['x-amz-access-token'].substring(0, 20)}...`
       : 'missing',
+    accept: finalHeaders.accept || 'missing',
     authorization: finalHeaders.authorization
       ? `${finalHeaders.authorization.substring(0, 50)}...`
-      : 'missing',
-    'x-amz-date': finalHeaders['x-amz-date'],
+      : 'not-present',
+    'x-amz-date': finalHeaders['x-amz-date'] || 'not-present',
   });
 
   return new Promise((resolve, reject) => {
@@ -800,9 +805,9 @@ async function callSPAPI(
   body = null,
   options = {},
 ) {
-  const maxRetries = options.maxRetries !== undefined ? options.maxRetries : 3;
+  const maxRetries = options.maxRetries !== undefined ? options.maxRetries : 5;
   const initialDelay =
-    options.initialDelay !== undefined ? options.initialDelay : 1000;
+    options.initialDelay !== undefined ? options.initialDelay : 2000;
   const operation = options.operation || null; // Operation名称（可选）
 
   let lastError = null;
@@ -884,7 +889,7 @@ async function callSPAPI(
 
         // 如果没有Retry-After头或解析失败，使用指数退避作为兜底
         if (waitTime === null || waitTime <= 0) {
-          waitTime = Math.min(initialDelay * Math.pow(2, attempt), 10000); // 最多10秒
+          waitTime = Math.min(initialDelay * Math.pow(2, attempt), 30000); // 最多30秒
           logger.info(
             `[callSPAPI] 429限流错误，使用指数退避等待 ${waitTime}ms 后重试 (${
               attempt + 1
@@ -892,8 +897,8 @@ async function callSPAPI(
           );
         }
 
-        // 限制最大等待时间为60秒
-        waitTime = Math.min(waitTime, 60000);
+        // 限制最大等待时间为120秒
+        waitTime = Math.min(waitTime, 120000);
 
         logger.info(
           `[callSPAPI] 遇到限流错误（429/QuotaExceeded），等待 ${waitTime}ms 后进行第 ${

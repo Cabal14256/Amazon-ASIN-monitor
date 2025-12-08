@@ -11,7 +11,9 @@
   "author": "",
   "main": "src/index.js",
   "scripts": {
+    "analyze-quota": "node scripts/analyze-quota-usage.js",
     "dev": "nodemon src/index.js",
+    "monitor-quota": "node scripts/monitor-quota-realtime.js",
     "start": "node src/index.js",
     "test-db": "node test-db-connection.js"
   },
