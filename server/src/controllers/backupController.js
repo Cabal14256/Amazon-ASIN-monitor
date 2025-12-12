@@ -1,5 +1,6 @@
 const backupService = require('../services/backupService');
 const BackupConfig = require('../models/BackupConfig');
+const schedulerService = require('../services/schedulerService');
 
 /**
  * 创建备份
@@ -185,9 +186,13 @@ async function saveBackupConfig(req, res) {
     });
 
     // 通知调度服务重新加载配置
-    const schedulerService = require('../services/schedulerService');
-    if (typeof schedulerService.reloadBackupSchedule === 'function') {
-      schedulerService.reloadBackupSchedule();
+    try {
+      if (typeof schedulerService.reloadBackupSchedule === 'function') {
+        await schedulerService.reloadBackupSchedule();
+      }
+    } catch (error) {
+      console.error('重新加载备份计划失败:', error);
+      // 不阻止响应，只记录错误
     }
 
     res.json({

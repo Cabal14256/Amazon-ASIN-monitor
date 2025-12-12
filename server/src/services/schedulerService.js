@@ -167,8 +167,10 @@ function initScheduler() {
     '   - 欧洲区域 (EU): 每小时整点，按顺序依次检查: UK → DE → FR → ES → IT',
   );
 
-  // 初始化自动备份任务
-  initBackupScheduler();
+  // 初始化自动备份任务（异步执行，不阻塞启动）
+  initBackupScheduler().catch((error) => {
+    console.error('❌ 初始化自动备份任务失败:', error.message);
+  });
 
   // ⭐ 新增：启动时立即执行一次监控（借鉴老项目经验）
   // 暂时注释掉，后续再启用
