@@ -7,12 +7,17 @@ const {
   REGION_MAP,
 } = require('./monitorTaskRunner');
 const { runCompetitorMonitorTask } = require('./competitorMonitorTaskRunner');
+const BackupConfig = require('../models/BackupConfig');
+const backupService = require('./backupService');
 
 // 分批处理配置
 const TOTAL_BATCHES = Number(process.env.MONITOR_BATCH_COUNT) || 1; // 默认不分批
 
 // EU国家检查顺序：UK, DE, FR, ES, IT
 const EU_COUNTRIES_ORDER = ['UK', 'DE', 'FR', 'ES', 'IT'];
+
+// 自动备份任务引用
+let backupTask = null;
 
 function initScheduler() {
   console.log('🕐 初始化定时任务...');
@@ -162,6 +167,9 @@ function initScheduler() {
     '   - 欧洲区域 (EU): 每小时整点，按顺序依次检查: UK → DE → FR → ES → IT',
   );
 
+  // 初始化自动备份任务
+  initBackupScheduler();
+
   // ⭐ 新增：启动时立即执行一次监控（借鉴老项目经验）
   // 暂时注释掉，后续再启用
   // if (process.env.MONITOR_RUN_ON_STARTUP !== '0') {
@@ -187,9 +195,109 @@ function initScheduler() {
   // }
 }
 
+/**
+ * 生成 cron 表达式
+ */
+function generateCronExpression(scheduleType, scheduleValue, backupTime) {
+  const [hour, minute] = backupTime.split(':').map(Number);
+
+  switch (scheduleType) {
+    case 'daily':
+      // 每天执行: 0 {minute} {hour} * * *
+      return `${minute} ${hour} * * *`;
+    case 'weekly': {
+      // 每周执行: 0 {minute} {hour} * * {dayOfWeek}
+      // scheduleValue: 1=周一, 2=周二, ..., 7=周日
+      // cron: 0=周日, 1=周一, ..., 6=周六
+      const dayOfWeek = scheduleValue === 7 ? 0 : scheduleValue;
+      return `${minute} ${hour} * * ${dayOfWeek}`;
+    }
+    case 'monthly':
+      // 每月执行: 0 {minute} {hour} {day} * *
+      return `${minute} ${hour} ${scheduleValue} * *`;
+    default:
+      return null;
+  }
+}
+
+/**
+ * 初始化自动备份定时任务
+ */
+async function initBackupScheduler() {
+  try {
+    const config = await BackupConfig.findOne();
+
+    if (!config || !config.enabled) {
+      console.log('ℹ️  自动备份未启用');
+      return;
+    }
+
+    const cronExpression = generateCronExpression(
+      config.scheduleType,
+      config.scheduleValue,
+      config.backupTime,
+    );
+
+    if (!cronExpression) {
+      console.error('❌ 无效的备份计划配置');
+      return;
+    }
+
+    // 如果已有任务，先停止
+    if (backupTask) {
+      backupTask.stop();
+    }
+
+    // 创建新的定时任务
+    backupTask = cron.schedule(cronExpression, async () => {
+      try {
+        console.log('🔄 开始执行自动备份...');
+        const now = new Date();
+        const description = `AutoBackup-${now
+          .toISOString()
+          .slice(0, 19)
+          .replace('T', ' ')}`;
+        await backupService.createBackup({ description });
+        console.log('✅ 自动备份完成');
+      } catch (error) {
+        console.error('❌ 自动备份失败:', error.message);
+      }
+    });
+
+    console.log('✅ 自动备份定时任务已启动');
+    console.log(`📅 备份计划: ${config.scheduleType}`);
+    if (config.scheduleType === 'weekly') {
+      const weekDays = ['周日', '周一', '周二', '周三', '周四', '周五', '周六'];
+      const dayName =
+        weekDays[config.scheduleValue === 7 ? 0 : config.scheduleValue];
+      console.log(`   每周${dayName} ${config.backupTime} 执行`);
+    } else if (config.scheduleType === 'monthly') {
+      console.log(`   每月${config.scheduleValue}号 ${config.backupTime} 执行`);
+    } else {
+      console.log(`   每天 ${config.backupTime} 执行`);
+    }
+  } catch (error) {
+    console.error('❌ 初始化自动备份任务失败:', error.message);
+  }
+}
+
+/**
+ * 重新加载备份计划（配置更新时调用）
+ */
+async function reloadBackupSchedule() {
+  console.log('🔄 重新加载备份计划...');
+  if (backupTask) {
+    backupTask.stop();
+    backupTask = null;
+  }
+  await initBackupScheduler();
+}
+
 module.exports = {
   initScheduler,
   triggerManualCheck,
   REGION_MAP,
   runCompetitorMonitorTask, // 导出竞品监控任务运行器供手动触发使用
+  initBackupScheduler,
+  reloadBackupSchedule,
 };
