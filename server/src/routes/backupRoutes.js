@@ -23,5 +23,10 @@ router.delete('/backup/:filename', backupController.deleteBackup);
 // 下载备份
 router.get('/backup/:filename/download', backupController.downloadBackup);
 
-module.exports = router;
+// 获取自动备份配置
+router.get('/backup/config', backupController.getBackupConfig);
 
+// 保存自动备份配置
+router.post('/backup/config', backupController.saveBackupConfig);
+
+module.exports = router;

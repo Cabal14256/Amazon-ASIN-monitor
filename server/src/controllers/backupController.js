@@ -1,4 +1,5 @@
 const backupService = require('../services/backupService');
+const BackupConfig = require('../models/BackupConfig');
 
 /**
  * 创建备份
@@ -40,11 +41,7 @@ async function restoreBackup(req, res) {
     }
 
     const { getBackupFile } = require('../services/backupService');
-    const filepath = require('path').join(
-      __dirname,
-      '../../backups',
-      filename,
-    );
+    const filepath = require('path').join(__dirname, '../../backups', filename);
 
     await backupService.restoreBackup(filepath);
 
@@ -134,10 +131,7 @@ async function downloadBackup(req, res) {
 
     const fileBuffer = await backupService.getBackupFile(filename);
 
-    res.setHeader(
-      'Content-Type',
-      'application/sql',
-    );
+    res.setHeader('Content-Type', 'application/sql');
     res.setHeader(
       'Content-Disposition',
       `attachment; filename="${encodeURIComponent(filename)}"`,
@@ -154,11 +148,69 @@ async function downloadBackup(req, res) {
   }
 }
 
+/**
+ * 获取自动备份配置
+ */
+async function getBackupConfig(req, res) {
+  try {
+    const config = await BackupConfig.findOne();
+
+    res.json({
+      success: true,
+      data: config,
+      errorCode: 0,
+    });
+  } catch (error) {
+    console.error('获取备份配置失败:', error);
+    res.status(500).json({
+      success: false,
+      errorMessage: error.message || '获取备份配置失败',
+      errorCode: 500,
+    });
+  }
+}
+
+/**
+ * 保存自动备份配置
+ */
+async function saveBackupConfig(req, res) {
+  try {
+    const { enabled, scheduleType, scheduleValue, backupTime } = req.body;
+
+    const config = await BackupConfig.upsert({
+      enabled,
+      scheduleType,
+      scheduleValue,
+      backupTime,
+    });
+
+    // 通知调度服务重新加载配置
+    const schedulerService = require('../services/schedulerService');
+    if (typeof schedulerService.reloadBackupSchedule === 'function') {
+      schedulerService.reloadBackupSchedule();
+    }
+
+    res.json({
+      success: true,
+      data: config,
+      errorCode: 0,
+    });
+  } catch (error) {
+    console.error('保存备份配置失败:', error);
+    res.status(500).json({
+      success: false,
+      errorMessage: error.message || '保存备份配置失败',
+      errorCode: 500,
+    });
+  }
+}
+
 module.exports = {
   createBackup,
   restoreBackup,
   listBackups,
   deleteBackup,
   downloadBackup,
+  getBackupConfig,
+  saveBackupConfig,
 };
-

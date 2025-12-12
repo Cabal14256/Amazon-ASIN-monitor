@@ -69,11 +69,38 @@ export async function downloadBackup(
   });
 }
 
+/** 获取自动备份配置 */
+export async function getBackupConfig(options?: { [key: string]: any }) {
+  return request<API.Result_BackupConfig__>('/api/v1/backup/config', {
+    method: 'GET',
+    ...(options || {}),
+  });
+}
+
+/** 保存自动备份配置 */
+export async function saveBackupConfig(
+  params: {
+    // body
+    enabled?: boolean;
+    scheduleType?: 'daily' | 'weekly' | 'monthly';
+    scheduleValue?: number;
+    backupTime?: string;
+  },
+  options?: { [key: string]: any },
+) {
+  return request<API.Result_BackupConfig__>('/api/v1/backup/config', {
+    method: 'POST',
+    data: params,
+    ...(options || {}),
+  });
+}
+
 export default {
   createBackup,
   restoreBackup,
   listBackups,
   deleteBackup,
   downloadBackup,
+  getBackupConfig,
+  saveBackupConfig,
 };
-
