@@ -8,6 +8,7 @@ import {
   Col,
   DatePicker,
   Input,
+  Progress,
   Radio,
   Row,
   Select,
@@ -101,6 +102,7 @@ const AnalyticsPageContent: React.FC<unknown> = () => {
   const [country, setCountry] = useState<string>('');
   const [groupBy, setGroupBy] = useState<string>('hour');
   const [loading, setLoading] = useState(false);
+  const [progress, setProgress] = useState(0);
   // 三个表格各自的时间槽粒度
   const [allCountriesTimeSlot, setAllCountriesTimeSlot] =
     useState<string>('hour');
@@ -165,6 +167,7 @@ const AnalyticsPageContent: React.FC<unknown> = () => {
   const loadStatistics = useCallback(
     async (retryCount = 0) => {
       setLoading(true);
+      setProgress(0);
       const maxRetries = 3;
 
       try {
@@ -204,8 +207,32 @@ const AnalyticsPageContent: React.FC<unknown> = () => {
           promises.push(getPeakHoursStatistics({ ...params, country }));
         }
 
+        // 跟踪进度：为每个 promise 添加进度更新
+        const totalPromises = promises.length;
+        let completedCount = 0;
+
+        const promisesWithProgress = promises.map((promise) => {
+          return promise
+            .then((result) => {
+              completedCount++;
+              const newProgress = Math.round(
+                (completedCount / totalPromises) * 100,
+              );
+              setProgress(newProgress);
+              return result;
+            })
+            .catch((error) => {
+              completedCount++;
+              const newProgress = Math.round(
+                (completedCount / totalPromises) * 100,
+              );
+              setProgress(newProgress);
+              throw error;
+            });
+        });
+
         // 使用 Promise.allSettled 允许部分失败
-        const results = await Promise.allSettled(promises);
+        const results = await Promise.allSettled(promisesWithProgress);
 
         // 检查是否有失败的请求
         const failedCount = results.filter(
@@ -281,18 +308,6 @@ const AnalyticsPageContent: React.FC<unknown> = () => {
           overallDataResult?.status === 'fulfilled'
             ? overallDataResult.value
             : null;
-        const allCountriesData =
-          allCountriesDataResult?.status === 'fulfilled'
-            ? allCountriesDataResult.value
-            : null;
-        const regionData =
-          regionDataResult?.status === 'fulfilled'
-            ? regionDataResult.value
-            : null;
-        const periodData =
-          periodDataResult?.status === 'fulfilled'
-            ? periodDataResult.value
-            : null;
         const peakData =
           peakDataResult?.status === 'fulfilled' ? peakDataResult.value : null;
 
@@ -341,33 +356,74 @@ const AnalyticsPageContent: React.FC<unknown> = () => {
         }
 
         // 处理汇总表格数据
-        const allCountriesStats =
-          allCountriesData &&
-          typeof allCountriesData === 'object' &&
-          !('success' in allCountriesData)
-            ? allCountriesData
-            : (allCountriesData as any)?.data || null;
+        // 确保正确处理返回数据，包括 success 包装的情况
+        let allCountriesStats = null;
+        if (allCountriesDataResult?.status === 'fulfilled') {
+          const data = allCountriesDataResult.value;
+          if (data && typeof data === 'object') {
+            if ('success' in data && data.success && data.data) {
+              allCountriesStats = data.data;
+            } else if (!('success' in data)) {
+              allCountriesStats = data;
+            }
+          }
+        }
         setAllCountriesSummary(allCountriesStats);
 
-        const regionStats =
-          regionData &&
-          typeof regionData === 'object' &&
-          !('success' in regionData)
-            ? regionData
-            : (regionData as any)?.data || [];
+        let regionStats: API.RegionSummary[] = [];
+        if (regionDataResult?.status === 'fulfilled') {
+          const data = regionDataResult.value;
+          if (data && typeof data === 'object') {
+            if ('success' in data && data.success && Array.isArray(data.data)) {
+              regionStats = data.data;
+            } else if (!('success' in data) && Array.isArray(data)) {
+              regionStats = data;
+            } else if (
+              !('success' in data) &&
+              data.data &&
+              Array.isArray(data.data)
+            ) {
+              regionStats = data.data;
+            }
+          }
+        }
         setRegionSummary(regionStats);
 
-        const periodStats =
-          periodData &&
-          typeof periodData === 'object' &&
-          !('success' in periodData)
-            ? periodData
-            : (periodData as any)?.data || {
-                list: [],
-                total: 0,
-                current: 1,
-                pageSize: 10,
+        let periodStats = {
+          list: [],
+          total: 0,
+          current: periodSummary.current,
+          pageSize: periodSummary.pageSize,
+        };
+        if (periodDataResult?.status === 'fulfilled') {
+          const data = periodDataResult.value;
+          if (data && typeof data === 'object') {
+            if ('success' in data && data.success && data.data) {
+              periodStats = {
+                list: data.data.list || [],
+                total: data.data.total || 0,
+                current: data.data.current || periodSummary.current,
+                pageSize: data.data.pageSize || periodSummary.pageSize,
               };
+            } else if (!('success' in data)) {
+              if (data.list && Array.isArray(data.list)) {
+                periodStats = {
+                  list: data.list,
+                  total: data.total || 0,
+                  current: data.current || periodSummary.current,
+                  pageSize: data.pageSize || periodSummary.pageSize,
+                };
+              } else if (data.data && data.data.list) {
+                periodStats = {
+                  list: data.data.list,
+                  total: data.data.total || 0,
+                  current: data.data.current || periodSummary.current,
+                  pageSize: data.data.pageSize || periodSummary.pageSize,
+                };
+              }
+            }
+          }
+        }
         setPeriodSummary(periodStats);
       } catch (error: any) {
         console.error('加载统计数据失败:', error);
@@ -398,6 +454,7 @@ const AnalyticsPageContent: React.FC<unknown> = () => {
         );
       } finally {
         setLoading(false);
+        setProgress(0);
       }
     },
     [
@@ -1244,42 +1301,61 @@ const AnalyticsPageContent: React.FC<unknown> = () => {
     >
       {/* 筛选条件 */}
       <Card style={{ marginBottom: 16 }}>
-        <Space>
-          <span>时间范围：</span>
-          <RangePicker
-            value={dateRange}
-            onChange={(dates) => {
-              if (dates) {
-                setDateRange([dates[0]!, dates[1]!]);
-              }
-            }}
-            format="YYYY-MM-DD HH:mm:ss"
-            showTime={{ format: 'HH:mm:ss' }}
-          />
-          <span>国家：</span>
-          <Select
-            style={{ width: 150 }}
-            value={country}
-            onChange={setCountry}
-            allowClear
-            placeholder="全部国家"
-          >
-            {Object.entries(countryMap).map(([key, value]) => (
-              <Select.Option key={key} value={key}>
-                {value}
-              </Select.Option>
-            ))}
-          </Select>
-          <span>时间分组：</span>
-          <Select style={{ width: 120 }} value={groupBy} onChange={setGroupBy}>
-            <Select.Option value="hour">按小时</Select.Option>
-            <Select.Option value="day">按天</Select.Option>
-            <Select.Option value="week">按周</Select.Option>
-            <Select.Option value="month">按月</Select.Option>
-          </Select>
-          <Button type="primary" onClick={loadStatistics} loading={loading}>
-            查询
-          </Button>
+        <Space direction="vertical" style={{ width: '100%' }} size="small">
+          <Space wrap>
+            <span>时间范围：</span>
+            <RangePicker
+              value={dateRange}
+              onChange={(dates) => {
+                if (dates) {
+                  setDateRange([dates[0]!, dates[1]!]);
+                }
+              }}
+              format="YYYY-MM-DD HH:mm"
+              showTime={{ format: 'HH:mm' }}
+              placeholder={['开始时间', '结束时间']}
+              style={{ width: 380 }}
+            />
+            <span>国家：</span>
+            <Select
+              style={{ width: 150 }}
+              value={country}
+              onChange={setCountry}
+              allowClear
+              placeholder="全部国家"
+            >
+              {Object.entries(countryMap).map(([key, value]) => (
+                <Select.Option key={key} value={key}>
+                  {value}
+                </Select.Option>
+              ))}
+            </Select>
+            <span>时间分组：</span>
+            <Select
+              style={{ width: 120 }}
+              value={groupBy}
+              onChange={setGroupBy}
+            >
+              <Select.Option value="hour">按小时</Select.Option>
+              <Select.Option value="day">按天</Select.Option>
+              <Select.Option value="week">按周</Select.Option>
+              <Select.Option value="month">按月</Select.Option>
+            </Select>
+            <Button type="primary" onClick={loadStatistics} loading={loading}>
+              查询
+            </Button>
+          </Space>
+          {loading && progress > 0 && (
+            <Progress
+              percent={progress}
+              status="active"
+              strokeColor={{
+                '0%': '#108ee9',
+                '100%': '#87d068',
+              }}
+              style={{ marginTop: 8 }}
+            />
+          )}
         </Space>
       </Card>
 
