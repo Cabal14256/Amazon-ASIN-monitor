@@ -3,7 +3,6 @@ import { useMessage } from '@/utils/message';
 import { getPeakHours } from '@/utils/peakHours';
 import { PageContainer, StatisticCard } from '@ant-design/pro-components';
 import {
-  Alert,
   Button,
   Card,
   Col,
@@ -41,6 +40,13 @@ const countryMap: Record<string, string> = {
   FR: '法国',
   IT: '意大利',
   ES: '西班牙',
+};
+
+// 高峰期区域名称映射
+const peakAreaNameMap: Record<string, string> = {
+  US: 'US（美国）',
+  UK: 'UK（英国）',
+  EU_OTHER: 'DE/FR/ES/IT（其他EU国家）',
 };
 
 const formatTooltipValue = (
@@ -125,6 +131,14 @@ const AnalyticsPageContent: React.FC<unknown> = () => {
     useState<API.MonitorStatistics>({});
   const [peakHoursStatistics, setPeakHoursStatistics] =
     useState<API.PeakHoursStatistics>({});
+  // 高峰期区域显示状态（key为区域代码，value为是否显示）
+  const [peakAreaVisible, setPeakAreaVisible] = useState<
+    Record<string, boolean>
+  >({
+    US: true,
+    UK: true,
+    EU_OTHER: true,
+  });
   // 汇总表格数据
   const [allCountriesSummary, setAllCountriesSummary] =
     useState<API.AllCountriesSummary | null>(null);
@@ -147,150 +161,269 @@ const AnalyticsPageContent: React.FC<unknown> = () => {
     brand?: string;
   }>({});
 
-  // 加载所有统计数据（使用useCallback优化）
-  const loadStatistics = useCallback(async () => {
-    setLoading(true);
-    try {
-      const startTime = dateRange[0].format('YYYY-MM-DD HH:mm:ss');
-      const endTime = dateRange[1].format('YYYY-MM-DD HH:mm:ss');
-      const params: any = {
-        startTime,
-        endTime,
-      };
-      if (country) {
-        params.country = country;
+  // 加载所有统计数据（使用useCallback优化，支持重试）
+  const loadStatistics = useCallback(
+    async (retryCount = 0) => {
+      setLoading(true);
+      const maxRetries = 3;
+
+      try {
+        const startTime = dateRange[0].format('YYYY-MM-DD HH:mm:ss');
+        const endTime = dateRange[1].format('YYYY-MM-DD HH:mm:ss');
+        const params: any = {
+          startTime,
+          endTime,
+        };
+        if (country) {
+          params.country = country;
+        }
+
+        // 并行加载所有统计数据
+        const promises: any[] = [
+          getStatisticsByTime({ ...params, groupBy }),
+          // 使用ASIN当前状态统计，而不是监控历史记录
+          getASINStatisticsByCountry(),
+          getASINStatisticsByVariantGroup({ limit: 10 }),
+          getMonitorStatistics(params),
+          getAllCountriesSummary({
+            ...params,
+            timeSlotGranularity: allCountriesTimeSlot,
+          }),
+          getRegionSummary({ ...params, timeSlotGranularity: regionTimeSlot }),
+          getPeriodSummary({
+            ...params,
+            ...periodFilter,
+            timeSlotGranularity: periodTimeSlot,
+            current: periodSummary.current,
+            pageSize: periodSummary.pageSize,
+          }),
+        ];
+
+        // 如果选择了国家，加载高峰期统计
+        if (country) {
+          promises.push(getPeakHoursStatistics({ ...params, country }));
+        }
+
+        // 使用 Promise.allSettled 允许部分失败
+        const results = await Promise.allSettled(promises);
+
+        // 检查是否有失败的请求
+        const failedCount = results.filter(
+          (r) => r.status === 'rejected',
+        ).length;
+        if (failedCount > 0) {
+          const errorMessages = results
+            .filter((r) => r.status === 'rejected')
+            .map(
+              (r) => (r as PromiseRejectedResult).reason?.message || '未知错误',
+            )
+            .join('; ');
+
+          // 如果是网络错误或超时，且还有重试次数，则重试
+          const hasRetryableError = results.some((r) => {
+            if (r.status === 'rejected') {
+              const error = (r as PromiseRejectedResult).reason;
+              const errorMsg = error?.message || '';
+              return (
+                errorMsg.includes('timeout') ||
+                errorMsg.includes('network') ||
+                errorMsg.includes('ECONNRESET') ||
+                errorMsg.includes('Connection lost')
+              );
+            }
+            return false;
+          });
+
+          if (hasRetryableError && retryCount < maxRetries) {
+            const delay = (retryCount + 1) * 2000; // 2秒、4秒、6秒
+            message.warning(
+              `数据加载部分失败，${delay / 1000}秒后自动重试 (${
+                retryCount + 1
+              }/${maxRetries})...`,
+            );
+            setTimeout(() => {
+              loadStatistics(retryCount + 1);
+            }, delay);
+            return;
+          } else if (failedCount === results.length) {
+            // 所有请求都失败
+            throw new Error(`所有数据加载失败: ${errorMessages}`);
+          } else {
+            // 部分失败，但继续处理成功的数据
+            message.warning(
+              `部分数据加载失败 (${failedCount}/${results.length})，将显示可用数据`,
+            );
+          }
+        }
+
+        // 提取结果，处理 rejected 的情况
+        // 注意：promises数组长度可能为7或8（取决于是否选择了国家）
+        const timeDataResult = results[0];
+        const countryDataResult = results[1];
+        const variantGroupDataResult = results[2];
+        const overallDataResult = results[3];
+        const allCountriesDataResult = results[4];
+        const regionDataResult = results[5];
+        const periodDataResult = results[6];
+        const peakDataResult = results[7]; // 可能为undefined（当未选择国家时）
+
+        const timeData =
+          timeDataResult?.status === 'fulfilled' ? timeDataResult.value : null;
+        const countryData =
+          countryDataResult?.status === 'fulfilled'
+            ? countryDataResult.value
+            : null;
+        const variantGroupData =
+          variantGroupDataResult?.status === 'fulfilled'
+            ? variantGroupDataResult.value
+            : null;
+        const overallData =
+          overallDataResult?.status === 'fulfilled'
+            ? overallDataResult.value
+            : null;
+        const allCountriesData =
+          allCountriesDataResult?.status === 'fulfilled'
+            ? allCountriesDataResult.value
+            : null;
+        const regionData =
+          regionDataResult?.status === 'fulfilled'
+            ? regionDataResult.value
+            : null;
+        const periodData =
+          periodDataResult?.status === 'fulfilled'
+            ? periodDataResult.value
+            : null;
+        const peakData =
+          peakDataResult?.status === 'fulfilled' ? peakDataResult.value : null;
+
+        // 处理响应数据
+        const timeStats =
+          timeData && typeof timeData === 'object' && !('success' in timeData)
+            ? timeData
+            : (timeData as any)?.data || [];
+        // countryData 现在是基于ASIN当前状态的统计
+        const countryStats =
+          countryData &&
+          typeof countryData === 'object' &&
+          !('success' in countryData)
+            ? countryData
+            : (countryData as any)?.data || [];
+        // variantGroupData 现在是基于ASIN当前状态的统计
+        const variantGroupStats =
+          variantGroupData &&
+          typeof variantGroupData === 'object' &&
+          !('success' in variantGroupData)
+            ? variantGroupData
+            : (variantGroupData as any)?.data || [];
+        const overallStats =
+          overallData &&
+          typeof overallData === 'object' &&
+          !('success' in overallData)
+            ? overallData
+            : (overallData as any)?.data || {};
+
+        setTimeStatistics(timeStats as API.TimeStatistics[]);
+        setCountryStatistics(countryStats as API.CountryStatistics[]);
+        setVariantGroupStatistics(
+          variantGroupStats as API.VariantGroupStatistics[],
+        );
+        setOverallStatistics(overallStats);
+
+        // 处理高峰期统计数据
+        if (country && peakData) {
+          const peakStats =
+            peakData && typeof peakData === 'object' && !('success' in peakData)
+              ? peakData
+              : (peakData as any)?.data || {};
+          setPeakHoursStatistics(peakStats);
+        } else {
+          setPeakHoursStatistics({});
+        }
+
+        // 处理汇总表格数据
+        const allCountriesStats =
+          allCountriesData &&
+          typeof allCountriesData === 'object' &&
+          !('success' in allCountriesData)
+            ? allCountriesData
+            : (allCountriesData as any)?.data || null;
+        setAllCountriesSummary(allCountriesStats);
+
+        const regionStats =
+          regionData &&
+          typeof regionData === 'object' &&
+          !('success' in regionData)
+            ? regionData
+            : (regionData as any)?.data || [];
+        setRegionSummary(regionStats);
+
+        const periodStats =
+          periodData &&
+          typeof periodData === 'object' &&
+          !('success' in periodData)
+            ? periodData
+            : (periodData as any)?.data || {
+                list: [],
+                total: 0,
+                current: 1,
+                pageSize: 10,
+              };
+        setPeriodSummary(periodStats);
+      } catch (error: any) {
+        console.error('加载统计数据失败:', error);
+
+        // 如果是网络错误或超时，且还有重试次数，则重试
+        const errorMessage = error?.message || '';
+        const isRetryableError =
+          errorMessage.includes('timeout') ||
+          errorMessage.includes('network') ||
+          errorMessage.includes('ECONNRESET') ||
+          errorMessage.includes('Connection lost');
+
+        if (isRetryableError && retryCount < maxRetries) {
+          const delay = (retryCount + 1) * 2000; // 2秒、4秒、6秒
+          message.warning(
+            `数据加载失败，${delay / 1000}秒后自动重试 (${
+              retryCount + 1
+            }/${maxRetries})...`,
+          );
+          setTimeout(() => {
+            loadStatistics(retryCount + 1);
+          }, delay);
+          return;
+        }
+
+        message.error(
+          `加载统计数据失败${retryCount > 0 ? '（已重试）' : ''}，请稍后重试`,
+        );
+      } finally {
+        setLoading(false);
       }
-
-      // 并行加载所有统计数据
-      const promises: any[] = [
-        getStatisticsByTime({ ...params, groupBy }),
-        // 使用ASIN当前状态统计，而不是监控历史记录
-        getASINStatisticsByCountry(),
-        getASINStatisticsByVariantGroup({ limit: 10 }),
-        getMonitorStatistics(params),
-        getAllCountriesSummary({
-          ...params,
-          timeSlotGranularity: allCountriesTimeSlot,
-        }),
-        getRegionSummary({ ...params, timeSlotGranularity: regionTimeSlot }),
-        getPeriodSummary({
-          ...params,
-          ...periodFilter,
-          timeSlotGranularity: periodTimeSlot,
-          current: periodSummary.current,
-          pageSize: periodSummary.pageSize,
-        }),
-      ];
-
-      // 如果选择了国家，加载高峰期统计
-      if (country) {
-        promises.push(getPeakHoursStatistics({ ...params, country }));
-      }
-
-      const results = await Promise.all(promises);
-      const [
-        timeData,
-        countryData,
-        variantGroupData,
-        overallData,
-        allCountriesData,
-        regionData,
-        periodData,
-        peakData,
-      ] = results;
-
-      // 处理响应数据
-      const timeStats =
-        timeData && typeof timeData === 'object' && !('success' in timeData)
-          ? timeData
-          : (timeData as any)?.data || [];
-      // countryData 现在是基于ASIN当前状态的统计
-      const countryStats =
-        countryData &&
-        typeof countryData === 'object' &&
-        !('success' in countryData)
-          ? countryData
-          : (countryData as any)?.data || [];
-      // variantGroupData 现在是基于ASIN当前状态的统计
-      const variantGroupStats =
-        variantGroupData &&
-        typeof variantGroupData === 'object' &&
-        !('success' in variantGroupData)
-          ? variantGroupData
-          : (variantGroupData as any)?.data || [];
-      const overallStats =
-        overallData &&
-        typeof overallData === 'object' &&
-        !('success' in overallData)
-          ? overallData
-          : (overallData as any)?.data || {};
-
-      setTimeStatistics(timeStats as API.TimeStatistics[]);
-      setCountryStatistics(countryStats as API.CountryStatistics[]);
-      setVariantGroupStatistics(
-        variantGroupStats as API.VariantGroupStatistics[],
-      );
-      setOverallStatistics(overallStats);
-
-      // 处理高峰期统计数据
-      if (country && peakData) {
-        const peakStats =
-          peakData && typeof peakData === 'object' && !('success' in peakData)
-            ? peakData
-            : (peakData as any)?.data || {};
-        setPeakHoursStatistics(peakStats);
-      } else {
-        setPeakHoursStatistics({});
-      }
-
-      // 处理汇总表格数据
-      const allCountriesStats =
-        allCountriesData &&
-        typeof allCountriesData === 'object' &&
-        !('success' in allCountriesData)
-          ? allCountriesData
-          : (allCountriesData as any)?.data || null;
-      setAllCountriesSummary(allCountriesStats);
-
-      const regionStats =
-        regionData &&
-        typeof regionData === 'object' &&
-        !('success' in regionData)
-          ? regionData
-          : (regionData as any)?.data || [];
-      setRegionSummary(regionStats);
-
-      const periodStats =
-        periodData &&
-        typeof periodData === 'object' &&
-        !('success' in periodData)
-          ? periodData
-          : (periodData as any)?.data || {
-              list: [],
-              total: 0,
-              current: 1,
-              pageSize: 10,
-            };
-      setPeriodSummary(periodStats);
-    } catch (error) {
-      console.error('加载统计数据失败:', error);
-      message.error('加载统计数据失败');
-    } finally {
-      setLoading(false);
-    }
-  }, [
-    dateRange,
-    country,
-    groupBy,
-    periodFilter,
-    periodSummary.current,
-    periodSummary.pageSize,
-    message,
-  ]);
+    },
+    [
+      dateRange,
+      country,
+      groupBy,
+      periodFilter,
+      periodSummary.current,
+      periodSummary.pageSize,
+      allCountriesTimeSlot,
+      regionTimeSlot,
+      periodTimeSlot,
+      message,
+    ],
+  );
 
   useEffect(() => {
+    // 检查日期范围，如果超过30天，提示用户
+    const daysDiff = dateRange[1].diff(dateRange[0], 'day');
+    if (daysDiff > 30) {
+      message.warning(
+        '查询时间范围较大，可能影响加载速度，建议选择30天以内的范围',
+      );
+    }
     loadStatistics();
-  }, [loadStatistics]);
+  }, [loadStatistics, dateRange, message]);
 
   // 时间趋势图表数据
   // 注意：确保数据顺序与颜色数组顺序一致（按字母顺序：异常、正常、总计）
@@ -392,62 +525,103 @@ const AnalyticsPageContent: React.FC<unknown> = () => {
     '#a0d911', // 黄绿色
   ];
 
-  // 高峰期背景区域（仅在按小时分组且选择了国家时显示）
+  // 高峰期背景区域（仅在按小时分组时显示）
   const peakHoursMarkAreas = useMemo(() => {
-    if (groupBy !== 'hour' || !country) {
+    if (groupBy !== 'hour') {
       return [];
     }
 
-    const peakHours = getPeakHours(country);
-    const areas: any[] = [];
-
-    // 根据国家设置高峰时段颜色
-    const peakColorMap: Record<string, string> = {
-      US: 'rgba(255, 152, 0, 0.15)', // 橙色
-      UK: 'rgba(156, 39, 176, 0.15)', // 紫色
-      DE: 'rgba(33, 150, 243, 0.15)', // 蓝色
-      FR: 'rgba(33, 150, 243, 0.15)', // 蓝色
-      IT: 'rgba(33, 150, 243, 0.15)', // 蓝色
-      ES: 'rgba(33, 150, 243, 0.15)', // 蓝色
-    };
-    const peakColor = peakColorMap[country] || 'rgba(255, 193, 7, 0.1)';
-
-    // 获取时间范围
-    if (timeChartData.length > 0) {
-      const firstTime = timeChartData[0]?.time;
-      const lastTime = timeChartData[timeChartData.length - 1]?.time;
-      if (firstTime && lastTime) {
-        const startDate = dayjs(firstTime).startOf('day');
-        const endDate = dayjs(lastTime).endOf('day');
-        let currentDate = startDate;
-
-        while (currentDate <= endDate) {
-          const dateForLoop = currentDate; // 创建局部变量避免闭包问题
-          peakHours.forEach((peak) => {
-            const startHour = peak.start;
-            const endHour = peak.end === 24 ? 0 : peak.end;
-            const startTime = dateForLoop.hour(startHour).minute(0).second(0);
-            const endTime =
-              endHour === 0
-                ? dateForLoop.add(1, 'day').hour(0).minute(0).second(0)
-                : dateForLoop.hour(endHour).minute(0).second(0);
-
-            areas.push([
-              {
-                name: '高峰期',
-                xAxis: startTime.format('YYYY-MM-DD HH:mm'),
-              },
-              {
-                xAxis: endTime.format('YYYY-MM-DD HH:mm'),
-              },
-            ]);
-          });
-          currentDate = currentDate.add(1, 'day');
-        }
+    // 确定要显示的区域列表
+    // 如果选择了国家，根据国家判断显示哪个区域
+    let regionsToShow: Array<{ code: string; countries: string[] }> = [];
+    if (country) {
+      // 选择了国家，只显示该国家对应的区域
+      if (country === 'US') {
+        regionsToShow = [{ code: 'US', countries: ['US'] }];
+      } else if (country === 'UK') {
+        regionsToShow = [{ code: 'UK', countries: ['UK'] }];
+      } else if (['DE', 'FR', 'ES', 'IT'].includes(country)) {
+        regionsToShow = [
+          { code: 'EU_OTHER', countries: ['DE', 'FR', 'ES', 'IT'] },
+        ];
       }
+    } else {
+      // 未选择国家，显示所有三个区域
+      regionsToShow = [
+        { code: 'US', countries: ['US'] },
+        { code: 'UK', countries: ['UK'] },
+        { code: 'EU_OTHER', countries: ['DE', 'FR', 'ES', 'IT'] },
+      ];
     }
 
-    return { areas, color: peakColor };
+    // 获取时间范围
+    if (timeChartData.length === 0) {
+      return [];
+    }
+
+    const firstTime = timeChartData[0]?.time;
+    const lastTime = timeChartData[timeChartData.length - 1]?.time;
+    if (!firstTime || !lastTime) {
+      return [];
+    }
+
+    const startDate = dayjs(firstTime).startOf('day');
+    const endDate = dayjs(lastTime).endOf('day');
+
+    // 为每个区域生成高峰期区域
+    const markAreas: Array<{ areas: any[]; color: string; name: string }> = [];
+
+    regionsToShow.forEach((region) => {
+      // 获取该区域中第一个国家的高峰期配置（DE/FR/ES/IT的高峰期相同）
+      const representativeCountry = region.countries[0];
+      const peakHours = getPeakHours(representativeCountry);
+      const areas: any[] = [];
+
+      // 根据区域代码设置颜色
+      let peakColor = 'rgba(255, 193, 7, 0.1)';
+      if (region.code === 'US') {
+        peakColor = 'rgba(255, 152, 0, 0.15)'; // 橙色
+      } else if (region.code === 'UK') {
+        peakColor = 'rgba(156, 39, 176, 0.15)'; // 紫色
+      } else if (region.code === 'EU_OTHER') {
+        peakColor = 'rgba(33, 150, 243, 0.15)'; // 蓝色
+      }
+
+      let currentDate = startDate;
+      while (currentDate <= endDate) {
+        const dateForLoop = currentDate; // 创建局部变量避免闭包问题
+        peakHours.forEach((peak) => {
+          const startHour = peak.start;
+          const endHour = peak.end === 24 ? 0 : peak.end;
+          const startTime = dateForLoop.hour(startHour).minute(0).second(0);
+          const endTime =
+            endHour === 0
+              ? dateForLoop.add(1, 'day').hour(0).minute(0).second(0)
+              : dateForLoop.hour(endHour).minute(0).second(0);
+
+          areas.push([
+            {
+              name: `${region.code}高峰期`,
+              xAxis: startTime.format('YYYY-MM-DD HH:mm'),
+            },
+            {
+              xAxis: endTime.format('YYYY-MM-DD HH:mm'),
+            },
+          ]);
+        });
+        currentDate = currentDate.add(1, 'day');
+      }
+
+      if (areas.length > 0) {
+        markAreas.push({
+          areas,
+          color: peakColor,
+          name: region.code,
+        });
+      }
+    });
+
+    return markAreas;
   }, [groupBy, country, timeChartData]);
 
   const lineChartOptions = useMemo(() => {
@@ -460,6 +634,45 @@ const AnalyticsPageContent: React.FC<unknown> = () => {
           Number(item.rawValue),
           item.labelValue,
         ]);
+
+      // 只在第一个系列添加高峰期背景
+      let markAreaConfig = undefined;
+      if (index === 0 && peakHoursMarkAreas.length > 0) {
+        // 合并所有区域的高峰期数据，每个区域使用自己的颜色
+        // 根据peakAreaVisible状态过滤显示的区域
+        const allAreas: any[] = [];
+        peakHoursMarkAreas.forEach((region) => {
+          // 只添加可见的区域
+          if (peakAreaVisible[region.name] !== false) {
+            region.areas.forEach((area) => {
+              allAreas.push([
+                {
+                  ...area[0],
+                  itemStyle: {
+                    color: region.color,
+                  },
+                },
+                {
+                  ...area[1],
+                  itemStyle: {
+                    color: region.color,
+                  },
+                },
+              ]);
+            });
+          }
+        });
+
+        if (allAreas.length > 0) {
+          markAreaConfig = {
+            label: {
+              show: false,
+            },
+            data: allAreas,
+          };
+        }
+      }
+
       return {
         name: type,
         type: 'line',
@@ -480,23 +693,37 @@ const AnalyticsPageContent: React.FC<unknown> = () => {
         connectNulls: true,
         data,
         yAxisIndex: 0, // 都使用左侧Y轴
-        // 只在第一个系列添加高峰期背景
-        markArea:
-          index === 0 &&
-          peakHoursMarkAreas.areas &&
-          peakHoursMarkAreas.areas.length > 0
-            ? {
-                itemStyle: {
-                  color: peakHoursMarkAreas.color,
-                },
-                label: {
-                  show: false,
-                },
-                data: peakHoursMarkAreas.areas,
-              }
-            : undefined,
+        markArea: markAreaConfig,
       };
     });
+
+    // 为高峰期区域创建虚拟series用于图例显示（仅在按小时分组时）
+    if (groupBy === 'hour' && peakHoursMarkAreas.length > 0) {
+      peakHoursMarkAreas.forEach((region) => {
+        const areaName = peakAreaNameMap[region.name] || region.name;
+        // 创建一个隐藏的series，只用于图例显示和交互
+        // 使用areaStyle来显示颜色块，但不显示线条
+        series.push({
+          name: areaName,
+          type: 'line',
+          data: [], // 空数据，不显示线条
+          lineStyle: {
+            width: 0,
+            opacity: 0,
+          },
+          itemStyle: {
+            color: region.color.replace('0.15', '0.8'), // 使用不透明的颜色用于图例
+          },
+          areaStyle: {
+            color: region.color.replace('0.15', '0.3'), // 图例显示用的颜色
+          },
+          showSymbol: false,
+          silent: true, // 不响应鼠标事件
+          legendHoverLink: false,
+          // 不在这里添加markArea，因为markArea已经在第一个series上了
+        });
+      });
+    }
     return {
       tooltip: {
         trigger: 'axis',
@@ -517,8 +744,26 @@ const AnalyticsPageContent: React.FC<unknown> = () => {
         },
       },
       legend: {
-        data: lineTypes,
+        data: [
+          ...lineTypes,
+          // 添加高峰期区域图例（仅在按小时分组时显示）
+          ...(groupBy === 'hour' && peakHoursMarkAreas.length > 0
+            ? peakHoursMarkAreas.map(
+                (region) => peakAreaNameMap[region.name] || region.name,
+              )
+            : []),
+        ],
         top: 8,
+        selected: {
+          // 设置高峰期区域的初始选中状态
+          ...(groupBy === 'hour' && peakHoursMarkAreas.length > 0
+            ? peakHoursMarkAreas.reduce((acc, region) => {
+                const name = peakAreaNameMap[region.name] || region.name;
+                acc[name] = peakAreaVisible[region.name] !== false;
+                return acc;
+              }, {} as Record<string, boolean>)
+            : {}),
+        },
       },
       grid: {
         left: '3%',
@@ -571,7 +816,25 @@ const AnalyticsPageContent: React.FC<unknown> = () => {
       ],
       series,
     };
-  }, [timeChartData, peakHoursMarkAreas]);
+  }, [timeChartData, peakHoursMarkAreas, peakAreaVisible, groupBy]);
+
+  // 处理图例点击事件
+  const handleLegendSelectChanged = useCallback((params: any) => {
+    // 检查是否是高峰期区域的图例被点击
+    const peakAreaNames = Object.values(peakAreaNameMap);
+    if (peakAreaNames.includes(params.name)) {
+      // 找到对应的区域代码
+      const regionCode = Object.keys(peakAreaNameMap).find(
+        (key) => peakAreaNameMap[key] === params.name,
+      );
+      if (regionCode) {
+        setPeakAreaVisible((prev) => ({
+          ...prev,
+          [regionCode]: params.selected[params.name] !== false,
+        }));
+      }
+    }
+  }, []);
 
   // 国家统计柱状图数据（基于ASIN当前状态）
   // 注意：确保数据顺序与颜色数组顺序一致
@@ -979,15 +1242,6 @@ const AnalyticsPageContent: React.FC<unknown> = () => {
         </Button>,
       ]}
     >
-      {/* 数据说明 */}
-      <Alert
-        message="数据说明"
-        description="本页面的统计数据基于ASIN级别的监控记录，每条记录代表一次对特定ASIN的检查结果。"
-        type="info"
-        showIcon
-        style={{ marginBottom: 16 }}
-        closable
-      />
       {/* 筛选条件 */}
       <Card style={{ marginBottom: 16 }}>
         <Space>
@@ -999,7 +1253,8 @@ const AnalyticsPageContent: React.FC<unknown> = () => {
                 setDateRange([dates[0]!, dates[1]!]);
               }
             }}
-            format="YYYY-MM-DD"
+            format="YYYY-MM-DD HH:mm:ss"
+            showTime={{ format: 'HH:mm:ss' }}
           />
           <span>国家：</span>
           <Select
@@ -1095,6 +1350,9 @@ const AnalyticsPageContent: React.FC<unknown> = () => {
               <ReactECharts
                 option={lineChartOptions}
                 style={{ width: '100%', height: 420 }}
+                onEvents={{
+                  legendselectchanged: handleLegendSelectChanged,
+                }}
               />
             ) : (
               <div style={{ textAlign: 'center', padding: 40 }}>暂无数据</div>

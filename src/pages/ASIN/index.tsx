@@ -137,6 +137,16 @@ const ASINManagement: React.FC<unknown> = () => {
         fieldProps: {
           placeholder: '搜索变体组名称或ASIN',
         },
+        search: {
+          transform: (value: any) => {
+            // 智能去除多余空格
+            if (typeof value === 'string') {
+              const trimmed = value.trim();
+              return trimmed ? { keyword: trimmed } : {};
+            }
+            return value ? { keyword: value } : {};
+          },
+        },
       },
       {
         title: '名称',
@@ -175,7 +185,7 @@ const ASINManagement: React.FC<unknown> = () => {
             return '';
           }
           const asin = (record as API.ASINInfo).asin;
-          return <span style={{ fontFamily: 'monospace' }}>{asin || '-'}</span>;
+          return <span>{asin || '-'}</span>;
         },
       },
       {

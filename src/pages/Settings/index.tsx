@@ -4,6 +4,8 @@ import { useMessage } from '@/utils/message';
 import {
   PageContainer,
   ProForm,
+  ProFormRadio,
+  ProFormSelect,
   ProFormSwitch,
   ProFormText,
 } from '@ant-design/pro-components';
@@ -16,6 +18,7 @@ import {
   Space,
   Table,
   Tabs,
+  TimePicker,
   message as antdMessage,
 } from 'antd';
 import dayjs from 'dayjs';
@@ -38,6 +41,8 @@ const SettingsPage: React.FC<unknown> = () => {
   const [restoreModalVisible, setRestoreModalVisible] = useState(false);
   const [restoreFilename, setRestoreFilename] = useState<string>('');
   const [backupForm] = ProForm.useForm();
+  const [backupConfigLoading, setBackupConfigLoading] = useState(false);
+  const [backupConfigForm] = ProForm.useForm();
 
   // 加载配置
   const loadConfigs = async () => {
@@ -149,11 +154,73 @@ const SettingsPage: React.FC<unknown> = () => {
     }
   };
 
+  // 加载备份配置
+  const loadBackupConfig = async () => {
+    setBackupConfigLoading(true);
+    try {
+      const response = await backupServices.getBackupConfig();
+      if (response && typeof response === 'object') {
+        let config: API.BackupConfig | null = null;
+        if ('data' in response) {
+          config = (response.data as API.BackupConfig) || null;
+        } else if (response && typeof response === 'object') {
+          config = response as API.BackupConfig;
+        }
+        if (config) {
+          // 设置表单值
+          setTimeout(() => {
+            backupConfigForm.setFieldsValue({
+              enabled: config?.enabled || false,
+              scheduleType: config?.scheduleType || 'daily',
+              scheduleValue: config?.scheduleValue,
+              backupTime: config?.backupTime
+                ? dayjs(config.backupTime, 'HH:mm')
+                : dayjs('02:00', 'HH:mm'),
+            });
+          }, 0);
+        }
+      }
+    } catch (error) {
+      console.error('加载备份配置失败:', error);
+      message.error('加载备份配置失败');
+    } finally {
+      setBackupConfigLoading(false);
+    }
+  };
+
+  // 保存备份配置
+  const handleSaveBackupConfig = async (values: any) => {
+    try {
+      const backupTime = values.backupTime
+        ? dayjs(values.backupTime).format('HH:mm')
+        : '02:00';
+      await backupServices.saveBackupConfig({
+        enabled: values.enabled || false,
+        scheduleType: values.scheduleType || 'daily',
+        scheduleValue: values.scheduleValue,
+        backupTime,
+      });
+      message.success('自动备份配置已保存');
+      await loadBackupConfig();
+    } catch (error: any) {
+      message.error(error?.errorMessage || '保存备份配置失败');
+    }
+  };
+
   // 页面加载时获取配置
   useEffect(() => {
     loadConfigs();
     loadBackups();
+    loadBackupConfig();
   }, []);
+
+  // 修复SP-API设置页面焦点问题：页面加载时滚动到顶部
+  useEffect(() => {
+    // 当切换到SP-API配置标签页时，滚动到顶部
+    if (activeTab === 'sp-api') {
+      window.scrollTo({ top: 0, behavior: 'smooth' });
+    }
+  }, [activeTab]);
 
   // 创建备份
   const handleCreateBackup = async (values: any) => {
@@ -305,6 +372,7 @@ const SettingsPage: React.FC<unknown> = () => {
           <Card title="US区域 LWA 配置">
             <ProForm
               form={spApiForm}
+              autoFocusFirstInput={false}
               onFinish={async (values) => {
                 await saveConfigGroup(
                   [
@@ -356,6 +424,7 @@ const SettingsPage: React.FC<unknown> = () => {
           <Card title="EU区域 LWA 配置">
             <ProForm
               form={spApiForm}
+              autoFocusFirstInput={false}
               onFinish={async (values) => {
                 await saveConfigGroup(
                   [
@@ -407,6 +476,7 @@ const SettingsPage: React.FC<unknown> = () => {
           <Card title="共享 AWS IAM 配置">
             <ProForm
               form={spApiForm}
+              autoFocusFirstInput={false}
               onFinish={async (values) => {
                 await saveConfigGroup(
                   [
@@ -462,6 +532,7 @@ const SettingsPage: React.FC<unknown> = () => {
           <Card title="SP-API 调用模式">
             <ProForm
               form={spApiForm}
+              autoFocusFirstInput={false}
               onFinish={async (values) => {
                 await saveConfigGroup(['SP_API_USE_AWS_SIGNATURE'], values);
               }}
@@ -486,6 +557,7 @@ const SettingsPage: React.FC<unknown> = () => {
           <Card title="降级策略">
             <ProForm
               form={spApiForm}
+              autoFocusFirstInput={false}
               onFinish={async (values) => {
                 await saveConfigGroup(
                   [
@@ -730,6 +802,102 @@ const SettingsPage: React.FC<unknown> = () => {
             />
             <p>备份文件：{restoreFilename}</p>
           </Modal>
+
+          <Card title="自动备份配置">
+            <Alert
+              message="备份时间建议"
+              description="定时任务执行时间：美国区域(US)每小时整点和30分执行，欧洲区域(EU)每小时整点执行。建议将备份时间设置在非高峰期，如凌晨2-6点。"
+              type="warning"
+              showIcon
+              style={{ marginBottom: 16 }}
+            />
+            <ProForm
+              form={backupConfigForm}
+              onFinish={handleSaveBackupConfig}
+              loading={backupConfigLoading}
+              submitter={{
+                searchConfig: {
+                  submitText: '保存配置',
+                },
+              }}
+            >
+              <ProFormSwitch
+                name="enabled"
+                label="启用自动备份"
+                checkedChildren="启用"
+                unCheckedChildren="禁用"
+              />
+              <ProFormRadio.Group
+                name="scheduleType"
+                label="备份频率"
+                options={[
+                  { label: '每天', value: 'daily' },
+                  { label: '每周', value: 'weekly' },
+                  { label: '每月', value: 'monthly' },
+                ]}
+                rules={[{ required: true, message: '请选择备份频率' }]}
+              />
+              <ProForm.Item
+                noStyle
+                shouldUpdate={(prevValues, currentValues) =>
+                  prevValues.scheduleType !== currentValues.scheduleType
+                }
+              >
+                {({ getFieldValue }) => {
+                  const scheduleType = getFieldValue('scheduleType');
+                  if (scheduleType === 'weekly') {
+                    return (
+                      <ProFormSelect
+                        name="scheduleValue"
+                        label="选择星期"
+                        options={[
+                          { label: '周一', value: 1 },
+                          { label: '周二', value: 2 },
+                          { label: '周三', value: 3 },
+                          { label: '周四', value: 4 },
+                          { label: '周五', value: 5 },
+                          { label: '周六', value: 6 },
+                          { label: '周日', value: 7 },
+                        ]}
+                        rules={[{ required: true, message: '请选择星期' }]}
+                        fieldProps={{
+                          style: { width: '100%' },
+                        }}
+                      />
+                    );
+                  }
+                  if (scheduleType === 'monthly') {
+                    return (
+                      <ProFormSelect
+                        name="scheduleValue"
+                        label="选择日期"
+                        options={Array.from({ length: 31 }, (_, i) => ({
+                          label: `${i + 1}号`,
+                          value: i + 1,
+                        }))}
+                        rules={[{ required: true, message: '请选择日期' }]}
+                        fieldProps={{
+                          style: { width: '100%' },
+                        }}
+                      />
+                    );
+                  }
+                  return null;
+                }}
+              </ProForm.Item>
+              <ProForm.Item
+                name="backupTime"
+                label="备份时间"
+                rules={[{ required: true, message: '请选择备份时间' }]}
+              >
+                <TimePicker
+                  format="HH:mm"
+                  style={{ width: '100%' }}
+                  placeholder="请选择备份时间"
+                />
+              </ProForm.Item>
+            </ProForm>
+          </Card>
         </Space>
       ),
     },
