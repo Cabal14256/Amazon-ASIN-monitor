@@ -407,6 +407,10 @@ exports.getRegionSummary = async (req, res) => {
       timeSlotGranularity = 'day',
     } = req.query;
 
+    logger.info(
+      `[统计查询] getRegionSummary 开始，参数: startTime=${startTimeParam}, endTime=${endTime}, timeSlotGranularity=${timeSlotGranularity}`,
+    );
+
     const statistics = await withRetry(
       async () => {
         return await MonitorHistory.getRegionSummary({
@@ -416,11 +420,15 @@ exports.getRegionSummary = async (req, res) => {
         });
       },
       3,
-      1000,
+      2000, // 增加重试间隔到2秒，统计查询可能需要更长时间
     );
 
     const duration = Date.now() - startTime;
-    logger.info(`[统计查询] getRegionSummary 完成，耗时${duration}ms`);
+    logger.info(
+      `[统计查询] getRegionSummary 完成，耗时${duration}ms，返回${
+        Array.isArray(statistics) ? statistics.length : 0
+      }条记录`,
+    );
 
     res.json({
       success: true,
@@ -429,12 +437,35 @@ exports.getRegionSummary = async (req, res) => {
     });
   } catch (error) {
     const duration = Date.now() - startTime;
-    logger.error(`[统计查询] getRegionSummary 失败，耗时${duration}ms:`, error);
-    res.status(500).json({
-      success: false,
-      errorMessage: error.message || '查询失败',
-      errorCode: 500,
-    });
+    const errorCode = error.code || '';
+    const errorMessage = error.message || '查询失败';
+    const isTimeout =
+      errorCode === 'ETIMEDOUT' ||
+      errorCode === 'PROTOCOL_SEQUENCE_TIMEOUT' ||
+      errorMessage.includes('timeout') ||
+      errorMessage.includes('Timeout') ||
+      duration > 100000; // 如果耗时超过100秒，也认为是超时
+
+    if (isTimeout) {
+      logger.error(
+        `[统计查询] getRegionSummary 超时，耗时${duration}ms，错误码: ${errorCode}, 错误信息: ${errorMessage}`,
+      );
+      res.status(504).json({
+        success: false,
+        errorMessage: '查询超时，请尝试缩小时间范围或稍后重试',
+        errorCode: 504,
+      });
+    } else {
+      logger.error(
+        `[统计查询] getRegionSummary 失败，耗时${duration}ms，错误码: ${errorCode}, 错误信息: ${errorMessage}`,
+        error,
+      );
+      res.status(500).json({
+        success: false,
+        errorMessage: errorMessage,
+        errorCode: 500,
+      });
+    }
   }
 };
 
@@ -453,6 +484,10 @@ exports.getPeriodSummary = async (req, res) => {
       pageSize = 10,
     } = req.query;
 
+    logger.info(
+      `[统计查询] getPeriodSummary 开始，参数: country=${country}, site=${site}, brand=${brand}, startTime=${startTimeParam}, endTime=${endTime}, timeSlotGranularity=${timeSlotGranularity}, current=${current}, pageSize=${pageSize}`,
+    );
+
     const result = await withRetry(
       async () => {
         return await MonitorHistory.getPeriodSummary({
@@ -467,11 +502,15 @@ exports.getPeriodSummary = async (req, res) => {
         });
       },
       3,
-      1000,
+      2000, // 增加重试间隔到2秒，统计查询可能需要更长时间
     );
 
     const duration = Date.now() - startTime;
-    logger.info(`[统计查询] getPeriodSummary 完成，耗时${duration}ms`);
+    logger.info(
+      `[统计查询] getPeriodSummary 完成，耗时${duration}ms，返回${
+        result?.list?.length || 0
+      }条记录，总计${result?.total || 0}条`,
+    );
 
     res.json({
       success: true,
@@ -480,12 +519,35 @@ exports.getPeriodSummary = async (req, res) => {
     });
   } catch (error) {
     const duration = Date.now() - startTime;
-    logger.error(`[统计查询] getPeriodSummary 失败，耗时${duration}ms:`, error);
-    res.status(500).json({
-      success: false,
-      errorMessage: error.message || '查询失败',
-      errorCode: 500,
-    });
+    const errorCode = error.code || '';
+    const errorMessage = error.message || '查询失败';
+    const isTimeout =
+      errorCode === 'ETIMEDOUT' ||
+      errorCode === 'PROTOCOL_SEQUENCE_TIMEOUT' ||
+      errorMessage.includes('timeout') ||
+      errorMessage.includes('Timeout') ||
+      duration > 100000; // 如果耗时超过100秒，也认为是超时
+
+    if (isTimeout) {
+      logger.error(
+        `[统计查询] getPeriodSummary 超时，耗时${duration}ms，错误码: ${errorCode}, 错误信息: ${errorMessage}`,
+      );
+      res.status(504).json({
+        success: false,
+        errorMessage: '查询超时，请尝试缩小时间范围或稍后重试',
+        errorCode: 504,
+      });
+    } else {
+      logger.error(
+        `[统计查询] getPeriodSummary 失败，耗时${duration}ms，错误码: ${errorCode}, 错误信息: ${errorMessage}`,
+        error,
+      );
+      res.status(500).json({
+        success: false,
+        errorMessage: errorMessage,
+        errorCode: 500,
+      });
+    }
   }
 };
 
