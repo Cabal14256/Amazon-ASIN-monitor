@@ -15,7 +15,7 @@ const dbConfig = {
   connectionLimit: Number(process.env.DB_CONNECTION_LIMIT) || 50,
   queueLimit: 200,
   acquireTimeout: 60000, // 获取连接超时时间（毫秒）
-  timeout: 60000, // 查询超时时间（毫秒）
+  timeout: Number(process.env.DB_QUERY_TIMEOUT) || 120000, // 查询超时时间（毫秒），默认120秒，统计查询可能需要更长时间
 };
 
 // 创建连接池

@@ -15,9 +15,16 @@
     "dev": "nodemon src/index.js",
     "monitor-quota": "node scripts/monitor-quota-realtime.js",
     "start": "node src/index.js",
-    "test-db": "node test-db-connection.js"
+    "test-db": "node test-db-connection.js",
+    "test:all": "node scripts/test-all.js",
+    "test:api": "node scripts/test-api.js",
+    "test:auth": "node scripts/test-auth.js",
+    "test:feishu": "node scripts/test-feishu.js",
+    "test:queue": "node scripts/test-queue.js",
+    "test:sp-api": "node scripts/test-sp-api.js"
   },
   "dependencies": {
+    "axios": "^1.6.0",
     "bcryptjs": "^3.0.3",
     "bull": "^4.16.5",
     "cors": "^2.8.5",
