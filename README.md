@@ -180,11 +180,16 @@ mysql -u root -p amazon_asin_monitor < database/init.sql
 
 #### 执行数据库迁移（如有）
 
+如果是从旧版本升级，需要按顺序执行迁移脚本。**新安装请跳过此步骤**，直接使用 `init.sql` 即可。
+
 ```bash
 # 按顺序执行 migrations 目录下的 SQL 文件
 mysql -u root -p amazon_asin_monitor < database/migrations/001_add_asin_type.sql
+mysql -u root -p amazon_asin_monitor < database/migrations/002_add_monitor_fields.sql
 # ... 其他迁移文件
 ```
+
+详细迁移说明请参考下方"数据库文档"章节。
 
 #### 初始化管理员用户
 
@@ -315,7 +320,272 @@ Amazon Selling Partner API 配置可以通过两种方式：
 1. **环境变量**（在 `.env` 文件中）
 2. **前端系统设置页面**（推荐，更灵活）
 
-支持多区域配置（US、EU 等），详细配置说明请参考 `server/SP-API-SETUP.md`。
+支持多区域配置（US、EU 等）。
+
+#### SP-API 配置步骤
+
+**前置要求**：
+
+1. Amazon Seller Central 账户
+2. AWS 账户
+3. SP-API 开发者账户
+
+**配置步骤**：
+
+1. **创建 IAM 用户和角色**
+
+   - 登录 AWS 控制台
+   - 创建 IAM 用户：
+     - 用户名：`sp-api-user`
+     - 访问类型：编程访问
+     - 保存 Access Key ID 和 Secret Access Key
+   - 创建 IAM 角色：
+     - 角色名称：`sp-api-role`
+     - 信任实体：选择 "另一个 AWS 账户"
+     - 输入你的 AWS 账户 ID
+     - 附加策略：`AmazonSellingPartnerAPIReadOnlyAccess`（或自定义策略）
+   - 记录 Role ARN（格式：`arn:aws:iam::ACCOUNT_ID:role/sp-api-role`）
+
+2. **在 Seller Central 注册应用程序**
+
+   - 登录 Seller Central
+   - 进入 "应用和服务" > "开发应用程序"
+   - 点击 "添加新应用程序"
+   - 填写信息：
+     - 应用程序名称
+     - OAuth 重定向 URI（开发环境可以使用 `https://localhost`）
+   - 保存后获得：
+     - LWA Client ID
+     - LWA Client Secret
+
+3. **获取 Refresh Token**
+
+   - 使用 OAuth 2.0 授权流程获取 Refresh Token
+   - 可以使用 SP-API 授权工具或手动授权
+   - 授权工具：https://sellercentral.amazon.com/apps/authorize/consent
+
+4. **配置环境变量**
+
+   在 `server/.env` 文件中添加以下配置：
+
+   ```env
+   # SP-API LWA 配置
+   SP_API_LWA_CLIENT_ID=your_lwa_client_id
+   SP_API_LWA_CLIENT_SECRET=your_lwa_client_secret
+   SP_API_REFRESH_TOKEN=your_refresh_token
+
+   # SP-API AWS 配置（如启用 AWS 签名）
+   SP_API_ACCESS_KEY_ID=your_aws_access_key_id
+   SP_API_SECRET_ACCESS_KEY=your_aws_secret_access_key
+   SP_API_ROLE_ARN=arn:aws:iam::YOUR_ACCOUNT_ID:role/sp-api-role
+   ```
+
+#### API 端点说明
+
+系统会根据国家代码自动选择正确的 API 端点：
+
+- **US 区域（美国）**: `https://sellingpartnerapi-na.amazon.com`
+- **EU 区域（英国、德国、法国、意大利、西班牙）**: `https://sellingpartnerapi-eu.amazon.com`
+
+#### Marketplace ID 映射
+
+系统已配置以下 Marketplace ID：
+
+**US 区域：**
+
+- US: `ATVPDKIKX0DER` (美国)
+
+**EU 区域：**
+
+- UK: `A1F83G8C2ARO7P` (英国)
+- DE: `A1PA6795UKMFR9` (德国)
+- FR: `A13V1IB3VIYZZH` (法国)
+- IT: `APJ6JRA9NG5V4` (意大利)
+- ES: `A1RKKUPIHCS9HS` (西班牙)
+
+#### 错误处理
+
+- **404 错误**：ASIN 不存在或无法访问，标记为无变体
+- **认证错误**：检查 LWA 配置和 Refresh Token
+- **权限错误**：检查 IAM 角色和策略配置
+- **限流错误**：SP-API 有速率限制，系统会自动重试
+
+#### SP-API 检查接口
+
+系统提供以下 API 接口用于检查变体状态：
+
+- `POST /api/v1/variant-groups/:groupId/check` - 检查变体组
+- `POST /api/v1/asins/:asinId/check` - 检查单个 ASIN
+- `POST /api/v1/variant-groups/batch-check` - 批量检查变体组
+
+批量检查示例：
+
+```http
+POST /api/v1/variant-groups/batch-check
+Content-Type: application/json
+
+{
+  "groupIds": ["group-id-1", "group-id-2"],
+  "country": "US"
+}
+```
+
+#### 检查逻辑说明
+
+1. **变体组检查**：
+
+   - 检查组内所有 ASIN 的变体关系
+   - 如果任何一个 ASIN 没有变体，整个组标记为异常（is_broken=1）
+   - 更新所有 ASIN 和变体组的状态
+   - 记录监控历史
+
+2. **ASIN 检查**：
+   - 调用 SP-API 获取 ASIN 的变体信息
+   - 如果没有变体，标记为异常（is_broken=1）
+   - 更新 ASIN 状态
+   - 记录监控历史
+
+#### 测试 SP-API 配置
+
+配置完成后，可以使用以下方式测试：
+
+1. 通过 API 接口手动触发检查
+2. 查看监控历史记录
+3. 检查数据库中的变体状态更新
+
+#### 注意事项
+
+1. SP-API 有速率限制，请合理控制检查频率
+2. Refresh Token 可能会过期，需要定期更新
+3. 确保 IAM 角色有正确的权限
+4. 不同 Marketplace 的 API 端点不同，系统会自动处理
+
+#### 参考文档
+
+- [SP-API 官方文档](https://developer-docs.amazon.com/sp-api/)
+- [SP-API 认证指南](https://developer-docs.amazon.com/sp-api/docs/connecting-to-the-selling-partner-api)
+- [Catalog Items API](https://developer-docs.amazon.com/sp-api/docs/catalog-items-api-v2022-04-01-reference)
+
+### SP-API 配额管理
+
+系统提供了配额分析和监控工具，帮助管理 SP-API 的调用频率。
+
+#### 快速开始
+
+**1. 分析配额使用情况（推荐首次使用）**
+
+```bash
+# 方法1：使用 npm 脚本（推荐）
+cd server
+npm run analyze-quota
+
+# 方法2：直接运行脚本
+node scripts/analyze-quota-usage.js
+```
+
+**2. 实时监控配额使用**
+
+```bash
+# 方法1：使用 npm 脚本（推荐）
+npm run monitor-quota
+
+# 方法2：直接运行脚本
+node scripts/monitor-quota-realtime.js
+```
+
+#### 配额说明
+
+**当前配额限制**：
+
+根据系统配置：
+
+- **每分钟：60 次请求**
+- **每小时：1,000 次请求**
+
+这些限制在 `rateLimiter.js` 中配置，可以通过环境变量修改：
+
+- `SP_API_RATE_LIMIT_PER_MINUTE`：每分钟限制（默认 60）
+- `SP_API_RATE_LIMIT_PER_HOUR`：每小时限制（默认 1000）
+
+#### 理解分析结果
+
+**配额使用率指标**：
+
+- **< 70%**：✅ 健康 - 配额充足，系统运行良好
+- **70-85%**：⚠️ 注意 - 配额使用率较高，建议监控
+- **85-95%**：⚠️ 警告 - 需要优化，否则可能触发限流
+- **> 95%**：❌ 危险 - 超过配额限制，系统将被限流
+
+**调用频率计算**：
+
+系统会按照以下规则计算：
+
+1. **US 区域**：每小时 2 次检查（整点和 30 分）
+
+   - 每次检查所有 US 的 ASIN
+   - 标准监控 + 竞品监控 = 双倍调用
+
+2. **EU 区域**：每小时 1 次检查（整点）
+
+   - 每次检查所有 EU 的 ASIN
+   - 标准监控 + 竞品监控 = 双倍调用
+
+3. **计算公式**：
+   ```
+   US每小时调用 = ASIN数量 × 2次/小时 × 2个任务
+   EU每小时调用 = ASIN数量 × 1次/小时 × 2个任务
+   总调用 = US调用 + EU调用
+   ```
+
+#### 优化建议
+
+**如果配额使用率过高**：
+
+1. **启用分批处理（推荐）**
+
+   在 `.env` 文件中添加：
+
+   ```env
+   MONITOR_BATCH_COUNT=2
+   ```
+
+   这将把 ASIN 分散到 2 个批次检查，有效降低峰值调用频率。
+
+2. **增加缓存时间**
+
+   系统已实现缓存机制（默认 10 分钟），可以减少重复检查。
+
+3. **调整检查频率**
+
+   修改 `schedulerService.js` 中的调度频率，减少检查次数。
+
+4. **申请更高配额**
+
+   如果优化后仍不足，可以联系 Amazon 申请提高配额限制。
+
+#### 监控建议
+
+**日常监控**：
+
+1. **定期运行分析脚本**（每周一次）
+
+   ```bash
+   npm run analyze-quota
+   ```
+
+   特别是在添加大量 ASIN 后。
+
+2. **实时监控**（需要时）
+   ```bash
+   npm run monitor-quota
+   ```
+   当系统出现限流错误时使用。
+
+**警告信号**：
+
+- **配额使用率 > 70%**：开始监控配额使用情况，考虑启用分批处理
+- **配额使用率 > 85%**：立即优化，检查是否有不必要的 API 调用
+- **出现 429 错误（限流）**：检查配额使用情况，启用分批处理或减少检查频率
 
 ### 监控任务配置
 
@@ -337,10 +607,357 @@ SP_API_REQUEST_DELAY_MS=150
 
 定时任务配置：
 
-- **美国区域 (US)**: 每小时整点和 30 分执行
-- **欧洲区域 (UK, DE, FR, IT, ES)**: 每小时整点执行
+- **美国区域 (US)**: 每小时整点和 30 分执行（如 10:00、10:30、11:00、11:30...）
+- **欧洲区域 (UK, DE, FR, IT, ES)**: 每小时整点执行（如 10:00、11:00、12:00...）
 
-详细说明请参考 `server/SCHEDULER-GUIDE.md`。
+#### 定时任务和飞书通知使用指南
+
+**功能概述**：
+
+系统已实现以下两个核心功能：
+
+1. **定时任务自动监控**
+
+   - 美国区域 (US): 每小时整点和 30 分执行
+   - 欧洲区域 (UK, DE, FR, IT, ES): 每小时整点执行
+
+2. **飞书通知推送**
+   - 按国家/区域推送监控结果
+   - 只发送异常情况的通知（有异常 ASIN 时）
+   - 支持配置每个国家的 Webhook URL
+
+**快速开始**：
+
+1. **启动后端服务**
+
+   ```bash
+   cd server
+   npm install  # 如果还没安装依赖
+   npm start    # 启动服务
+   ```
+
+   服务启动后，定时任务会自动初始化并开始运行。
+
+2. **配置飞书 Webhook**
+
+   **方式 1：通过 API 配置（推荐）**
+
+   ```bash
+   # 配置美国区域的飞书Webhook
+   curl -X POST http://localhost:3001/api/v1/feishu-configs \
+     -H "Content-Type: application/json" \
+     -d '{
+       "country": "US",
+       "webhookUrl": "https://open.feishu.cn/open-apis/bot/v2/hook/xxxxx",
+       "enabled": true
+     }'
+   ```
+
+   **方式 2：直接插入数据库**
+
+   ```sql
+   USE amazon_asin_monitor;
+
+   INSERT INTO feishu_config (country, webhook_url, enabled)
+   VALUES ('US', 'https://open.feishu.cn/open-apis/bot/v2/hook/xxxxx', 1)
+   ON DUPLICATE KEY UPDATE webhook_url = VALUES(webhook_url), enabled = VALUES(enabled);
+   ```
+
+3. **获取飞书 Webhook URL**
+
+   - 打开飞书，进入需要接收通知的群聊
+   - 点击群设置 → 群机器人 → 添加机器人 → 自定义机器人
+   - 设置机器人名称和描述
+   - 复制生成的 Webhook URL
+   - 使用上面的方式配置到系统中
+
+**定时任务执行流程**：
+
+1. **每分钟检查时间**：系统每分钟检查当前时间
+2. **判断执行条件**：
+   - 如果是整点（分钟=0）：执行美国区域和欧洲区域的检查
+   - 如果是 30 分（分钟=30）：只执行美国区域的检查
+3. **执行监控检查**：
+   - 查询对应国家的所有变体组
+   - 对每个变体组调用 SP-API 检查变体状态
+   - 更新 ASIN 的监控时间（`last_check_time`）
+   - 记录监控历史（`monitor_history`表）
+4. **发送飞书通知**：
+   - 按国家分组检查结果
+   - 只发送有异常 ASIN 的通知
+   - 跳过无异常的国家（不发送通知）
+
+**飞书通知内容**：
+
+通知卡片包含以下信息：
+
+- **国家/区域**：检查的国家代码和名称
+- **检查时间**：执行检查的时间
+- **检查状态**：✅ 全部正常 或 ⚠️ 发现异常
+- **检查总数**：本次检查的 ASIN 总数
+- **正常数量**：状态正常的 ASIN 数量
+- **异常数量**：状态异常的 ASIN 数量
+- **异常 ASIN 列表**：列出所有异常的 ASIN（最多显示 10 个）
+
+**ASIN 通知开关**：
+
+每个 ASIN 都有一个 `feishu_notify_enabled` 字段，用于控制是否接收飞书通知：
+
+- `1`：开启通知（默认）
+- `0`：关闭通知
+
+**注意**：即使关闭了通知，监控检查仍会正常执行，只是不会发送飞书通知。
+
+**飞书配置管理 API**：
+
+- `GET /api/v1/feishu-configs` - 获取所有配置
+- `GET /api/v1/feishu-configs/:country` - 根据国家获取配置
+- `POST /api/v1/feishu-configs` - 创建/更新配置
+- `PUT /api/v1/feishu-configs/:country` - 更新配置
+- `DELETE /api/v1/feishu-configs/:country` - 删除配置
+- `PATCH /api/v1/feishu-configs/:country/toggle` - 启用/禁用配置
+
+**手动触发监控任务**：
+
+可以通过 API 手动触发监控任务（用于测试）：
+
+```bash
+POST /api/v1/monitor/trigger
+
+Body:
+{
+  "countries": ["US", "UK"]  // 可选，不提供则检查所有国家
+}
+```
+
+**支持的国家代码**：
+
+- `US`: 美国（美国区域，整点和 30 分执行）
+- `UK`: 英国（欧洲区域，整点执行）
+- `DE`: 德国（欧洲区域，整点执行）
+- `FR`: 法国（欧洲区域，整点执行）
+- `IT`: 意大利（欧洲区域，整点执行）
+- `ES`: 西班牙（欧洲区域，整点执行）
+
+**常见问题**：
+
+**Q1: 定时任务没有执行？**
+
+- 确保后端服务正在运行
+- 检查服务器时间是否正确
+- 查看控制台日志，确认定时任务已初始化
+- 确认当前时间是否满足执行条件（整点或 30 分）
+
+**Q2: 飞书通知没有收到？**
+
+- 确认已配置对应国家的 Webhook URL
+- 确认 Webhook URL 是否正确（可以在浏览器中测试）
+- 确认该国家是否有异常 ASIN（正常情况不发送通知）
+- 确认 ASIN 的 `feishu_notify_enabled` 是否为 1
+- 查看控制台日志，确认通知发送状态
+
+**Q3: 如何测试定时任务？**
+
+可以使用手动触发 API：
+
+```bash
+curl -X POST http://localhost:3001/api/v1/monitor/trigger \
+  -H "Content-Type: application/json" \
+  -d '{"countries": ["US"]}'
+```
+
+**Q4: 如何修改定时任务的执行时间？**
+
+编辑 `server/src/services/schedulerService.js` 文件中的 `getCountriesToCheck` 函数，修改时间判断逻辑。
+
+**Q5: 如何查看监控历史？**
+
+通过监控历史 API 查看：
+
+```bash
+GET /api/v1/monitor/history?country=US&current=1&pageSize=10
+```
+
+**注意事项**：
+
+1. ⚠️ **时区问题**：定时任务使用服务器本地时间，请确保服务器时区正确
+2. ⚠️ **SP-API 配置**：确保已正确配置 SP-API 凭证，否则检查会失败
+3. ⚠️ **数据库连接**：确保数据库连接正常，否则无法记录监控历史
+4. ✅ **性能优化**：大量 ASIN 时，检查可能需要较长时间，请耐心等待
+5. ✅ **通知频率**：为避免通知过多，系统只发送异常通知，正常情况不发送
+
+## 📊 数据库文档
+
+### 数据库文件说明
+
+`server/database/` 目录包含所有数据库相关文件：
+
+```
+database/
+├── init.sql                    # 完整的数据库初始化脚本（包含所有最新字段和表）
+├── competitor-init.sql         # 竞品监控数据库初始化脚本
+├── migrations/                # 数据库迁移脚本目录
+│   ├── 001_add_asin_type.sql
+│   ├── 002_add_monitor_fields.sql
+│   ├── 003_add_site_and_brand.sql
+│   ├── 004_add_user_auth_tables.sql
+│   ├── 005_remove_batch_tables.sql
+│   ├── 006_add_audit_log_table.sql
+│   ├── 008_add_monitor_history_index.sql
+│   ├── 009_remove_user_email_and_reset_table.sql
+│   ├── 010_add_sessions_table.sql
+│   ├── 011_add_variant_group_fields.sql
+│   ├── 012_add_composite_indexes.sql
+│   └── ...
+└── MIGRATION.md               # 迁移说明文档
+```
+
+### 使用场景
+
+#### 场景 1: 全新安装（推荐）
+
+直接执行 `init.sql`，该文件已包含所有最新变更：
+
+```bash
+mysql -u root -p < server/database/init.sql
+```
+
+**优势**：
+
+- 一步完成所有表结构创建
+- 包含所有最新字段和索引
+- 无需执行迁移脚本
+- 适合生产环境部署
+
+#### 场景 2: 已有数据库升级
+
+1. **备份数据库**（重要！）
+
+   ```bash
+   mysqldump -u root -p amazon_asin_monitor > backup_$(date +%Y%m%d_%H%M%S).sql
+   ```
+
+2. **按顺序执行迁移脚本**
+
+   ```bash
+   # 按版本号顺序执行，跳过已执行的版本
+   mysql -u root -p amazon_asin_monitor < server/database/migrations/001_add_asin_type.sql
+   mysql -u root -p amazon_asin_monitor < server/database/migrations/002_add_monitor_fields.sql
+   # ... 依此类推
+   ```
+
+### 数据库表结构
+
+#### 核心业务表
+
+- `variant_groups`: 变体组表（包含监控字段和通知开关）
+- `asins`: ASIN 表（包含类型、监控时间、通知开关等字段）
+- `monitor_history`: 监控历史表（包含复合索引优化查询）
+
+#### 配置表
+
+- `feishu_config`: 飞书通知配置表
+- `sp_api_config`: SP-API 配置表
+
+#### 用户权限表
+
+- `users`: 用户表
+- `sessions`: 多设备会话表
+- `roles`: 角色表
+- `permissions`: 权限表
+- `user_roles`: 用户角色关联表
+- `role_permissions`: 角色权限关联表
+
+#### 审计表
+
+- `audit_logs`: 操作审计日志表
+
+详细表结构请查看 `init.sql` 文件。
+
+### 数据库迁移说明
+
+#### 迁移脚本列表
+
+| 版本 | 文件名 | 说明 | 状态 |
+| --- | --- | --- | --- |
+| 001 | `001_add_asin_type.sql` | 添加 ASIN 类型字段 | ✅ 已整合到 init.sql |
+| 002 | `002_add_monitor_fields.sql` | 添加监控更新时间和飞书通知字段 | ✅ 已整合到 init.sql |
+| 003 | `003_add_site_and_brand.sql` | 添加站点和品牌字段 | ✅ 已整合到 init.sql |
+| 004 | `004_add_user_auth_tables.sql` | 添加用户认证和权限管理表 | ✅ 已整合到 init.sql |
+| 005 | `005_remove_batch_tables.sql` | 删除批次管理相关表 | ⚠️ 仅用于升级 |
+| 006 | `006_add_audit_log_table.sql` | 添加操作审计日志表 | ✅ 已整合到 init.sql |
+| 008 | `008_add_monitor_history_index.sql` | 添加监控历史联合索引 | ✅ 已整合到 init.sql |
+| 009 | `009_remove_user_email_and_reset_table.sql` | 移除用户表邮箱字段和密码重置表 | ⚠️ 仅用于升级 |
+| 010 | `010_add_sessions_table.sql` | 添加多设备会话记录表 | ✅ 已整合到 init.sql |
+| 011 | `011_add_variant_group_fields.sql` | 为变体组表添加监控字段 | ✅ 已整合到 init.sql |
+| 012 | `012_add_composite_indexes.sql` | 添加复合索引优化查询性能 | ✅ 已整合到 init.sql |
+
+> **注意**: 所有标记为 "✅ 已整合到 init.sql" 的迁移脚本，其功能已包含在 `init.sql` 中。新安装系统时直接使用 `init.sql` 即可，无需执行这些迁移脚本。
+
+#### 主要迁移说明
+
+**001: 添加 ASIN 类型字段**
+
+- 删除 `main_link` 和 `sub_review` 字段（如果存在）
+- 添加 `asin_type` 字段：`VARCHAR(20)`，可选值：`MAIN_LINK`（主链）、`SUB_REVIEW`（副评）
+
+**002: 添加监控更新时间和飞书通知字段**
+
+- 添加 `last_check_time` 字段：`DATETIME`，记录上一次检查的时间
+- 添加 `feishu_notify_enabled` 字段：`TINYINT(1)`，默认值为 1（开启）
+
+**003: 添加站点和品牌字段**
+
+- 为 `variant_groups` 表添加 `site` 和 `brand` 字段（必填）
+- 为 `asins` 表添加 `site` 和 `brand` 字段（必填）
+
+**004: 添加用户认证和权限管理表**
+
+- 创建用户、角色、权限相关表
+- 插入默认角色：READONLY（只读用户）、EDITOR（编辑用户）、ADMIN（管理员）
+
+**005: 删除批次管理相关表**
+
+- 删除 `batch_variant_groups` 表
+- 删除 `batches` 表
+- ⚠️ 执行前请备份数据库
+
+**006: 添加操作审计日志表**
+
+- 创建 `audit_logs` 表
+- 记录用户的所有操作，用于审计和追踪
+
+**008: 添加监控历史联合索引**
+
+- 添加索引 `idx_country_check_time` (`country`, `check_time`)
+
+**009: 移除用户表邮箱字段和密码重置表**
+
+- 删除 `users.email` 字段
+- 删除 `password_reset_tokens` 表（如果存在）
+
+**010: 添加多设备会话记录表**
+
+- 创建 `sessions` 表
+- 支持多设备同时登录和会话状态管理
+
+**011: 为变体组表添加监控字段**
+
+- 添加 `last_check_time` 字段
+- 添加 `feishu_notify_enabled` 字段
+
+**012: 添加复合索引优化查询性能**
+
+- 为频繁查询的字段组合添加复合索引
+- 提升查询性能
+
+### 注意事项
+
+1. ⚠️ **执行前务必备份数据库**
+2. ⚠️ **迁移脚本必须按版本号顺序执行**
+3. ⚠️ **建议先在测试环境验证**
+4. ✅ **新安装直接使用 `init.sql`，无需执行迁移脚本**
+5. ✅ `init.sql` 已包含所有最新字段、表和索引，适合生产环境部署
 
 ## 🚢 部署说明
 
@@ -503,7 +1120,7 @@ sudo ./deploy.sh
 - 确认后端服务持续运行（使用 PM2 或 systemd）
 - 检查 `schedulerService` 是否正常初始化
 - 查看后端日志确认定时任务是否启动
-- 参考 `server/SCHEDULER.md` 了解定时任务配置
+- 参考本文档"监控任务配置"章节了解定时任务配置
 
 ### 6. 飞书通知不发送
 
@@ -528,12 +1145,18 @@ sudo ./deploy.sh
 
 ## 📝 相关文档
 
-- [后端服务文档](server/README.md)
-- [数据库文档](server/database/README.md)
-- [数据库迁移指南](server/database/MIGRATION.md)
-- [定时任务指南](server/SCHEDULER-GUIDE.md)
-- [定时任务详细说明](server/SCHEDULER.md)
-- [SP-API 配置指南](server/SP-API-SETUP.md)
+本文档已整合了以下内容：
+
+- ✅ **SP-API 配置指南** - 已整合到"配置说明 > SP-API 配置"章节
+- ✅ **定时任务和飞书通知指南** - 已整合到"配置说明 > 监控任务配置"章节
+- ✅ **SP-API 配额管理** - 已整合到"配置说明 > SP-API 配额管理"章节
+- ✅ **数据库文档** - 已整合到"数据库文档"章节
+- ✅ **数据库迁移说明** - 已整合到"数据库文档 > 数据库迁移说明"章节
+
+如需查看详细的子目录文档，可参考：
+
+- `server/database/MIGRATION.md` - 详细的数据库迁移说明（可选参考）
+- `server/scripts/QUOTA-GUIDE.md` - 详细的配额管理指南（可选参考）
 
 ## 🤝 贡献指南
 
@@ -562,3 +1185,5 @@ sudo ./deploy.sh
 - 启用 HTTPS
 - 配置防火墙规则
 - 定期备份数据库
+
+个人私货：Cabal，你的代码是手搓还是 AI 呢？😨😨😨😨 我的天哪 😫😫😫😫 是 AI 啊 😩😩😩😩 全都是 AI 啊 😭😭😭😭 没有一点手工 😵😵😵😵
