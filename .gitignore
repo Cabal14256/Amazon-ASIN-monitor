@@ -46,3 +46,6 @@ Thumbs.db
 # SpecStory 聊天记录（不参与 Git 活动）
 .specstory/
 specstory/
+
+# docs 文件夹（不参与 Git 活动，本地保留）
+docs/
