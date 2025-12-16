@@ -480,7 +480,6 @@ const CompetitorASINManagement: React.FC<unknown> = () => {
         rowKey="id"
         search={{
           labelWidth: 120,
-          debounceTime: 500, // 搜索防抖500ms
         }}
         rowClassName={(record) => {
           // 根据 parentId 判断是变体组还是 ASIN

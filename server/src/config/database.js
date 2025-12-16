@@ -7,7 +7,7 @@ const dbConfig = {
   host: process.env.DB_HOST || 'localhost',
   port: process.env.DB_PORT || 3306,
   user: process.env.DB_USER || 'root',
-  password: process.env.DB_PASSWORD || 'JSBjsb123',
+  password: process.env.DB_PASSWORD,
   database: process.env.DB_NAME || 'amazon_asin_monitor',
   charset: 'utf8mb4',
   timezone: '+08:00',
@@ -23,6 +23,10 @@ const pool = mysql.createPool(dbConfig);
 
 // 测试数据库连接
 async function testConnection() {
+  if (!process.env.DB_PASSWORD) {
+    logger.error('❌ 数据库密码未配置！请在 .env 文件中设置 DB_PASSWORD');
+    throw new Error('数据库密码未配置');
+  }
   try {
     const connection = await pool.getConnection();
     logger.info('✅ 数据库连接成功');

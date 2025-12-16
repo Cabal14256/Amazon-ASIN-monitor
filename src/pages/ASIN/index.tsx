@@ -116,6 +116,7 @@ const ASINManagement: React.FC<unknown> = () => {
   const [excelImportModalVisible, setExcelImportModalVisible] = useState(false);
   const [batchDeleteModalVisible, setBatchDeleteModalVisible] = useState(false);
   const [batchDeleteLoading, setBatchDeleteLoading] = useState(false);
+  const [totalASINs, setTotalASINs] = useState<number>(0);
 
   // 国家选项枚举（使用useMemo优化）
   const countryValueEnum = useMemo(
@@ -335,7 +336,12 @@ const ASINManagement: React.FC<unknown> = () => {
           return (
             <Switch
               checked={enabled}
+              disabled={!access.canWriteASIN}
               onChange={async (checked) => {
+                if (!access.canWriteASIN) {
+                  message.warning('只读用户不能修改飞书通知开关');
+                  return;
+                }
                 try {
                   if (isGroup) {
                     const group = record as API.VariantGroup;
@@ -512,7 +518,6 @@ const ASINManagement: React.FC<unknown> = () => {
         rowKey="id"
         search={{
           labelWidth: 120,
-          debounceTime: 500, // 搜索防抖500ms
         }}
         rowClassName={(record) => {
           // 根据 parentId 判断是变体组还是 ASIN
@@ -610,6 +615,9 @@ const ASINManagement: React.FC<unknown> = () => {
           });
           const cached = requestCacheRef.current.get(cacheKey);
           if (cached && Date.now() - cached.timestamp < CACHE_TTL) {
+            if (cached.totalASINs !== undefined) {
+              setTotalASINs(cached.totalASINs);
+            }
             return {
               data: cached.data,
               success: true,
@@ -676,9 +684,12 @@ const ASINManagement: React.FC<unknown> = () => {
               return groupWithParentId;
             });
             const finalData = treeData || [];
+            const totalASINsValue = data?.totalASINs || 0;
+            setTotalASINs(totalASINsValue);
             requestCacheRef.current.set(cacheKey, {
               data: finalData,
               total: data?.total || 0,
+              totalASINs: totalASINsValue,
               timestamp: Date.now(),
             });
 
@@ -712,7 +723,9 @@ const ASINManagement: React.FC<unknown> = () => {
           showSizeChanger: true,
           showQuickJumper: true,
           showTotal: (total, range) =>
-            `第 ${range[0]}-${range[1]} 条/总共 ${total} 条`,
+            `第 ${range[0]}-${range[1]} 条/总共 ${total} 条${
+              totalASINs > 0 ? `，ASIN总数: ${totalASINs}` : ''
+            }`,
           pageSizeOptions: ['10', '20', '50', '100'],
         }}
       />

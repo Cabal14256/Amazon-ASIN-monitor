@@ -2,6 +2,53 @@
   padding: 0;
 }
 
+// 统计卡片容器 - 一个大的 Card 包裹所有统计项
+.statCardsContainer {
+  margin-bottom: 16px;
+
+  :global(.ant-card-body) {
+    padding: 0;
+  }
+
+  .statCardsInner {
+    display: flex;
+    gap: 0;
+    flex-wrap: wrap;
+  }
+
+  .statCard {
+    flex: 1;
+    min-width: 150px;
+    max-width: calc(16.666%); // 6个卡片，无gap
+    padding: 16px;
+    border-right: 1px solid #f0f0f0;
+
+    // 最后一个卡片不需要右边框
+    &:last-child {
+      border-right: none;
+    }
+
+    :global(.ant-statistic) {
+      :global(.ant-statistic-title) {
+        font-size: 13px;
+        margin-bottom: 8px;
+      }
+
+      :global(.ant-statistic-content) {
+        :global(.ant-statistic-content-value) {
+          font-size: 20px;
+          line-height: 1.2;
+        }
+
+        :global(.ant-statistic-content-prefix) {
+          font-size: 18px;
+          margin-right: 4px;
+        }
+      }
+    }
+  }
+}
+
 .alertCard {
   :global(.ant-card-body) {
     max-height: 500px;
@@ -22,6 +69,23 @@
     padding: 8px;
   }
 
+  .statCardsContainer {
+    .statCardsInner {
+      flex-direction: column;
+    }
+
+    .statCard {
+      max-width: 100%;
+      width: 100%;
+      border-right: none;
+      border-bottom: 1px solid #f0f0f0;
+
+      &:last-child {
+        border-bottom: none;
+      }
+    }
+  }
+
   .alertCard {
     :global(.ant-card-body) {
       max-height: 300px;
@@ -31,16 +95,6 @@
   .timelineCard {
     :global(.ant-timeline) {
       max-height: 300px;
-    }
-  }
-
-  // 统计卡片移动端优化
-  :global(.ant-statistic-card-group) {
-    flex-direction: column;
-    
-    :global(.ant-statistic-card) {
-      width: 100%;
-      margin-bottom: 16px;
     }
   }
 

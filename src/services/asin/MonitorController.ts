@@ -278,9 +278,9 @@ export async function getPeriodSummary(
 }
 
 /** 按国家统计ASIN当前状态 */
-export async function getASINStatisticsByCountry(
-  options?: { [key: string]: any },
-) {
+export async function getASINStatisticsByCountry(options?: {
+  [key: string]: any;
+}) {
   return request<API.Result_CountryStatistics_>(
     '/api/v1/monitor-history/statistics/asin-by-country',
     {
@@ -305,6 +305,43 @@ export async function getASINStatisticsByVariantGroup(
       method: 'GET',
       params: {
         ...params,
+      },
+      ...(options || {}),
+    },
+  );
+}
+
+/** 获取异常时长统计 */
+export async function getAbnormalDurationStatistics(
+  params: {
+    // query
+    /** ASIN ID列表（逗号分隔或数组） */
+    asinIds?: string | string[];
+    /** ASIN编码列表（逗号分隔或数组） */
+    asinCodes?: string | string[];
+    /** 变体组ID */
+    variantGroupId?: string;
+    /** 开始时间 */
+    startTime?: string;
+    /** 结束时间 */
+    endTime?: string;
+  },
+  options?: { [key: string]: any },
+) {
+  return request<API.Result_AbnormalDurationStatistics_>(
+    '/api/v1/monitor-history/abnormal-duration-statistics',
+    {
+      method: 'GET',
+      params: {
+        ...params,
+        // 如果asinIds是数组，转换为逗号分隔的字符串
+        asinIds: Array.isArray(params.asinIds)
+          ? params.asinIds.join(',')
+          : params.asinIds,
+        // 如果asinCodes是数组，转换为逗号分隔的字符串
+        asinCodes: Array.isArray(params.asinCodes)
+          ? params.asinCodes.join(',')
+          : params.asinCodes,
       },
       ...(options || {}),
     },

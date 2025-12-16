@@ -17,6 +17,7 @@ export async function getInitialState(): Promise<{
   currentUser?: API.CurrentUser;
   permissions?: string[];
   roles?: string[];
+  sessionId?: string;
 }> {
   // 从storage获取token
   const token = getToken();
@@ -284,23 +285,36 @@ export const layout = ({ initialState, setInitialState }: any) => {
       const LayoutWrapper = () => {
         useEffect(() => {
           const updateSiderActions = () => {
-            const sider = document.querySelector('aside.ant-layout-sider, aside[class*="sider"]');
+            const sider = document.querySelector(
+              'aside.ant-layout-sider, aside[class*="sider"]',
+            );
             if (sider) {
-              const actions = sider.querySelector('.ant-pro-sider-actions') as HTMLElement;
+              const actions = sider.querySelector(
+                '.ant-pro-sider-actions',
+              ) as HTMLElement;
               if (actions) {
                 // 检查侧边栏是否收起
-                const isCollapsed = sider.classList.contains('ant-layout-sider-collapsed') ||
-                                   sider.classList.contains('ant-pro-layout-sider-collapsed') ||
-                                   sider.className.includes('collapsed');
-                
+                const isCollapsed =
+                  sider.classList.contains('ant-layout-sider-collapsed') ||
+                  sider.classList.contains('ant-pro-layout-sider-collapsed') ||
+                  sider.className.includes('collapsed');
+
                 if (isCollapsed) {
                   // 收起时隐藏
                   actions.style.setProperty('display', 'none', 'important');
-                  actions.style.setProperty('visibility', 'hidden', 'important');
+                  actions.style.setProperty(
+                    'visibility',
+                    'hidden',
+                    'important',
+                  );
                   actions.style.setProperty('width', '0', 'important');
                   actions.style.setProperty('height', '0', 'important');
                   actions.style.setProperty('opacity', '0', 'important');
-                  actions.style.setProperty('pointer-events', 'none', 'important');
+                  actions.style.setProperty(
+                    'pointer-events',
+                    'none',
+                    'important',
+                  );
                 } else {
                   // 展开时显示
                   actions.style.removeProperty('display');
@@ -371,12 +385,8 @@ export const layout = ({ initialState, setInitialState }: any) => {
             <Avatar style={{ backgroundColor: '#87d068' }}>
               {displayName.charAt(0).toUpperCase()}
             </Avatar>
-            <div style={{ fontSize: '12px', color: '#666' }}>
-              {displayName}
-            </div>
-            <div style={{ fontSize: '11px', color: '#999' }}>
-              {roleName}
-            </div>
+            <div style={{ fontSize: '12px', color: '#666' }}>{displayName}</div>
+            <div style={{ fontSize: '11px', color: '#999' }}>{roleName}</div>
           </Space>
         </div>
       );
@@ -384,8 +394,9 @@ export const layout = ({ initialState, setInitialState }: any) => {
     // 侧边栏底部操作区 - 收起时隐藏（这是实际渲染 ant-pro-sider-actions 的配置）
     siderActionsRender: (props: any) => {
       // 检查 collapsed 状态，可能在不同的属性中
-      const isCollapsed = props?.collapsed || props?.collapsedWidth !== undefined;
-      
+      const isCollapsed =
+        props?.collapsed || props?.collapsedWidth !== undefined;
+
       // 如果侧边栏收起，不渲染底部操作区
       if (isCollapsed) {
         return null;
@@ -402,14 +413,34 @@ export const layout = ({ initialState, setInitialState }: any) => {
 
       return (
         <div style={{ padding: '8px 16px' }}>
-          <Button type="text" block style={{ textAlign: 'left', height: 'auto', padding: '8px' }}>
+          <Button
+            type="text"
+            block
+            style={{ textAlign: 'left', height: 'auto', padding: '8px' }}
+          >
             <Space>
               <Avatar style={{ backgroundColor: '#87d068' }}>
                 {displayName.charAt(0).toUpperCase()}
               </Avatar>
-              <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-start' }}>
-                <span style={{ fontSize: '14px', lineHeight: '20px' }}>{displayName}</span>
-                <span style={{ fontSize: '12px', color: '#999', lineHeight: '16px' }}>{roleName}</span>
+              <div
+                style={{
+                  display: 'flex',
+                  flexDirection: 'column',
+                  alignItems: 'flex-start',
+                }}
+              >
+                <span style={{ fontSize: '14px', lineHeight: '20px' }}>
+                  {displayName}
+                </span>
+                <span
+                  style={{
+                    fontSize: '12px',
+                    color: '#999',
+                    lineHeight: '16px',
+                  }}
+                >
+                  {roleName}
+                </span>
               </div>
             </Space>
           </Button>

@@ -2,6 +2,7 @@ import services from '@/services/asin';
 import { useMessage } from '@/utils/message';
 import { getPeakHours } from '@/utils/peakHours';
 import { PageContainer, StatisticCard } from '@ant-design/pro-components';
+import { history } from '@umijs/max';
 import {
   Button,
   Card,
@@ -977,9 +978,19 @@ const AnalyticsPageContent: React.FC<unknown> = () => {
   const variantGroupColumnData = useMemo(() => {
     const data = variantGroupStatistics.map((item) => {
       const broken = toNumber(item.broken_count);
+      const countryName = item.country
+        ? countryMap[item.country] || item.country
+        : '';
+      const displayName = countryName
+        ? `${item.variant_group_name || '未知'} (${countryName})`
+        : item.variant_group_name || '未知';
       return attachLabelValue(
         {
-          name: item.variant_group_name || '未知',
+          name: displayName,
+          originalName: item.variant_group_name || '未知',
+          country: item.country || '',
+          countryName: countryName,
+          variantGroupId: item.variant_group_id || '',
           broken,
           rawValue: broken,
         },
@@ -1176,6 +1187,10 @@ const AnalyticsPageContent: React.FC<unknown> = () => {
       value: Number(item.broken),
       rawValue: item.rawValue ?? Number(item.broken),
       labelValue: item.labelValue,
+      variantGroupId: (item as any).variantGroupId || '',
+      originalName: (item as any).originalName || item.name,
+      country: (item as any).country || '',
+      countryName: (item as any).countryName || '',
     }));
     return {
       tooltip: {
@@ -1189,9 +1204,14 @@ const AnalyticsPageContent: React.FC<unknown> = () => {
             value,
             rawValue,
           );
+          const countryName = point?.data?.countryName || '';
+          const countryInfo = countryName
+            ? `<div>国家: ${countryName}</div>`
+            : '';
           return `
             <div>${point?.seriesName}</div>
-            <div>${formatted}</div>`;
+            <div>${formatted}</div>
+            ${countryInfo}`;
         },
       },
       grid: {
@@ -1215,6 +1235,10 @@ const AnalyticsPageContent: React.FC<unknown> = () => {
           data: data.map((item) => ({
             value: item.value,
             labelValue: item.labelValue,
+            variantGroupId: item.variantGroupId,
+            originalName: item.originalName,
+            country: item.country,
+            countryName: item.countryName,
           })),
           itemStyle: {
             color: '#ff4d4f',
@@ -1515,6 +1539,16 @@ const AnalyticsPageContent: React.FC<unknown> = () => {
               <ReactECharts
                 option={variantGroupOptions}
                 style={{ width: '100%', height: 360 }}
+                onEvents={{
+                  click: (params: any) => {
+                    const variantGroupId = params.data?.variantGroupId;
+                    if (variantGroupId) {
+                      history.push(
+                        `/monitor-history?type=group&id=${variantGroupId}`,
+                      );
+                    }
+                  },
+                }}
               />
             ) : (
               <div style={{ textAlign: 'center', padding: 40 }}>暂无数据</div>

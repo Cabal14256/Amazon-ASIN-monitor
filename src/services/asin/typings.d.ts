@@ -246,6 +246,8 @@ declare namespace API {
     variant_group_id?: string;
     /** 变体组名称 */
     variant_group_name?: string;
+    /** 所属国家 */
+    country?: string;
     /** 总检查次数 */
     total_checks?: number;
     /** 异常次数 */
@@ -301,6 +303,44 @@ declare namespace API {
   }
 
   /** 仪表盘概览数据 */
+  /** 国家概览数据 */
+  interface CountryOverview {
+    /** 总变体组数 */
+    totalGroups?: number;
+    /** 总ASIN数 */
+    totalASINs?: number;
+    /** 异常变体组数 */
+    brokenGroups?: number;
+    /** 异常ASIN数 */
+    brokenASINs?: number;
+    /** 正常变体组数 */
+    normalGroups?: number;
+    /** 正常ASIN数 */
+    normalASINs?: number;
+    /** 今日检查次数 */
+    todayChecks?: number;
+    /** 今日异常次数 */
+    todayBroken?: number;
+  }
+
+  /** 按国家分组的概览数据 */
+  interface OverviewByCountry {
+    /** 美国的数据 */
+    US?: CountryOverview;
+    /** 英国的数据 */
+    UK?: CountryOverview;
+    /** 德国的数据 */
+    DE?: CountryOverview;
+    /** 法国的数据 */
+    FR?: CountryOverview;
+    /** 意大利的数据 */
+    IT?: CountryOverview;
+    /** 西班牙的数据 */
+    ES?: CountryOverview;
+    /** 欧洲五国总和的数据 */
+    EU_TOTAL?: CountryOverview;
+  }
+
   interface DashboardOverview {
     /** 总变体组数 */
     totalGroups?: number;
@@ -318,6 +358,8 @@ declare namespace API {
     todayChecks?: number;
     /** 今日异常次数 */
     todayBroken?: number;
+    /** 按国家分组的统计数据 */
+    overviewByCountry?: OverviewByCountry;
   }
 
   /** 异常变体组信息（简化版） */
@@ -510,5 +552,27 @@ declare namespace API {
     success?: boolean;
     errorMessage?: string;
     data?: PageInfo_PeriodSummary_;
+  }
+
+  interface AbnormalDurationStatisticsItem {
+    timePeriod?: string;
+    asinId?: string;
+    asin?: string;
+    abnormalDuration?: number;
+    totalDuration?: number;
+    abnormalRatio?: number;
+    brokenCount?: number;
+    totalChecks?: number;
+  }
+
+  interface AbnormalDurationStatistics {
+    timeGranularity?: 'hour' | 'day' | 'week';
+    data?: AbnormalDurationStatisticsItem[];
+  }
+
+  interface Result_AbnormalDurationStatistics_ {
+    success?: boolean;
+    errorMessage?: string;
+    data?: AbnormalDurationStatistics;
   }
 }

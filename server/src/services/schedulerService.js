@@ -1,4 +1,5 @@
 const cron = require('node-cron');
+const logger = require('../utils/logger');
 const monitorTaskQueue = require('./monitorTaskQueue');
 const competitorMonitorTaskQueue = require('./competitorMonitorTaskQueue');
 const {
@@ -20,7 +21,7 @@ const EU_COUNTRIES_ORDER = ['UK', 'DE', 'FR', 'ES', 'IT'];
 let backupTask = null;
 
 function initScheduler() {
-  console.log('🕐 初始化定时任务...');
+  logger.info('🕐 初始化定时任务...');
   console.log(
     `📦 分批处理配置: ${TOTAL_BATCHES} 批（${
       TOTAL_BATCHES === 1 ? '不分批' : '分批处理'
@@ -42,7 +43,7 @@ function initScheduler() {
         // 基于小时和分钟计算批次索引（0 到 TOTAL_BATCHES-1）
         // 使用 (hour * 60 + minute) % TOTAL_BATCHES 来分散批次
         const batchIndex = (hour * 60 + minute) % TOTAL_BATCHES;
-        console.log(
+        logger.info(
           `[定时任务] 标准监控（US）当前批次: ${
             batchIndex + 1
           }/${TOTAL_BATCHES}`,
@@ -64,7 +65,7 @@ function initScheduler() {
     if (competitorUsCountries.length > 0) {
       if (TOTAL_BATCHES > 1) {
         const batchIndex = (hour * 60 + minute) % TOTAL_BATCHES;
-        console.log(
+        logger.info(
           `[定时任务] 竞品监控（US）当前批次: ${
             batchIndex + 1
           }/${TOTAL_BATCHES}`,
@@ -99,7 +100,7 @@ function initScheduler() {
       if (TOTAL_BATCHES > 1) {
         // 基于小时和分钟计算批次索引（0 到 TOTAL_BATCHES-1）
         const batchIndex = (hour * 60 + minute) % TOTAL_BATCHES;
-        console.log(
+        logger.info(
           `[定时任务] 标准监控（EU）当前批次: ${
             batchIndex + 1
           }/${TOTAL_BATCHES}`,
@@ -135,7 +136,7 @@ function initScheduler() {
     if (orderedCompetitorEuCountries.length > 0) {
       if (TOTAL_BATCHES > 1) {
         const batchIndex = (hour * 60 + minute) % TOTAL_BATCHES;
-        console.log(
+        logger.info(
           `[定时任务] 竞品监控（EU）当前批次: ${
             batchIndex + 1
           }/${TOTAL_BATCHES}`,
@@ -160,16 +161,16 @@ function initScheduler() {
     }
   });
 
-  console.log('✅ 定时任务已启动');
-  console.log('📅 执行时间:');
-  console.log('   - 美国区域 (US): 每小时整点和30分');
-  console.log(
+  logger.info('✅ 定时任务已启动');
+  logger.info('📅 执行时间:');
+  logger.info('   - 美国区域 (US): 每小时整点和30分');
+  logger.info(
     '   - 欧洲区域 (EU): 每小时整点，按顺序依次检查: UK → DE → FR → ES → IT',
   );
 
   // 初始化自动备份任务（异步执行，不阻塞启动）
   initBackupScheduler().catch((error) => {
-    console.error('❌ 初始化自动备份任务失败:', error.message);
+    logger.error('❌ 初始化自动备份任务失败:', error.message);
   });
 
   // ⭐ 新增：启动时立即执行一次监控（借鉴老项目经验）
@@ -230,7 +231,7 @@ async function initBackupScheduler() {
     const config = await BackupConfig.findOne();
 
     if (!config || !config.enabled) {
-      console.log('ℹ️  自动备份未启用');
+      logger.info('ℹ️  自动备份未启用');
       return;
     }
 
@@ -241,7 +242,7 @@ async function initBackupScheduler() {
     );
 
     if (!cronExpression) {
-      console.error('❌ 无效的备份计划配置');
+      logger.error('❌ 无效的备份计划配置');
       return;
     }
 
@@ -253,33 +254,33 @@ async function initBackupScheduler() {
     // 创建新的定时任务
     backupTask = cron.schedule(cronExpression, async () => {
       try {
-        console.log('🔄 开始执行自动备份...');
+        logger.info('🔄 开始执行自动备份...');
         const now = new Date();
         const description = `AutoBackup-${now
           .toISOString()
           .slice(0, 19)
           .replace('T', ' ')}`;
         await backupService.createBackup({ description });
-        console.log('✅ 自动备份完成');
+        logger.info('✅ 自动备份完成');
       } catch (error) {
-        console.error('❌ 自动备份失败:', error.message);
+        logger.error('❌ 自动备份失败:', error.message);
       }
     });
 
-    console.log('✅ 自动备份定时任务已启动');
-    console.log(`📅 备份计划: ${config.scheduleType}`);
+    logger.info('✅ 自动备份定时任务已启动');
+    logger.info(`📅 备份计划: ${config.scheduleType}`);
     if (config.scheduleType === 'weekly') {
       const weekDays = ['周日', '周一', '周二', '周三', '周四', '周五', '周六'];
       const dayName =
         weekDays[config.scheduleValue === 7 ? 0 : config.scheduleValue];
-      console.log(`   每周${dayName} ${config.backupTime} 执行`);
+      logger.info(`   每周${dayName} ${config.backupTime} 执行`);
     } else if (config.scheduleType === 'monthly') {
-      console.log(`   每月${config.scheduleValue}号 ${config.backupTime} 执行`);
+      logger.info(`   每月${config.scheduleValue}号 ${config.backupTime} 执行`);
     } else {
-      console.log(`   每天 ${config.backupTime} 执行`);
+      logger.info(`   每天 ${config.backupTime} 执行`);
     }
   } catch (error) {
-    console.error('❌ 初始化自动备份任务失败:', error.message);
+    logger.error('❌ 初始化自动备份任务失败:', error.message);
   }
 }
 
@@ -287,7 +288,7 @@ async function initBackupScheduler() {
  * 重新加载备份计划（配置更新时调用）
  */
 async function reloadBackupSchedule() {
-  console.log('🔄 重新加载备份计划...');
+  logger.info('🔄 重新加载备份计划...');
   if (backupTask) {
     backupTask.stop();
     backupTask = null;

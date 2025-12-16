@@ -21,7 +21,7 @@ function recordRateLimit(country) {
   feishuMetrics.rateLimitCount++;
   feishuMetrics.lastRateLimitAt = new Date();
   if (feishuMetrics.rateLimitCount % 5 === 0) {
-    console.warn(
+    logger.warn(
       `[feishu] 累计 ${feishuMetrics.rateLimitCount} 次限频（最近一次: ${country}）`,
     );
   }
@@ -29,7 +29,7 @@ function recordRateLimit(country) {
 
 setInterval(() => {
   if (feishuMetrics.rateLimitCount > 0) {
-    console.warn(
+    logger.warn(
       `[feishu] 最近 ${RATE_LIMIT_LOG_INTERVAL / 1000}s 触发 ${
         feishuMetrics.rateLimitCount
       } 次限频，上次发生在 ${feishuMetrics.lastRateLimitAt}`,
@@ -80,12 +80,12 @@ async function sendFeishuNotification(region, messageData) {
     if (response.status === 200 && response.data.code === 0) {
       const displayCountry =
         messageData.countryDisplay || messageData.country || region;
-      console.log(`✅ 飞书通知发送成功: ${region} (${displayCountry})`);
+      logger.info(`✅ 飞书通知发送成功: ${region} (${displayCountry})`);
       return { success: true };
     } else {
       const displayCountry =
         messageData.countryDisplay || messageData.country || region;
-      console.error(`❌ 飞书通知发送失败: ${region} (${displayCountry})`, {
+      logger.error(`❌ 飞书通知发送失败: ${region} (${displayCountry})`, {
         code: response.data?.code,
         msg: response.data?.msg,
       });
@@ -97,7 +97,7 @@ async function sendFeishuNotification(region, messageData) {
   } catch (error) {
     const displayCountry =
       messageData.countryDisplay || messageData.country || region;
-    console.error(
+    logger.error(
       `❌ 发送飞书通知异常: ${region} (${displayCountry})`,
       error.message,
     );
@@ -124,7 +124,7 @@ async function sendNotificationWithRetry(region, messageData) {
       attempts < MAX_RETRY_ATTEMPTS
     ) {
       const waitMs = 2000 + Math.floor(Math.random() * 2000);
-      console.warn(
+      logger.warn(
         `[feishu] 限频(${region})，第 ${attempts + 1} 次尝试前等待 ${waitMs}ms`,
       );
       recordRateLimit(region);
@@ -299,7 +299,7 @@ async function sendSingleCountryNotification(country, countryData) {
     };
   } else {
     if (result.errorCode === RATE_LIMIT_CODE) {
-      console.warn(`[feishu] 国家 ${country} 限频重试失败`);
+      logger.warn(`[feishu] 国家 ${country} 限频重试失败`);
       recordRateLimit(country);
     }
     return {
@@ -379,7 +379,7 @@ async function sendBatchNotifications(countryResults) {
           errorCode: result.errorCode,
         };
         if (result.errorCode === RATE_LIMIT_CODE) {
-          console.warn(`[feishu] 国家 ${country} 限频重试失败`);
+          logger.warn(`[feishu] 国家 ${country} 限频重试失败`);
           recordRateLimit(country);
         }
       }

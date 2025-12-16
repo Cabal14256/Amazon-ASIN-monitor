@@ -41,6 +41,10 @@ router.get(
   monitorController.getASINStatisticsByVariantGroup,
 );
 router.get('/monitor-history/statistics', monitorController.getStatistics);
+router.get(
+  '/monitor-history/abnormal-duration-statistics',
+  monitorController.getAbnormalDurationStatistics,
+);
 router.get('/monitor-history/:id', monitorController.getMonitorHistoryById);
 router.get('/monitor-history', monitorController.getMonitorHistory);
 

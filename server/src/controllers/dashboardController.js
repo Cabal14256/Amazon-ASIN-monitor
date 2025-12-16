@@ -124,6 +124,173 @@ exports.getDashboardData = async (req, res) => {
        LIMIT 20`,
     );
 
+    // 5. 按国家分组的统计数据
+    // 欧洲五国列表
+    const euCountries = ['UK', 'DE', 'FR', 'IT', 'ES'];
+
+    // 按国家统计总变体组数
+    const groupsByCountry = await query(
+      `SELECT country, COUNT(*) as total 
+       FROM variant_groups 
+       GROUP BY country`,
+    );
+
+    // 按国家统计总ASIN数
+    const asinsByCountry = await query(
+      `SELECT country, COUNT(*) as total 
+       FROM asins 
+       GROUP BY country`,
+    );
+
+    // 按国家统计异常变体组数
+    const brokenGroupsByCountry = await query(
+      `SELECT country, COUNT(*) as total 
+       FROM variant_groups 
+       WHERE is_broken = 1 
+       GROUP BY country`,
+    );
+
+    // 按国家统计异常ASIN数
+    const brokenASINsByCountry = await query(
+      `SELECT country, COUNT(*) as total 
+       FROM asins 
+       WHERE is_broken = 1 
+       GROUP BY country`,
+    );
+
+    // 按国家统计今日检查次数
+    const todayChecksByCountry = await query(
+      `SELECT country, COUNT(*) as total 
+       FROM monitor_history 
+       WHERE check_time >= ? 
+       GROUP BY country`,
+      [todayStartStr],
+    );
+
+    // 按国家统计今日异常次数
+    const todayBrokenByCountry = await query(
+      `SELECT country, COUNT(*) as total 
+       FROM monitor_history 
+       WHERE check_time >= ? AND is_broken = 1 
+       GROUP BY country`,
+      [todayStartStr],
+    );
+
+    // 将查询结果转换为对象，方便查找
+    const getCountryValue = (data, country, defaultValue = 0) => {
+      const item = data.find((d) => d.country === country);
+      return item ? item.total || 0 : defaultValue;
+    };
+
+    // 计算欧洲五国总和
+    const calculateEUTotal = (data) => {
+      return euCountries.reduce((sum, country) => {
+        return sum + getCountryValue(data, country, 0);
+      }, 0);
+    };
+
+    // 构建按国家分组的数据结构
+    const overviewByCountry = {
+      US: {
+        totalGroups: getCountryValue(groupsByCountry, 'US', 0),
+        totalASINs: getCountryValue(asinsByCountry, 'US', 0),
+        brokenGroups: getCountryValue(brokenGroupsByCountry, 'US', 0),
+        brokenASINs: getCountryValue(brokenASINsByCountry, 'US', 0),
+        todayChecks: getCountryValue(todayChecksByCountry, 'US', 0),
+        todayBroken: getCountryValue(todayBrokenByCountry, 'US', 0),
+        normalGroups:
+          getCountryValue(groupsByCountry, 'US', 0) -
+          getCountryValue(brokenGroupsByCountry, 'US', 0),
+        normalASINs:
+          getCountryValue(asinsByCountry, 'US', 0) -
+          getCountryValue(brokenASINsByCountry, 'US', 0),
+      },
+      UK: {
+        totalGroups: getCountryValue(groupsByCountry, 'UK', 0),
+        totalASINs: getCountryValue(asinsByCountry, 'UK', 0),
+        brokenGroups: getCountryValue(brokenGroupsByCountry, 'UK', 0),
+        brokenASINs: getCountryValue(brokenASINsByCountry, 'UK', 0),
+        todayChecks: getCountryValue(todayChecksByCountry, 'UK', 0),
+        todayBroken: getCountryValue(todayBrokenByCountry, 'UK', 0),
+        normalGroups:
+          getCountryValue(groupsByCountry, 'UK', 0) -
+          getCountryValue(brokenGroupsByCountry, 'UK', 0),
+        normalASINs:
+          getCountryValue(asinsByCountry, 'UK', 0) -
+          getCountryValue(brokenASINsByCountry, 'UK', 0),
+      },
+      DE: {
+        totalGroups: getCountryValue(groupsByCountry, 'DE', 0),
+        totalASINs: getCountryValue(asinsByCountry, 'DE', 0),
+        brokenGroups: getCountryValue(brokenGroupsByCountry, 'DE', 0),
+        brokenASINs: getCountryValue(brokenASINsByCountry, 'DE', 0),
+        todayChecks: getCountryValue(todayChecksByCountry, 'DE', 0),
+        todayBroken: getCountryValue(todayBrokenByCountry, 'DE', 0),
+        normalGroups:
+          getCountryValue(groupsByCountry, 'DE', 0) -
+          getCountryValue(brokenGroupsByCountry, 'DE', 0),
+        normalASINs:
+          getCountryValue(asinsByCountry, 'DE', 0) -
+          getCountryValue(brokenASINsByCountry, 'DE', 0),
+      },
+      FR: {
+        totalGroups: getCountryValue(groupsByCountry, 'FR', 0),
+        totalASINs: getCountryValue(asinsByCountry, 'FR', 0),
+        brokenGroups: getCountryValue(brokenGroupsByCountry, 'FR', 0),
+        brokenASINs: getCountryValue(brokenASINsByCountry, 'FR', 0),
+        todayChecks: getCountryValue(todayChecksByCountry, 'FR', 0),
+        todayBroken: getCountryValue(todayBrokenByCountry, 'FR', 0),
+        normalGroups:
+          getCountryValue(groupsByCountry, 'FR', 0) -
+          getCountryValue(brokenGroupsByCountry, 'FR', 0),
+        normalASINs:
+          getCountryValue(asinsByCountry, 'FR', 0) -
+          getCountryValue(brokenASINsByCountry, 'FR', 0),
+      },
+      IT: {
+        totalGroups: getCountryValue(groupsByCountry, 'IT', 0),
+        totalASINs: getCountryValue(asinsByCountry, 'IT', 0),
+        brokenGroups: getCountryValue(brokenGroupsByCountry, 'IT', 0),
+        brokenASINs: getCountryValue(brokenASINsByCountry, 'IT', 0),
+        todayChecks: getCountryValue(todayChecksByCountry, 'IT', 0),
+        todayBroken: getCountryValue(todayBrokenByCountry, 'IT', 0),
+        normalGroups:
+          getCountryValue(groupsByCountry, 'IT', 0) -
+          getCountryValue(brokenGroupsByCountry, 'IT', 0),
+        normalASINs:
+          getCountryValue(asinsByCountry, 'IT', 0) -
+          getCountryValue(brokenASINsByCountry, 'IT', 0),
+      },
+      ES: {
+        totalGroups: getCountryValue(groupsByCountry, 'ES', 0),
+        totalASINs: getCountryValue(asinsByCountry, 'ES', 0),
+        brokenGroups: getCountryValue(brokenGroupsByCountry, 'ES', 0),
+        brokenASINs: getCountryValue(brokenASINsByCountry, 'ES', 0),
+        todayChecks: getCountryValue(todayChecksByCountry, 'ES', 0),
+        todayBroken: getCountryValue(todayBrokenByCountry, 'ES', 0),
+        normalGroups:
+          getCountryValue(groupsByCountry, 'ES', 0) -
+          getCountryValue(brokenGroupsByCountry, 'ES', 0),
+        normalASINs:
+          getCountryValue(asinsByCountry, 'ES', 0) -
+          getCountryValue(brokenASINsByCountry, 'ES', 0),
+      },
+      EU_TOTAL: {
+        totalGroups: calculateEUTotal(groupsByCountry),
+        totalASINs: calculateEUTotal(asinsByCountry),
+        brokenGroups: calculateEUTotal(brokenGroupsByCountry),
+        brokenASINs: calculateEUTotal(brokenASINsByCountry),
+        todayChecks: calculateEUTotal(todayChecksByCountry),
+        todayBroken: calculateEUTotal(todayBrokenByCountry),
+        normalGroups:
+          calculateEUTotal(groupsByCountry) -
+          calculateEUTotal(brokenGroupsByCountry),
+        normalASINs:
+          calculateEUTotal(asinsByCountry) -
+          calculateEUTotal(brokenASINsByCountry),
+      },
+    };
+
     const dashboardData = {
       // 关键指标
       overview: {
@@ -135,6 +302,7 @@ exports.getDashboardData = async (req, res) => {
         todayBroken,
         normalGroups: totalGroups - brokenGroups,
         normalASINs: totalASINs - brokenASINs,
+        overviewByCountry,
       },
       // 实时异常
       realtimeAlerts: {

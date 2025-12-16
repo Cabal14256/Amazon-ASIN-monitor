@@ -155,7 +155,7 @@ const LoginPage: React.FC = () => {
 
           <div className={styles.footer}>
             <Text type="secondary" style={{ fontSize: '12px' }}>
-              © 2024 Amazon ASIN Monitor. All rights reserved.
+              © 2026 Amazon ASIN Monitor. All rights reserved.
             </Text>
           </div>
         </Card>

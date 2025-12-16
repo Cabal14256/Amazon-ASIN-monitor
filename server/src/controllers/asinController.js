@@ -1,11 +1,12 @@
 const VariantGroup = require('../models/VariantGroup');
 const ASIN = require('../models/ASIN');
+const logger = require('../utils/logger');
 
 // 查询变体组列表
 exports.getVariantGroups = async (req, res) => {
   try {
     const { keyword, country, variantStatus, current, pageSize } = req.query;
-    console.log('查询参数:', {
+    logger.info('查询参数:', {
       keyword,
       country,
       variantStatus,
@@ -25,8 +26,8 @@ exports.getVariantGroups = async (req, res) => {
       errorCode: 0,
     });
   } catch (error) {
-    console.error('查询变体组列表错误:', error);
-    console.error('错误堆栈:', error.stack);
+    logger.error('查询变体组列表错误:', error);
+    logger.error('错误堆栈:', error.stack);
     res.status(500).json({
       success: false,
       errorMessage: error.message || '查询失败',
@@ -55,7 +56,7 @@ exports.getVariantGroupById = async (req, res) => {
       errorCode: 0,
     });
   } catch (error) {
-    console.error('查询变体组详情错误:', error);
+    logger.error('查询变体组详情错误:', error);
     res.status(500).json({
       success: false,
       errorMessage: error.message || '查询失败',
@@ -82,7 +83,7 @@ exports.createVariantGroup = async (req, res) => {
       errorCode: 0,
     });
   } catch (error) {
-    console.error('创建变体组错误:', error);
+    logger.error('创建变体组错误:', error);
     res.status(500).json({
       success: false,
       errorMessage: error.message || '创建失败',
@@ -122,7 +123,7 @@ exports.updateVariantGroup = async (req, res) => {
       errorCode: 0,
     });
   } catch (error) {
-    console.error('更新变体组错误:', error);
+    logger.error('更新变体组错误:', error);
     res.status(500).json({
       success: false,
       errorMessage: error.message || '更新失败',
@@ -142,7 +143,7 @@ exports.deleteVariantGroup = async (req, res) => {
       errorCode: 0,
     });
   } catch (error) {
-    console.error('删除变体组错误:', error);
+    logger.error('删除变体组错误:', error);
     res.status(500).json({
       success: false,
       errorMessage: error.message || '删除失败',
@@ -185,7 +186,7 @@ exports.createASIN = async (req, res) => {
       errorCode: 0,
     });
   } catch (error) {
-    console.error('创建ASIN错误:', error);
+    logger.error('创建ASIN错误:', error);
     res.status(500).json({
       success: false,
       errorMessage: error.message || '创建失败',
@@ -235,7 +236,7 @@ exports.updateASIN = async (req, res) => {
       errorCode: 0,
     });
   } catch (error) {
-    console.error('更新ASIN错误:', error);
+    logger.error('更新ASIN错误:', error);
     res.status(500).json({
       success: false,
       errorMessage: error.message || '更新失败',
@@ -270,7 +271,7 @@ exports.moveASIN = async (req, res) => {
       errorCode: 0,
     });
   } catch (error) {
-    console.error('移动ASIN错误:', error);
+    logger.error('移动ASIN错误:', error);
     res.status(500).json({
       success: false,
       errorMessage: error.message || '移动失败',
@@ -305,7 +306,7 @@ exports.updateASINFeishuNotify = async (req, res) => {
       errorCode: 0,
     });
   } catch (error) {
-    console.error('更新ASIN飞书通知开关错误:', error);
+    logger.error('更新ASIN飞书通知开关错误:', error);
     res.status(500).json({
       success: false,
       errorMessage: error.message || '更新失败',
@@ -340,7 +341,7 @@ exports.updateVariantGroupFeishuNotify = async (req, res) => {
       errorCode: 0,
     });
   } catch (error) {
-    console.error('更新变体组飞书通知开关错误:', error);
+    logger.error('更新变体组飞书通知开关错误:', error);
     res.status(500).json({
       success: false,
       errorMessage: error.message || '更新失败',
@@ -360,7 +361,7 @@ exports.deleteASIN = async (req, res) => {
       errorCode: 0,
     });
   } catch (error) {
-    console.error('删除ASIN错误:', error);
+    logger.error('删除ASIN错误:', error);
     res.status(500).json({
       success: false,
       errorMessage: error.message || '删除失败',
@@ -373,7 +374,7 @@ exports.deleteASIN = async (req, res) => {
 exports.importFromExcel = async (req, res) => {
   try {
     if (!req.file) {
-      console.error('Excel导入错误: 没有收到文件', {
+      logger.error('Excel导入错误: 没有收到文件', {
         body: req.body,
         files: req.files,
         file: req.file,
@@ -385,7 +386,7 @@ exports.importFromExcel = async (req, res) => {
       });
     }
 
-    console.log('收到文件:', {
+    logger.info('收到文件:', {
       originalname: req.file.originalname,
       mimetype: req.file.mimetype,
       size: req.file.size,
@@ -414,7 +415,7 @@ exports.importFromExcel = async (req, res) => {
         codepage: 65001, // UTF-8
       });
     } catch (parseError) {
-      console.error('Excel解析错误:', parseError);
+      logger.error('Excel解析错误:', parseError);
       return res.status(400).json({
         success: false,
         errorMessage:
@@ -441,10 +442,10 @@ exports.importFromExcel = async (req, res) => {
       codepage: 65001, // UTF-8
     });
 
-    console.log('解析到的数据行数:', data.length);
+    logger.info('解析到的数据行数:', data.length);
     if (data.length > 0) {
-      console.log('第一行数据（表头）原始:', data[0]);
-      console.log(
+      logger.info('第一行数据（表头）原始:', data[0]);
+      logger.info(
         '第一行数据（表头）类型:',
         data[0].map((h) => typeof h),
       );
@@ -478,7 +479,7 @@ exports.importFromExcel = async (req, res) => {
       }
       return header;
     });
-    console.log('解析到的表头（修复后）:', headers);
+    logger.info('解析到的表头（修复后）:', headers);
 
     // 改进表头匹配逻辑，支持更多变体
     // 使用更宽松的匹配，支持部分匹配和位置匹配
@@ -588,7 +589,7 @@ exports.importFromExcel = async (req, res) => {
       return false;
     });
 
-    console.log('表头索引:', {
+    logger.info('表头索引:', {
       groupNameIndex,
       countryIndex,
       siteIndex,
@@ -653,7 +654,7 @@ exports.importFromExcel = async (req, res) => {
       const asinType =
         asinTypeIndex !== -1 ? String(row[asinTypeIndex] || '').trim() : '';
 
-      console.log(`行 ${rowNumber} 数据:`, {
+      logger.info(`行 ${rowNumber} 数据:`, {
         groupName,
         country,
         site,
@@ -731,7 +732,7 @@ exports.importFromExcel = async (req, res) => {
           }
         }
 
-        console.log(
+        logger.info(
           `处理ASIN: ${asin}, 名称: ${finalAsinName}, 类型: ${finalAsinType}, 原始类型值: ${asinType}`,
         );
 
@@ -829,8 +830,8 @@ exports.importFromExcel = async (req, res) => {
       errorCode: 0,
     });
   } catch (error) {
-    console.error('Excel导入错误:', error);
-    console.error('错误堆栈:', error.stack);
+    logger.error('Excel导入错误:', error);
+    logger.error('错误堆栈:', error.stack);
     const statusCode = error.statusCode || 500;
     res.status(statusCode).json({
       success: false,

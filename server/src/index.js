@@ -107,14 +107,8 @@ app.use((req, res) => {
 });
 
 // 错误处理
-app.use((err, req, res, next) => {
-  logger.error('服务器错误:', err);
-  res.status(500).json({
-    success: false,
-    errorMessage: err.message || '服务器内部错误',
-    errorCode: 500,
-  });
-});
+const errorHandler = require('./middleware/errorHandler');
+app.use(errorHandler);
 
 // 启动服务器
 async function startServer() {

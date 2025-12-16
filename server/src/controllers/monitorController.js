@@ -75,10 +75,19 @@ exports.getMonitorHistory = async (req, res) => {
       pageSize,
     } = req.query;
 
+    // 处理多ASIN查询：如果asin是逗号分隔的字符串，转换为数组
+    let asinParam = asin;
+    if (asin && typeof asin === 'string' && asin.includes(',')) {
+      asinParam = asin
+        .split(',')
+        .map((s) => s.trim())
+        .filter((s) => s.length > 0);
+    }
+
     const result = await MonitorHistory.findAll({
       variantGroupId,
       asinId,
-      asin,
+      asin: asinParam,
       country,
       checkType,
       isBroken,
@@ -94,7 +103,7 @@ exports.getMonitorHistory = async (req, res) => {
       errorCode: 0,
     });
   } catch (error) {
-    console.error('查询监控历史错误:', error);
+    logger.error('查询监控历史错误:', error);
     res.status(500).json({
       success: false,
       errorMessage: error.message || '查询失败',
@@ -121,7 +130,7 @@ exports.getMonitorHistoryById = async (req, res) => {
       errorCode: 0,
     });
   } catch (error) {
-    console.error('查询监控历史详情错误:', error);
+    logger.error('查询监控历史详情错误:', error);
     res.status(500).json({
       success: false,
       errorMessage: error.message || '查询失败',
@@ -148,7 +157,7 @@ exports.getStatistics = async (req, res) => {
       errorCode: 0,
     });
   } catch (error) {
-    console.error('获取统计信息错误:', error);
+    logger.error('获取统计信息错误:', error);
     res.status(500).json({
       success: false,
       errorMessage: error.message || '查询失败',
@@ -218,7 +227,7 @@ exports.getStatisticsByCountry = async (req, res) => {
       errorCode: 0,
     });
   } catch (error) {
-    console.error('按国家统计错误:', error);
+    logger.error('按国家统计错误:', error);
     res.status(500).json({
       success: false,
       errorMessage: error.message || '查询失败',
@@ -244,7 +253,7 @@ exports.getStatisticsByVariantGroup = async (req, res) => {
       errorCode: 0,
     });
   } catch (error) {
-    console.error('按变体组统计错误:', error);
+    logger.error('按变体组统计错误:', error);
     res.status(500).json({
       success: false,
       errorMessage: error.message || '查询失败',
@@ -308,7 +317,7 @@ exports.triggerManualCheck = async (req, res) => {
 
     const { triggerManualCheck } = require('../services/monitorTaskRunner');
 
-    console.log(
+    logger.info(
       `[手动检查] 收到手动检查请求，国家: ${
         countries ? countries.join(', ') : '全部'
       }`,
@@ -344,7 +353,7 @@ exports.triggerManualCheck = async (req, res) => {
       });
     }
   } catch (error) {
-    console.error('手动触发监控检查错误:', error);
+    logger.error('手动触发监控检查错误:', error);
     res.status(500).json({
       success: false,
       errorMessage: error.message || '检查失败',
@@ -562,7 +571,7 @@ exports.getASINStatisticsByCountry = async (req, res) => {
       errorCode: 0,
     });
   } catch (error) {
-    console.error('按国家统计ASIN当前状态错误:', error);
+    logger.error('按国家统计ASIN当前状态错误:', error);
     res.status(500).json({
       success: false,
       errorMessage: error.message || '查询失败',
@@ -585,7 +594,62 @@ exports.getASINStatisticsByVariantGroup = async (req, res) => {
       errorCode: 0,
     });
   } catch (error) {
-    console.error('按变体组统计ASIN当前状态错误:', error);
+    logger.error('按变体组统计ASIN当前状态错误:', error);
+    res.status(500).json({
+      success: false,
+      errorMessage: error.message || '查询失败',
+      errorCode: 500,
+    });
+  }
+};
+
+// 获取异常时长统计
+exports.getAbnormalDurationStatistics = async (req, res) => {
+  try {
+    const { asinIds, asinCodes, variantGroupId, startTime, endTime } =
+      req.query;
+
+    // 处理asinIds参数：可能是逗号分隔的字符串或数组
+    let asinIdsArray = [];
+    if (asinIds) {
+      if (typeof asinIds === 'string') {
+        asinIdsArray = asinIds
+          .split(',')
+          .map((id) => id.trim())
+          .filter((id) => id.length > 0);
+      } else if (Array.isArray(asinIds)) {
+        asinIdsArray = asinIds;
+      }
+    }
+
+    // 处理asinCodes参数：可能是逗号分隔的字符串或数组
+    let asinCodesArray = [];
+    if (asinCodes) {
+      if (typeof asinCodes === 'string') {
+        asinCodesArray = asinCodes
+          .split(',')
+          .map((code) => code.trim())
+          .filter((code) => code.length > 0);
+      } else if (Array.isArray(asinCodes)) {
+        asinCodesArray = asinCodes;
+      }
+    }
+
+    const statistics = await MonitorHistory.getAbnormalDurationStatistics({
+      asinIds: asinIdsArray,
+      asinCodes: asinCodesArray,
+      variantGroupId,
+      startTime,
+      endTime,
+    });
+
+    res.json({
+      success: true,
+      data: statistics,
+      errorCode: 0,
+    });
+  } catch (error) {
+    logger.error('获取异常时长统计错误:', error);
     res.status(500).json({
       success: false,
       errorMessage: error.message || '查询失败',

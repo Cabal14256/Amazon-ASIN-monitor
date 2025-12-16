@@ -34,7 +34,7 @@ class VariantGroup {
     if (shouldUseCache) {
       const cachedValue = cacheService.get(cacheKey);
       if (cachedValue) {
-        console.log('VariantGroup.findAll 使用缓存:', cacheKey);
+        logger.info('VariantGroup.findAll 使用缓存:', cacheKey);
         return JSON.parse(JSON.stringify(cachedValue));
       }
     }
@@ -122,17 +122,45 @@ class VariantGroup {
     const countResult = await query(countSql, countValues);
     const total = countResult[0]?.total || 0;
 
+    // 获取ASIN总数（不受分页和筛选影响，但受keyword、country、variantStatus筛选影响）
+    let totalASINsSql = `SELECT COUNT(*) as total FROM asins a WHERE 1=1`;
+    const totalASINsValues = [];
+
+    if (keyword) {
+      // 如果有关键词搜索，需要关联变体组表
+      totalASINsSql = `SELECT COUNT(DISTINCT a.id) as total 
+                        FROM asins a 
+                        LEFT JOIN variant_groups vg ON vg.id = a.variant_group_id 
+                        WHERE 1=1 
+                        AND (vg.name LIKE ? OR vg.id LIKE ? OR a.asin LIKE ?)`;
+      totalASINsValues.push(`%${keyword}%`, `%${keyword}%`, `%${keyword}%`);
+    }
+
+    if (country) {
+      totalASINsSql += ` AND a.country = ?`;
+      totalASINsValues.push(country);
+    }
+
+    if (variantStatus) {
+      const isBroken = variantStatus === 'BROKEN' ? 1 : 0;
+      totalASINsSql += ` AND a.is_broken = ?`;
+      totalASINsValues.push(isBroken);
+    }
+
+    const totalASINsResult = await query(totalASINsSql, totalASINsValues);
+    const totalASINs = totalASINsResult[0]?.total || 0;
+
     // 分页 - LIMIT 和 OFFSET 不能使用参数绑定，必须直接拼接（确保是整数）
     const offset = (Number(current) - 1) * Number(pageSize);
     const limit = Number(pageSize);
     sql += ` ORDER BY vg.create_time DESC LIMIT ${limit} OFFSET ${offset}`;
 
     // 调试日志
-    console.log('执行SQL:', sql);
-    console.log('查询参数:', queryValues);
+    logger.debug('执行SQL:', sql);
+    logger.debug('查询参数:', queryValues);
 
     const list = await query(sql, queryValues);
-    console.log('查询到的变体组数量:', list.length);
+    logger.debug('查询到的变体组数量:', list.length);
 
     // 优化：使用批量查询替代N+1查询
     // 一次性获取所有变体组的ASIN数据，然后在应用层分组
@@ -164,7 +192,7 @@ class VariantGroup {
       // 为每个变体组分配ASIN数据
       for (const group of list) {
         const asins = asinsByGroupId[group.id] || [];
-        console.log(`变体组 ${group.id} 查询到的ASIN数量:`, asins.length);
+        logger.debug(`变体组 ${group.id} 查询到的ASIN数量:`, asins.length);
 
         group.children = asins.map((asin) => ({
           id: asin.id,
@@ -217,6 +245,7 @@ class VariantGroup {
     const result = {
       list,
       total,
+      totalASINs,
       current: Number(current),
       pageSize: Number(pageSize),
     };

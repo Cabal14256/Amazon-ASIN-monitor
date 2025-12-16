@@ -1,5 +1,7 @@
 import services from '@/services/dashboard';
+import { wsClient } from '@/services/websocket';
 import { useMessage } from '@/utils/message';
+import { DownOutlined, UpOutlined } from '@ant-design/icons';
 import { PageContainer, StatisticCard } from '@ant-design/pro-components';
 import { history } from '@umijs/max';
 import {
@@ -8,6 +10,7 @@ import {
   Col,
   Empty,
   List,
+  Popover,
   Row,
   Space,
   Tag,
@@ -16,7 +19,6 @@ import {
 import dayjs from 'dayjs';
 import ReactECharts from 'echarts-for-react';
 import React, { useEffect, useState } from 'react';
-import { wsClient } from '@/services/websocket';
 import styles from './index.less';
 
 const { getDashboardData } = services.DashboardController;
@@ -59,6 +61,15 @@ const HomePage: React.FC = () => {
     total?: number;
     progress?: number;
   } | null>(null);
+  // 管理每个统计卡片的展开状态
+  const [expandedCards, setExpandedCards] = useState<Record<string, boolean>>({
+    totalGroups: false,
+    totalASINs: false,
+    brokenGroups: false,
+    brokenASINs: false,
+    todayChecks: false,
+    todayBroken: false,
+  });
 
   // 加载仪表盘数据
   const loadDashboardData = async () => {
@@ -150,6 +161,53 @@ const HomePage: React.FC = () => {
 
   const { overview, realtimeAlerts, distribution, recentActivities } =
     dashboardData;
+
+  // 渲染 Popover 中的国家数据列表
+  const renderCountryPopoverContent = (
+    getValue: (country: API.CountryOverview) => number,
+  ) => {
+    const overviewByCountry = overview?.overviewByCountry;
+    if (!overviewByCountry) {
+      return <div style={{ padding: '8px 0' }}>暂无数据</div>;
+    }
+
+    const countries = [
+      { key: 'US', label: '美国', data: overviewByCountry.US },
+      { key: 'UK', label: '英国', data: overviewByCountry.UK },
+      { key: 'DE', label: '德国', data: overviewByCountry.DE },
+      { key: 'FR', label: '法国', data: overviewByCountry.FR },
+      { key: 'IT', label: '意大利', data: overviewByCountry.IT },
+      { key: 'ES', label: '西班牙', data: overviewByCountry.ES },
+      {
+        key: 'EU_TOTAL',
+        label: '欧洲五国总和',
+        data: overviewByCountry.EU_TOTAL,
+      },
+    ];
+
+    return (
+      <div style={{ minWidth: 180, maxHeight: 300, overflowY: 'auto' }}>
+        {countries.map(({ key, label, data }) => {
+          if (!data) return null;
+          const value = getValue(data);
+          return (
+            <div
+              key={key}
+              style={{
+                display: 'flex',
+                justifyContent: 'space-between',
+                padding: '6px 0',
+                borderBottom: '1px solid #f0f0f0',
+              }}
+            >
+              <span style={{ fontSize: 13, color: '#666' }}>{label}</span>
+              <span style={{ fontSize: 13, fontWeight: 600 }}>{value}</span>
+            </div>
+          );
+        })}
+      </div>
+    );
+  };
 
   // 国家分布柱状图数据（ECharts格式）
   const countryColumnData = React.useMemo(() => {
@@ -323,53 +381,259 @@ const HomePage: React.FC = () => {
       loading={loading}
     >
       {/* 关键指标概览卡片 */}
-      <StatisticCard.Group>
-        <StatisticCard
-          statistic={{
-            title: '总变体组数',
-            value: overview?.totalGroups || 0,
-            prefix: '📦',
-          }}
-        />
-        <StatisticCard
-          statistic={{
-            title: '总ASIN数',
-            value: overview?.totalASINs || 0,
-            prefix: '🔗',
-          }}
-        />
-        <StatisticCard
-          statistic={{
-            title: '异常变体组',
-            value: overview?.brokenGroups || 0,
-            status: overview?.brokenGroups ? 'error' : 'success',
-            prefix: overview?.brokenGroups ? '⚠️' : '✅',
-          }}
-        />
-        <StatisticCard
-          statistic={{
-            title: '异常ASIN',
-            value: overview?.brokenASINs || 0,
-            status: overview?.brokenASINs ? 'error' : 'success',
-            prefix: overview?.brokenASINs ? '⚠️' : '✅',
-          }}
-        />
-        <StatisticCard
-          statistic={{
-            title: '今日检查次数',
-            value: overview?.todayChecks || 0,
-            prefix: '📊',
-          }}
-        />
-        <StatisticCard
-          statistic={{
-            title: '今日异常次数',
-            value: overview?.todayBroken || 0,
-            status: overview?.todayBroken ? 'error' : 'success',
-            prefix: overview?.todayBroken ? '⚠️' : '✅',
-          }}
-        />
-      </StatisticCard.Group>
+      <Card className={styles.statCardsContainer}>
+        <div className={styles.statCardsInner}>
+          <div className={styles.statCard}>
+            <StatisticCard
+              statistic={{
+                title: '总变体组数',
+                value: overview?.totalGroups || 0,
+                prefix: '📦',
+                valueRender: (node) => (
+                  <Space size={4}>
+                    {node}
+                    <Popover
+                      content={renderCountryPopoverContent(
+                        (country) => country.totalGroups || 0,
+                      )}
+                      trigger="click"
+                      open={expandedCards.totalGroups}
+                      onOpenChange={(open) =>
+                        setExpandedCards((prev) => ({
+                          ...prev,
+                          totalGroups: open,
+                        }))
+                      }
+                      placement="bottomLeft"
+                    >
+                      <Button
+                        type="text"
+                        size="small"
+                        icon={
+                          expandedCards.totalGroups ? (
+                            <UpOutlined />
+                          ) : (
+                            <DownOutlined />
+                          )
+                        }
+                        style={{ padding: 0, height: 'auto', lineHeight: 1 }}
+                      />
+                    </Popover>
+                  </Space>
+                ),
+              }}
+            />
+          </div>
+          <div className={styles.statCard}>
+            <StatisticCard
+              statistic={{
+                title: '总ASIN数',
+                value: overview?.totalASINs || 0,
+                prefix: '🔗',
+                valueRender: (node) => (
+                  <Space size={4}>
+                    {node}
+                    <Popover
+                      content={renderCountryPopoverContent(
+                        (country) => country.totalASINs || 0,
+                      )}
+                      trigger="click"
+                      open={expandedCards.totalASINs}
+                      onOpenChange={(open) =>
+                        setExpandedCards((prev) => ({
+                          ...prev,
+                          totalASINs: open,
+                        }))
+                      }
+                      placement="bottomLeft"
+                    >
+                      <Button
+                        type="text"
+                        size="small"
+                        icon={
+                          expandedCards.totalASINs ? (
+                            <UpOutlined />
+                          ) : (
+                            <DownOutlined />
+                          )
+                        }
+                        style={{ padding: 0, height: 'auto', lineHeight: 1 }}
+                      />
+                    </Popover>
+                  </Space>
+                ),
+              }}
+            />
+          </div>
+          <div className={styles.statCard}>
+            <StatisticCard
+              statistic={{
+                title: '异常变体组',
+                value: overview?.brokenGroups || 0,
+                status: overview?.brokenGroups ? 'error' : 'success',
+                prefix: overview?.brokenGroups ? '⚠️' : '✅',
+                valueRender: (node) => (
+                  <Space size={4}>
+                    {node}
+                    <Popover
+                      content={renderCountryPopoverContent(
+                        (country) => country.brokenGroups || 0,
+                      )}
+                      trigger="click"
+                      open={expandedCards.brokenGroups}
+                      onOpenChange={(open) =>
+                        setExpandedCards((prev) => ({
+                          ...prev,
+                          brokenGroups: open,
+                        }))
+                      }
+                      placement="bottomLeft"
+                    >
+                      <Button
+                        type="text"
+                        size="small"
+                        icon={
+                          expandedCards.brokenGroups ? (
+                            <UpOutlined />
+                          ) : (
+                            <DownOutlined />
+                          )
+                        }
+                        style={{ padding: 0, height: 'auto', lineHeight: 1 }}
+                      />
+                    </Popover>
+                  </Space>
+                ),
+              }}
+            />
+          </div>
+          <div className={styles.statCard}>
+            <StatisticCard
+              statistic={{
+                title: '异常ASIN',
+                value: overview?.brokenASINs || 0,
+                status: overview?.brokenASINs ? 'error' : 'success',
+                prefix: overview?.brokenASINs ? '⚠️' : '✅',
+                valueRender: (node) => (
+                  <Space size={4}>
+                    {node}
+                    <Popover
+                      content={renderCountryPopoverContent(
+                        (country) => country.brokenASINs || 0,
+                      )}
+                      trigger="click"
+                      open={expandedCards.brokenASINs}
+                      onOpenChange={(open) =>
+                        setExpandedCards((prev) => ({
+                          ...prev,
+                          brokenASINs: open,
+                        }))
+                      }
+                      placement="bottomLeft"
+                    >
+                      <Button
+                        type="text"
+                        size="small"
+                        icon={
+                          expandedCards.brokenASINs ? (
+                            <UpOutlined />
+                          ) : (
+                            <DownOutlined />
+                          )
+                        }
+                        style={{ padding: 0, height: 'auto', lineHeight: 1 }}
+                      />
+                    </Popover>
+                  </Space>
+                ),
+              }}
+            />
+          </div>
+          <div className={styles.statCard}>
+            <StatisticCard
+              statistic={{
+                title: '今日检查次数',
+                value: overview?.todayChecks || 0,
+                prefix: '📊',
+                valueRender: (node) => (
+                  <Space size={4}>
+                    {node}
+                    <Popover
+                      content={renderCountryPopoverContent(
+                        (country) => country.todayChecks || 0,
+                      )}
+                      trigger="click"
+                      open={expandedCards.todayChecks}
+                      onOpenChange={(open) =>
+                        setExpandedCards((prev) => ({
+                          ...prev,
+                          todayChecks: open,
+                        }))
+                      }
+                      placement="bottomLeft"
+                    >
+                      <Button
+                        type="text"
+                        size="small"
+                        icon={
+                          expandedCards.todayChecks ? (
+                            <UpOutlined />
+                          ) : (
+                            <DownOutlined />
+                          )
+                        }
+                        style={{ padding: 0, height: 'auto', lineHeight: 1 }}
+                      />
+                    </Popover>
+                  </Space>
+                ),
+              }}
+            />
+          </div>
+          <div className={styles.statCard}>
+            <StatisticCard
+              statistic={{
+                title: '今日异常次数',
+                value: overview?.todayBroken || 0,
+                status: overview?.todayBroken ? 'error' : 'success',
+                prefix: overview?.todayBroken ? '⚠️' : '✅',
+                valueRender: (node) => (
+                  <Space size={4}>
+                    {node}
+                    <Popover
+                      content={renderCountryPopoverContent(
+                        (country) => country.todayBroken || 0,
+                      )}
+                      trigger="click"
+                      open={expandedCards.todayBroken}
+                      onOpenChange={(open) =>
+                        setExpandedCards((prev) => ({
+                          ...prev,
+                          todayBroken: open,
+                        }))
+                      }
+                      placement="bottomLeft"
+                    >
+                      <Button
+                        type="text"
+                        size="small"
+                        icon={
+                          expandedCards.todayBroken ? (
+                            <UpOutlined />
+                          ) : (
+                            <DownOutlined />
+                          )
+                        }
+                        style={{ padding: 0, height: 'auto', lineHeight: 1 }}
+                      />
+                    </Popover>
+                  </Space>
+                ),
+              }}
+            />
+          </div>
+        </div>
+      </Card>
 
       <Row gutter={16} style={{ marginTop: 16 }}>
         {/* 实时异常监控面板 */}

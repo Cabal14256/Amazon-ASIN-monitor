@@ -1,5 +1,6 @@
 const { query } = require('../config/database');
 const cacheService = require('../services/cacheService');
+const logger = require('../utils/logger');
 
 class MonitorHistory {
   // 查询监控历史列表
@@ -42,9 +43,16 @@ class MonitorHistory {
     }
 
     if (asin) {
-      // 优先在快照字段中搜索，如果没有则搜索关联表
-      sql += ` AND (COALESCE(mh.asin_code, a.asin) LIKE ?)`;
-      conditions.push(`%${asin}%`);
+      // 支持多ASIN查询：如果asin是数组，使用IN查询；否则使用LIKE查询（向后兼容）
+      if (Array.isArray(asin) && asin.length > 0) {
+        const placeholders = asin.map(() => '?').join(',');
+        sql += ` AND (COALESCE(mh.asin_code, a.asin) IN (${placeholders}))`;
+        conditions.push(...asin);
+      } else if (typeof asin === 'string') {
+        // 优先在快照字段中搜索，如果没有则搜索关联表
+        sql += ` AND (COALESCE(mh.asin_code, a.asin) LIKE ?)`;
+        conditions.push(`%${asin}%`);
+      }
     }
 
     if (country) {
@@ -100,9 +108,16 @@ class MonitorHistory {
       }
 
       if (asin) {
-        // 只搜索快照字段，避免JOIN
-        countSql += ` AND mh.asin_code LIKE ?`;
-        countConditions.push(`%${asin}%`);
+        // 支持多ASIN查询：如果asin是数组，使用IN查询；否则使用LIKE查询（向后兼容）
+        if (Array.isArray(asin) && asin.length > 0) {
+          const placeholders = asin.map(() => '?').join(',');
+          countSql += ` AND mh.asin_code IN (${placeholders})`;
+          countConditions.push(...asin);
+        } else if (typeof asin === 'string') {
+          // 只搜索快照字段，避免JOIN
+          countSql += ` AND mh.asin_code LIKE ?`;
+          countConditions.push(`%${asin}%`);
+        }
       }
 
       if (country) {
@@ -138,7 +153,7 @@ class MonitorHistory {
       total = countResult[0]?.total || 0;
       cacheService.set(countKey, total, 60 * 1000);
     } else {
-      console.log('MonitorHistory.findAll 使用缓存总数:', countKey);
+      logger.info('MonitorHistory.findAll 使用缓存总数:', countKey);
     }
 
     // 分页 - LIMIT 和 OFFSET 不能使用参数绑定，必须直接拼接（确保是整数）
@@ -1215,13 +1230,14 @@ class MonitorHistory {
       SELECT 
         vg.id as variant_group_id,
         vg.name as variant_group_name,
+        vg.country as country,
         COUNT(a.id) as total_asins,
         SUM(CASE WHEN a.is_broken = 1 THEN 1 ELSE 0 END) as broken_count,
         SUM(CASE WHEN a.is_broken = 0 THEN 1 ELSE 0 END) as normal_count
       FROM variant_groups vg
       LEFT JOIN asins a ON a.variant_group_id = vg.id
       WHERE a.id IS NOT NULL
-      GROUP BY vg.id, vg.name
+      GROUP BY vg.id, vg.name, vg.country
       HAVING broken_count > 0
       ORDER BY broken_count DESC, total_asins DESC
       LIMIT ${safeLimit}
@@ -1229,6 +1245,255 @@ class MonitorHistory {
 
     const list = await query(sql, []);
     return list;
+  }
+
+  // 获取异常时长统计
+  static async getAbnormalDurationStatistics(params = {}) {
+    const {
+      asinIds = [],
+      asinCodes = [],
+      variantGroupId = '',
+      startTime = '',
+      endTime = '',
+    } = params;
+
+    // 根据时间范围自动选择时间粒度
+    let groupBy = 'day';
+    let dateFormat = 'DATE_FORMAT(check_time, "%Y-%m-%d")';
+    let intervalHours = 24; // 默认按天，间隔24小时
+
+    if (startTime && endTime) {
+      const start = new Date(startTime);
+      const end = new Date(endTime);
+      const diffHours = (end - start) / (1000 * 60 * 60);
+
+      if (diffHours <= 7 * 24) {
+        // 7天以内按小时
+        groupBy = 'hour';
+        dateFormat = 'DATE_FORMAT(check_time, "%Y-%m-%d %H:00:00")';
+        intervalHours = 1;
+      } else if (diffHours <= 30 * 24) {
+        // 30天以内按天
+        groupBy = 'day';
+        dateFormat = 'DATE_FORMAT(check_time, "%Y-%m-%d")';
+        intervalHours = 24;
+      } else {
+        // 超过30天按周
+        groupBy = 'week';
+        // MySQL的WEEK函数，模式3表示ISO周（1-53），格式为：YYYY-WW
+        dateFormat =
+          'CONCAT(YEAR(check_time), "-", LPAD(WEEK(check_time, 3), 2, "0"))';
+        intervalHours = 24 * 7;
+      }
+    }
+
+    // 构建WHERE条件
+    let whereClause = 'WHERE 1=1';
+    const conditions = [];
+
+    if (variantGroupId) {
+      whereClause += ` AND mh.variant_group_id = ?`;
+      conditions.push(variantGroupId);
+    }
+
+    if (asinIds && Array.isArray(asinIds) && asinIds.length > 0) {
+      const placeholders = asinIds.map(() => '?').join(',');
+      whereClause += ` AND mh.asin_id IN (${placeholders})`;
+      conditions.push(...asinIds);
+    }
+
+    if (asinCodes && Array.isArray(asinCodes) && asinCodes.length > 0) {
+      const placeholders = asinCodes.map(() => '?').join(',');
+      whereClause += ` AND COALESCE(mh.asin_code, a.asin) IN (${placeholders})`;
+      conditions.push(...asinCodes);
+    }
+
+    if (startTime) {
+      whereClause += ` AND mh.check_time >= ?`;
+      conditions.push(startTime);
+    }
+
+    if (endTime) {
+      whereClause += ` AND mh.check_time <= ?`;
+      conditions.push(endTime);
+    }
+
+    // 查询每个时间粒度内每个ASIN的异常记录数
+    // 假设检查间隔为1小时（根据定时任务配置）
+    const checkIntervalHours = 1;
+
+    const sql = `
+      SELECT 
+        ${dateFormat} as time_period,
+        mh.asin_id,
+        COALESCE(mh.asin_code, a.asin) as asin,
+        COUNT(*) as total_checks,
+        SUM(CASE WHEN mh.is_broken = 1 THEN 1 ELSE 0 END) as broken_count,
+        SUM(CASE WHEN mh.is_broken = 0 THEN 1 ELSE 0 END) as normal_count
+      FROM monitor_history mh
+      LEFT JOIN asins a ON a.id = mh.asin_id
+      ${whereClause}
+      AND mh.asin_id IS NOT NULL
+      GROUP BY ${dateFormat}, mh.asin_id, COALESCE(mh.asin_code, a.asin)
+      ORDER BY time_period ASC, mh.asin_id ASC
+    `;
+
+    const results = await query(sql, conditions);
+
+    // 处理数据：计算异常时长和占比
+    const processedData = results.map((row) => {
+      const brokenCount = row.broken_count || 0;
+      const totalChecks = row.total_checks || 0;
+
+      // 异常时长 = 异常记录数 × 检查间隔（小时）
+      // 每个异常记录代表该ASIN在检查间隔时间内处于异常状态
+      // 注意：US区域检查间隔是30分钟（0.5小时），EU区域是1小时
+      // 这里使用1小时作为默认值，实际应该根据国家区分，但为了简化，统一使用1小时
+      const abnormalDuration = brokenCount * checkIntervalHours;
+
+      // 总时长 = 时间粒度长度（小时）
+      const totalDuration = intervalHours;
+
+      // 异常占比 = 异常记录数 / 总记录数 × 100%
+      // 这表示在该时间粒度内，异常检查次数占总检查次数的百分比
+      const abnormalRatio =
+        totalChecks > 0 ? (brokenCount / totalChecks) * 100 : 0;
+
+      return {
+        timePeriod: row.time_period,
+        asinId: row.asin_id,
+        asin: row.asin,
+        abnormalDuration: Number(abnormalDuration.toFixed(2)),
+        totalDuration: totalDuration,
+        abnormalRatio: Number(abnormalRatio.toFixed(2)),
+        brokenCount: brokenCount,
+        totalChecks: totalChecks,
+      };
+    });
+
+    // 填充完整的时间序列（包括没有数据的时间点）
+    if (startTime && endTime) {
+      const start = new Date(startTime);
+      const end = new Date(endTime);
+
+      // 获取所有唯一的ASIN
+      const asinSet = new Set();
+      processedData.forEach((item) => {
+        if (item.asinId) {
+          asinSet.add(JSON.stringify({ asinId: item.asinId, asin: item.asin }));
+        }
+      });
+
+      // 生成完整的时间序列
+      const timeSeries = [];
+      const current = new Date(start);
+      // 将时间设置为当天的开始（对于按天和周）
+      if (groupBy === 'day' || groupBy === 'week') {
+        current.setHours(0, 0, 0, 0);
+      } else if (groupBy === 'hour') {
+        current.setMinutes(0, 0, 0);
+      }
+
+      while (current <= end) {
+        let timePeriod;
+        if (groupBy === 'hour') {
+          // 格式：YYYY-MM-DD HH:00:00
+          const year = current.getFullYear();
+          const month = String(current.getMonth() + 1).padStart(2, '0');
+          const day = String(current.getDate()).padStart(2, '0');
+          const hour = String(current.getHours()).padStart(2, '0');
+          timePeriod = `${year}-${month}-${day} ${hour}:00:00`;
+          current.setHours(current.getHours() + 1);
+        } else if (groupBy === 'day') {
+          // 格式：YYYY-MM-DD
+          const year = current.getFullYear();
+          const month = String(current.getMonth() + 1).padStart(2, '0');
+          const day = String(current.getDate()).padStart(2, '0');
+          timePeriod = `${year}-${month}-${day}`;
+          current.setDate(current.getDate() + 1);
+        } else if (groupBy === 'week') {
+          // 格式：YYYY-WW（与MySQL的DATE_FORMAT(check_time, "%Y-%u")匹配）
+          const year = current.getFullYear();
+          // MySQL的WEEK函数默认模式是0，返回0-53，但我们需要ISO周（1-53）
+          // 使用WEEK(date, 3)返回ISO周数
+          // 这里我们使用JavaScript计算ISO周数
+          const week = MonitorHistory.getWeekNumber(current);
+          timePeriod = `${year}-${week.toString().padStart(2, '0')}`;
+          current.setDate(current.getDate() + 7);
+        }
+
+        if (timePeriod) {
+          timeSeries.push(timePeriod);
+        }
+      }
+
+      // 为每个ASIN填充完整的时间序列
+      const filledData = [];
+      asinSet.forEach((asinKey) => {
+        const { asinId, asin } = JSON.parse(asinKey);
+        timeSeries.forEach((timePeriod) => {
+          // 查找是否有该时间点的数据
+          const existingData = processedData.find(
+            (item) => item.timePeriod === timePeriod && item.asinId === asinId,
+          );
+
+          if (existingData) {
+            // 使用已有数据
+            filledData.push(existingData);
+          } else {
+            // 填充空数据（0值）
+            filledData.push({
+              timePeriod: timePeriod,
+              asinId: asinId,
+              asin: asin,
+              abnormalDuration: 0,
+              totalDuration: intervalHours,
+              abnormalRatio: 0,
+              brokenCount: 0,
+              totalChecks: 0,
+            });
+          }
+        });
+      });
+
+      // 如果没有任何ASIN数据，至少返回时间序列（用于显示空图表）
+      if (filledData.length === 0 && timeSeries.length > 0) {
+        timeSeries.forEach((timePeriod) => {
+          filledData.push({
+            timePeriod: timePeriod,
+            asinId: null,
+            asin: null,
+            abnormalDuration: 0,
+            totalDuration: intervalHours,
+            abnormalRatio: 0,
+            brokenCount: 0,
+            totalChecks: 0,
+          });
+        });
+      }
+
+      return {
+        timeGranularity: groupBy,
+        data: filledData,
+      };
+    }
+
+    // 如果没有时间范围，直接返回处理后的数据
+    return {
+      timeGranularity: groupBy,
+      data: processedData,
+    };
+  }
+
+  // 辅助函数：获取周数（ISO周）
+  static getWeekNumber(date) {
+    const d = new Date(
+      Date.UTC(date.getFullYear(), date.getMonth(), date.getDate()),
+    );
+    const dayNum = d.getUTCDay() || 7;
+    d.setUTCDate(d.getUTCDate() + 4 - dayNum);
+    const yearStart = new Date(Date.UTC(d.getUTCFullYear(), 0, 1));
+    return Math.ceil(((d - yearStart) / 86400000 + 1) / 7);
   }
 
   // 更新监控历史记录的通知状态
