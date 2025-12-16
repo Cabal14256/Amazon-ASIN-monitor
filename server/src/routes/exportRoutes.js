@@ -26,4 +26,11 @@ router.get(
   exportController.exportMonitorHistory,
 );
 
+// 导出竞品监控历史（需要监控查看权限）
+router.get(
+  '/export/competitor-monitor-history',
+  checkPermission('monitor:read'),
+  exportController.exportCompetitorMonitorHistory,
+);
+
 module.exports = router;

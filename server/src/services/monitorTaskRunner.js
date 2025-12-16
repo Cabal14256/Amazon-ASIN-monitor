@@ -756,10 +756,13 @@ async function runMonitorTask(countries, batchConfig = null) {
       checkTime: toUTC8ISOString(checkTime),
     };
   } catch (error) {
-    logger.error(`❌ 监控任务执行失败:`, error);
+    // 改进错误日志：提取错误信息，避免显示空对象
+    const errorMessage = error?.message || error?.toString() || '未知错误';
+    const errorStack = error?.stack ? `\n堆栈: ${error.stack}` : '';
+    logger.error(`❌ 监控任务执行失败: ${errorMessage}${errorStack}`);
     return {
       success: false,
-      error: error.message || '监控任务执行失败',
+      error: errorMessage,
       totalChecked,
       totalBroken,
       totalNormal: totalChecked - totalBroken,
@@ -776,7 +779,14 @@ async function runMonitorTask(countries, batchConfig = null) {
     if (pendingRunCountries && pendingRunCountries.length > 0) {
       const nextCountries = pendingRunCountries;
       pendingRunCountries = null;
-      await runMonitorTask(nextCountries);
+      // 捕获错误，避免影响主任务的日志
+      try {
+        await runMonitorTask(nextCountries);
+      } catch (nextTaskError) {
+        const nextErrorMessage =
+          nextTaskError?.message || nextTaskError?.toString() || '未知错误';
+        logger.error(`❌ 执行待处理的监控任务失败: ${nextErrorMessage}`);
+      }
     }
   }
 }

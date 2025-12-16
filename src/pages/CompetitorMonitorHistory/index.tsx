@@ -1,4 +1,5 @@
 import services from '@/services/competitor';
+import { exportToExcel } from '@/utils/export';
 import {
   ActionType,
   PageContainer,
@@ -6,7 +7,7 @@ import {
   ProTable,
 } from '@ant-design/pro-components';
 import { useSearchParams } from '@umijs/max';
-import { Button, message, Tag } from 'antd';
+import { Button, Tag } from 'antd';
 import dayjs from 'dayjs';
 import React, { useRef } from 'react';
 
@@ -249,71 +250,45 @@ const CompetitorMonitorHistoryPage: React.FC<unknown> = () => {
             key="export"
             onClick={async () => {
               try {
-                const params = new URLSearchParams();
                 // 获取当前表格的筛选条件
                 const formValues = actionRef.current?.getFieldsValue?.() || {};
 
-                // 处理时间范围（transform 函数已经转换为 startTime 和 endTime）
+                // 构建查询参数对象
+                const queryParams: Record<string, any> = {};
                 if (formValues.startTime) {
-                  params.append('startTime', formValues.startTime);
+                  queryParams.startTime = formValues.startTime;
                 }
                 if (formValues.endTime) {
-                  params.append('endTime', formValues.endTime);
+                  queryParams.endTime = formValues.endTime;
                 }
-
-                // 处理其他筛选条件
                 if (formValues.country) {
-                  params.append('country', formValues.country);
+                  queryParams.country = formValues.country;
                 }
                 if (formValues.checkType) {
-                  params.append('checkType', formValues.checkType);
+                  queryParams.checkType = formValues.checkType;
                 }
                 if (
                   formValues.isBroken !== undefined &&
                   formValues.isBroken !== ''
                 ) {
-                  params.append('isBroken', formValues.isBroken);
+                  queryParams.isBroken = formValues.isBroken;
                 }
                 if (formValues.asin) {
-                  params.append('asin', formValues.asin);
+                  queryParams.asin = formValues.asin;
                 }
-
-                // 如果URL中有参数，添加到请求中
                 if (type === 'group' && id) {
-                  params.append('variantGroupId', id);
+                  queryParams.variantGroupId = id;
                 } else if (type === 'asin' && id) {
-                  params.append('asinId', id);
+                  queryParams.asinId = id;
                 }
 
-                const token = localStorage.getItem('token');
-                const url = `/api/v1/export/competitor-monitor-history?${params.toString()}`;
-
-                const response = await fetch(url, {
-                  method: 'GET',
-                  headers: {
-                    Authorization: `Bearer ${token}`,
-                  },
-                });
-
-                if (response.ok) {
-                  const blob = await response.blob();
-                  const downloadUrl = window.URL.createObjectURL(blob);
-                  const a = document.createElement('a');
-                  a.href = downloadUrl;
-                  a.download = `竞品监控历史_${
-                    new Date().toISOString().split('T')[0]
-                  }.xlsx`;
-                  document.body.appendChild(a);
-                  a.click();
-                  document.body.removeChild(a);
-                  window.URL.revokeObjectURL(downloadUrl);
-                  message.success('导出成功');
-                } else {
-                  message.error('导出失败');
-                }
+                await exportToExcel(
+                  '/v1/export/competitor-monitor-history',
+                  queryParams,
+                  '竞品监控历史',
+                );
               } catch (error) {
                 console.error('导出失败:', error);
-                message.error('导出失败');
               }
             }}
           >

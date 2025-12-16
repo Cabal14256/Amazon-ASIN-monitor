@@ -1,6 +1,7 @@
 const { query } = require('../config/database');
 const { v4: uuidv4 } = require('uuid');
 const cacheService = require('../services/cacheService');
+const logger = require('../utils/logger');
 
 // 转换ASIN类型：将旧格式(MAIN_LINK/SUB_REVIEW)转换为新格式(1/2)
 function normalizeAsinType(asinType) {

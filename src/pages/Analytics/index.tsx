@@ -1,4 +1,5 @@
 import services from '@/services/asin';
+import { exportToExcel } from '@/utils/export';
 import { useMessage } from '@/utils/message';
 import { getPeakHours } from '@/utils/peakHours';
 import { PageContainer, StatisticCard } from '@ant-design/pro-components';
@@ -1251,49 +1252,28 @@ const AnalyticsPageContent: React.FC<unknown> = () => {
   const { totalChecks, brokenCount, normalCount } = normalizedOverall;
 
   // 导出数据
-  const handleExport = async (format: 'excel' | 'csv' = 'excel') => {
+  const handleExport = async () => {
     try {
       const startTime = dateRange[0].format('YYYY-MM-DD 00:00:00');
       const endTime = dateRange[1].format('YYYY-MM-DD 23:59:59');
 
-      const params = new URLSearchParams({
+      // 构建查询参数对象
+      const queryParams: Record<string, any> = {
         startTime,
         endTime,
-        format,
-      });
-
+      };
       if (country) {
-        params.append('country', country);
+        queryParams.country = country;
       }
 
-      const url = `/api/v1/export/monitor-history?${params.toString()}`;
-      const token = localStorage.getItem('token');
-
-      // 使用 fetch 下载文件，避免 HTTPS 警告
-      const response = await fetch(url, {
-        headers: {
-          ...(token ? { Authorization: `Bearer ${token}` } : {}),
-        },
-      });
-      if (!response.ok) {
-        throw new Error('导出失败');
-      }
-
-      const blob = await response.blob();
-      const downloadUrl = window.URL.createObjectURL(blob);
-      const link = document.createElement('a');
-      link.href = downloadUrl;
-      link.download = `监控历史_${dateRange[0].format(
-        'YYYY-MM-DD',
-      )}_${dateRange[1].format('YYYY-MM-DD')}.${
-        format === 'excel' ? 'xlsx' : 'csv'
-      }`;
-      document.body.appendChild(link);
-      link.click();
-      document.body.removeChild(link);
-      window.URL.revokeObjectURL(downloadUrl);
-
-      message.success(`正在导出${format === 'excel' ? 'Excel' : 'CSV'}文件...`);
+      // 注意：后端目前只支持 Excel 格式
+      await exportToExcel(
+        '/v1/export/monitor-history',
+        queryParams,
+        `监控历史_${dateRange[0].format('YYYY-MM-DD')}_${dateRange[1].format(
+          'YYYY-MM-DD',
+        )}`,
+      );
     } catch (error) {
       console.error('导出失败:', error);
       message.error('导出失败，请重试');
