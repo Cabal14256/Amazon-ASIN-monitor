@@ -168,6 +168,14 @@ const AnalyticsPageContent: React.FC<unknown> = () => {
   // 加载所有统计数据（使用useCallback优化，支持重试）
   const loadStatistics = useCallback(
     async (retryCount = 0) => {
+      // 检查日期范围，如果超过30天，提示用户
+      const daysDiff = dateRange[1].diff(dateRange[0], 'day');
+      if (daysDiff > 30) {
+        message.warning(
+          '查询时间范围较大，可能影响加载速度，建议选择30天以内的范围',
+        );
+      }
+
       setLoading(true);
       setProgress(0);
       const maxRetries = 3;
@@ -473,16 +481,11 @@ const AnalyticsPageContent: React.FC<unknown> = () => {
     ],
   );
 
+  // 只在组件首次加载时执行一次查询
   useEffect(() => {
-    // 检查日期范围，如果超过30天，提示用户
-    const daysDiff = dateRange[1].diff(dateRange[0], 'day');
-    if (daysDiff > 30) {
-      message.warning(
-        '查询时间范围较大，可能影响加载速度，建议选择30天以内的范围',
-      );
-    }
     loadStatistics();
-  }, [loadStatistics, dateRange, message]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   // 时间趋势图表数据
   // 注意：确保数据顺序与颜色数组顺序一致（按字母顺序：异常、正常、总计）

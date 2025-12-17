@@ -4,7 +4,11 @@
  */
 
 const { testConnection, getPoolStatus } = require('../config/database');
-const rateLimiter = require('../services/rateLimiter');
+const {
+  testConnection: testCompetitorConnection,
+  getPoolStatus: getCompetitorPoolStatus,
+} = require('../config/competitor-database');
+const { getRateLimitStats } = require('../middleware/rateLimit');
 const cacheService = require('../services/cacheService');
 const errorStatsService = require('../services/errorStatsService');
 const riskControlService = require('../services/riskControlService');
@@ -24,13 +28,46 @@ exports.getHealth = async (req, res) => {
     // 检查数据库连接
     try {
       const dbConnected = await testConnection();
+      const poolStatus = getPoolStatus();
+      const poolUsage =
+        poolStatus.activeConnections / poolStatus.config.connectionLimit;
+      const isPoolHealthy = poolUsage < 0.9; // 使用率超过90%认为不健康
+
       health.database = {
-        status: dbConnected ? 'ok' : 'error',
+        status: dbConnected ? (isPoolHealthy ? 'ok' : 'degraded') : 'error',
         connected: dbConnected,
-        pool: getPoolStatus(),
+        pool: poolStatus,
+        usagePercent: (poolUsage * 100).toFixed(2),
       };
     } catch (error) {
       health.database = {
+        status: 'error',
+        connected: false,
+        error: error.message,
+      };
+    }
+
+    // 检查竞品数据库连接
+    try {
+      const competitorDbConnected = await testCompetitorConnection();
+      const competitorPoolStatus = getCompetitorPoolStatus();
+      const competitorPoolUsage =
+        competitorPoolStatus.activeConnections /
+        competitorPoolStatus.config.connectionLimit;
+      const isCompetitorPoolHealthy = competitorPoolUsage < 0.9;
+
+      health.competitorDatabase = {
+        status: competitorDbConnected
+          ? isCompetitorPoolHealthy
+            ? 'ok'
+            : 'degraded'
+          : 'error',
+        connected: competitorDbConnected,
+        pool: competitorPoolStatus,
+        usagePercent: (competitorPoolUsage * 100).toFixed(2),
+      };
+    } catch (error) {
+      health.competitorDatabase = {
         status: 'error',
         connected: false,
         error: error.message,
@@ -52,9 +89,9 @@ exports.getHealth = async (req, res) => {
 
     // 检查限流器状态
     try {
+      const rateLimitStats = getRateLimitStats();
       health.rateLimiter = {
-        US: rateLimiter.getStatus('US'),
-        EU: rateLimiter.getStatus('EU'),
+        stats: rateLimitStats,
       };
     } catch (error) {
       health.rateLimiter = {
@@ -109,6 +146,7 @@ exports.getHealth = async (req, res) => {
     // 判断整体健康状态
     if (
       !health.database.connected ||
+      (health.database.pool && parseFloat(health.database.usagePercent) > 90) ||
       parseFloat(health.memory.usagePercent) > 90
     ) {
       health.status = 'degraded';

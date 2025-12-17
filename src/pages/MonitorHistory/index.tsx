@@ -1,6 +1,7 @@
 import services from '@/services/asin';
 import { exportToExcel } from '@/utils/export';
 import { useMessage } from '@/utils/message';
+import { DownOutlined } from '@ant-design/icons';
 import {
   ActionType,
   PageContainer,
@@ -9,7 +10,7 @@ import {
   StatisticCard,
 } from '@ant-design/pro-components';
 import { useSearchParams } from '@umijs/max';
-import { Button, Card, Space, Tag } from 'antd';
+import { Card, Dropdown, Space, Tag } from 'antd';
 import dayjs from 'dayjs';
 import ReactECharts from 'echarts-for-react';
 import React, { useEffect, useMemo, useRef, useState } from 'react';
@@ -191,6 +192,8 @@ const MonitorHistoryPage: React.FC<unknown> = () => {
   const [selectedCountry, setSelectedCountry] = useState<string>('');
   const [abnormalDurationData, setAbnormalDurationData] = useState<any>(null);
   const [showChart, setShowChart] = useState(false);
+  // 保存当前的查询参数，用于导出
+  const currentQueryParamsRef = useRef<Record<string, any>>({});
 
   // 从URL参数获取筛选条件
   const type = searchParams.get('type') || '';
@@ -568,6 +571,30 @@ const MonitorHistoryPage: React.FC<unknown> = () => {
             requestParams.asinId = id;
           }
 
+          // 保存当前查询参数到 ref，用于导出
+          // 只保存筛选条件，不保存分页和排序参数
+          // 只保存有值的参数，避免传递 undefined
+          const paramsToSave: Record<string, any> = {};
+          if (requestParams.startTime)
+            paramsToSave.startTime = requestParams.startTime;
+          if (requestParams.endTime)
+            paramsToSave.endTime = requestParams.endTime;
+          if (requestParams.country)
+            paramsToSave.country = requestParams.country;
+          if (requestParams.checkType)
+            paramsToSave.checkType = requestParams.checkType;
+          if (
+            requestParams.isBroken !== undefined &&
+            requestParams.isBroken !== ''
+          ) {
+            paramsToSave.isBroken = requestParams.isBroken;
+          }
+          if (requestParams.asin) paramsToSave.asin = requestParams.asin;
+          if (requestParams.variantGroupId)
+            paramsToSave.variantGroupId = requestParams.variantGroupId;
+          if (requestParams.asinId) paramsToSave.asinId = requestParams.asinId;
+          currentQueryParamsRef.current = paramsToSave;
+
           // 处理排序
           if (sorter && Object.keys(sorter).length > 0) {
             // 这里可以根据需要处理排序逻辑
@@ -715,56 +742,68 @@ const MonitorHistoryPage: React.FC<unknown> = () => {
             `第 ${range[0]}-${range[1]} 条/总共 ${total} 条`,
           pageSizeOptions: ['10', '20', '50', '100'],
         }}
-        toolBarRender={() => [
-          <Button
-            key="export"
-            onClick={async () => {
-              try {
-                // 获取当前表格的筛选条件
-                const formValues = actionRef.current?.getFieldsValue?.() || {};
+        toolBarRender={() => {
+          const handleExport = async (
+            exportType: 'records' | 'statusChanges',
+          ) => {
+            try {
+              // 直接使用保存的查询参数，确保导出时使用的筛选条件与查询时完全一致
+              const savedParams = currentQueryParamsRef.current;
 
-                // 构建查询参数对象
-                const queryParams: Record<string, any> = {};
-                if (formValues.startTime) {
-                  queryParams.startTime = formValues.startTime;
-                }
-                if (formValues.endTime) {
-                  queryParams.endTime = formValues.endTime;
-                }
-                if (formValues.country) {
-                  queryParams.country = formValues.country;
-                }
-                if (formValues.checkType) {
-                  queryParams.checkType = formValues.checkType;
-                }
-                if (
-                  formValues.isBroken !== undefined &&
-                  formValues.isBroken !== ''
-                ) {
-                  queryParams.isBroken = formValues.isBroken;
-                }
-                if (formValues.asin) {
-                  queryParams.asin = formValues.asin;
-                }
-                if (type === 'group' && id) {
-                  queryParams.variantGroupId = id;
-                } else if (type === 'asin' && id) {
-                  queryParams.asinId = id;
-                }
+              // 构建查询参数对象，从保存的参数开始
+              const queryParams: Record<string, any> = {
+                ...savedParams,
+              };
 
-                await exportToExcel(
-                  '/v1/export/monitor-history',
-                  queryParams,
-                  '监控历史',
-                );
-              } catch (error) {
-                console.error('导出失败:', error);
+              // 如果URL中有参数，添加到请求中（确保这些参数始终存在）
+              if (type === 'group' && id) {
+                queryParams.variantGroupId = id;
+              } else if (type === 'asin' && id) {
+                queryParams.asinId = id;
               }
-            }}
-          >
-            导出Excel
-          </Button>,
-        ]}
+
+              console.log('导出使用的查询参数（与查询时一致）:', queryParams);
+
+              // 添加导出类型参数
+              queryParams.exportType = exportType;
+
+              const filename =
+                exportType === 'statusChanges' ? '状态变动' : '监控历史';
+
+              await exportToExcel(
+                '/v1/export/monitor-history',
+                queryParams,
+                filename,
+              );
+            } catch (error) {
+              console.error('导出失败:', error);
+            }
+          };
+
+          return [
+            <Dropdown.Button
+              key="export"
+              type="primary"
+              icon={<DownOutlined />}
+              menu={{
+                items: [
+                  {
+                    key: 'records',
+                    label: '导出检查记录',
+                    onClick: () => handleExport('records'),
+                  },
+                  {
+                    key: 'statusChanges',
+                    label: '导出状态变动',
+                    onClick: () => handleExport('statusChanges'),
+                  },
+                ],
+              }}
+            >
+              导出Excel
+            </Dropdown.Button>,
+          ];
+        }}
       />
 
       {/* 异常时长统计图表 - 放在表格下方 */}

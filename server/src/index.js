@@ -2,6 +2,7 @@ const express = require('express');
 const cors = require('cors');
 require('dotenv').config();
 const logger = require('./utils/logger');
+const { validateEnv } = require('./config/envValidator');
 const { testConnection } = require('./config/database');
 const {
   testConnection: testCompetitorConnection,
@@ -39,12 +40,30 @@ app.use(
   }),
 );
 // 响应压缩（如果安装了compression包）
+// 注意：排除 SSE 响应和导出路由，因为压缩会缓冲数据，破坏 SSE 流式特性
 try {
   const compression = require('compression');
   app.use(
     compression({
       threshold: 1024, // 只压缩大于1KB的响应
       level: 6, // 压缩级别
+      filter: (req, res) => {
+        // 如果请求标记为不压缩，则不压缩
+        if (req.noCompression) {
+          return false;
+        }
+        // 排除导出路由（使用 SSE 流式响应）
+        if (req.path && req.path.includes('/export')) {
+          return false;
+        }
+        // 排除 SSE 响应（如果响应头已设置）
+        const contentType = res.getHeader('Content-Type');
+        if (contentType && contentType.includes('text/event-stream')) {
+          return false;
+        }
+        // 使用默认的压缩过滤器
+        return compression.filter(req, res);
+      },
     }),
   );
 } catch (error) {
@@ -56,6 +75,16 @@ app.use(express.urlencoded({ extended: true }));
 
 // Prometheus 监控
 app.use(metricsMiddleware);
+
+// 请求超时处理
+const timeout = require('./middleware/timeout');
+// 为导出路由设置更长的超时时间（10分钟），因为数据量大时可能需要较长时间
+app.use('/api/v1/export', timeout(600000));
+// 为统计查询和仪表盘设置更长的超时时间（120秒）
+app.use('/api/v1/analytics', timeout(120000));
+app.use('/api/v1/dashboard', timeout(120000));
+// 其他 API 使用默认超时（30秒）
+app.use('/api/v1', timeout(30000));
 
 // API限流（应用到所有API路由）
 try {
@@ -112,6 +141,9 @@ app.use(errorHandler);
 
 // 启动服务器
 async function startServer() {
+  // 首先验证环境变量
+  validateEnv();
+
   // 测试数据库连接
   const dbConnected = await testConnection();
   if (!dbConnected) {

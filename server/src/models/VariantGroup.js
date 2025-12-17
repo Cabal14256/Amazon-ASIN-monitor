@@ -85,38 +85,65 @@ class VariantGroup {
 
     sql += ` GROUP BY vg.id`;
 
-    // 获取总数（需要关联ASIN表以支持ASIN搜索）
-    let countSql = `SELECT COUNT(DISTINCT vg.id) as total FROM variant_groups vg LEFT JOIN asins a ON a.variant_group_id = vg.id WHERE 1=1`;
+    // 优化 COUNT 查询：当没有 keyword 时，避免不必要的 LEFT JOIN
+    let countSql = `SELECT COUNT(DISTINCT vg.id) as total FROM variant_groups vg WHERE 1=1`;
     const countValues = [];
 
     if (keyword) {
-      // 搜索变体组名称、变体组ID，以及ASIN代码
-      countSql += ` AND (vg.name LIKE ? OR vg.id LIKE ? OR a.asin LIKE ?)`;
+      // 有keyword时需要搜索变体组名称、ID或ASIN，使用 EXISTS 子查询替代 JOIN 以提高性能
+      countSql = `SELECT COUNT(DISTINCT vg.id) as total 
+        FROM variant_groups vg 
+        WHERE EXISTS (
+          SELECT 1 FROM asins a 
+          WHERE a.variant_group_id = vg.id 
+          AND (vg.name LIKE ? OR vg.id LIKE ? OR a.asin LIKE ?)
+        )`;
       countValues.push(`%${keyword}%`, `%${keyword}%`, `%${keyword}%`);
-    }
-    if (country) {
-      countSql += ` AND vg.country = ?`;
-      countValues.push(country);
-    }
-    if (variantStatus) {
-      const isBroken = variantStatus === 'BROKEN' ? 1 : 0;
-      // 使用子查询检查变体组是否有指定状态的ASIN
-      // 对于"异常"：至少有一个ASIN的is_broken=1
-      // 对于"正常"：所有ASIN的is_broken=0（或没有ASIN）
-      if (isBroken === 1) {
-        // 筛选异常：至少有一个异常的ASIN
-        countSql += ` AND EXISTS (
-          SELECT 1 FROM asins a2 
-          WHERE a2.variant_group_id = vg.id 
-          AND a2.is_broken = 1
-        )`;
-      } else {
-        // 筛选正常：没有异常的ASIN（所有ASIN都是正常的，或者没有ASIN）
-        countSql += ` AND NOT EXISTS (
-          SELECT 1 FROM asins a2 
-          WHERE a2.variant_group_id = vg.id 
-          AND a2.is_broken = 1
-        )`;
+
+      // 添加 country 条件
+      if (country) {
+        countSql += ` AND vg.country = ?`;
+        countValues.push(country);
+      }
+
+      // 添加 variantStatus 条件
+      if (variantStatus) {
+        const isBroken = variantStatus === 'BROKEN' ? 1 : 0;
+        if (isBroken === 1) {
+          countSql += ` AND EXISTS (
+            SELECT 1 FROM asins a2 
+            WHERE a2.variant_group_id = vg.id 
+            AND a2.is_broken = 1
+          )`;
+        } else {
+          countSql += ` AND NOT EXISTS (
+            SELECT 1 FROM asins a2 
+            WHERE a2.variant_group_id = vg.id 
+            AND a2.is_broken = 1
+          )`;
+        }
+      }
+    } else {
+      // 没有 keyword 时，只需要在 variant_groups 表上查询，避免 JOIN
+      if (country) {
+        countSql += ` AND vg.country = ?`;
+        countValues.push(country);
+      }
+      if (variantStatus) {
+        const isBroken = variantStatus === 'BROKEN' ? 1 : 0;
+        if (isBroken === 1) {
+          countSql += ` AND EXISTS (
+            SELECT 1 FROM asins a2 
+            WHERE a2.variant_group_id = vg.id 
+            AND a2.is_broken = 1
+          )`;
+        } else {
+          countSql += ` AND NOT EXISTS (
+            SELECT 1 FROM asins a2 
+            WHERE a2.variant_group_id = vg.id 
+            AND a2.is_broken = 1
+          )`;
+        }
       }
     }
 

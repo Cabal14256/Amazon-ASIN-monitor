@@ -20,7 +20,16 @@ class MonitorHistory {
 
     let sql = `
       SELECT 
-        mh.*,
+        mh.id,
+        mh.variant_group_id,
+        mh.asin_id,
+        mh.check_type,
+        mh.country,
+        mh.is_broken,
+        mh.check_time,
+        mh.check_result,
+        mh.notification_sent,
+        mh.create_time,
         COALESCE(mh.variant_group_name, vg.name) as variant_group_name,
         COALESCE(mh.asin_code, a.asin) as asin,
         COALESCE(mh.asin_name, a.name) as asin_name,
@@ -188,7 +197,16 @@ class MonitorHistory {
   static async findById(id) {
     const [history] = await query(
       `SELECT 
-        mh.*,
+        mh.id,
+        mh.variant_group_id,
+        mh.asin_id,
+        mh.check_type,
+        mh.country,
+        mh.is_broken,
+        mh.check_time,
+        mh.check_result,
+        mh.notification_sent,
+        mh.create_time,
         COALESCE(mh.variant_group_name, vg.name) as variant_group_name,
         COALESCE(mh.asin_code, a.asin) as asin,
         COALESCE(mh.asin_name, a.name) as asin_name,
@@ -1527,6 +1545,421 @@ class MonitorHistory {
     cacheService.deleteByPrefix('monitorHistoryCount:');
 
     return result.affectedRows || 0;
+  }
+
+  // 查询ASIN状态变动记录
+  // 使用窗口函数 LAG 来识别状态变化
+  static async findStatusChanges(params = {}) {
+    const {
+      variantGroupId = '',
+      asinId = '',
+      asin = '',
+      country = '',
+      checkType = '',
+      startTime = '',
+      endTime = '',
+      current = 1,
+      pageSize = 10,
+    } = params;
+
+    // 构建基础查询，使用窗口函数识别状态变化
+    let sql = `
+      WITH status_history AS (
+        SELECT 
+          mh.id,
+          mh.variant_group_id,
+          mh.asin_id,
+          mh.check_type,
+          mh.country,
+          mh.is_broken,
+          mh.check_time,
+          mh.check_result,
+          mh.notification_sent,
+          mh.create_time,
+          COALESCE(mh.variant_group_name, vg.name) as variant_group_name,
+          COALESCE(mh.asin_code, a.asin) as asin,
+          COALESCE(mh.asin_name, a.name) as asin_name,
+          a.asin_type as asin_type,
+          LAG(mh.is_broken) OVER (
+            PARTITION BY mh.asin_id, mh.country 
+            ORDER BY mh.check_time
+          ) as prev_is_broken
+        FROM monitor_history mh
+        LEFT JOIN variant_groups vg ON vg.id = mh.variant_group_id
+        LEFT JOIN asins a ON a.id = mh.asin_id
+        WHERE 1=1
+    `;
+    const conditions = [];
+
+    if (variantGroupId) {
+      sql += ` AND mh.variant_group_id = ?`;
+      conditions.push(variantGroupId);
+    }
+
+    if (asinId) {
+      sql += ` AND mh.asin_id = ?`;
+      conditions.push(asinId);
+    }
+
+    if (asin) {
+      if (Array.isArray(asin) && asin.length > 0) {
+        const placeholders = asin.map(() => '?').join(',');
+        sql += ` AND (COALESCE(mh.asin_code, a.asin) IN (${placeholders}))`;
+        conditions.push(...asin);
+      } else if (typeof asin === 'string') {
+        sql += ` AND (COALESCE(mh.asin_code, a.asin) LIKE ?)`;
+        conditions.push(`%${asin}%`);
+      }
+    }
+
+    if (country) {
+      if (country === 'EU') {
+        sql += ` AND mh.country IN ('UK', 'DE', 'FR', 'IT', 'ES')`;
+      } else {
+        sql += ` AND mh.country = ?`;
+        conditions.push(country);
+      }
+    }
+
+    if (checkType) {
+      sql += ` AND mh.check_type = ?`;
+      conditions.push(checkType);
+    }
+
+    if (startTime) {
+      sql += ` AND mh.check_time >= ?`;
+      conditions.push(startTime);
+    }
+
+    if (endTime) {
+      sql += ` AND mh.check_time <= ?`;
+      conditions.push(endTime);
+    }
+
+    // 只选择状态发生变化的记录（排除第一条记录，因为 prev_is_broken 为 NULL）
+    sql += `
+      )
+      SELECT * FROM status_history
+      WHERE prev_is_broken IS NOT NULL
+        AND prev_is_broken != is_broken
+      ORDER BY check_time DESC
+    `;
+
+    // 计算总数（先查询总数）
+    const countKey = `statusChangesCount:${variantGroupId || 'ALL'}:${
+      asinId || 'ALL'
+    }:${asin || 'ALL'}:${country || 'ALL'}:${checkType || 'ALL'}:${
+      startTime || 'ALL'
+    }:${endTime || 'ALL'}`;
+    let total = cacheService.get(countKey);
+    if (total === null) {
+      let countSql = `
+        WITH status_history AS (
+          SELECT 
+            mh.id,
+            mh.asin_id,
+            mh.country,
+            mh.is_broken,
+            LAG(mh.is_broken) OVER (
+              PARTITION BY mh.asin_id, mh.country 
+              ORDER BY mh.check_time
+            ) as prev_is_broken
+          FROM monitor_history mh
+          WHERE 1=1
+      `;
+      const countConditions = [];
+
+      if (variantGroupId) {
+        countSql += ` AND mh.variant_group_id = ?`;
+        countConditions.push(variantGroupId);
+      }
+
+      if (asinId) {
+        countSql += ` AND mh.asin_id = ?`;
+        countConditions.push(asinId);
+      }
+
+      if (asin) {
+        if (Array.isArray(asin) && asin.length > 0) {
+          const placeholders = asin.map(() => '?').join(',');
+          countSql += ` AND mh.asin_code IN (${placeholders})`;
+          countConditions.push(...asin);
+        } else if (typeof asin === 'string') {
+          countSql += ` AND mh.asin_code LIKE ?`;
+          countConditions.push(`%${asin}%`);
+        }
+      }
+
+      if (country) {
+        if (country === 'EU') {
+          countSql += ` AND mh.country IN ('UK', 'DE', 'FR', 'IT', 'ES')`;
+        } else {
+          countSql += ` AND mh.country = ?`;
+          countConditions.push(country);
+        }
+      }
+
+      if (checkType) {
+        countSql += ` AND mh.check_type = ?`;
+        countConditions.push(checkType);
+      }
+
+      if (startTime) {
+        countSql += ` AND mh.check_time >= ?`;
+        countConditions.push(startTime);
+      }
+
+      if (endTime) {
+        countSql += ` AND mh.check_time <= ?`;
+        countConditions.push(endTime);
+      }
+
+      countSql += `
+        )
+        SELECT COUNT(*) as total FROM status_history
+        WHERE prev_is_broken IS NOT NULL
+          AND prev_is_broken != is_broken
+      `;
+
+      const countResult = await query(countSql, countConditions);
+      total = countResult[0]?.total || 0;
+      cacheService.set(countKey, total, 60 * 1000);
+    }
+
+    // 分页
+    const offset = (Number(current) - 1) * Number(pageSize);
+    const limit = Number(pageSize);
+    sql += ` LIMIT ${limit} OFFSET ${offset}`;
+
+    const list = await query(sql, conditions);
+
+    // 转换字段名
+    const formattedList = list.map((item) => ({
+      ...item,
+      checkTime: item.check_time,
+      checkType: item.check_type,
+      isBroken: item.is_broken,
+      prevIsBroken: item.prev_is_broken,
+      notificationSent: item.notification_sent,
+      variantGroupName: item.variant_group_name,
+      asinName: item.asin_name,
+      asinType: item.asin_type,
+      createTime: item.create_time,
+      statusChange: item.prev_is_broken === 0 ? '正常→异常' : '异常→正常',
+    }));
+
+    return {
+      list: formattedList,
+      total,
+      current: Number(current),
+      pageSize: Number(pageSize),
+    };
+  }
+
+  // 流式查询状态变动记录（用于大数据量导出）
+  // 使用分页批量查询，避免一次性加载所有数据
+  static async findStatusChangesStream(params = {}, onRow, batchSize = 10000) {
+    const {
+      variantGroupId = '',
+      asinId = '',
+      asin = '',
+      country = '',
+      checkType = '',
+      startTime = '',
+      endTime = '',
+    } = params;
+
+    // 先获取总数
+    const countKey = `statusChangesCount:${variantGroupId || 'ALL'}:${
+      asinId || 'ALL'
+    }:${asin || 'ALL'}:${country || 'ALL'}:${checkType || 'ALL'}:${
+      startTime || 'ALL'
+    }:${endTime || 'ALL'}`;
+    let total = cacheService.get(countKey);
+
+    if (total === null) {
+      // 使用与 findStatusChanges 相同的计数逻辑
+      let countSql = `
+        WITH status_history AS (
+          SELECT 
+            mh.id,
+            mh.asin_id,
+            mh.country,
+            mh.is_broken,
+            LAG(mh.is_broken) OVER (
+              PARTITION BY mh.asin_id, mh.country 
+              ORDER BY mh.check_time
+            ) as prev_is_broken
+          FROM monitor_history mh
+          WHERE 1=1
+      `;
+      const countConditions = [];
+
+      if (variantGroupId) {
+        countSql += ` AND mh.variant_group_id = ?`;
+        countConditions.push(variantGroupId);
+      }
+
+      if (asinId) {
+        countSql += ` AND mh.asin_id = ?`;
+        countConditions.push(asinId);
+      }
+
+      if (asin) {
+        if (Array.isArray(asin) && asin.length > 0) {
+          const placeholders = asin.map(() => '?').join(',');
+          countSql += ` AND mh.asin_code IN (${placeholders})`;
+          countConditions.push(...asin);
+        } else if (typeof asin === 'string') {
+          countSql += ` AND mh.asin_code LIKE ?`;
+          countConditions.push(`%${asin}%`);
+        }
+      }
+
+      if (country) {
+        if (country === 'EU') {
+          countSql += ` AND mh.country IN ('UK', 'DE', 'FR', 'IT', 'ES')`;
+        } else {
+          countSql += ` AND mh.country = ?`;
+          countConditions.push(country);
+        }
+      }
+
+      if (checkType) {
+        countSql += ` AND mh.check_type = ?`;
+        countConditions.push(checkType);
+      }
+
+      if (startTime) {
+        countSql += ` AND mh.check_time >= ?`;
+        countConditions.push(startTime);
+      }
+
+      if (endTime) {
+        countSql += ` AND mh.check_time <= ?`;
+        countConditions.push(endTime);
+      }
+
+      countSql += `
+        )
+        SELECT COUNT(*) as total FROM status_history
+        WHERE prev_is_broken IS NOT NULL
+          AND prev_is_broken != is_broken
+      `;
+
+      const countResult = await query(countSql, countConditions);
+      total = countResult[0]?.total || 0;
+      cacheService.set(countKey, total, 60 * 1000);
+    }
+
+    // 分页批量查询
+    const totalPages = Math.ceil(total / batchSize);
+    for (let page = 1; page <= totalPages; page++) {
+      const offset = (page - 1) * batchSize;
+      const limit = batchSize;
+
+      let sql = `
+        WITH status_history AS (
+          SELECT 
+            mh.id,
+            mh.variant_group_id,
+            mh.asin_id,
+            mh.check_type,
+            mh.country,
+            mh.is_broken,
+            mh.check_time,
+            mh.check_result,
+            mh.notification_sent,
+            mh.create_time,
+            COALESCE(mh.variant_group_name, vg.name) as variant_group_name,
+            COALESCE(mh.asin_code, a.asin) as asin,
+            COALESCE(mh.asin_name, a.name) as asin_name,
+            a.asin_type as asin_type,
+            LAG(mh.is_broken) OVER (
+              PARTITION BY mh.asin_id, mh.country 
+              ORDER BY mh.check_time
+            ) as prev_is_broken
+          FROM monitor_history mh
+          LEFT JOIN variant_groups vg ON vg.id = mh.variant_group_id
+          LEFT JOIN asins a ON a.id = mh.asin_id
+          WHERE 1=1
+      `;
+      const conditions = [];
+
+      if (variantGroupId) {
+        sql += ` AND mh.variant_group_id = ?`;
+        conditions.push(variantGroupId);
+      }
+
+      if (asinId) {
+        sql += ` AND mh.asin_id = ?`;
+        conditions.push(asinId);
+      }
+
+      if (asin) {
+        if (Array.isArray(asin) && asin.length > 0) {
+          const placeholders = asin.map(() => '?').join(',');
+          sql += ` AND (COALESCE(mh.asin_code, a.asin) IN (${placeholders}))`;
+          conditions.push(...asin);
+        } else if (typeof asin === 'string') {
+          sql += ` AND (COALESCE(mh.asin_code, a.asin) LIKE ?)`;
+          conditions.push(`%${asin}%`);
+        }
+      }
+
+      if (country) {
+        if (country === 'EU') {
+          sql += ` AND mh.country IN ('UK', 'DE', 'FR', 'IT', 'ES')`;
+        } else {
+          sql += ` AND mh.country = ?`;
+          conditions.push(country);
+        }
+      }
+
+      if (checkType) {
+        sql += ` AND mh.check_type = ?`;
+        conditions.push(checkType);
+      }
+
+      if (startTime) {
+        sql += ` AND mh.check_time >= ?`;
+        conditions.push(startTime);
+      }
+
+      if (endTime) {
+        sql += ` AND mh.check_time <= ?`;
+        conditions.push(endTime);
+      }
+
+      sql += `
+        )
+        SELECT * FROM status_history
+        WHERE prev_is_broken IS NOT NULL
+          AND prev_is_broken != is_broken
+        ORDER BY check_time DESC
+        LIMIT ${limit} OFFSET ${offset}
+      `;
+
+      const rows = await query(sql, conditions);
+
+      // 处理每一行
+      for (const row of rows) {
+        const formattedRow = {
+          ...row,
+          checkTime: row.check_time,
+          checkType: row.check_type,
+          isBroken: row.is_broken,
+          prevIsBroken: row.prev_is_broken,
+          notificationSent: row.notification_sent,
+          variantGroupName: row.variant_group_name,
+          asinName: row.asin_name,
+          asinType: row.asin_type,
+          createTime: row.create_time,
+          statusChange: row.prev_is_broken === 0 ? '正常→异常' : '异常→正常',
+        };
+        await onRow(formattedRow);
+      }
+    }
   }
 }
 

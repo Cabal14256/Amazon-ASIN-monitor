@@ -1,11 +1,18 @@
 const CompetitorVariantGroup = require('../models/CompetitorVariantGroup');
 const CompetitorASIN = require('../models/CompetitorASIN');
+const logger = require('../utils/logger');
+const {
+  sendSuccessResponse,
+  sendErrorResponse,
+  validateRequiredFields,
+  handleControllerError,
+} = require('../services/sharedService');
 
 // 查询变体组列表
 exports.getCompetitorVariantGroups = async (req, res) => {
   try {
     const { keyword, country, variantStatus, current, pageSize } = req.query;
-    console.log('查询参数:', {
+    logger.info('查询参数:', {
       keyword,
       country,
       variantStatus,
@@ -19,21 +26,9 @@ exports.getCompetitorVariantGroups = async (req, res) => {
       current: current || 1,
       pageSize: pageSize || 10,
     });
-    res.json({
-      success: true,
-      data: result,
-      errorCode: 0,
-    });
+    sendSuccessResponse(res, result);
   } catch (error) {
-    console.error('查询变体组列表错误:', error);
-    console.error('错误堆栈:', error.stack);
-    res.status(500).json({
-      success: false,
-      errorMessage: error.message || '查询失败',
-      errorCode: 500,
-      errorDetails:
-        process.env.NODE_ENV === 'development' ? error.stack : undefined,
-    });
+    handleControllerError(error, req, res);
   }
 };
 
@@ -43,90 +38,49 @@ exports.getCompetitorVariantGroupById = async (req, res) => {
     const { groupId } = req.params;
     const group = await CompetitorVariantGroup.findById(groupId);
     if (!group) {
-      return res.status(404).json({
-        success: false,
-        errorMessage: '竞品变体组不存在',
-        errorCode: 404,
-      });
+      return sendErrorResponse(res, 404, '竞品变体组不存在');
     }
-    res.json({
-      success: true,
-      data: group,
-      errorCode: 0,
-    });
+    sendSuccessResponse(res, group);
   } catch (error) {
-    console.error('查询变体组详情错误:', error);
-    res.status(500).json({
-      success: false,
-      errorMessage: error.message || '查询失败',
-      errorCode: 500,
-    });
+    handleControllerError(error, req, res);
   }
 };
 
 // 创建变体组
 exports.createCompetitorVariantGroup = async (req, res) => {
   try {
+    validateRequiredFields(req.body, ['name', 'country', 'brand']);
     const { name, country, brand } = req.body;
-    if (!name || !country || !brand) {
-      return res.status(400).json({
-        success: false,
-        errorMessage: '名称、国家和品牌为必填项',
-        errorCode: 400,
-      });
-    }
     const group = await CompetitorVariantGroup.create({ name, country, brand });
-    res.json({
-      success: true,
-      data: group,
-      errorCode: 0,
-    });
+    sendSuccessResponse(res, group);
   } catch (error) {
-    console.error('创建变体组错误:', error);
-    res.status(500).json({
-      success: false,
-      errorMessage: error.message || '创建失败',
-      errorCode: 500,
-    });
+    if (error.statusCode === 400) {
+      return sendErrorResponse(res, 400, error.message);
+    }
+    handleControllerError(error, req, res);
   }
 };
 
 // 更新变体组
 exports.updateCompetitorVariantGroup = async (req, res) => {
   try {
+    validateRequiredFields(req.body, ['name', 'country', 'brand']);
     const { groupId } = req.params;
     const { name, country, brand } = req.body;
-    if (!name || !country || !brand) {
-      return res.status(400).json({
-        success: false,
-        errorMessage: '名称、国家和品牌为必填项',
-        errorCode: 400,
-      });
-    }
     const group = await CompetitorVariantGroup.update(groupId, {
       name,
       country,
       brand,
     });
     if (!group) {
-      return res.status(404).json({
-        success: false,
-        errorMessage: '竞品变体组不存在',
-        errorCode: 404,
-      });
+      return sendErrorResponse(res, 404, '竞品变体组不存在');
     }
-    res.json({
-      success: true,
-      data: group,
-      errorCode: 0,
-    });
+    sendSuccessResponse(res, group);
   } catch (error) {
-    console.error('更新变体组错误:', error);
-    res.status(500).json({
-      success: false,
-      errorMessage: error.message || '更新失败',
-      errorCode: 500,
-    });
+    if (error.statusCode === 400) {
+      return sendErrorResponse(res, 400, error.message);
+    }
+    handleControllerError(error, req, res);
   }
 };
 
@@ -135,39 +89,24 @@ exports.deleteCompetitorVariantGroup = async (req, res) => {
   try {
     const { groupId } = req.params;
     await CompetitorVariantGroup.delete(groupId);
-    res.json({
-      success: true,
-      data: '删除成功',
-      errorCode: 0,
-    });
+    sendSuccessResponse(res, '删除成功');
   } catch (error) {
-    console.error('删除变体组错误:', error);
-    res.status(500).json({
-      success: false,
-      errorMessage: error.message || '删除失败',
-      errorCode: 500,
-    });
+    handleControllerError(error, req, res);
   }
 };
 
 // 添加ASIN
 exports.createCompetitorASIN = async (req, res) => {
   try {
+    validateRequiredFields(req.body, ['asin', 'country', 'brand', 'parentId']);
     const { asin, name, country, brand, parentId, asinType } = req.body;
-    if (!asin || !country || !brand || !parentId) {
-      return res.status(400).json({
-        success: false,
-        errorMessage: 'ASIN、国家、品牌和变体组ID为必填项',
-        errorCode: 400,
-      });
-    }
     // 验证asinType值
     if (asinType && !['1', '2'].includes(String(asinType))) {
-      return res.status(400).json({
-        success: false,
-        errorMessage: 'ASIN类型必须是 1（主链）或 2（副评）',
-        errorCode: 400,
-      });
+      return sendErrorResponse(
+        res,
+        400,
+        'ASIN类型必须是 1（主链）或 2（副评）',
+      );
     }
     const asinData = await CompetitorASIN.create({
       asin,
@@ -177,18 +116,12 @@ exports.createCompetitorASIN = async (req, res) => {
       variantGroupId: parentId,
       asinType: asinType || null,
     });
-    res.json({
-      success: true,
-      data: asinData,
-      errorCode: 0,
-    });
+    sendSuccessResponse(res, asinData);
   } catch (error) {
-    console.error('创建ASIN错误:', error);
-    res.status(500).json({
-      success: false,
-      errorMessage: error.message || '创建失败',
-      errorCode: 500,
-    });
+    if (error.statusCode === 400) {
+      return sendErrorResponse(res, 400, error.message);
+    }
+    handleControllerError(error, req, res);
   }
 };
 

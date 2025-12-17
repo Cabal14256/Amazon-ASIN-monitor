@@ -1,6 +1,7 @@
 const axios = require('axios');
 const FeishuConfig = require('../models/FeishuConfig');
 const { getUTC8LocaleString } = require('../utils/dateTime');
+const logger = require('../utils/logger');
 
 const RATE_LIMIT_CODE = 11232;
 const REQUEST_INTERVAL_MS = 500;

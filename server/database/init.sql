@@ -26,7 +26,8 @@ CREATE TABLE IF NOT EXISTS `variant_groups` (
   INDEX `idx_create_time` (`create_time`),
   INDEX `idx_last_check_time` (`last_check_time`),
   INDEX `idx_feishu_notify_enabled` (`feishu_notify_enabled`),
-  INDEX `idx_country_broken` (`country`, `is_broken`)
+  INDEX `idx_country_broken` (`country`, `is_broken`),
+  INDEX `idx_variant_groups_name` (`name`) COMMENT '变体组名称索引，优化LIKE查询性能'
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='变体组表';
 
 -- ASIN表
@@ -82,6 +83,7 @@ CREATE TABLE IF NOT EXISTS `monitor_history` (
   INDEX `idx_country_check_time` (`country`, `check_time`),
   INDEX `idx_variant_group_check_time_broken` (`variant_group_id`, `check_time`, `is_broken`),
   INDEX `idx_country_check_time_broken` (`country`, `check_time`, `is_broken`),
+  INDEX `idx_asin_country_check_time_broken` (`asin_id`, `country`, `check_time`, `is_broken`) COMMENT '状态变化查询优化索引，优化窗口函数查询性能',
   FOREIGN KEY (`variant_group_id`) REFERENCES `variant_groups`(`id`) ON DELETE SET NULL,
   FOREIGN KEY (`asin_id`) REFERENCES `asins`(`id`) ON DELETE SET NULL
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='监控历史表';

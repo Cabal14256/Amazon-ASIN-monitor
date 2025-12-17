@@ -1,6 +1,12 @@
 const VariantGroup = require('../models/VariantGroup');
 const ASIN = require('../models/ASIN');
 const logger = require('../utils/logger');
+const {
+  sendSuccessResponse,
+  sendErrorResponse,
+  validateRequiredFields,
+  handleControllerError,
+} = require('../services/sharedService');
 
 // 查询变体组列表
 exports.getVariantGroups = async (req, res) => {
@@ -20,21 +26,9 @@ exports.getVariantGroups = async (req, res) => {
       current: current || 1,
       pageSize: pageSize || 10,
     });
-    res.json({
-      success: true,
-      data: result,
-      errorCode: 0,
-    });
+    sendSuccessResponse(res, result);
   } catch (error) {
-    logger.error('查询变体组列表错误:', error);
-    logger.error('错误堆栈:', error.stack);
-    res.status(500).json({
-      success: false,
-      errorMessage: error.message || '查询失败',
-      errorCode: 500,
-      errorDetails:
-        process.env.NODE_ENV === 'development' ? error.stack : undefined,
-    });
+    handleControllerError(error, req, res);
   }
 };
 
@@ -44,66 +38,35 @@ exports.getVariantGroupById = async (req, res) => {
     const { groupId } = req.params;
     const group = await VariantGroup.findById(groupId);
     if (!group) {
-      return res.status(404).json({
-        success: false,
-        errorMessage: '变体组不存在',
-        errorCode: 404,
-      });
+      return sendErrorResponse(res, 404, '变体组不存在');
     }
-    res.json({
-      success: true,
-      data: group,
-      errorCode: 0,
-    });
+    sendSuccessResponse(res, group);
   } catch (error) {
-    logger.error('查询变体组详情错误:', error);
-    res.status(500).json({
-      success: false,
-      errorMessage: error.message || '查询失败',
-      errorCode: 500,
-    });
+    handleControllerError(error, req, res);
   }
 };
 
 // 创建变体组
 exports.createVariantGroup = async (req, res) => {
   try {
+    validateRequiredFields(req.body, ['name', 'country', 'site', 'brand']);
     const { name, country, site, brand } = req.body;
-    if (!name || !country || !site || !brand) {
-      return res.status(400).json({
-        success: false,
-        errorMessage: '名称、国家、站点和品牌为必填项',
-        errorCode: 400,
-      });
-    }
     const group = await VariantGroup.create({ name, country, site, brand });
-    res.json({
-      success: true,
-      data: group,
-      errorCode: 0,
-    });
+    sendSuccessResponse(res, group);
   } catch (error) {
-    logger.error('创建变体组错误:', error);
-    res.status(500).json({
-      success: false,
-      errorMessage: error.message || '创建失败',
-      errorCode: 500,
-    });
+    if (error.statusCode === 400) {
+      return sendErrorResponse(res, 400, error.message);
+    }
+    handleControllerError(error, req, res);
   }
 };
 
 // 更新变体组
 exports.updateVariantGroup = async (req, res) => {
   try {
+    validateRequiredFields(req.body, ['name', 'country', 'site', 'brand']);
     const { groupId } = req.params;
     const { name, country, site, brand } = req.body;
-    if (!name || !country || !site || !brand) {
-      return res.status(400).json({
-        success: false,
-        errorMessage: '名称、国家、站点和品牌为必填项',
-        errorCode: 400,
-      });
-    }
     const group = await VariantGroup.update(groupId, {
       name,
       country,
@@ -111,24 +74,14 @@ exports.updateVariantGroup = async (req, res) => {
       brand,
     });
     if (!group) {
-      return res.status(404).json({
-        success: false,
-        errorMessage: '变体组不存在',
-        errorCode: 404,
-      });
+      return sendErrorResponse(res, 404, '变体组不存在');
     }
-    res.json({
-      success: true,
-      data: group,
-      errorCode: 0,
-    });
+    sendSuccessResponse(res, group);
   } catch (error) {
-    logger.error('更新变体组错误:', error);
-    res.status(500).json({
-      success: false,
-      errorMessage: error.message || '更新失败',
-      errorCode: 500,
-    });
+    if (error.statusCode === 400) {
+      return sendErrorResponse(res, 400, error.message);
+    }
+    handleControllerError(error, req, res);
   }
 };
 
@@ -137,39 +90,30 @@ exports.deleteVariantGroup = async (req, res) => {
   try {
     const { groupId } = req.params;
     await VariantGroup.delete(groupId);
-    res.json({
-      success: true,
-      data: '删除成功',
-      errorCode: 0,
-    });
+    sendSuccessResponse(res, '删除成功');
   } catch (error) {
-    logger.error('删除变体组错误:', error);
-    res.status(500).json({
-      success: false,
-      errorMessage: error.message || '删除失败',
-      errorCode: 500,
-    });
+    handleControllerError(error, req, res);
   }
 };
 
 // 添加ASIN
 exports.createASIN = async (req, res) => {
   try {
+    validateRequiredFields(req.body, [
+      'asin',
+      'country',
+      'site',
+      'brand',
+      'parentId',
+    ]);
     const { asin, name, country, site, brand, parentId, asinType } = req.body;
-    if (!asin || !country || !site || !brand || !parentId) {
-      return res.status(400).json({
-        success: false,
-        errorMessage: 'ASIN、国家、站点、品牌和变体组ID为必填项',
-        errorCode: 400,
-      });
-    }
     // 验证asinType值
     if (asinType && !['1', '2'].includes(String(asinType))) {
-      return res.status(400).json({
-        success: false,
-        errorMessage: 'ASIN类型必须是 1（主链）或 2（副评）',
-        errorCode: 400,
-      });
+      return sendErrorResponse(
+        res,
+        400,
+        'ASIN类型必须是 1（主链）或 2（副评）',
+      );
     }
     const asinData = await ASIN.create({
       asin,
@@ -180,18 +124,12 @@ exports.createASIN = async (req, res) => {
       variantGroupId: parentId,
       asinType: asinType || null,
     });
-    res.json({
-      success: true,
-      data: asinData,
-      errorCode: 0,
-    });
+    sendSuccessResponse(res, asinData);
   } catch (error) {
-    logger.error('创建ASIN错误:', error);
-    res.status(500).json({
-      success: false,
-      errorMessage: error.message || '创建失败',
-      errorCode: 500,
-    });
+    if (error.statusCode === 400) {
+      return sendErrorResponse(res, 400, error.message);
+    }
+    handleControllerError(error, req, res);
   }
 };
 
@@ -209,11 +147,11 @@ exports.updateASIN = async (req, res) => {
     }
     // 验证asinType值
     if (asinType && !['1', '2'].includes(String(asinType))) {
-      return res.status(400).json({
-        success: false,
-        errorMessage: 'ASIN类型必须是 1（主链）或 2（副评）',
-        errorCode: 400,
-      });
+      return sendErrorResponse(
+        res,
+        400,
+        'ASIN类型必须是 1（主链）或 2（副评）',
+      );
     }
     const asinData = await ASIN.update(asinId, {
       asin,
@@ -224,24 +162,14 @@ exports.updateASIN = async (req, res) => {
       asinType,
     });
     if (!asinData) {
-      return res.status(404).json({
-        success: false,
-        errorMessage: 'ASIN不存在',
-        errorCode: 404,
-      });
+      return sendErrorResponse(res, 404, 'ASIN不存在');
     }
-    res.json({
-      success: true,
-      data: asinData,
-      errorCode: 0,
-    });
+    sendSuccessResponse(res, asinData);
   } catch (error) {
-    logger.error('更新ASIN错误:', error);
-    res.status(500).json({
-      success: false,
-      errorMessage: error.message || '更新失败',
-      errorCode: 500,
-    });
+    if (error.statusCode === 400) {
+      return sendErrorResponse(res, 400, error.message);
+    }
+    handleControllerError(error, req, res);
   }
 };
 
@@ -355,18 +283,9 @@ exports.deleteASIN = async (req, res) => {
   try {
     const { asinId } = req.params;
     await ASIN.delete(asinId);
-    res.json({
-      success: true,
-      data: '删除成功',
-      errorCode: 0,
-    });
+    sendSuccessResponse(res, '删除成功');
   } catch (error) {
-    logger.error('删除ASIN错误:', error);
-    res.status(500).json({
-      success: false,
-      errorMessage: error.message || '删除失败',
-      errorCode: 500,
-    });
+    handleControllerError(error, req, res);
   }
 };
 

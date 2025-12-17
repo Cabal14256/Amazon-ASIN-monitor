@@ -1,3 +1,21 @@
+/**
+ * 缓存服务
+ *
+ * 缓存键命名规范:
+ * - 格式: {module}:{resource}:{params}
+ * - 示例:
+ *   - variantGroups:US:ALL:pageSize:10 (变体组列表)
+ *   - monitorHistoryCount:US:2025-01-01 (监控历史计数)
+ *   - variantGroup:{groupId} (变体组详情)
+ *   - asin:{asinId} (ASIN详情)
+ *
+ * 模块前缀:
+ * - variantGroups: 变体组相关
+ * - monitorHistory: 监控历史相关
+ * - asin: ASIN相关
+ * - statistics: 统计相关
+ */
+
 const DEFAULT_TTL_MS = Number(process.env.CACHE_DEFAULT_TTL_MS) || 30 * 1000;
 const DEFAULT_MAX_ENTRIES = Number(process.env.CACHE_MAX_ENTRIES) || 2000;
 const DEFAULT_CLEANUP_INTERVAL_MS =
