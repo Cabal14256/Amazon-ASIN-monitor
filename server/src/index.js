@@ -22,6 +22,7 @@ const roleRoutes = require('./routes/roleRoutes');
 const dashboardRoutes = require('./routes/dashboardRoutes');
 const auditLogRoutes = require('./routes/auditLogRoutes');
 const exportRoutes = require('./routes/exportRoutes');
+const taskRoutes = require('./routes/taskRoutes');
 const systemRoutes = require('./routes/systemRoutes');
 const backupRoutes = require('./routes/backupRoutes');
 const websocketService = require('./services/websocketService');
@@ -118,6 +119,7 @@ app.use('/api/v1', userRoutes); // 用户管理路由
 app.use('/api/v1', roleRoutes); // 角色和权限管理路由
 app.use('/api/v1', auditLogRoutes); // 审计日志路由
 app.use('/api/v1', exportRoutes); // 导出路由
+app.use('/api/v1', taskRoutes); // 任务管理路由
 app.use('/api/v1', systemRoutes); // 系统级别配置
 app.use('/api/v1', backupRoutes); // 备份恢复路由
 

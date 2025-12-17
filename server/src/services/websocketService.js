@@ -28,7 +28,7 @@ class WebSocketService {
         try {
           const data = JSON.parse(message.toString());
           console.log('[WebSocket] 收到客户端消息:', data);
-          
+
           // 可以在这里处理客户端发送的消息
           if (data.type === 'ping') {
             this.sendToClient(ws, { type: 'pong' });
@@ -119,7 +119,75 @@ class WebSocketService {
   getClientCount() {
     return this.clients.size;
   }
+
+  /**
+   * 发送任务进度（支持按用户ID发送）
+   * @param {string} taskId - 任务ID
+   * @param {number} progress - 进度百分比 (0-100)
+   * @param {string} message - 进度消息
+   * @param {string} userId - 用户ID（可选，如果提供则只发送给该用户）
+   */
+  sendTaskProgress(taskId, progress, message, userId = null) {
+    const data = {
+      type: 'task_progress',
+      taskId,
+      progress,
+      message,
+      timestamp: new Date().toISOString(),
+    };
+
+    if (userId) {
+      // 如果指定了用户ID，只发送给该用户（需要客户端在连接时传递用户信息）
+      // 这里先广播，后续可以优化为按用户发送
+      this.broadcast(data);
+    } else {
+      this.broadcast(data);
+    }
+  }
+
+  /**
+   * 发送任务完成通知
+   * @param {string} taskId - 任务ID
+   * @param {string} downloadUrl - 下载URL
+   * @param {string} filename - 文件名
+   * @param {string} userId - 用户ID（可选）
+   */
+  sendTaskComplete(taskId, downloadUrl, filename, userId = null) {
+    const data = {
+      type: 'task_complete',
+      taskId,
+      downloadUrl,
+      filename,
+      timestamp: new Date().toISOString(),
+    };
+
+    if (userId) {
+      this.broadcast(data);
+    } else {
+      this.broadcast(data);
+    }
+  }
+
+  /**
+   * 发送任务错误通知
+   * @param {string} taskId - 任务ID
+   * @param {string} error - 错误信息
+   * @param {string} userId - 用户ID（可选）
+   */
+  sendTaskError(taskId, error, userId = null) {
+    const data = {
+      type: 'task_error',
+      taskId,
+      error,
+      timestamp: new Date().toISOString(),
+    };
+
+    if (userId) {
+      this.broadcast(data);
+    } else {
+      this.broadcast(data);
+    }
+  }
 }
 
 module.exports = new WebSocketService();
-

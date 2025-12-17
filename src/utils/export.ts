@@ -90,16 +90,237 @@ const ProgressModal: React.FC<ProgressModalProps> = ({
 };
 
 /**
+ * 导出类型映射
+ */
+const EXPORT_TYPE_MAP: Record<string, string> = {
+  '/v1/export/asin': 'asin',
+  '/v1/export/monitor-history': 'monitor-history',
+  '/v1/export/variant-group': 'variant-group',
+  '/v1/export/competitor-monitor-history': 'competitor-monitor-history',
+};
+
+/**
+ * 后台任务导出（使用任务队列）
+ * @param url 导出API地址（相对路径，如 '/v1/export/asin'）
+ * @param params 查询参数
+ * @param filename 文件名（不含扩展名）
+ */
+export async function exportToExcelAsync(
+  url: string,
+  params: Record<string, any> = {},
+  filename?: string,
+): Promise<void> {
+  // 确定导出类型
+  const exportType = EXPORT_TYPE_MAP[url];
+  if (!exportType) {
+    throw new Error(`不支持的导出类型: ${url}`);
+  }
+
+  // 创建进度条容器
+  const progressContainer = document.createElement('div');
+  document.body.appendChild(progressContainer);
+  const root = ReactDOM.createRoot(progressContainer);
+
+  let progress = 0;
+  let progressMessage = '正在创建任务...';
+  const modalState = { visible: true };
+  let taskId: string | null = null;
+  let unsubscribe: (() => void) | null = null;
+
+  const updateProgress = (newProgress: number, msg: string) => {
+    progress = newProgress;
+    progressMessage = msg;
+    root.render(
+      React.createElement(ProgressModal, {
+        visible: modalState.visible,
+        progress: progress,
+        progressMessage: progressMessage,
+      }),
+    );
+  };
+
+  const cleanup = () => {
+    if (unsubscribe) {
+      unsubscribe();
+      unsubscribe = null;
+    }
+    setTimeout(() => {
+      root.unmount();
+      document.body.removeChild(progressContainer);
+    }, 500);
+  };
+
+  try {
+    const baseURL = getBaseURL();
+    const token = localStorage.getItem('token');
+
+    // 创建导出任务
+    const createTaskResponse = await fetch(`${baseURL}/v1/tasks/export`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${token}`,
+      },
+      body: JSON.stringify({
+        exportType,
+        params,
+      }),
+    });
+
+    if (!createTaskResponse.ok) {
+      const errorData = await createTaskResponse.json().catch(() => ({}));
+      throw new Error(errorData.errorMessage || '创建导出任务失败');
+    }
+
+    const taskData = await createTaskResponse.json();
+    if (!taskData.success || !taskData.data?.taskId) {
+      throw new Error('创建导出任务失败：未返回任务ID');
+    }
+
+    taskId = taskData.data.taskId;
+    updateProgress(5, '任务已创建，等待处理...');
+
+    // 监听WebSocket消息
+    const { wsClient } = await import('../services/websocket');
+
+    // 确保WebSocket已连接
+    if (!wsClient.isConnected()) {
+      wsClient.connect();
+      // 等待连接建立
+      await new Promise((resolve) => {
+        const checkConnection = setInterval(() => {
+          if (wsClient.isConnected()) {
+            clearInterval(checkConnection);
+            resolve(undefined);
+          }
+        }, 100);
+        setTimeout(() => {
+          clearInterval(checkConnection);
+          resolve(undefined);
+        }, 5000); // 最多等待5秒
+      });
+    }
+
+    unsubscribe = wsClient.onMessage((msg) => {
+      if (msg.type === 'task_progress' && msg.taskId === taskId) {
+        updateProgress(msg.progress, msg.message);
+      } else if (msg.type === 'task_complete' && msg.taskId === taskId) {
+        updateProgress(100, '导出完成，正在下载...');
+
+        // 下载文件
+        const downloadUrl = `${baseURL}${msg.downloadUrl}`;
+        const a = document.createElement('a');
+        a.href = downloadUrl;
+        a.download =
+          msg.filename ||
+          (filename
+            ? `${filename}_${new Date().toISOString().split('T')[0]}.xlsx`
+            : `导出数据_${new Date().toISOString().split('T')[0]}.xlsx`);
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+
+        modalState.visible = false;
+        updateProgress(100, '导出完成');
+        message.success('导出成功');
+        cleanup();
+      } else if (msg.type === 'task_error' && msg.taskId === taskId) {
+        modalState.visible = false;
+        updateProgress(0, '导出失败');
+        message.error(`导出失败: ${msg.error}`);
+        cleanup();
+        throw new Error(msg.error);
+      }
+    });
+
+    // 轮询任务状态（作为WebSocket的备用方案）
+    const pollInterval = setInterval(async () => {
+      if (!taskId) return;
+
+      try {
+        const statusResponse = await fetch(`${baseURL}/v1/tasks/${taskId}`, {
+          headers: {
+            Authorization: `Bearer ${token}`,
+          },
+        });
+
+        if (statusResponse.ok) {
+          const statusData = await statusResponse.json();
+          if (statusData.success && statusData.data) {
+            const { status, progress: taskProgress, error } = statusData.data;
+
+            if (status === 'completed') {
+              clearInterval(pollInterval);
+              // 下载文件
+              const downloadUrl = `${baseURL}/v1/tasks/${taskId}/download`;
+              const a = document.createElement('a');
+              a.href = downloadUrl;
+              a.download = filename
+                ? `${filename}_${new Date().toISOString().split('T')[0]}.xlsx`
+                : `导出数据_${new Date().toISOString().split('T')[0]}.xlsx`;
+              document.body.appendChild(a);
+              a.click();
+              document.body.removeChild(a);
+
+              modalState.visible = false;
+              updateProgress(100, '导出完成');
+              message.success('导出成功');
+              cleanup();
+            } else if (status === 'failed') {
+              clearInterval(pollInterval);
+              modalState.visible = false;
+              updateProgress(0, '导出失败');
+              message.error(`导出失败: ${error || '未知错误'}`);
+              cleanup();
+              throw new Error(error || '导出失败');
+            } else if (status === 'processing' && taskProgress !== undefined) {
+              updateProgress(taskProgress, `正在处理... (${taskProgress}%)`);
+            }
+          }
+        }
+      } catch (error) {
+        console.error('查询任务状态失败:', error);
+      }
+    }, 2000); // 每2秒轮询一次
+
+    // 设置超时（30分钟）
+    setTimeout(() => {
+      clearInterval(pollInterval);
+      if (modalState.visible) {
+        modalState.visible = false;
+        updateProgress(0, '导出超时');
+        message.error('导出超时，请重试');
+        cleanup();
+      }
+    }, 30 * 60 * 1000);
+  } catch (error: any) {
+    console.error('导出失败:', error);
+    modalState.visible = false;
+    updateProgress(0, '导出失败');
+    message.error(error?.message || '导出失败，请重试');
+    cleanup();
+    throw error;
+  }
+}
+
+/**
  * 导出数据为Excel（带进度条）
  * @param url 导出API地址（相对路径，如 '/v1/export/asin'）
  * @param params 查询参数
  * @param filename 文件名（不含扩展名）
+ * @param useAsync 是否使用后台任务模式（默认false，使用同步模式）
  */
 export async function exportToExcel(
   url: string,
   params: Record<string, any> = {},
   filename?: string,
+  useAsync: boolean = false,
 ) {
+  // 如果使用异步模式，调用后台任务导出
+  if (useAsync) {
+    return exportToExcelAsync(url, params, filename);
+  }
+
   // 创建进度条容器
   const progressContainer = document.createElement('div');
   document.body.appendChild(progressContainer);

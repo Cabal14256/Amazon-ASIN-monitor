@@ -292,6 +292,9 @@ exports.deleteASIN = async (req, res) => {
 // Excel导入变体组和ASIN
 exports.importFromExcel = async (req, res) => {
   try {
+    const { useAsync } = req.body;
+    const userId = req.user?.userId || req.user?.id;
+
     if (!req.file) {
       logger.error('Excel导入错误: 没有收到文件', {
         body: req.body,
@@ -304,6 +307,35 @@ exports.importFromExcel = async (req, res) => {
         errorCode: 400,
       });
     }
+
+    // 如果使用异步模式，创建后台任务
+    if (useAsync === true) {
+      const { v4: uuidv4 } = require('uuid');
+      const importTaskQueue = require('../services/importTaskQueue');
+
+      const taskId = uuidv4();
+      await importTaskQueue.enqueue({
+        taskId,
+        fileBuffer: req.file.buffer,
+        originalFilename: req.file.originalname,
+        userId,
+      });
+
+      logger.info(
+        `[导入任务] 创建任务成功: ${taskId}, 文件: ${req.file.originalname}, 用户: ${userId}`,
+      );
+
+      return res.json({
+        success: true,
+        data: {
+          taskId,
+          status: 'pending',
+        },
+        errorCode: 0,
+      });
+    }
+
+    // 同步模式（原有逻辑继续）
 
     logger.info('收到文件:', {
       originalname: req.file.originalname,

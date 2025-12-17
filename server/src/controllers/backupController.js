@@ -7,8 +7,38 @@ const schedulerService = require('../services/schedulerService');
  */
 async function createBackup(req, res) {
   try {
-    const { tables, description } = req.body;
+    const { tables, description, useAsync } = req.body;
+    const userId = req.user?.userId || req.user?.id;
 
+    // 如果使用异步模式，创建后台任务
+    if (useAsync === true) {
+      const { v4: uuidv4 } = require('uuid');
+      const backupTaskQueue = require('../services/backupTaskQueue');
+      const logger = require('../utils/logger');
+
+      const taskId = uuidv4();
+      await backupTaskQueue.enqueue({
+        taskId,
+        taskType: 'create',
+        params: { tables, description },
+        userId,
+      });
+
+      logger.info(
+        `[备份任务] 创建任务成功: ${taskId}, 类型: create, 用户: ${userId}`,
+      );
+
+      return res.json({
+        success: true,
+        data: {
+          taskId,
+          status: 'pending',
+        },
+        errorCode: 0,
+      });
+    }
+
+    // 同步模式（原有逻辑）
     const result = await backupService.createBackup({ tables, description });
 
     res.json({
@@ -31,7 +61,8 @@ async function createBackup(req, res) {
  */
 async function restoreBackup(req, res) {
   try {
-    const { filename } = req.body;
+    const { filename, useAsync } = req.body;
+    const userId = req.user?.userId || req.user?.id;
 
     if (!filename) {
       return res.status(400).json({
@@ -41,6 +72,38 @@ async function restoreBackup(req, res) {
       });
     }
 
+    // 如果使用异步模式，创建后台任务
+    if (useAsync === true) {
+      const { v4: uuidv4 } = require('uuid');
+      const backupTaskQueue = require('../services/backupTaskQueue');
+      const logger = require('../utils/logger');
+      const path = require('path');
+
+      const taskId = uuidv4();
+      const filepath = path.join(__dirname, '../../backups', filename);
+
+      await backupTaskQueue.enqueue({
+        taskId,
+        taskType: 'restore',
+        params: { filepath },
+        userId,
+      });
+
+      logger.info(
+        `[备份任务] 创建任务成功: ${taskId}, 类型: restore, 文件: ${filename}, 用户: ${userId}`,
+      );
+
+      return res.json({
+        success: true,
+        data: {
+          taskId,
+          status: 'pending',
+        },
+        errorCode: 0,
+      });
+    }
+
+    // 同步模式（原有逻辑）
     const { getBackupFile } = require('../services/backupService');
     const filepath = require('path').join(__dirname, '../../backups', filename);
 

@@ -1,8 +1,40 @@
 type WebSocketMessage =
   | { type: 'connected'; message: string }
-  | { type: 'monitor_progress'; status: string; country?: string; current?: number; total?: number; progress?: number; timestamp: string }
-  | { type: 'monitor_complete'; success: boolean; totalChecked: number; totalBroken: number; totalNormal: number; duration: string; countryResults: any; timestamp: string }
+  | {
+      type: 'monitor_progress';
+      status: string;
+      country?: string;
+      current?: number;
+      total?: number;
+      progress?: number;
+      timestamp: string;
+    }
+  | {
+      type: 'monitor_complete';
+      success: boolean;
+      totalChecked: number;
+      totalBroken: number;
+      totalNormal: number;
+      duration: string;
+      countryResults: any;
+      timestamp: string;
+    }
   | { type: 'stats_update'; data: any }
+  | {
+      type: 'task_progress';
+      taskId: string;
+      progress: number;
+      message: string;
+      timestamp: string;
+    }
+  | {
+      type: 'task_complete';
+      taskId: string;
+      downloadUrl: string;
+      filename: string;
+      timestamp: string;
+    }
+  | { type: 'task_error'; taskId: string; error: string; timestamp: string }
   | { type: 'pong' };
 
 type MessageHandler = (message: WebSocketMessage) => void;
@@ -104,7 +136,9 @@ class WebSocketClient {
 
     this.reconnectAttempts++;
     const delay = this.reconnectDelay * Math.pow(2, this.reconnectAttempts - 1);
-    console.log(`[WebSocket] ${delay}ms后尝试重连 (${this.reconnectAttempts}/${this.maxReconnectAttempts})`);
+    console.log(
+      `[WebSocket] ${delay}ms后尝试重连 (${this.reconnectAttempts}/${this.maxReconnectAttempts})`,
+    );
 
     setTimeout(() => {
       this.connect();
@@ -126,10 +160,9 @@ const getWebSocketUrl = () => {
   if (process.env.NODE_ENV === 'development') {
     return 'http://localhost:3001';
   }
-  
+
   // 生产环境：从当前页面URL构建WebSocket URL（不包含 /ws，构造函数会自动添加）
   return window.location.origin;
 };
 
 export const wsClient = new WebSocketClient(getWebSocketUrl());
-

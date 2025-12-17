@@ -180,9 +180,8 @@ exports.checkASIN = async (req, res) => {
 // ===============================
 exports.batchCheckVariantGroups = async (req, res) => {
   try {
-    const { groupIds, country, forceRefresh } = req.body;
-    // 批量检查时默认也强制刷新（不使用缓存）
-    const shouldForceRefresh = forceRefresh !== false;
+    const { groupIds, country, forceRefresh, useAsync } = req.body;
+    const userId = req.user?.userId || req.user?.id;
 
     if (!groupIds || !Array.isArray(groupIds) || groupIds.length === 0) {
       return res.status(400).json({
@@ -191,6 +190,40 @@ exports.batchCheckVariantGroups = async (req, res) => {
         errorCode: 400,
       });
     }
+
+    // 如果使用异步模式，创建后台任务
+    if (useAsync === true) {
+      const { v4: uuidv4 } = require('uuid');
+      const batchCheckTaskQueue = require('../services/batchCheckTaskQueue');
+      const logger = require('../utils/logger');
+
+      const taskId = uuidv4();
+      await batchCheckTaskQueue.enqueue({
+        taskId,
+        groupIds,
+        country,
+        forceRefresh,
+        userId,
+      });
+
+      logger.info(
+        `[批量检查任务] 创建任务成功: ${taskId}, 变体组数量: ${groupIds.length}, 用户: ${userId}`,
+      );
+
+      return res.json({
+        success: true,
+        data: {
+          taskId,
+          status: 'pending',
+          total: groupIds.length,
+        },
+        errorCode: 0,
+      });
+    }
+
+    // 同步模式（原有逻辑）
+    // 批量检查时默认也强制刷新（不使用缓存）
+    const shouldForceRefresh = forceRefresh !== false;
 
     const results = [];
     for (const groupId of groupIds) {

@@ -1243,9 +1243,101 @@ async function exportCompetitorMonitorHistory(req, res) {
   }
 }
 
+const { v4: uuidv4 } = require('uuid');
+const exportTaskQueue = require('../services/exportTaskQueue');
+
+/**
+ * 创建导出任务（后台异步）
+ */
+async function createExportTask(req, res) {
+  try {
+    const { exportType, params } = req.body;
+    const userId = req.user?.userId || req.user?.id;
+
+    if (!exportType) {
+      return res.status(400).json({
+        success: false,
+        errorMessage: '导出类型不能为空',
+        errorCode: 400,
+      });
+    }
+
+    // 验证导出类型
+    const validTypes = [
+      'asin',
+      'monitor-history',
+      'variant-group',
+      'competitor-monitor-history',
+    ];
+    if (!validTypes.includes(exportType)) {
+      return res.status(400).json({
+        success: false,
+        errorMessage: `不支持的导出类型: ${exportType}`,
+        errorCode: 400,
+      });
+    }
+
+    // 检查权限（根据导出类型检查不同权限）
+    const User = require('../models/User');
+    const permissionMap = {
+      asin: 'asin:read',
+      'variant-group': 'asin:read',
+      'monitor-history': 'monitor:read',
+      'competitor-monitor-history': 'monitor:read',
+    };
+    const requiredPermission = permissionMap[exportType];
+    if (requiredPermission) {
+      const hasPermission = await User.hasPermission(
+        userId,
+        requiredPermission,
+      );
+      if (!hasPermission) {
+        return res.status(403).json({
+          success: false,
+          errorMessage: '无权执行此操作',
+          errorCode: 403,
+        });
+      }
+    }
+
+    // 生成任务ID
+    const taskId = uuidv4();
+
+    // 创建后台任务
+    await exportTaskQueue.enqueue({
+      taskId,
+      exportType,
+      params: params || {},
+      userId,
+    });
+
+    logger.info(
+      `[导出任务] 创建任务成功: ${taskId}, 类型: ${exportType}, 用户: ${userId}`,
+    );
+
+    res.json({
+      success: true,
+      data: {
+        taskId,
+        exportType,
+        status: 'pending',
+      },
+      errorCode: 0,
+    });
+  } catch (error) {
+    logger.error('创建导出任务失败:', error);
+    res.status(500).json({
+      success: false,
+      errorMessage: error.message || '创建导出任务失败',
+      errorCode: 500,
+    });
+  }
+}
+
 module.exports = {
   exportASINData,
   exportMonitorHistory,
   exportVariantGroupData,
   exportCompetitorMonitorHistory,
+  createExportTask,
 };
