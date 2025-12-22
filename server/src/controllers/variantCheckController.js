@@ -284,3 +284,46 @@ exports.batchCheckVariantGroups = async (req, res) => {
     });
   }
 };
+
+// ===============================
+// 批量查询ASIN的父变体
+// ===============================
+exports.batchQueryParentAsin = async (req, res) => {
+  try {
+    const { asins, country } = req.body;
+
+    if (!asins || !Array.isArray(asins) || asins.length === 0) {
+      return res.status(400).json({
+        success: false,
+        errorMessage: '请提供ASIN列表',
+        errorCode: 400,
+      });
+    }
+
+    if (!country || typeof country !== 'string') {
+      return res.status(400).json({
+        success: false,
+        errorMessage: '请提供国家代码',
+        errorCode: 400,
+      });
+    }
+
+    const results = await variantCheckService.batchQueryParentAsin(
+      asins,
+      country,
+    );
+
+    res.json({
+      success: true,
+      data: results,
+      errorCode: 0,
+    });
+  } catch (error) {
+    console.error('批量查询父变体错误:', error);
+    res.status(500).json({
+      success: false,
+      errorMessage: error.message || '批量查询失败',
+      errorCode: 500,
+    });
+  }
+};

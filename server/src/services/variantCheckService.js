@@ -965,10 +965,96 @@ async function checkSingleASIN(asinId, forceRefresh = false) {
   }
 }
 
+/**
+ * 批量查询ASIN的父变体
+ * @param {string[]} asinList - ASIN列表
+ * @param {string} country - 国家代码
+ * @returns {Promise<Array>} 查询结果数组
+ */
+async function batchQueryParentAsin(asinList, country) {
+  if (!Array.isArray(asinList) || asinList.length === 0) {
+    throw new Error('ASIN列表不能为空');
+  }
+
+  if (!country || typeof country !== 'string') {
+    throw new Error('国家代码不能为空');
+  }
+
+  const results = [];
+  const cleanAsinList = asinList
+    .map((asin) => (asin || '').toString().trim().toUpperCase())
+    .filter((asin) => asin && /^[A-Z][A-Z0-9]{9}$/.test(asin));
+
+  if (cleanAsinList.length === 0) {
+    throw new Error('没有有效的ASIN');
+  }
+
+  logger.info(
+    `[batchQueryParentAsin] 开始批量查询 ${cleanAsinList.length} 个ASIN的父变体 (${country})`,
+  );
+
+  // 使用并发控制批量查询
+  const queryPromises = cleanAsinList.map((asin) =>
+    runWithConcurrencyLimit(async () => {
+      try {
+        // 强制刷新，不使用缓存，确保获取最新数据
+        const result = await checkASINVariants(
+          asin,
+          country,
+          true,
+          PRIORITY.USER,
+        );
+
+        const parentAsin = result?.details?.parentAsin || null;
+        const hasParentAsin = !!parentAsin;
+
+        return {
+          asin,
+          hasParentAsin,
+          parentAsin,
+          title: result?.details?.title || '',
+          brand: result?.details?.brand || null,
+          hasVariants: result?.hasVariants || false,
+          variantCount: result?.variantCount || 0,
+          error: null,
+        };
+      } catch (error) {
+        logger.error(
+          `[batchQueryParentAsin] 查询ASIN ${asin} 失败:`,
+          error.message || error,
+        );
+
+        return {
+          asin,
+          hasParentAsin: false,
+          parentAsin: null,
+          title: '',
+          brand: null,
+          hasVariants: false,
+          variantCount: 0,
+          error: error.message || '查询失败',
+        };
+      }
+    }),
+  );
+
+  const queryResults = await Promise.all(queryPromises);
+  results.push(...queryResults);
+
+  logger.info(
+    `[batchQueryParentAsin] 批量查询完成，成功: ${
+      results.filter((r) => !r.error).length
+    }, 失败: ${results.filter((r) => r.error).length}`,
+  );
+
+  return results;
+}
+
 module.exports = {
   checkASINVariants,
   checkVariantGroup,
   checkSingleASIN,
+  batchQueryParentAsin,
   reloadHtmlScraperFallbackConfig,
   reloadLegacyClientFallbackConfig,
   MAX_CONCURRENT_ASIN_CHECKS,

@@ -170,6 +170,10 @@ async function auditLogMiddleware(req, res, next) {
   let errorMessage = null;
 
   res.json = function (data) {
+    // 检查响应是否已经发送
+    if (res.headersSent) {
+      return res;
+    }
     responseStatus = res.statusCode || 200;
     if (data && data.success === false) {
       errorMessage = data.errorMessage || data.message || 'Unknown error';
@@ -178,6 +182,10 @@ async function auditLogMiddleware(req, res, next) {
   };
 
   res.send = function (data) {
+    // 检查响应是否已经发送
+    if (res.headersSent) {
+      return res;
+    }
     responseStatus = res.statusCode || 200;
     return originalSend(data);
   };

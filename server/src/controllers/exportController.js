@@ -1334,10 +1334,171 @@ async function createExportTask(req, res) {
   }
 }
 
+/**
+ * 导出父变体查询结果
+ */
+async function exportParentAsinQuery(req, res) {
+  try {
+    const { asins, country } = req.query;
+    const isProgressMode = req.query.useProgress === 'true';
+
+    if (!asins || typeof asins !== 'string') {
+      if (isProgressMode) {
+        sendError(res, '请提供ASIN列表');
+      } else {
+        return res.status(400).json({
+          success: false,
+          errorMessage: '请提供ASIN列表',
+        });
+      }
+      return;
+    }
+
+    if (!country || typeof country !== 'string') {
+      if (isProgressMode) {
+        sendError(res, '请提供国家代码');
+      } else {
+        return res.status(400).json({
+          success: false,
+          errorMessage: '请提供国家代码',
+        });
+      }
+      return;
+    }
+
+    // 解析ASIN列表（支持逗号分隔或换行分隔）
+    const asinList = asins
+      .split(/[,\n]/)
+      .map((asin) => asin.trim().toUpperCase())
+      .filter((asin) => asin && /^[A-Z][A-Z0-9]{9}$/.test(asin));
+
+    if (asinList.length === 0) {
+      if (isProgressMode) {
+        sendError(res, '没有有效的ASIN');
+      } else {
+        return res.status(400).json({
+          success: false,
+          errorMessage: '没有有效的ASIN',
+        });
+      }
+      return;
+    }
+
+    // 设置SSE响应头
+    if (isProgressMode) {
+      res.setHeader('Content-Type', 'text/event-stream');
+      res.setHeader('Cache-Control', 'no-cache');
+      res.setHeader('Connection', 'keep-alive');
+      res.setHeader('X-Accel-Buffering', 'no'); // 禁用Nginx缓冲
+    }
+
+    sendProgress(res, 10, '开始查询ASIN父变体...', 'querying');
+
+    // 调用批量查询服务
+    const variantCheckService = require('../services/variantCheckService');
+    const results = await variantCheckService.batchQueryParentAsin(
+      asinList,
+      country,
+    );
+
+    sendProgress(res, 80, '正在生成Excel文件...', 'generating');
+
+    // 准备Excel数据
+    const excelData = [];
+
+    // 表头
+    excelData.push([
+      'ASIN',
+      '国家',
+      '是否有父变体',
+      '父变体ASIN',
+      '产品标题',
+      '品牌',
+      '是否有变体',
+      '变体数量',
+      '查询时间',
+      '错误信息',
+    ]);
+
+    // 添加数据行
+    const queryTime = getUTC8String('YYYY-MM-DD HH:mm:ss');
+    for (const result of results) {
+      excelData.push([
+        result.asin || '',
+        country || '',
+        result.hasParentAsin ? '是' : '否',
+        result.parentAsin || '',
+        result.title || '',
+        result.brand || '',
+        result.hasVariants ? '是' : '否',
+        result.variantCount || 0,
+        queryTime,
+        result.error || '',
+      ]);
+    }
+
+    sendProgress(res, 90, '正在生成Excel文件...', 'generating');
+
+    // 创建工作簿
+    const wb = XLSX.utils.book_new();
+    const ws = XLSX.utils.aoa_to_sheet(excelData);
+
+    // 设置列宽
+    ws['!cols'] = [
+      { wch: 15 }, // ASIN
+      { wch: 10 }, // 国家
+      { wch: 15 }, // 是否有父变体
+      { wch: 15 }, // 父变体ASIN
+      { wch: 50 }, // 产品标题
+      { wch: 20 }, // 品牌
+      { wch: 15 }, // 是否有变体
+      { wch: 12 }, // 变体数量
+      { wch: 20 }, // 查询时间
+      { wch: 30 }, // 错误信息
+    ];
+
+    XLSX.utils.book_append_sheet(wb, ws, '父变体查询结果');
+
+    sendProgress(res, 95, '准备下载文件...', 'generating');
+
+    // 生成Excel文件
+    const excelBuffer = XLSX.write(wb, { type: 'buffer', bookType: 'xlsx' });
+
+    // 设置响应头
+    const filename = `ASIN父变体查询结果_${getUTC8String('YYYY-MM-DD')}.xlsx`;
+
+    if (isProgressMode) {
+      sendProgress(res, 95, '准备下载文件...', 'generating');
+      sendComplete(res, excelBuffer, filename);
+    } else {
+      res.setHeader(
+        'Content-Type',
+        'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+      );
+      res.setHeader(
+        'Content-Disposition',
+        `attachment; filename="${encodeURIComponent(filename)}"`,
+      );
+      res.send(excelBuffer);
+    }
+  } catch (error) {
+    logger.error('导出父变体查询结果失败:', error);
+    if (req.query.useProgress === 'true') {
+      sendError(res, '导出父变体查询结果失败');
+    } else {
+      res.status(500).json({
+        success: false,
+        errorMessage: '导出父变体查询结果失败',
+      });
+    }
+  }
+}
+
 module.exports = {
   exportASINData,
   exportMonitorHistory,
   exportVariantGroupData,
   exportCompetitorMonitorHistory,
+  exportParentAsinQuery,
   createExportTask,
 };

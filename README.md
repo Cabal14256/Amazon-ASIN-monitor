@@ -32,9 +32,16 @@ Amazon ASIN Monitor 是一个全栈 Web 应用，用于监控和管理 Amazon �
   - 独立数据库隔离
 
 - **数据分析**
+
   - 监控数据可视化
   - 趋势分析图表
   - 数据统计报表
+
+- **ASIN 父变体查询**
+  - 批量查询 ASIN 的父变体信息
+  - 支持多 ASIN 同时查询（逗号或换行分隔）
+  - 显示变体关系、数量和状态
+  - 支持按国家/区域查询
 
 ### 企业级特性
 
@@ -43,6 +50,9 @@ Amazon ASIN Monitor 是一个全栈 Web 应用，用于监控和管理 Amazon �
   - 基于角色的访问控制（RBAC）
   - 用户管理、角色管理、权限管理
   - JWT 认证
+  - 密码重置功能
+  - 密码安全策略
+  - 多设备会话管理
 
 - **审计日志**
 
@@ -54,6 +64,9 @@ Amazon ASIN Monitor 是一个全栈 Web 应用，用于监控和管理 Amazon �
   - 飞书 Webhook 通知
   - 按国家/区域配置通知
   - 异常情况自动推送
+  - 独立的飞书配置管理页面
+  - 按区域（US/EU）配置通知
+  - 启用/禁用开关管理
 
 - **系统管理**
 
@@ -72,7 +85,7 @@ Amazon ASIN Monitor 是一个全栈 Web 应用，用于监控和管理 Amazon �
 
 - **框架**: React 18 + TypeScript
 - **UI 库**: Ant Design 5
-- **构建工具**: UmiJS 4
+- **构建工具**: @umijs/max (UmiJS 4)
 - **图表**: ECharts + @ant-design/charts
 - **状态管理**: UmiJS Model
 - **路由**: UmiJS Router
@@ -96,10 +109,10 @@ Amazon ASIN Monitor 是一个全栈 Web 应用，用于监控和管理 Amazon �
 
 ## 📦 环境要求
 
-- **Node.js**: >= 14.0.0 (推荐 16.x 或更高版本)
-- **MySQL**: >= 5.7
-- **Redis**: >= 5.0 (用于队列和缓存)
-- **npm**: >= 6.0.0
+- **Node.js**: >= 14.0.0 (推荐 16.x 或 18.x LTS 版本)
+- **MySQL**: >= 5.7 (推荐 8.0+)
+- **Redis**: >= 5.0 (推荐 6.0+，用于队列和缓存)
+- **npm**: >= 6.0.0 (推荐 8.x 或更高版本)
 
 ## 🚀 快速开始
 
@@ -150,6 +163,10 @@ REDIS_URL=redis://127.0.0.1:6379
 
 # JWT 配置
 JWT_SECRET=your_jwt_secret_key_change_this_in_production
+# JWT过期时间（默认7天）
+JWT_EXPIRES_IN=7d
+# 记住我功能的过期时间（默认30天）
+JWT_REMEMBER_EXPIRES_IN=30d
 
 # 服务器配置
 PORT=3001
@@ -159,6 +176,12 @@ CORS_ORIGIN=http://localhost:8000
 SP_API_LWA_CLIENT_ID=your_client_id
 SP_API_LWA_CLIENT_SECRET=your_client_secret
 SP_API_REFRESH_TOKEN=your_refresh_token
+# 是否启用AWS签名（false=简化模式，无需AWS签名；true=标准模式，需要完整AWS配置）
+SP_API_USE_AWS_SIGNATURE=false
+# 是否启用HTML抓取兜底（当SP-API失败时使用HTML抓取，有风险）
+ENABLE_HTML_SCRAPER_FALLBACK=false
+# 是否启用旧客户端备用方案（当标准SP-API失败时使用）
+ENABLE_LEGACY_CLIENT_FALLBACK=false
 ```
 
 详细配置说明请参考 `server/env.template` 文件。
@@ -248,11 +271,17 @@ Amazon-ASIN-monitor/
 │   ├── pages/             # 页面组件
 │   │   ├── Home/          # 首页/仪表盘
 │   │   ├── ASIN/          # ASIN 管理
+│   │   ├── ASINParentQuery/ # ASIN 父变体查询
 │   │   ├── CompetitorASIN/ # 竞品 ASIN 管理
 │   │   ├── MonitorHistory/ # 监控历史
+│   │   ├── CompetitorMonitorHistory/ # 竞品监控历史
 │   │   ├── Analytics/     # 数据分析
 │   │   ├── Settings/       # 系统设置
+│   │   ├── FeishuConfig/   # 飞书配置管理
 │   │   ├── UserManagement/ # 用户管理
+│   │   ├── AuditLog/       # 操作审计
+│   │   ├── Profile/        # 个人中心
+│   │   ├── ResetPassword/  # 密码重置
 │   │   └── ...
 │   ├── components/        # 公共组件
 │   ├── services/          # API 服务
@@ -269,7 +298,10 @@ Amazon-ASIN-monitor/
 │   │   └── utils/         # 工具函数
 │   ├── database/          # 数据库脚本
 │   │   ├── init.sql       # 初始化脚本
-│   │   └── migrations/   # 数据库迁移
+│   │   ├── competitor-init.sql # 竞品数据库初始化脚本
+│   │   ├── migrations/   # 数据库迁移
+│   │   ├── MIGRATION.md  # 迁移说明文档
+│   │   └── README.md     # 数据库文档
 │   ├── env.template       # 环境变量模板
 │   └── index.js           # 入口文件
 ├── dist/                  # 前端构建输出（生产环境）
@@ -600,9 +632,27 @@ MAX_ALLOWED_CONCURRENT_GROUP_CHECKS=10
 MONITOR_BATCH_COUNT=1
 MONITOR_MAX_GROUPS_PER_TASK=0
 
-# 请求延迟（避免限流）
+# 是否启用自动调整并发数（默认启用，设置为false禁用）
+# 启用后，系统会根据限流情况自动调整并发数
+AUTO_ADJUST_CONCURRENCY=true
+
+# 请求延迟（避免限流，已废弃，由令牌桶限流器替代）
 SP_API_REQUEST_DELAY_INTERVAL=20
 SP_API_REQUEST_DELAY_MS=150
+
+# SP-API速率限制配置（令牌桶限流器）
+# 每分钟允许的请求数（默认60）
+SP_API_RATE_LIMIT_PER_MINUTE=60
+# 每小时允许的请求数（默认1000）
+SP_API_RATE_LIMIT_PER_HOUR=1000
+
+# 缓存配置
+# 缓存默认TTL（毫秒，默认30秒）
+CACHE_DEFAULT_TTL_MS=30000
+# 缓存最大条目数（默认2000）
+CACHE_MAX_ENTRIES=2000
+# 缓存清理间隔（毫秒，默认60秒）
+CACHE_CLEANUP_INTERVAL_MS=60000
 ```
 
 定时任务配置：
@@ -891,6 +941,15 @@ mysql -u root -p < server/database/init.sql
 | 010 | `010_add_sessions_table.sql` | 添加多设备会话记录表 | ✅ 已整合到 init.sql |
 | 011 | `011_add_variant_group_fields.sql` | 为变体组表添加监控字段 | ✅ 已整合到 init.sql |
 | 012 | `012_add_composite_indexes.sql` | 添加复合索引优化查询性能 | ✅ 已整合到 init.sql |
+| 013 | `013_add_password_security_tables.sql` | 添加密码安全相关表 | ✅ 已整合到 init.sql |
+| 014 | `014_add_granular_permissions.sql` | 添加细粒度权限 | ✅ 已整合到 init.sql |
+| 015 | `015_change_asin_unique_to_composite.sql` | 修改 ASIN 唯一约束为复合索引 | ✅ 已整合到 init.sql |
+| 016 | `016_add_snapshot_fields_to_monitor_history.sql` | 为监控历史添加快照字段 | ✅ 已整合到 init.sql |
+| 017 | `017_optimize_monitor_history_indexes.sql` | 优化监控历史索引 | ✅ 已整合到 init.sql |
+| 018 | `018_add_analytics_query_index.sql` | 添加数据分析查询索引 | ✅ 已整合到 init.sql |
+| 019 | `019_add_backup_config_table.sql` | 添加备份配置表 | ✅ 已整合到 init.sql |
+| 020 | `020_add_status_change_indexes.sql` | 添加状态变更索引 | ✅ 已整合到 init.sql |
+| 021 | `021_optimize_variant_group_indexes.sql` | 优化变体组索引 | ✅ 已整合到 init.sql |
 
 > **注意**: 所有标记为 "✅ 已整合到 init.sql" 的迁移脚本，其功能已包含在 `init.sql` 中。新安装系统时直接使用 `init.sql` 即可，无需执行这些迁移脚本。
 
@@ -950,6 +1009,51 @@ mysql -u root -p < server/database/init.sql
 
 - 为频繁查询的字段组合添加复合索引
 - 提升查询性能
+
+**013: 添加密码安全相关表**
+
+- 创建密码安全策略相关表
+- 支持密码重置和密码历史记录
+
+**014: 添加细粒度权限**
+
+- 扩展权限系统，支持更细粒度的权限控制
+- 优化权限查询性能
+
+**015: 修改 ASIN 唯一约束为复合索引**
+
+- 将 ASIN 的唯一约束改为复合索引（country + asin）
+- 支持同一 ASIN 在不同国家存在
+
+**016: 为监控历史添加快照字段**
+
+- 添加快照相关字段，支持数据快照功能
+- 便于历史数据分析和对比
+
+**017: 优化监控历史索引**
+
+- 优化监控历史表的索引结构
+- 提升查询性能
+
+**018: 添加数据分析查询索引**
+
+- 为数据分析相关查询添加专用索引
+- 优化数据分析页面加载速度
+
+**019: 添加备份配置表**
+
+- 创建备份配置表
+- 支持备份策略配置
+
+**020: 添加状态变更索引**
+
+- 为状态变更相关查询添加索引
+- 优化状态查询性能
+
+**021: 优化变体组索引**
+
+- 优化变体组表的索引结构
+- 提升变体组查询性能
 
 ### 注意事项
 
@@ -1032,12 +1136,22 @@ sudo ./deploy.sh
 - `POST /api/v1/asins` - 创建 ASIN
 - `PUT /api/v1/asins/:asinId` - 更新 ASIN
 - `DELETE /api/v1/asins/:asinId` - 删除 ASIN
+- `POST /api/v1/asins/:asinId/move` - 移动 ASIN 到其他变体组
+- `PUT /api/v1/asins/:asinId/feishu-notify` - 更新 ASIN 的飞书通知开关
+- `PUT /api/v1/variant-groups/:groupId/feishu-notify` - 更新变体组的飞书通知开关
 
 ### 监控接口
 
 - `POST /api/v1/monitor/check` - 手动触发监控
 - `POST /api/v1/monitor/check-variant-group` - 检查变体组
 - `GET /api/v1/monitor/history` - 查询监控历史
+
+### 变体检查接口
+
+- `POST /api/v1/variant-groups/:groupId/check` - 检查变体组
+- `POST /api/v1/asins/:asinId/check` - 检查单个 ASIN
+- `POST /api/v1/variant-groups/batch-check` - 批量检查变体组
+- `POST /api/v1/variant-check/batch-query-parent-asin` - 批量查询 ASIN 的父变体信息
 
 ### 竞品监控接口
 
@@ -1050,6 +1164,15 @@ sudo ./deploy.sh
 - `POST /api/v1/users` - 创建用户
 - `PUT /api/v1/users/:userId` - 更新用户
 - `DELETE /api/v1/users/:userId` - 删除用户
+
+### 飞书配置接口
+
+- `GET /api/v1/feishu-configs` - 获取所有飞书配置
+- `GET /api/v1/feishu-configs/:country` - 根据国家获取飞书配置
+- `POST /api/v1/feishu-configs` - 创建/更新飞书配置
+- `PUT /api/v1/feishu-configs/:country` - 更新飞书配置
+- `DELETE /api/v1/feishu-configs/:country` - 删除飞书配置
+- `PATCH /api/v1/feishu-configs/:country/toggle` - 启用/禁用飞书配置
 
 ### 系统接口
 

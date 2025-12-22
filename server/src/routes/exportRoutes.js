@@ -33,4 +33,11 @@ router.get(
   exportController.exportCompetitorMonitorHistory,
 );
 
+// 导出父变体查询结果（需要ASIN查看权限）
+router.get(
+  '/export/parent-asin-query',
+  checkPermission('asin:read'),
+  exportController.exportParentAsinQuery,
+);
+
 module.exports = router;

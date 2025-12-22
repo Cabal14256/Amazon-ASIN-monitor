@@ -269,6 +269,7 @@ class MonitorHistory {
     );
 
     cacheService.deleteByPrefix('monitorHistoryCount:');
+    cacheService.deleteByPrefix('periodSummary:');
     return this.findById(result.insertId);
   }
 
@@ -305,6 +306,7 @@ class MonitorHistory {
     cacheService.deleteByPrefix('statisticsByTime:');
     cacheService.deleteByPrefix('allCountriesSummary:');
     cacheService.deleteByPrefix('regionSummary:');
+    cacheService.deleteByPrefix('periodSummary:');
   }
 
   // 获取统计信息
@@ -989,7 +991,16 @@ class MonitorHistory {
       pageSize = 10,
     } = params;
 
-    const { isPeakHour } = require('../utils/peakHours');
+    // 生成缓存键
+    const cacheKey = `periodSummary:${country}:${site}:${brand}:${startTime}:${endTime}:${timeSlotGranularity}:${current}:${pageSize}`;
+    const cached = cacheService.get(cacheKey);
+    if (cached !== null) {
+      logger.info(`[缓存命中] getPeriodSummary 缓存键: ${cacheKey}`);
+      return cached;
+    }
+    logger.info(
+      `[缓存未命中] getPeriodSummary 缓存键: ${cacheKey}，将查询数据库`,
+    );
 
     let dateFormat = '';
     if (timeSlotGranularity === 'hour') {
@@ -998,9 +1009,12 @@ class MonitorHistory {
       dateFormat = 'DATE_FORMAT(mh.check_time, "%Y-%m-%d")';
     }
 
+    // 优化：WHERE子句条件顺序与索引匹配（先country，后check_time）
+    // 使用 idx_country_check_time 或 idx_country_check_time_broken 索引
     let whereClause = 'WHERE mh.asin_id IS NOT NULL';
     const conditions = [];
 
+    // 先添加country条件（索引的第一列）
     if (country) {
       if (country === 'EU') {
         // EU汇总：包含所有欧洲国家
@@ -1011,6 +1025,7 @@ class MonitorHistory {
       }
     }
 
+    // 再添加check_time条件（索引的第二列）
     if (startTime) {
       whereClause += ` AND mh.check_time >= ?`;
       conditions.push(startTime);
@@ -1024,6 +1039,8 @@ class MonitorHistory {
     // 如果需要按站点或品牌筛选，需要关联 asins 表
     let joinClause = '';
     if (site || brand) {
+      // 优化：使用INNER JOIN替代LEFT JOIN（如果确定所有记录都有对应的asin）
+      // 但为了保持兼容性，仍使用LEFT JOIN，但确保asins表有索引
       joinClause = 'LEFT JOIN asins a ON a.id = mh.asin_id';
       if (site) {
         whereClause += ` AND a.site = ?`;
@@ -1035,8 +1052,34 @@ class MonitorHistory {
       }
     }
 
-    // 优化：使用数据库 GROUP BY 聚合，减少内存占用
-    // 先按时间槽、国家、站点、品牌、ASIN分组，在数据库层面聚合
+    // 优化：将高峰时段判断移到数据库层面
+    // 构建高峰时段判断的SQL CASE语句
+    // 注意：数据库配置timezone为'+08:00'，所以check_time已经是UTC+8时间
+    // 使用DATE_ADD将UTC时间转换为UTC+8，如果数据库存储的是UTC时间
+    // 如果数据库已经存储为UTC+8，则直接使用HOUR()函数
+    const buildPeakHourCase = (countryField) => {
+      // 使用DATE_ADD确保时区转换，如果MySQL没有时区表，使用DATE_ADD作为备选
+      // 假设check_time存储为UTC，需要转换为UTC+8（北京时间）
+      const hourExpr = `HOUR(DATE_ADD(mh.check_time, INTERVAL 8 HOUR))`;
+      return `CASE 
+        WHEN ${countryField} = 'US' THEN 
+          (${hourExpr} >= 2 AND ${hourExpr} < 6)
+          OR (${hourExpr} >= 9 AND ${hourExpr} < 12)
+        WHEN ${countryField} = 'UK' THEN
+          ${hourExpr} >= 22
+          OR (${hourExpr} >= 0 AND ${hourExpr} < 2)
+          OR (${hourExpr} >= 3 AND ${hourExpr} < 6)
+        WHEN ${countryField} IN ('DE', 'FR', 'ES', 'IT') THEN
+          ${hourExpr} >= 20
+          OR (${hourExpr} >= 2 AND ${hourExpr} < 5)
+        ELSE 0
+      END`;
+    };
+
+    const isPeakCase = buildPeakHourCase('mh.country');
+
+    // 优化：在数据库层面完成所有聚合计算
+    // 使用子查询先按ASIN分组，再按时间槽和维度分组
     const groupByFields = [];
     const selectFields = [];
 
@@ -1049,9 +1092,8 @@ class MonitorHistory {
     if (brand) {
       groupByFields.push('a.brand');
     }
-    groupByFields.push('mh.asin_id');
 
-    // 构建 SELECT 字段
+    // 构建 SELECT 字段 - 在数据库层面完成所有聚合
     selectFields.push(`${dateFormat} as time_slot`);
     selectFields.push('mh.country');
     if (site) {
@@ -1064,137 +1106,120 @@ class MonitorHistory {
     } else {
       selectFields.push("'' as brand");
     }
-    selectFields.push('mh.asin_id');
-    selectFields.push('COUNT(*) as check_count');
+    // 聚合统计
+    selectFields.push('SUM(check_count) as total_checks');
+    selectFields.push('SUM(broken_count) as broken_count');
+    // 高峰时段统计（在数据库层面计算）
     selectFields.push(
-      'SUM(CASE WHEN mh.is_broken = 1 THEN 1 ELSE 0 END) as broken_count',
+      `SUM(CASE WHEN is_peak = 1 THEN check_count ELSE 0 END) as peak_total`,
     );
-    selectFields.push('MAX(mh.is_broken) as has_broken');
-    selectFields.push('MIN(mh.check_time) as first_check_time');
+    selectFields.push(
+      `SUM(CASE WHEN is_peak = 1 THEN broken_count ELSE 0 END) as peak_broken`,
+    );
+    // 低峰时段统计
+    selectFields.push(
+      `SUM(CASE WHEN is_peak = 0 THEN check_count ELSE 0 END) as low_total`,
+    );
+    selectFields.push(
+      `SUM(CASE WHEN is_peak = 0 THEN broken_count ELSE 0 END) as low_broken`,
+    );
+    // 去重统计：使用COUNT(DISTINCT)在数据库层面计算
+    selectFields.push(
+      `COUNT(DISTINCT CONCAT(mh.country, '_', mh.asin_id, '_', ${dateFormat})) as total_asins_dedup`,
+    );
+    // 去重异常ASIN统计
+    selectFields.push(
+      `COUNT(DISTINCT CASE WHEN has_broken = 1 THEN CONCAT(mh.country, '_', mh.asin_id, '_', ${dateFormat}) ELSE NULL END) as broken_asins_dedup`,
+    );
 
-    // 优化：使用数据库聚合查询（获取所有聚合数据，然后在内存中分组和分页）
-    const sql = `
+    // 使用子查询先按ASIN分组，计算高峰时段和异常状态
+    const subquerySql = `
       SELECT 
-        ${selectFields.join(', ')}
+        ${dateFormat} as time_slot,
+        mh.country,
+        ${site ? 'a.site as site' : "'' as site"},
+        ${brand ? 'a.brand as brand' : "'' as brand"},
+        mh.asin_id,
+        COUNT(*) as check_count,
+        SUM(CASE WHEN mh.is_broken = 1 THEN 1 ELSE 0 END) as broken_count,
+        MAX(mh.is_broken) as has_broken,
+        ${isPeakCase} as is_peak
       FROM monitor_history mh
       ${joinClause}
       ${whereClause}
-      GROUP BY ${groupByFields.join(', ')}
-      ORDER BY first_check_time ASC, mh.country ASC
-      ${site ? ', a.site ASC' : ''}
-      ${brand ? ', a.brand ASC' : ''}
+      GROUP BY ${dateFormat}, mh.country, mh.asin_id${site ? ', a.site' : ''}${
+      brand ? ', a.brand' : ''
+    }
     `;
 
+    // 外层查询：按时间槽和维度分组，完成最终聚合
+    const sql = `
+      SELECT 
+        ${selectFields.join(', ')}
+      FROM (
+        ${subquerySql}
+      ) subquery
+      GROUP BY time_slot, country${site ? ', site' : ''}${
+      brand ? ', brand' : ''
+    }
+      ORDER BY time_slot ASC, country ASC${site ? ', site ASC' : ''}${
+      brand ? ', brand ASC' : ''
+    }
+    `;
+
+    const queryStartTime = Date.now();
     const groupedRecords = await query(sql, conditions);
+    const queryDuration = Date.now() - queryStartTime;
+    logger.info(
+      `[数据库查询] getPeriodSummary SQL查询完成，耗时${queryDuration}ms，返回${groupedRecords.length}条记录`,
+    );
 
-    // 按维度分组统计（国家、站点、品牌、时间槽）
-    const groupKey = site || brand ? (site ? 'site' : 'brand') : 'country';
-    const statsMap = new Map(); // key: groupValue_timeSlot, value: stats
+    // 优化：减少内存计算，大部分计算已在数据库完成
+    const result = groupedRecords.map((record) => {
+      const totalChecks = Number(record.total_checks) || 0;
+      const brokenCount = Number(record.broken_count) || 0;
+      const peakTotal = Number(record.peak_total) || 0;
+      const peakBroken = Number(record.peak_broken) || 0;
+      const lowTotal = Number(record.low_total) || 0;
+      const lowBroken = Number(record.low_broken) || 0;
+      const totalAsinsDedup = Number(record.total_asins_dedup) || 0;
+      const brokenAsinsDedup = Number(record.broken_asins_dedup) || 0;
 
-    // 在内存中计算指标（数据量已大大减少）
-    groupedRecords.forEach((record) => {
-      const groupValue = record[groupKey] || record.country || 'ALL';
-      const timeSlot = record.time_slot;
-      const key = `${groupValue}_${timeSlot}`;
-
-      if (!statsMap.has(key)) {
-        statsMap.set(key, {
-          groupValue,
-          timeSlot,
-          country: record.country,
-          site: record.site || '',
-          brand: record.brand || '',
-          totalChecks: 0,
-          brokenCount: 0,
-          peakBroken: 0,
-          peakTotal: 0,
-          lowBroken: 0,
-          lowTotal: 0,
-          dedupMap: new Map(), // key: country_asin_timeSlot
-        });
-      }
-
-      const stats = statsMap.get(key);
-      const checkCount = Number(record.check_count) || 0;
-      const brokenCountInGroup = Number(record.broken_count) || 0;
-      const hasBroken = record.has_broken === 1;
-
-      stats.totalChecks += checkCount;
-      stats.brokenCount += brokenCountInGroup;
-
-      // 判断是否在高峰时段（使用该组的第一个检查时间）
-      const checkTime = new Date(record.first_check_time);
-      const isPeak = isPeakHour(checkTime, record.country);
-      if (isPeak) {
-        stats.peakTotal += checkCount;
-        stats.peakBroken += brokenCountInGroup;
-      } else {
-        stats.lowTotal += checkCount;
-        stats.lowBroken += brokenCountInGroup;
-      }
-
-      // 去重统计：按 (国家 + ASIN + 时间槽) 去重
-      const dedupKey = `${record.country}_${record.asin_id}_${timeSlot}`;
-      if (!stats.dedupMap.has(dedupKey)) {
-        stats.dedupMap.set(dedupKey, { isBroken: false });
-      }
-      // 如果该ASIN在该时间槽内任意一次快照为异常，则计为异常
-      if (hasBroken) {
-        stats.dedupMap.get(dedupKey).isBroken = true;
-      }
-    });
-
-    // 计算每个分组的指标
-    const result = [];
-    statsMap.forEach((stats) => {
-      const totalAsinsDedup = stats.dedupMap.size;
-      let brokenAsinsDedup = 0;
-      stats.dedupMap.forEach((value) => {
-        if (value.isBroken) {
-          brokenAsinsDedup++;
-        }
-      });
-
+      // 计算比率（在内存中完成，因为涉及除法）
       const ratioAllAsin =
-        stats.totalChecks > 0
-          ? (stats.brokenCount / stats.totalChecks) * 100
-          : 0;
+        totalChecks > 0 ? (brokenCount / totalChecks) * 100 : 0;
       const ratioAllTime =
         totalAsinsDedup > 0 ? (brokenAsinsDedup / totalAsinsDedup) * 100 : 0;
       const globalPeakRate =
-        stats.totalChecks > 0
-          ? (stats.peakBroken / stats.totalChecks) * 100
-          : 0;
+        totalChecks > 0 ? (peakBroken / totalChecks) * 100 : 0;
       const globalLowRate =
-        stats.totalChecks > 0 ? (stats.lowBroken / stats.totalChecks) * 100 : 0;
-      const ratioHigh =
-        stats.peakTotal > 0 ? (stats.peakBroken / stats.peakTotal) * 100 : 0;
-      const ratioLow =
-        stats.lowTotal > 0 ? (stats.lowBroken / stats.lowTotal) * 100 : 0;
+        totalChecks > 0 ? (lowBroken / totalChecks) * 100 : 0;
+      const ratioHigh = peakTotal > 0 ? (peakBroken / peakTotal) * 100 : 0;
+      const ratioLow = lowTotal > 0 ? (lowBroken / lowTotal) * 100 : 0;
 
-      result.push({
-        timeSlot: stats.timeSlot,
-        country: stats.country,
-        site: stats.site,
-        brand: stats.brand,
-        totalChecks: stats.totalChecks,
+      return {
+        timeSlot: record.time_slot,
+        country: record.country,
+        site: record.site || '',
+        brand: record.brand || '',
+        totalChecks,
         ratioAllAsin,
         ratioAllTime,
         globalPeakRate,
         globalLowRate,
         ratioHigh,
         ratioLow,
-        brokenCount: stats.brokenCount,
+        brokenCount,
         totalAsinsDedup,
         brokenAsinsDedup,
-        peakBroken: stats.peakBroken,
-        peakTotal: stats.peakTotal,
-        lowBroken: stats.lowBroken,
-        lowTotal: stats.lowTotal,
-      });
+        peakBroken,
+        peakTotal,
+        lowBroken,
+        lowTotal,
+      };
     });
 
-    // 排序和分页
+    // 排序（数据已在数据库层面排序，但为了确保一致性，再次排序）
     result.sort((a, b) => {
       if (a.timeSlot !== b.timeSlot) {
         return a.timeSlot.localeCompare(b.timeSlot);
@@ -1213,12 +1238,20 @@ class MonitorHistory {
     const limit = Number(pageSize);
     const paginatedResult = result.slice(offset, offset + limit);
 
-    return {
+    const finalResult = {
       list: paginatedResult,
       total,
       current: Number(current),
       pageSize: Number(pageSize),
     };
+
+    // 存储到缓存，TTL设置为2.5分钟（150000ms）
+    cacheService.set(cacheKey, finalResult, 150000);
+    logger.info(
+      `[缓存存储] getPeriodSummary 结果已缓存，键: ${cacheKey}，TTL: 150000ms`,
+    );
+
+    return finalResult;
   }
 
   // 按国家统计ASIN当前状态（基于asins表）

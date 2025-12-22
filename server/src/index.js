@@ -79,8 +79,13 @@ app.use(metricsMiddleware);
 
 // 请求超时处理
 const timeout = require('./middleware/timeout');
+// 注意：更具体的路径应该放在更通用的路径之前
+// 为批量查询父变体设置更长的超时时间（5分钟），因为批量查询可能需要较长时间
+app.use('/api/v1/variant-check/batch-query-parent-asin', timeout(300000));
 // 为导出路由设置更长的超时时间（10分钟），因为数据量大时可能需要较长时间
 app.use('/api/v1/export', timeout(600000));
+// 为监控历史统计查询设置更长的超时时间（120秒），因为统计查询涉及大量数据聚合
+app.use('/api/v1/monitor-history/statistics', timeout(120000));
 // 为统计查询和仪表盘设置更长的超时时间（120秒）
 app.use('/api/v1/analytics', timeout(120000));
 app.use('/api/v1/dashboard', timeout(120000));

@@ -59,6 +59,13 @@ export default defineConfig({
       icon: 'DatabaseOutlined',
     },
     {
+      name: 'ASIN父变体查询',
+      path: '/asin-parent-query',
+      component: './ASINParentQuery',
+      access: 'canReadASIN', // 需要ASIN查看权限
+      icon: 'SearchOutlined',
+    },
+    {
       name: '竞品ASIN 管理',
       path: '/competitor-asin',
       component: './CompetitorASIN',

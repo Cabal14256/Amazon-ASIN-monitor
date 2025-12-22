@@ -54,3 +54,25 @@ export async function batchCheckVariantGroups(
     ...(options || {}),
   });
 }
+
+/** 批量查询ASIN的父变体 */
+export async function batchQueryParentAsin(
+  body: {
+    asins: string[];
+    country: string;
+  },
+  options?: { [key: string]: any },
+) {
+  return request<API.Result_any_>(
+    '/api/v1/variant-check/batch-query-parent-asin',
+    {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      data: body,
+      timeout: 300000, // 5分钟超时，因为批量查询可能需要较长时间
+      ...(options || {}),
+    },
+  );
+}
