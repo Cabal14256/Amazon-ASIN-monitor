@@ -111,7 +111,7 @@ exports.getDashboardData = async (req, res) => {
     );
 
     // 4. 最近监控活动时间线（最近20条）
-    const recentActivities = await query(
+    const recentActivitiesRaw = await query(
       `SELECT 
         mh.*,
         vg.name as variant_group_name,
@@ -123,6 +123,16 @@ exports.getDashboardData = async (req, res) => {
        ORDER BY mh.check_time DESC
        LIMIT 20`,
     );
+    const recentActivities = recentActivitiesRaw.map((item) => ({
+      ...item,
+      checkTime: item.check_time,
+      checkType: item.check_type,
+      isBroken: item.is_broken,
+      notificationSent: item.notification_sent,
+      variantGroupName: item.variant_group_name,
+      asinName: item.asin_name,
+      createTime: item.create_time,
+    }));
 
     // 5. 按国家分组的统计数据
     // 欧洲五国列表

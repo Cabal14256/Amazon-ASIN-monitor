@@ -82,13 +82,23 @@ class ASIN {
     return this.findById(asinId);
   }
 
+  // 同时更新变体状态和监控时间（减少写入次数）
+  static async updateVariantStatusAndCheckTime(asinId, isBroken) {
+    const variantStatus = isBroken ? 'BROKEN' : 'NORMAL';
+    await query(
+      `UPDATE asins
+       SET is_broken = ?, variant_status = ?, last_check_time = NOW(), update_time = NOW()
+       WHERE id = ?`,
+      [isBroken ? 1 : 0, variantStatus, asinId],
+    );
+  }
+
   // 更新监控时间
   static async updateLastCheckTime(asinId) {
     await query(
       `UPDATE asins SET last_check_time = NOW(), update_time = NOW() WHERE id = ?`,
       [asinId],
     );
-    return this.findById(asinId);
   }
 
   // 根据ASIN编码查询（可选：同时查询国家）
@@ -196,7 +206,6 @@ class ASIN {
       `UPDATE asins SET is_broken = ?, variant_status = ?, update_time = NOW() WHERE id = ?`,
       [isBroken ? 1 : 0, variantStatus, id],
     );
-    return this.findById(id);
   }
 }
 

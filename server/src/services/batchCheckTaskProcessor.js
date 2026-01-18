@@ -38,6 +38,7 @@ async function processBatchCheckTask(job) {
         const result = await variantCheckService.checkVariantGroup(
           groupId,
           shouldForceRefresh,
+          { skipGroupStatus: true },
         );
 
         // 构建变体视图

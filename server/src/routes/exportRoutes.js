@@ -19,6 +19,20 @@ router.get(
   exportController.exportASINData,
 );
 
+// 导出竞品变体组数据（需要ASIN查看权限）
+router.get(
+  '/export/competitor-variant-group',
+  checkPermission('asin:read'),
+  exportController.exportCompetitorVariantGroupData,
+);
+
+// 导出竞品ASIN数据（需要ASIN查看权限）
+router.get(
+  '/export/competitor-asin',
+  checkPermission('asin:read'),
+  exportController.exportCompetitorASINData,
+);
+
 // 导出监控历史（需要监控查看权限）
 router.get(
   '/export/monitor-history',

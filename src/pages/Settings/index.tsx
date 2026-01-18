@@ -85,6 +85,7 @@ const SettingsPage: React.FC<unknown> = () => {
         let value: any;
         if (
           config.configKey === 'SP_API_USE_AWS_SIGNATURE' ||
+          config.configKey === 'COMPETITOR_MONITOR_ENABLED' ||
           config.configKey === 'ENABLE_HTML_SCRAPER_FALLBACK' ||
           config.configKey === 'ENABLE_LEGACY_CLIENT_FALLBACK'
         ) {
@@ -314,6 +315,7 @@ const SettingsPage: React.FC<unknown> = () => {
     SP_API_ROLE_ARN: 'AWS IAM Role ARN（US+EU共用）',
     SP_API_USE_AWS_SIGNATURE:
       '是否启用AWS签名（简化模式：关闭，标准模式：开启）',
+    COMPETITOR_MONITOR_ENABLED: '是否启用竞品监控任务',
     ENABLE_HTML_SCRAPER_FALLBACK: '是否启用HTML抓取兜底（SP-API失败时使用）',
     ENABLE_LEGACY_CLIENT_FALLBACK: '是否启用旧客户端备用（SP-API失败时使用）',
   };
@@ -326,6 +328,7 @@ const SettingsPage: React.FC<unknown> = () => {
           let value = formValues[key];
           if (
             key === 'SP_API_USE_AWS_SIGNATURE' ||
+            key === 'COMPETITOR_MONITOR_ENABLED' ||
             key === 'ENABLE_HTML_SCRAPER_FALLBACK' ||
             key === 'ENABLE_LEGACY_CLIENT_FALLBACK'
           ) {
@@ -596,6 +599,31 @@ const SettingsPage: React.FC<unknown> = () => {
                     style={{ marginTop: 8 }}
                   />
                 }
+              />
+            </ProForm>
+          </Card>
+
+          <Card title="监控功能开关">
+            <ProForm
+              form={spApiForm}
+              autoFocusFirstInput={false}
+              onFinish={async (values) => {
+                await saveConfigGroup(['COMPETITOR_MONITOR_ENABLED'], values);
+              }}
+              submitter={{
+                resetButtonProps: {
+                  onClick: () => {
+                    loadConfigs();
+                  },
+                },
+              }}
+            >
+              <ProFormSwitch
+                name="COMPETITOR_MONITOR_ENABLED"
+                label="启用竞品监控"
+                checkedChildren="启用"
+                unCheckedChildren="禁用"
+                extra="关闭后将跳过竞品定时监控与手动触发任务。"
               />
             </ProForm>
           </Card>

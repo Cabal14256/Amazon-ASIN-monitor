@@ -171,20 +171,24 @@ async function checkCompetitorASINVariants(
 async function checkCompetitorVariantGroup(
   variantGroupId,
   forceRefresh = false,
+  options = {},
 ) {
   try {
-    const group = await CompetitorVariantGroup.findById(variantGroupId);
-    if (!group) {
+    const { group = null } = options;
+    const groupSnapshot =
+      group || (await CompetitorVariantGroup.findById(variantGroupId));
+    if (!groupSnapshot) {
       throw new Error('竞品变体组不存在');
     }
 
-    const asins = group.children || [];
+    const asins = groupSnapshot.children || [];
     if (asins.length === 0) {
       // 没有ASIN，视为异常
       return {
         isBroken: true,
         brokenASINs: [],
         brokenByType: { SP_API_ERROR: 0, NO_VARIANTS: 0 },
+        groupSnapshot,
         details: {
           message: '竞品变体组中没有ASIN',
         },
@@ -231,7 +235,13 @@ async function checkCompetitorVariantGroup(
             });
           }
 
-          await CompetitorASIN.updateVariantStatus(asin.id, isBroken);
+          await CompetitorASIN.updateVariantStatusAndCheckTime(
+            asin.id,
+            isBroken,
+          );
+          asin.isBroken = isBroken ? 1 : 0;
+          asin.variantStatus = isBroken ? 'BROKEN' : 'NORMAL';
+          asin.lastCheckTime = new Date();
         } catch (error) {
           console.error(`检查竞品ASIN ${asin.asin} 失败:`, error);
           checkResults[currentIndex] = {
@@ -243,6 +253,10 @@ async function checkCompetitorVariantGroup(
             asin: asin.asin,
             errorType: 'SP_API_ERROR', // 异常情况标记为SP-API错误
           });
+          await CompetitorASIN.updateVariantStatusAndCheckTime(asin.id, true);
+          asin.isBroken = 1;
+          asin.variantStatus = 'BROKEN';
+          asin.lastCheckTime = new Date();
         }
       }
     });
@@ -252,31 +266,25 @@ async function checkCompetitorVariantGroup(
     // 判断变体组是否异常（如果有任何一个ASIN异常，则整个组异常）
     const isBroken = brokenASINs.length > 0;
 
-    // 更新变体组状态
-    await CompetitorVariantGroup.updateVariantStatus(variantGroupId, isBroken);
+    // 更新变体组状态和监控时间
+    await CompetitorVariantGroup.updateVariantStatusAndCheckTime(
+      variantGroupId,
+      isBroken,
+    );
 
-    // 更新变体组的监控更新时间
-    await CompetitorVariantGroup.updateLastCheckTime(variantGroupId);
-
-    // 重新查询变体组状态确保准确性
-    const updatedGroup = await CompetitorVariantGroup.findById(variantGroupId);
-    if (updatedGroup) {
-      // 如果状态不一致，再次更新
-      const actualIsBroken = updatedGroup.isBroken === 1;
-      if (actualIsBroken !== isBroken) {
-        await CompetitorVariantGroup.updateVariantStatus(
-          variantGroupId,
-          actualIsBroken,
-        );
-      }
-    }
+    groupSnapshot.is_broken = isBroken ? 1 : 0;
+    groupSnapshot.isBroken = isBroken ? 1 : 0;
+    groupSnapshot.variant_status = isBroken ? 'BROKEN' : 'NORMAL';
+    groupSnapshot.variantStatus = isBroken ? 'BROKEN' : 'NORMAL';
+    groupSnapshot.last_check_time = new Date();
+    groupSnapshot.lastCheckTime = groupSnapshot.last_check_time;
 
     // 记录监控历史
     const checkTime = new Date();
     await CompetitorMonitorHistory.create({
       variantGroupId,
       checkType: 'GROUP',
-      country: group.country,
+      country: groupSnapshot.country,
       isBroken: isBroken ? 1 : 0,
       checkTime,
       checkResult: JSON.stringify({
@@ -287,8 +295,8 @@ async function checkCompetitorVariantGroup(
     });
 
     // 记录每个ASIN的检查历史
-    if (group.children && group.children.length > 0) {
-      const asinHistoryEntries = group.children.map((asinInfo) => ({
+    if (groupSnapshot.children && groupSnapshot.children.length > 0) {
+      const asinHistoryEntries = groupSnapshot.children.map((asinInfo) => ({
         asinId: asinInfo.id,
         variantGroupId,
         checkType: 'ASIN',
@@ -324,6 +332,7 @@ async function checkCompetitorVariantGroup(
           : item,
       ),
       brokenByType, // 按类型统计的异常数量
+      groupSnapshot,
       details: {
         totalASINs: asins.length,
         brokenCount: brokenASINs.length,
@@ -357,8 +366,8 @@ async function checkSingleCompetitorASIN(asinId, forceRefresh = false) {
     const isBroken =
       !result.hasVariants || !result.variantCount || result.variantCount === 0;
 
-    // 更新ASIN状态
-    await CompetitorASIN.updateVariantStatus(asinId, isBroken);
+    // 更新ASIN状态与监控时间
+    await CompetitorASIN.updateVariantStatusAndCheckTime(asinId, isBroken);
 
     // 如果ASIN属于某个变体组，同步更新变体组状态
     if (asin.variantGroupId) {
@@ -376,9 +385,6 @@ async function checkSingleCompetitorASIN(asinId, forceRefresh = false) {
         );
       }
     }
-
-    // 更新监控时间
-    await CompetitorASIN.updateLastCheckTime(asinId);
 
     // 记录监控历史
     const checkTime = new Date();

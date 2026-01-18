@@ -4,6 +4,8 @@ const https = require('https');
 const SPAPIConfig = require('../models/SPAPIConfig');
 const logger = require('../utils/logger');
 const responseAnalyzer = require('../services/spApiResponseAnalyzer');
+const rateLimiter = require('../services/rateLimiter');
+const spApiScheduler = require('../services/spApiScheduler');
 
 // 创建全局HTTP连接池（keep-alive）
 const httpsAgent = new https.Agent({
@@ -809,6 +811,22 @@ async function callSPAPI(
   const initialDelay =
     options.initialDelay !== undefined ? options.initialDelay : 2000;
   const operation = options.operation || null; // Operation名称（可选）
+  const region = getRegionByCountry(country);
+  const priority = options.priority || rateLimiter.PRIORITY.SCHEDULED;
+
+  const scheduleOptions = {
+    operation,
+    region,
+    method,
+    path,
+    priority,
+  };
+
+  const executeOnce = async () =>
+    spApiScheduler.schedule(async () => {
+      await rateLimiter.acquire(region, 1, priority, operation);
+      return callSPAPIInternal(method, path, country, params, body, operation);
+    }, scheduleOptions);
 
   let lastError = null;
 
@@ -822,14 +840,7 @@ async function callSPAPI(
         );
       }
 
-      const result = await callSPAPIInternal(
-        method,
-        path,
-        country,
-        params,
-        body,
-        operation,
-      );
+      const result = await executeOnce();
 
       return result;
     } catch (error) {

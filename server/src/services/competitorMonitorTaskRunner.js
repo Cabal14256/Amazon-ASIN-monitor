@@ -1,5 +1,4 @@
 const CompetitorVariantGroup = require('../models/CompetitorVariantGroup');
-const CompetitorASIN = require('../models/CompetitorASIN');
 const {
   checkCompetitorVariantGroup,
 } = require('./competitorVariantCheckService');
@@ -16,6 +15,9 @@ const {
   getUTC8LocaleString,
   toUTC8ISOString,
 } = require('../utils/dateTime');
+const {
+  isCompetitorMonitorEnabled,
+} = require('../config/competitor-monitor-config');
 
 let competitorMonitorSemaphore = new Semaphore(getMaxConcurrentGroupChecks());
 let isCompetitorMonitorTaskRunning = false;
@@ -124,6 +126,11 @@ async function processCompetitorCountry(
       return { checked: 0, broken: 0 };
     }
 
+    const groupIds = groupsList.map((group) => group.id);
+    const groupMap = await CompetitorVariantGroup.findByIdsWithChildren(
+      groupIds,
+    );
+
     const chunkConcurrency = Math.min(
       Math.max(getMaxConcurrentGroupChecks(), 1),
       groupsList.length,
@@ -138,6 +145,7 @@ async function processCompetitorCountry(
           break;
         }
         const group = groupsList[currentIndex];
+        const groupSnapshot = groupMap.get(group.id) || group;
         checked++;
         countryResult.totalGroups++;
 
@@ -155,7 +163,9 @@ async function processCompetitorCountry(
         const workerStart = process.hrtime();
         await competitorMonitorSemaphore.acquire();
         try {
-          result = await checkCompetitorVariantGroup(group.id);
+          result = await checkCompetitorVariantGroup(group.id, false, {
+            group: groupSnapshot,
+          });
         } finally {
           competitorMonitorSemaphore.release();
         }
@@ -194,18 +204,16 @@ async function processCompetitorCountry(
           },
         ];
 
-        const fullGroup = await CompetitorVariantGroup.findById(group.id);
-        if (fullGroup && Array.isArray(fullGroup.children)) {
+        const updatedGroup = result?.groupSnapshot || groupSnapshot;
+        if (updatedGroup && Array.isArray(updatedGroup.children)) {
           // 竞品监控：飞书通知默认关闭（feishu_notify_enabled默认为0）
           const groupNotifyEnabled =
-            fullGroup.feishuNotifyEnabled !== null &&
-            fullGroup.feishuNotifyEnabled !== undefined
-              ? fullGroup.feishuNotifyEnabled !== 0
+            updatedGroup.feishuNotifyEnabled !== null &&
+            updatedGroup.feishuNotifyEnabled !== undefined
+              ? updatedGroup.feishuNotifyEnabled !== 0
               : false; // 默认为关闭（竞品）
 
-          for (const asinInfo of fullGroup.children) {
-            await CompetitorASIN.updateLastCheckTime(asinInfo.id);
-
+          for (const asinInfo of updatedGroup.children) {
             // 同时检查变体组和ASIN的通知开关
             // 只有当两者都开启时，才发送通知
             const asinNotifyEnabled =
@@ -279,6 +287,16 @@ async function runCompetitorMonitorTask(countries, batchConfig = null) {
     return {
       success: false,
       error: '没有指定要检查的国家',
+      totalChecked: 0,
+      totalBroken: 0,
+      countryResults: {},
+    };
+  }
+
+  if (!isCompetitorMonitorEnabled()) {
+    return {
+      success: false,
+      error: '竞品监控已关闭',
       totalChecked: 0,
       totalBroken: 0,
       countryResults: {},

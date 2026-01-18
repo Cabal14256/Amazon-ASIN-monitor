@@ -3,6 +3,7 @@ const ExcelJS = require('exceljs');
 const VariantGroup = require('../models/VariantGroup');
 const ASIN = require('../models/ASIN');
 const MonitorHistory = require('../models/MonitorHistory');
+const CompetitorVariantGroup = require('../models/CompetitorVariantGroup');
 const CompetitorMonitorHistory = require('../models/CompetitorMonitorHistory');
 const { getUTC8String } = require('../utils/dateTime');
 const logger = require('../utils/logger');
@@ -1067,6 +1068,281 @@ async function exportVariantGroupData(req, res) {
 }
 
 /**
+ * 导出竞品ASIN数据为Excel
+ */
+async function exportCompetitorASINData(req, res) {
+  try {
+    const { keyword, country, variantStatus, useProgress } = req.query;
+    const isProgressMode = useProgress === 'true';
+
+    if (isProgressMode) {
+      res.setHeader('Content-Type', 'text/event-stream');
+      res.setHeader('Cache-Control', 'no-cache');
+      res.setHeader('Connection', 'keep-alive');
+      res.setHeader('X-Accel-Buffering', 'no');
+    }
+
+    sendProgress(res, 10, '正在查询数据...', 'querying');
+
+    const allGroups = await fetchAllData(
+      (params) => CompetitorVariantGroup.findAll(params),
+      {
+        keyword: keyword || '',
+        country: country || '',
+        variantStatus: variantStatus || '',
+      },
+      10000,
+      (progress, message) => {
+        if (isProgressMode) {
+          sendProgress(res, progress, message, 'querying');
+        }
+      },
+    );
+
+    sendProgress(res, 30, '正在处理数据...', 'processing');
+
+    const excelData = [];
+    excelData.push([
+      '变体组名称',
+      '变体组ID',
+      '国家',
+      '品牌',
+      '变体状态',
+      'ASIN',
+      'ASIN名称',
+      'ASIN类型',
+      'ASIN状态',
+      '创建时间',
+      '最后检查时间',
+    ]);
+
+    const totalItems = allGroups.length;
+    let processedItems = 0;
+    for (const group of allGroups) {
+      if (group.children && group.children.length > 0) {
+        for (const asin of group.children) {
+          excelData.push([
+            group.name || '',
+            group.id || '',
+            group.country || '',
+            group.brand || '',
+            group.isBroken === 1 ? '异常' : '正常',
+            asin.asin || '',
+            asin.name || '',
+            asin.asinType || '',
+            asin.isBroken === 1 ? '异常' : '正常',
+            asin.createTime || '',
+            asin.lastCheckTime || '',
+          ]);
+        }
+      } else {
+        excelData.push([
+          group.name || '',
+          group.id || '',
+          group.country || '',
+          group.brand || '',
+          group.isBroken === 1 ? '异常' : '正常',
+          '',
+          '',
+          '',
+          '',
+          group.createTime || '',
+          '',
+        ]);
+      }
+      processedItems++;
+      if (isProgressMode && totalItems > 0) {
+        const progress = 30 + Math.floor((processedItems / totalItems) * 40);
+        sendProgress(
+          res,
+          progress,
+          `正在处理数据... (${processedItems}/${totalItems})`,
+          'processing',
+        );
+      }
+    }
+
+    sendProgress(res, 75, '正在生成Excel文件...', 'generating');
+
+    const wb = XLSX.utils.book_new();
+    const ws = XLSX.utils.aoa_to_sheet(excelData);
+    ws['!cols'] = [
+      { wch: 20 }, // 变体组名称
+      { wch: 40 }, // 变体组ID
+      { wch: 10 }, // 国家
+      { wch: 15 }, // 品牌
+      { wch: 10 }, // 变体状态
+      { wch: 15 }, // ASIN
+      { wch: 50 }, // ASIN名称
+      { wch: 15 }, // ASIN类型
+      { wch: 10 }, // ASIN状态
+      { wch: 20 }, // 创建时间
+      { wch: 20 }, // 最后检查时间
+    ];
+    XLSX.utils.book_append_sheet(wb, ws, '竞品ASIN数据');
+
+    sendProgress(res, 90, '正在生成Excel文件...', 'generating');
+
+    const excelBuffer = XLSX.write(wb, { type: 'buffer', bookType: 'xlsx' });
+    const filename = `竞品ASIN数据_${getUTC8String('YYYY-MM-DD')}.xlsx`;
+
+    if (isProgressMode) {
+      sendProgress(res, 95, '准备下载文件...', 'generating');
+      sendComplete(res, excelBuffer, filename);
+    } else {
+      res.setHeader(
+        'Content-Type',
+        'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+      );
+      res.setHeader(
+        'Content-Disposition',
+        `attachment; filename="${encodeURIComponent(filename)}"`,
+      );
+      res.send(excelBuffer);
+    }
+  } catch (error) {
+    logger.error('导出竞品ASIN数据失败:', error);
+    if (req.query.useProgress === 'true') {
+      sendError(res, '导出竞品ASIN数据失败');
+    } else {
+      res.status(500).json({
+        success: false,
+        errorMessage: '导出竞品ASIN数据失败',
+      });
+    }
+  }
+}
+
+/**
+ * 导出竞品变体组数据为Excel
+ */
+async function exportCompetitorVariantGroupData(req, res) {
+  try {
+    const { keyword, country, variantStatus, useProgress } = req.query;
+    const isProgressMode = useProgress === 'true';
+
+    if (isProgressMode) {
+      res.setHeader('Content-Type', 'text/event-stream');
+      res.setHeader('Cache-Control', 'no-cache');
+      res.setHeader('Connection', 'keep-alive');
+      res.setHeader('X-Accel-Buffering', 'no');
+    }
+
+    sendProgress(res, 10, '正在查询数据...', 'querying');
+
+    const allGroups = await fetchAllData(
+      (params) => CompetitorVariantGroup.findAll(params),
+      {
+        keyword: keyword || '',
+        country: country || '',
+        variantStatus: variantStatus || '',
+      },
+      10000,
+      (progress, message) => {
+        if (isProgressMode) {
+          sendProgress(res, progress, message, 'querying');
+        }
+      },
+    );
+
+    sendProgress(res, 30, '正在处理数据...', 'processing');
+
+    const excelData = [];
+    excelData.push([
+      '变体组名称',
+      '变体组ID',
+      '国家',
+      '品牌',
+      '变体状态',
+      'ASIN数量',
+      '异常ASIN数量',
+      '创建时间',
+      '更新时间',
+      '最后检查时间',
+    ]);
+
+    const totalItems = allGroups.length;
+    let processedItems = 0;
+    for (const group of allGroups) {
+      const asinCount = group.children?.length || 0;
+      const brokenAsinCount =
+        group.children?.filter((asin) => asin.isBroken === 1).length || 0;
+
+      excelData.push([
+        group.name || '',
+        group.id || '',
+        group.country || '',
+        group.brand || '',
+        group.isBroken === 1 ? '异常' : '正常',
+        asinCount,
+        brokenAsinCount,
+        group.createTime || '',
+        group.updateTime || '',
+        group.lastCheckTime || '',
+      ]);
+      processedItems++;
+      if (isProgressMode && totalItems > 0) {
+        const progress = 30 + Math.floor((processedItems / totalItems) * 40);
+        sendProgress(
+          res,
+          progress,
+          `正在处理数据... (${processedItems}/${totalItems})`,
+          'processing',
+        );
+      }
+    }
+
+    sendProgress(res, 75, '正在生成Excel文件...', 'generating');
+
+    const wb = XLSX.utils.book_new();
+    const ws = XLSX.utils.aoa_to_sheet(excelData);
+    ws['!cols'] = [
+      { wch: 30 }, // 变体组名称
+      { wch: 40 }, // 变体组ID
+      { wch: 10 }, // 国家
+      { wch: 15 }, // 品牌
+      { wch: 10 }, // 变体状态
+      { wch: 10 }, // ASIN数量
+      { wch: 12 }, // 异常ASIN数量
+      { wch: 20 }, // 创建时间
+      { wch: 20 }, // 更新时间
+      { wch: 20 }, // 最后检查时间
+    ];
+    XLSX.utils.book_append_sheet(wb, ws, '竞品变体组数据');
+
+    sendProgress(res, 90, '正在生成Excel文件...', 'generating');
+
+    const excelBuffer = XLSX.write(wb, { type: 'buffer', bookType: 'xlsx' });
+    const filename = `竞品变体组数据_${getUTC8String('YYYY-MM-DD')}.xlsx`;
+
+    if (isProgressMode) {
+      sendProgress(res, 95, '准备下载文件...', 'generating');
+      sendComplete(res, excelBuffer, filename);
+    } else {
+      res.setHeader(
+        'Content-Type',
+        'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+      );
+      res.setHeader(
+        'Content-Disposition',
+        `attachment; filename="${encodeURIComponent(filename)}"`,
+      );
+      res.send(excelBuffer);
+    }
+  } catch (error) {
+    logger.error('导出竞品变体组数据失败:', error);
+    if (req.query.useProgress === 'true') {
+      sendError(res, '导出竞品变体组数据失败');
+    } else {
+      res.status(500).json({
+        success: false,
+        errorMessage: '导出竞品变体组数据失败',
+      });
+    }
+  }
+}
+
+/**
  * 导出竞品监控历史数据为Excel
  */
 async function exportCompetitorMonitorHistory(req, res) {
@@ -1412,6 +1688,7 @@ async function exportParentAsinQuery(req, res) {
       '国家',
       '是否有父变体',
       '父变体ASIN',
+      '父体标题',
       '产品标题',
       '品牌',
       '是否有变体',
@@ -1428,6 +1705,7 @@ async function exportParentAsinQuery(req, res) {
         country || '',
         result.hasParentAsin ? '是' : '否',
         result.parentAsin || '',
+        result.parentTitle || '',
         result.title || '',
         result.brand || '',
         result.hasVariants ? '是' : '否',
@@ -1449,6 +1727,7 @@ async function exportParentAsinQuery(req, res) {
       { wch: 10 }, // 国家
       { wch: 15 }, // 是否有父变体
       { wch: 15 }, // 父变体ASIN
+      { wch: 50 }, // 父体标题
       { wch: 50 }, // 产品标题
       { wch: 20 }, // 品牌
       { wch: 15 }, // 是否有变体
@@ -1498,6 +1777,8 @@ module.exports = {
   exportASINData,
   exportMonitorHistory,
   exportVariantGroupData,
+  exportCompetitorASINData,
+  exportCompetitorVariantGroupData,
   exportCompetitorMonitorHistory,
   exportParentAsinQuery,
   createExportTask,

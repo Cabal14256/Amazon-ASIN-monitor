@@ -26,6 +26,7 @@ interface QueryResult {
   asin: string;
   hasParentAsin: boolean;
   parentAsin: string | null;
+  parentTitle: string;
   title: string;
   brand: string | null;
   hasVariants: boolean;
@@ -150,6 +151,13 @@ const ASINParentQuery: React.FC<unknown> = () => {
       render: (text) => (text ? <Tag color="orange">{text}</Tag> : '-'),
     },
     {
+      title: '父体标题',
+      dataIndex: 'parentTitle',
+      ellipsis: true,
+      width: 300,
+      render: (text) => text || '-',
+    },
+    {
       title: '产品标题',
       dataIndex: 'title',
       ellipsis: true,
@@ -181,9 +189,9 @@ const ASINParentQuery: React.FC<unknown> = () => {
       title: '查询状态',
       dataIndex: 'error',
       width: 150,
-      render: (text) =>
-        text ? (
-          <Tag color="red" title={text}>
+      render: (_, record) =>
+        record.error ? (
+          <Tag color="red" title={record.error}>
             失败
           </Tag>
         ) : (
@@ -195,7 +203,7 @@ const ASINParentQuery: React.FC<unknown> = () => {
       dataIndex: 'error',
       ellipsis: true,
       hideInTable: false,
-      render: (text) => text || '-',
+      render: (_, record) => record.error || '-',
     },
   ];
 

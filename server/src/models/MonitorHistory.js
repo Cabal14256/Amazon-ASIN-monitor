@@ -480,12 +480,12 @@ class MonitorHistory {
           SELECT 
             ${dateFormat} as time_period,
             country,
-            asin_id,
+            COALESCE(asin_id, asin_code) as asin_key,
             MAX(CASE WHEN is_broken = 1 THEN 1 ELSE 0 END) as has_broken
           FROM monitor_history
           ${whereClause}
-          AND asin_id IS NOT NULL
-          GROUP BY ${dateFormat}, country, asin_id
+          AND (asin_id IS NOT NULL OR asin_code IS NOT NULL)
+          GROUP BY ${dateFormat}, country, COALESCE(asin_id, asin_code)
         ) dedup_grouped
         GROUP BY time_period
       ) dedup_stats ON t.time_period = dedup_stats.time_period
@@ -493,11 +493,15 @@ class MonitorHistory {
         -- 原有统计（按时间槽去重，但不按国家）
         SELECT 
           ${dateFormat} as time_period,
-          COUNT(DISTINCT asin_id) as total_asins,
-          COUNT(DISTINCT CASE WHEN is_broken = 1 THEN asin_id END) as broken_asins
+          COUNT(DISTINCT COALESCE(asin_id, asin_code)) as total_asins,
+          COUNT(
+            DISTINCT CASE 
+              WHEN is_broken = 1 THEN COALESCE(asin_id, asin_code) 
+            END
+          ) as broken_asins
         FROM monitor_history
         ${whereClause}
-        AND asin_id IS NOT NULL
+        AND (asin_id IS NOT NULL OR asin_code IS NOT NULL)
         GROUP BY ${dateFormat}
       ) asin_stats ON t.time_period = asin_stats.time_period
       ORDER BY t.time_period ASC
@@ -698,15 +702,15 @@ class MonitorHistory {
       SELECT 
         ${dateFormat} as time_slot,
         country,
-        asin_id,
+        COALESCE(asin_id, asin_code) as asin_key,
         COUNT(*) as check_count,
         SUM(CASE WHEN is_broken = 1 THEN 1 ELSE 0 END) as broken_count,
         MAX(is_broken) as has_broken,
         MIN(check_time) as first_check_time
       FROM monitor_history
       ${whereClause}
-      AND asin_id IS NOT NULL
-      GROUP BY ${dateFormat}, country, asin_id
+      AND (asin_id IS NOT NULL OR asin_code IS NOT NULL)
+      GROUP BY ${dateFormat}, country, COALESCE(asin_id, asin_code)
       ORDER BY first_check_time ASC
     `;
 
@@ -744,7 +748,7 @@ class MonitorHistory {
       }
 
       // 去重统计：按 (国家 + ASIN + 时间槽) 去重
-      const dedupKey = `${record.country}_${record.asin_id}_${record.time_slot}`;
+      const dedupKey = `${record.country}_${record.asin_key}_${record.time_slot}`;
       if (!dedupMap.has(dedupKey)) {
         dedupMap.set(dedupKey, { isBroken: false });
       }
@@ -841,16 +845,16 @@ class MonitorHistory {
       SELECT 
         ${dateFormat} as time_slot,
         country,
-        asin_id,
+        COALESCE(asin_id, asin_code) as asin_key,
         COUNT(*) as check_count,
         SUM(CASE WHEN is_broken = 1 THEN 1 ELSE 0 END) as broken_count,
         MAX(is_broken) as has_broken,
         MIN(check_time) as first_check_time
       FROM monitor_history
       ${whereClause}
-      AND asin_id IS NOT NULL
+      AND (asin_id IS NOT NULL OR asin_code IS NOT NULL)
       AND country IN ('US', 'UK', 'DE', 'FR', 'IT', 'ES')
-      GROUP BY ${dateFormat}, country, asin_id
+      GROUP BY ${dateFormat}, country, COALESCE(asin_id, asin_code)
       ORDER BY first_check_time ASC
     `;
 
@@ -913,7 +917,7 @@ class MonitorHistory {
       }
 
       // 去重统计：按 (国家 + ASIN + 时间槽) 去重
-      const dedupKey = `${record.country}_${record.asin_id}_${record.time_slot}`;
+      const dedupKey = `${record.country}_${record.asin_key}_${record.time_slot}`;
       if (!stats.dedupMap.has(dedupKey)) {
         stats.dedupMap.set(dedupKey, { isBroken: false });
       }
@@ -1011,7 +1015,8 @@ class MonitorHistory {
 
     // 优化：WHERE子句条件顺序与索引匹配（先country，后check_time）
     // 使用 idx_country_check_time 或 idx_country_check_time_broken 索引
-    let whereClause = 'WHERE mh.asin_id IS NOT NULL';
+    let whereClause =
+      'WHERE (mh.asin_id IS NOT NULL OR mh.asin_code IS NOT NULL)';
     const conditions = [];
 
     // 先添加country条件（索引的第一列）
@@ -1093,16 +1098,16 @@ class MonitorHistory {
       groupByFields.push('a.brand');
     }
 
-    // 构建 SELECT 字段 - 在数据库层面完成所有聚合
-    selectFields.push(`${dateFormat} as time_slot`);
-    selectFields.push('mh.country');
+    // 构建 SELECT 字段 - 外层查询应使用子查询输出列
+    selectFields.push('time_slot');
+    selectFields.push('country');
     if (site) {
-      selectFields.push('a.site as site');
+      selectFields.push('site as site');
     } else {
       selectFields.push("'' as site");
     }
     if (brand) {
-      selectFields.push('a.brand as brand');
+      selectFields.push('brand as brand');
     } else {
       selectFields.push("'' as brand");
     }
@@ -1125,11 +1130,11 @@ class MonitorHistory {
     );
     // 去重统计：使用COUNT(DISTINCT)在数据库层面计算
     selectFields.push(
-      `COUNT(DISTINCT CONCAT(mh.country, '_', mh.asin_id, '_', ${dateFormat})) as total_asins_dedup`,
+      `COUNT(DISTINCT CONCAT(country, '_', asin_key, '_', time_slot)) as total_asins_dedup`,
     );
     // 去重异常ASIN统计
     selectFields.push(
-      `COUNT(DISTINCT CASE WHEN has_broken = 1 THEN CONCAT(mh.country, '_', mh.asin_id, '_', ${dateFormat}) ELSE NULL END) as broken_asins_dedup`,
+      `COUNT(DISTINCT CASE WHEN has_broken = 1 THEN CONCAT(country, '_', asin_key, '_', time_slot) ELSE NULL END) as broken_asins_dedup`,
     );
 
     // 使用子查询先按ASIN分组，计算高峰时段和异常状态
@@ -1139,17 +1144,17 @@ class MonitorHistory {
         mh.country,
         ${site ? 'a.site as site' : "'' as site"},
         ${brand ? 'a.brand as brand' : "'' as brand"},
-        mh.asin_id,
+        COALESCE(mh.asin_id, mh.asin_code) as asin_key,
         COUNT(*) as check_count,
         SUM(CASE WHEN mh.is_broken = 1 THEN 1 ELSE 0 END) as broken_count,
         MAX(mh.is_broken) as has_broken,
-        ${isPeakCase} as is_peak
+        MAX(${isPeakCase}) as is_peak
       FROM monitor_history mh
       ${joinClause}
       ${whereClause}
-      GROUP BY ${dateFormat}, mh.country, mh.asin_id${site ? ', a.site' : ''}${
-      brand ? ', a.brand' : ''
-    }
+      GROUP BY ${dateFormat}, mh.country, COALESCE(mh.asin_id, mh.asin_code)${
+      site ? ', a.site' : ''
+    }${brand ? ', a.brand' : ''}
     `;
 
     // 外层查询：按时间槽和维度分组，完成最终聚合

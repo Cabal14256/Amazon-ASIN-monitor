@@ -137,6 +137,7 @@ class TokenBucket {
           tokens,
           resolve,
           startTime,
+          priority,
         },
         priority,
       );
@@ -192,7 +193,7 @@ class TokenBucket {
   reset() {
     this.tokens = this.capacity;
     this.lastRefill = Date.now();
-    this.pendingQueue = [];
+    this.pendingQueue = new PriorityQueue();
   }
 }
 
@@ -209,6 +210,8 @@ class MultiLevelRateLimiter {
   constructor(config = {}) {
     const perMinute = config.perMinute || 60;
     const perHour = config.perHour || 1000;
+    const rate = Number(config.rate) || 0;
+    const burst = Number(config.burst) || 0;
 
     // 每分钟限流器：每秒补充 perMinute/60 个令牌
     this.minuteLimiter = new TokenBucket(
@@ -223,6 +226,10 @@ class MultiLevelRateLimiter {
       perHour / 3600,
       3600000, // 1小时
     );
+
+    // 每秒限流器（用于 rate/burst 控制）
+    this.secondLimiter =
+      rate > 0 && burst > 0 ? new TokenBucket(burst, rate, 1000) : null;
   }
 
   /**
@@ -230,12 +237,18 @@ class MultiLevelRateLimiter {
    * @param {number} tokens - 需要的令牌数量，默认1
    * @returns {Promise<void>}
    */
-  async acquire(tokens = 1) {
-    // 同时从两个限流器获取令牌
-    await Promise.all([
-      this.minuteLimiter.acquire(tokens),
-      this.hourLimiter.acquire(tokens),
-    ]);
+  async acquire(tokens = 1, priority = PRIORITY.SCHEDULED) {
+    const waiters = [
+      this.minuteLimiter.acquire(tokens, priority),
+      this.hourLimiter.acquire(tokens, priority),
+    ];
+
+    if (this.secondLimiter) {
+      waiters.push(this.secondLimiter.acquire(tokens, priority));
+    }
+
+    // 同时从限流器获取令牌
+    await Promise.all(waiters);
   }
 
   /**
@@ -244,6 +257,9 @@ class MultiLevelRateLimiter {
    */
   getStatus() {
     return {
+      secondTokens: this.secondLimiter
+        ? this.secondLimiter.getAvailableTokens()
+        : null,
       minuteTokens: this.minuteLimiter.getAvailableTokens(),
       hourTokens: this.hourLimiter.getAvailableTokens(),
     };
@@ -255,6 +271,9 @@ class MultiLevelRateLimiter {
   reset() {
     this.minuteLimiter.reset();
     this.hourLimiter.reset();
+    if (this.secondLimiter) {
+      this.secondLimiter.reset();
+    }
   }
 }
 

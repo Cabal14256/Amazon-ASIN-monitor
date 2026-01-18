@@ -56,21 +56,7 @@ class OperationQueue {
         const task = this.queue.shift();
         if (!task) break;
 
-        // 检查速率限制：确保不会超过rate
-        const now = Date.now();
-        const timeSinceLastRequest = now - (this.lastRequestTime || 0);
-        const minInterval = 1000 / this.rate; // 最小请求间隔（毫秒）
-
-        if (timeSinceLastRequest < minInterval && this.lastRequestTime) {
-          // 需要等待
-          const waitTime = minInterval - timeSinceLastRequest;
-          await new Promise((resolve) => {
-            setTimeout(resolve, waitTime);
-          });
-        }
-
         this.running++;
-        this.lastRequestTime = Date.now();
 
         // 执行任务
         task

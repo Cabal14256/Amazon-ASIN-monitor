@@ -13,6 +13,9 @@ const {
   SP_API_CONFIG,
 } = require('../config/sp-api');
 const logger = require('../utils/logger');
+const rateLimiter = require('./rateLimiter');
+const spApiScheduler = require('./spApiScheduler');
+const operationIdentifier = require('./spApiOperationIdentifier');
 
 /**
  * 使用旧客户端方式调用 SP-API
@@ -29,6 +32,7 @@ async function callLegacySPAPI(
   country,
   params = {},
   body = null,
+  options = {},
 ) {
   try {
     const region = getRegionByCountry(country);
@@ -93,67 +97,83 @@ async function callLegacySPAPI(
         : 'missing',
     });
 
-    return new Promise((resolve, reject) => {
-      const options = {
-        hostname: urlObj.hostname,
-        path: urlObj.pathname + (urlObj.search || ''),
-        method: method,
-        headers: headers,
-      };
+    const operation = operationIdentifier.identifyOperation(method, path);
+    const priority = options.priority || rateLimiter.PRIORITY.SCHEDULED;
+    const scheduleOptions = {
+      operation,
+      region,
+      method,
+      path,
+      priority,
+    };
 
-      const req = https.request(options, (res) => {
-        let data = '';
-        res.on('data', (chunk) => {
-          data += chunk;
-        });
-        res.on('end', () => {
-          logger.info(`[Legacy SP-API] 响应状态码: ${res.statusCode}`);
-          logger.info(
-            `[Legacy SP-API] 响应数据长度: ${data ? data.length : 0}`,
-          );
+    const executeRequest = () =>
+      new Promise((resolve, reject) => {
+        const requestOptions = {
+          hostname: urlObj.hostname,
+          path: urlObj.pathname + (urlObj.search || ''),
+          method: method,
+          headers: headers,
+        };
 
-          if (res.statusCode >= 200 && res.statusCode < 300) {
-            try {
-              const response = data ? JSON.parse(data) : {};
-              logger.info(`[Legacy SP-API] 响应解析成功:`, {
-                hasItems: !!response.items,
-                itemsCount: response.items ? response.items.length : 0,
-                keys: Object.keys(response),
-              });
-              resolve(response);
-            } catch (e) {
-              logger.info(
-                `[Legacy SP-API] 响应解析失败，返回原始数据:`,
-                e.message,
-              );
-              resolve(data || {});
-            }
-          } else {
-            const errorMsg = data || `HTTP ${res.statusCode}`;
-            logger.error(`[Legacy SP-API] 请求失败:`, {
-              statusCode: res.statusCode,
-              errorMsg: errorMsg.substring(0, 500),
-            });
-
-            const error = new Error(
-              `Legacy SP-API调用失败: ${res.statusCode} - ${errorMsg}`,
+        const req = https.request(requestOptions, (res) => {
+          let data = '';
+          res.on('data', (chunk) => {
+            data += chunk;
+          });
+          res.on('end', () => {
+            logger.info(`[Legacy SP-API] 响应状态码: ${res.statusCode}`);
+            logger.info(
+              `[Legacy SP-API] 响应数据长度: ${data ? data.length : 0}`,
             );
-            error.statusCode = res.statusCode;
-            error.responseData = data;
-            reject(error);
-          }
+
+            if (res.statusCode >= 200 && res.statusCode < 300) {
+              try {
+                const response = data ? JSON.parse(data) : {};
+                logger.info(`[Legacy SP-API] 响应解析成功:`, {
+                  hasItems: !!response.items,
+                  itemsCount: response.items ? response.items.length : 0,
+                  keys: Object.keys(response),
+                });
+                resolve(response);
+              } catch (e) {
+                logger.info(
+                  `[Legacy SP-API] 响应解析失败，返回原始数据:`,
+                  e.message,
+                );
+                resolve(data || {});
+              }
+            } else {
+              const errorMsg = data || `HTTP ${res.statusCode}`;
+              logger.error(`[Legacy SP-API] 请求失败:`, {
+                statusCode: res.statusCode,
+                errorMsg: errorMsg.substring(0, 500),
+              });
+
+              const error = new Error(
+                `Legacy SP-API调用失败: ${res.statusCode} - ${errorMsg}`,
+              );
+              error.statusCode = res.statusCode;
+              error.responseData = data;
+              reject(error);
+            }
+          });
         });
+
+        req.on('error', (error) => {
+          reject(error);
+        });
+
+        if (payload) {
+          req.write(payload);
+        }
+        req.end();
       });
 
-      req.on('error', (error) => {
-        reject(error);
-      });
-
-      if (payload) {
-        req.write(payload);
-      }
-      req.end();
-    });
+    return spApiScheduler.schedule(async () => {
+      await rateLimiter.acquire(region, 1, priority, operation);
+      return executeRequest();
+    }, scheduleOptions);
   } catch (error) {
     logger.error('[Legacy SP-API] 调用错误:', error);
     throw error;

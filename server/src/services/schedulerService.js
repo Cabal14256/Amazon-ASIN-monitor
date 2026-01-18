@@ -8,6 +8,9 @@ const {
   REGION_MAP,
 } = require('./monitorTaskRunner');
 const { runCompetitorMonitorTask } = require('./competitorMonitorTaskRunner');
+const {
+  isCompetitorMonitorEnabled,
+} = require('../config/competitor-monitor-config');
 const BackupConfig = require('../models/BackupConfig');
 const backupService = require('./backupService');
 
@@ -60,23 +63,27 @@ function initScheduler() {
 
     // --- Competitor Monitor Task ---
     // 竞品监控使用相同的时间表
-    const competitorUsCountries = getCountriesToCheck('US', minute);
+    if (isCompetitorMonitorEnabled()) {
+      const competitorUsCountries = getCountriesToCheck('US', minute);
 
-    if (competitorUsCountries.length > 0) {
-      if (TOTAL_BATCHES > 1) {
-        const batchIndex = (hour * 60 + minute) % TOTAL_BATCHES;
-        logger.info(
-          `[定时任务] 竞品监控（US）当前批次: ${
-            batchIndex + 1
-          }/${TOTAL_BATCHES}`,
-        );
-        competitorMonitorTaskQueue.enqueue(competitorUsCountries, {
-          batchIndex,
-          totalBatches: TOTAL_BATCHES,
-        });
-      } else {
-        competitorMonitorTaskQueue.enqueue(competitorUsCountries);
+      if (competitorUsCountries.length > 0) {
+        if (TOTAL_BATCHES > 1) {
+          const batchIndex = (hour * 60 + minute) % TOTAL_BATCHES;
+          logger.info(
+            `[定时任务] 竞品监控（US）当前批次: ${
+              batchIndex + 1
+            }/${TOTAL_BATCHES}`,
+          );
+          competitorMonitorTaskQueue.enqueue(competitorUsCountries, {
+            batchIndex,
+            totalBatches: TOTAL_BATCHES,
+          });
+        } else {
+          competitorMonitorTaskQueue.enqueue(competitorUsCountries);
+        }
       }
+    } else {
+      logger.info('[定时任务] 竞品监控已关闭，跳过本次US任务');
     }
   });
 
@@ -126,38 +133,42 @@ function initScheduler() {
 
     // --- Competitor Monitor Task ---
     // 竞品监控使用相同的时间表，也按顺序执行
-    const competitorEuCountries = getCountriesToCheck('EU', minute);
+    if (isCompetitorMonitorEnabled()) {
+      const competitorEuCountries = getCountriesToCheck('EU', minute);
 
-    // 按指定顺序排序EU国家
-    const orderedCompetitorEuCountries = EU_COUNTRIES_ORDER.filter((country) =>
-      competitorEuCountries.includes(country),
-    );
+      // 按指定顺序排序EU国家
+      const orderedCompetitorEuCountries = EU_COUNTRIES_ORDER.filter(
+        (country) => competitorEuCountries.includes(country),
+      );
 
-    if (orderedCompetitorEuCountries.length > 0) {
-      if (TOTAL_BATCHES > 1) {
-        const batchIndex = (hour * 60 + minute) % TOTAL_BATCHES;
-        logger.info(
-          `[定时任务] 竞品监控（EU）当前批次: ${
-            batchIndex + 1
-          }/${TOTAL_BATCHES}`,
-        );
-        // 按顺序依次加入队列，每个国家单独一个任务
-        orderedCompetitorEuCountries.forEach((country, index) => {
-          setTimeout(() => {
-            competitorMonitorTaskQueue.enqueue([country], {
-              batchIndex,
-              totalBatches: TOTAL_BATCHES,
-            });
-          }, index * 1000); // 每个国家间隔1秒加入队列
-        });
-      } else {
-        // 不分批，按顺序依次加入队列
-        orderedCompetitorEuCountries.forEach((country, index) => {
-          setTimeout(() => {
-            competitorMonitorTaskQueue.enqueue([country]);
-          }, index * 1000); // 每个国家间隔1秒加入队列
-        });
+      if (orderedCompetitorEuCountries.length > 0) {
+        if (TOTAL_BATCHES > 1) {
+          const batchIndex = (hour * 60 + minute) % TOTAL_BATCHES;
+          logger.info(
+            `[定时任务] 竞品监控（EU）当前批次: ${
+              batchIndex + 1
+            }/${TOTAL_BATCHES}`,
+          );
+          // 按顺序依次加入队列，每个国家单独一个任务
+          orderedCompetitorEuCountries.forEach((country, index) => {
+            setTimeout(() => {
+              competitorMonitorTaskQueue.enqueue([country], {
+                batchIndex,
+                totalBatches: TOTAL_BATCHES,
+              });
+            }, index * 1000); // 每个国家间隔1秒加入队列
+          });
+        } else {
+          // 不分批，按顺序依次加入队列
+          orderedCompetitorEuCountries.forEach((country, index) => {
+            setTimeout(() => {
+              competitorMonitorTaskQueue.enqueue([country]);
+            }, index * 1000); // 每个国家间隔1秒加入队列
+          });
+        }
       }
+    } else {
+      logger.info('[定时任务] 竞品监控已关闭，跳过本次EU任务');
     }
   });
 

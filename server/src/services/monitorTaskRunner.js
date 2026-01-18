@@ -1,5 +1,4 @@
 const VariantGroup = require('../models/VariantGroup');
-const ASIN = require('../models/ASIN');
 const {
   checkVariantGroup,
   checkASINVariants,
@@ -229,6 +228,9 @@ async function processCountry(
       return { checked: 0, broken: 0 };
     }
 
+    const groupIds = groupsList.map((group) => group.id);
+    const groupMap = await VariantGroup.findByIdsWithChildren(groupIds);
+
     logger.info(
       `[processCountry] ${country} 开始检查 ${groupsList.length} 个变体组`,
     );
@@ -250,6 +252,7 @@ async function processCountry(
           break;
         }
         const group = groupsList[currentIndex];
+        const groupSnapshot = groupMap.get(group.id) || group;
         checked++;
         countryResult.totalGroups++;
 
@@ -274,7 +277,10 @@ async function processCountry(
         const workerStart = process.hrtime();
         await monitorSemaphore.acquire();
         try {
-          result = await checkVariantGroup(group.id);
+          result = await checkVariantGroup(group.id, false, {
+            group: groupSnapshot,
+            skipGroupStatus: true,
+          });
         } finally {
           monitorSemaphore.release();
         }
@@ -303,8 +309,8 @@ async function processCountry(
             brokenByType.NO_VARIANTS || 0;
         }
 
-        const fullGroup = await VariantGroup.findById(group.id);
-        const variantGroupName = fullGroup?.name || group.name || null;
+        const updatedGroup = result?.groupSnapshot || groupSnapshot;
+        const variantGroupName = updatedGroup?.name || group.name || null;
 
         const historyEntries = [
           {
@@ -318,17 +324,15 @@ async function processCountry(
           },
         ];
 
-        if (fullGroup && Array.isArray(fullGroup.children)) {
+        if (updatedGroup && Array.isArray(updatedGroup.children)) {
           // 检查变体组的通知开关（默认为1，即开启）
           const groupNotifyEnabled =
-            fullGroup.feishuNotifyEnabled !== null &&
-            fullGroup.feishuNotifyEnabled !== undefined
-              ? fullGroup.feishuNotifyEnabled !== 0
+            updatedGroup.feishuNotifyEnabled !== null &&
+            updatedGroup.feishuNotifyEnabled !== undefined
+              ? updatedGroup.feishuNotifyEnabled !== 0
               : true; // 默认为开启
 
-          for (const asinInfo of fullGroup.children) {
-            await ASIN.updateLastCheckTime(asinInfo.id);
-
+          for (const asinInfo of updatedGroup.children) {
             // 同时检查变体组和ASIN的通知开关
             // 只有当两者都开启时，才发送通知
             const asinNotifyEnabled =

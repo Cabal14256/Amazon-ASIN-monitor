@@ -86,17 +86,10 @@ async function batchCheckASINsBySearch(asins, country) {
         }`,
       );
 
-      // 通过令牌桶获取令牌（使用operation级别的限流器）
-      await rateLimiter.acquire(
-        region,
-        1,
-        rateLimiter.PRIORITY.BATCH,
-        operation,
-      );
-
       // 调用searchCatalogItems（POST方法），传递operation参数
       const response = await callSPAPI('POST', path, country, {}, body, {
         operation: operation,
+        priority: rateLimiter.PRIORITY.BATCH,
         maxRetries: 3,
       });
 
@@ -109,12 +102,30 @@ async function batchCheckASINsBySearch(asins, country) {
           // ========= 从 relationships 里判断是否有变体 =========
           const {
             variantASINs,
-            parentASIN: parentAsin,
+            parentASIN: parentAsinFromRel,
             isChild,
             isParent,
           } = parseVariantRelationships(item, asin);
 
-          const hasVariants = variantASINs.length > 0 || isChild || isParent;
+          let parentAsinFromSummaries = null;
+          if (Array.isArray(item.summaries) && item.summaries.length > 0) {
+            parentAsinFromSummaries = item.summaries[0].parentAsin || null;
+            if (parentAsinFromSummaries) {
+              parentAsinFromSummaries = String(parentAsinFromSummaries)
+                .trim()
+                .toUpperCase();
+              if (parentAsinFromSummaries === asin) {
+                parentAsinFromSummaries = null;
+              }
+            }
+          }
+
+          const parentAsin = parentAsinFromRel || parentAsinFromSummaries;
+          const hasVariants =
+            variantASINs.length > 0 ||
+            isChild ||
+            isParent ||
+            !!parentAsinFromSummaries;
 
           results.set(asin, {
             asin: asin,

@@ -5,6 +5,9 @@ const {
 } = require('../config/sp-api');
 const { reloadMonitorConfig } = require('../config/monitor-config');
 const {
+  reloadCompetitorMonitorConfig,
+} = require('../config/competitor-monitor-config');
+const {
   reloadHtmlScraperFallbackConfig,
   reloadLegacyClientFallbackConfig,
 } = require('../services/variantCheckService');
@@ -114,6 +117,13 @@ exports.updateSPAPIConfig = async (req, res) => {
       logger.error('⚠️ 重新加载监控并发配置失败:', monitorError);
     }
 
+    try {
+      await reloadCompetitorMonitorConfig();
+      logger.info('? 竞品监控开关已重新加载');
+    } catch (competitorError) {
+      logger.error('?? 重新加载竞品监控开关失败:', competitorError);
+    }
+
     res.json({
       success: true,
       data: results,
@@ -149,6 +159,7 @@ exports.getSPAPIConfigForDisplay = async (req, res) => {
       'SP_API_SECRET_ACCESS_KEY',
       'SP_API_ROLE_ARN',
       'MONITOR_MAX_CONCURRENT_GROUP_CHECKS',
+      'COMPETITOR_MONITOR_ENABLED',
       'SP_API_USE_AWS_SIGNATURE',
       'ENABLE_HTML_SCRAPER_FALLBACK',
       'ENABLE_LEGACY_CLIENT_FALLBACK',
@@ -165,12 +176,22 @@ exports.getSPAPIConfigForDisplay = async (req, res) => {
       let config = configMap[key];
       let value = '';
 
-      if (config && config.config_value) {
+      if (
+        config &&
+        config.config_value !== undefined &&
+        config.config_value !== null
+      ) {
         value = config.config_value;
       } else {
         // 从环境变量读取
         const envKey = key;
-        value = process.env[envKey] || '';
+        value = process.env[envKey];
+        if (value === undefined || value === '') {
+          value = key === 'COMPETITOR_MONITOR_ENABLED' ? 'true' : '';
+        }
+      }
+      if (value === undefined || value === null) {
+        value = '';
       }
 
       let displayValue = value;
@@ -232,6 +253,7 @@ function getConfigDescription(key) {
     SP_API_SECRET_ACCESS_KEY: 'AWS Secret Access Key（US+EU共用）',
     SP_API_ROLE_ARN: 'AWS IAM Role ARN（US+EU共用）',
     MONITOR_MAX_CONCURRENT_GROUP_CHECKS: '每次并发检查的变体组数量',
+    COMPETITOR_MONITOR_ENABLED: '竞品监控开关',
     SP_API_USE_AWS_SIGNATURE:
       '是否启用AWS签名（简化模式：关闭，标准模式：开启）',
     ENABLE_HTML_SCRAPER_FALLBACK: '是否启用HTML抓取兜底（SP-API失败时使用）',
