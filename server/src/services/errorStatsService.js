@@ -2,6 +2,7 @@
  * 错误分类和统计服务
  * 提供详细的错误类型分类和统计信息，便于问题诊断
  */
+const logger = require('../utils/logger');
 
 // 错误类型定义
 const ERROR_TYPES = {
@@ -315,7 +316,7 @@ function resetStats() {
   errorStats.total = 0;
   errorStats.recentHour = [];
 
-  console.log('[错误统计服务] 统计已重置');
+  logger.info('[错误统计服务] 统计已重置');
 }
 
 module.exports = {

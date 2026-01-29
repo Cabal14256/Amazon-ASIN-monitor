@@ -13,6 +13,7 @@ const {
 } = require('../config/competitor-monitor-config');
 const BackupConfig = require('../models/BackupConfig');
 const backupService = require('./backupService');
+const { refreshRecentMonitorHistoryAgg } = require('./analyticsAggService');
 
 // 分批处理配置
 const TOTAL_BATCHES = Number(process.env.MONITOR_BATCH_COUNT) || 1; // 默认不分批
@@ -25,7 +26,7 @@ let backupTask = null;
 
 function initScheduler() {
   logger.info('🕐 初始化定时任务...');
-  console.log(
+  logger.info(
     `📦 分批处理配置: ${TOTAL_BATCHES} 批（${
       TOTAL_BATCHES === 1 ? '不分批' : '分批处理'
     }）`,
@@ -178,6 +179,24 @@ function initScheduler() {
   logger.info(
     '   - 欧洲区域 (EU): 每小时整点，按顺序依次检查: UK → DE → FR → ES → IT',
   );
+
+  // 数据分析聚合刷新（默认开启，可通过 ANALYTICS_AGG_ENABLED=0 关闭）
+  if (process.env.ANALYTICS_AGG_ENABLED !== '0') {
+    // 启动时先执行一次（异步，不阻塞启动）
+    refreshRecentMonitorHistoryAgg().catch((error) => {
+      logger.error('❌ 初始化数据分析聚合失败:', error.message);
+    });
+
+    // 每小时第5分钟刷新一次最近聚合数据
+    cron.schedule('5 * * * *', () => {
+      refreshRecentMonitorHistoryAgg().catch((error) => {
+        logger.error('❌ 定时聚合刷新失败:', error.message);
+      });
+    });
+    logger.info('📊 数据分析聚合刷新已启用（每小时第5分钟）');
+  } else {
+    logger.info('📊 数据分析聚合刷新已禁用（ANALYTICS_AGG_ENABLED=0）');
+  }
 
   // 初始化自动备份任务（异步执行，不阻塞启动）
   initBackupScheduler().catch((error) => {

@@ -20,6 +20,8 @@ const DEFAULT_TTL_MS = Number(process.env.CACHE_DEFAULT_TTL_MS) || 30 * 1000;
 const DEFAULT_MAX_ENTRIES = Number(process.env.CACHE_MAX_ENTRIES) || 2000;
 const DEFAULT_CLEANUP_INTERVAL_MS =
   Number(process.env.CACHE_CLEANUP_INTERVAL_MS) || 60 * 1000;
+const redisConfig = require('../config/redis');
+const logger = require('../utils/logger');
 
 class CacheService {
   constructor() {
@@ -99,8 +101,76 @@ class CacheService {
     this.store.set(key, { value, expiry });
   }
 
+  async getAsync(key) {
+    const memoryValue = this.get(key);
+    if (memoryValue !== null) {
+      return memoryValue;
+    }
+
+    if (!redisConfig.isRedisAvailable()) {
+      return null;
+    }
+
+    try {
+      const client = redisConfig.getRedisClient();
+      if (!client) {
+        return null;
+      }
+      const result = await client.multi().get(key).pttl(key).exec();
+      const rawValue = result?.[0]?.[1];
+      const ttlMs = result?.[1]?.[1];
+      if (!rawValue) {
+        return null;
+      }
+      const parsed = JSON.parse(rawValue);
+      const fallbackTtl =
+        typeof ttlMs === 'number' && ttlMs > 0 ? ttlMs : this.ttl;
+      this.set(key, parsed, fallbackTtl);
+      return parsed;
+    } catch (error) {
+      logger.warn('Redis缓存读取失败:', error.message);
+      return null;
+    }
+  }
+
+  async setAsync(key, value, ttl = this.ttl) {
+    this.set(key, value, ttl);
+    if (!redisConfig.isRedisAvailable()) {
+      return;
+    }
+    try {
+      const client = redisConfig.getRedisClient();
+      if (!client) {
+        return;
+      }
+      const payload = JSON.stringify(value);
+      if (typeof ttl === 'number' && ttl > 0) {
+        await client.set(key, payload, 'PX', ttl);
+      } else {
+        await client.set(key, payload);
+      }
+    } catch (error) {
+      logger.warn('Redis缓存写入失败:', error.message);
+    }
+  }
+
   delete(key) {
     this.store.delete(key);
+  }
+
+  async deleteAsync(key) {
+    this.delete(key);
+    if (!redisConfig.isRedisAvailable()) {
+      return;
+    }
+    try {
+      const client = redisConfig.getRedisClient();
+      if (client) {
+        await client.del(key);
+      }
+    } catch (error) {
+      logger.warn('Redis缓存删除失败:', error.message);
+    }
   }
 
   deleteByPrefix(prefix) {
@@ -108,6 +178,35 @@ class CacheService {
       if (key.startsWith(prefix)) {
         this.store.delete(key);
       }
+    }
+  }
+
+  async deleteByPrefixAsync(prefix) {
+    this.deleteByPrefix(prefix);
+    if (!redisConfig.isRedisAvailable()) {
+      return;
+    }
+    try {
+      const client = redisConfig.getRedisClient();
+      if (!client) {
+        return;
+      }
+      let cursor = '0';
+      do {
+        const [nextCursor, keys] = await client.scan(
+          cursor,
+          'MATCH',
+          `${prefix}*`,
+          'COUNT',
+          200,
+        );
+        cursor = nextCursor;
+        if (keys.length > 0) {
+          await client.del(...keys);
+        }
+      } while (cursor !== '0');
+    } catch (error) {
+      logger.warn('Redis缓存前缀删除失败:', error.message);
     }
   }
 

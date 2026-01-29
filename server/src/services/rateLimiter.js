@@ -307,7 +307,7 @@ function initializeRateLimiters() {
     perHour,
   });
 
-  console.log(
+  logger.info(
     `[RateLimiter] 初始化完成 - 每分钟: ${perMinute}, 每小时: ${perHour}`,
   );
 }
@@ -507,7 +507,7 @@ function adjustRateLimit(region, recentRateLimitCount, errorRate = 0) {
         perHour: newPerHour,
       });
 
-      console.log(
+      logger.info(
         `[RateLimiter] ${region}区域限流频繁（限流${recentRateLimitCount}次，错误率${(
           errorRate * 100
         ).toFixed(
