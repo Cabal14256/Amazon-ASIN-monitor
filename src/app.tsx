@@ -1,5 +1,6 @@
 // 运行时配置
 import GlobalAlert from '@/components/GlobalAlert';
+import { debugError, debugLog, debugWarn } from '@/utils/debug';
 import { clearToken, getToken } from '@/utils/token';
 import * as Icons from '@ant-design/icons';
 import {
@@ -24,7 +25,7 @@ export async function getInitialState(): Promise<{
 
   // 调试日志
   if (process.env.NODE_ENV === 'development') {
-    console.log('[getInitialState] 开始执行', {
+    debugLog('[getInitialState] 开始执行', {
       hasToken: !!token,
       pathname: window.location.pathname,
     });
@@ -38,7 +39,7 @@ export async function getInitialState(): Promise<{
   if (!token) {
     // 调试日志
     if (process.env.NODE_ENV === 'development') {
-      console.log('[getInitialState] 没有token', {
+      debugLog('[getInitialState] 没有token', {
         isLoginPage,
         currentPath,
       });
@@ -59,7 +60,7 @@ export async function getInitialState(): Promise<{
 
   // 调试日志：有token，准备调用API
   if (process.env.NODE_ENV === 'development') {
-    console.log('[getInitialState] 有token，准备调用API', {
+    debugLog('[getInitialState] 有token，准备调用API', {
       tokenLength: token.length,
       isLoginPage,
       currentPath,
@@ -69,7 +70,7 @@ export async function getInitialState(): Promise<{
   try {
     // 获取当前用户信息
     if (process.env.NODE_ENV === 'development') {
-      console.log('[getInitialState] 正在调用API: /api/v1/auth/current-user');
+      debugLog('[getInitialState] 正在调用API: /api/v1/auth/current-user');
     }
 
     const response = await umiRequest<API.Result_CurrentUser_>(
@@ -85,7 +86,7 @@ export async function getInitialState(): Promise<{
 
     // 调试日志：打印响应
     if (process.env.NODE_ENV === 'development') {
-      console.log('[getInitialState] API 响应:', {
+      debugLog('[getInitialState] API 响应:', {
         success: response?.success,
         hasData: !!response?.data,
         errorMessage: response?.errorMessage,
@@ -103,7 +104,7 @@ export async function getInitialState(): Promise<{
 
       // 调试日志
       if (process.env.NODE_ENV === 'development') {
-        console.log('[getInitialState] 用户数据加载成功:', {
+        debugLog('[getInitialState] 用户数据加载成功:', {
           userId: userData.currentUser?.id,
           username: userData.currentUser?.username,
           permissionsCount: userData.permissions.length,
@@ -116,7 +117,7 @@ export async function getInitialState(): Promise<{
 
     // 如果响应不成功，记录日志
     if (response && !response.success) {
-      console.warn('[getInitialState] API 返回失败:', {
+      debugWarn('[getInitialState] API 返回失败:', {
         errorMessage: response.errorMessage,
         errorCode: response.errorCode,
       });
@@ -135,7 +136,7 @@ export async function getInitialState(): Promise<{
       // 其他错误（非401），如果是401才清除token
       // 其他错误可能是临时问题，不应该清除token
       if (response.errorCode === 401 && token) {
-        console.warn('[getInitialState] API返回401，清除token并重定向到登录页');
+        debugWarn('[getInitialState] API返回401，清除token并重定向到登录页');
         clearToken();
         if (!isLoginPage) {
           window.location.href = `/login?redirect=${encodeURIComponent(
@@ -147,7 +148,7 @@ export async function getInitialState(): Promise<{
 
       // 非401错误，如果是临时问题，允许继续访问
       if (token) {
-        console.warn(
+        debugWarn(
           '[getInitialState] API返回失败，但token存在，允许继续访问（可能是临时问题）',
         );
         return {
@@ -157,8 +158,8 @@ export async function getInitialState(): Promise<{
       }
     }
   } catch (error: any) {
-    console.error('[getInitialState] 获取用户信息失败:', error);
-    console.error('[getInitialState] 错误详情:', {
+    debugError('[getInitialState] 获取用户信息失败:', error);
+    debugError('[getInitialState] 错误详情:', {
       message: error?.message,
       response: error?.response,
       status: error?.response?.status,
@@ -178,7 +179,7 @@ export async function getInitialState(): Promise<{
       errorCode === 401 ||
       errorCode === 403
     ) {
-      console.warn(
+      debugWarn(
         '[getInitialState] Token无效或过期，清除token并重定向到登录页',
       );
       clearToken();
@@ -203,7 +204,7 @@ export async function getInitialState(): Promise<{
     // 如果是网络错误或超时，且有token，可能是临时问题
     // 返回一个状态让权限检查通过，这样用户可以看到页面（虽然可能没有完整功能）
     if (isNetworkError && token) {
-      console.warn(
+      debugWarn(
         '[getInitialState] 网络错误，但token存在，允许继续访问（可能是临时问题）',
       );
       return {
@@ -216,7 +217,7 @@ export async function getInitialState(): Promise<{
     // 如果后端返回500，说明后端有问题，不应该清除token（token可能仍然有效）
     // 返回一个状态让权限检查通过，但用户可能无法使用完整功能
     if ((errorStatus === 500 || errorCode === 500) && token) {
-      console.error(
+      debugError(
         '[getInitialState] 服务器错误，但token存在，允许继续访问（可能是临时问题）',
       );
       return {
@@ -227,7 +228,7 @@ export async function getInitialState(): Promise<{
 
     // 其他错误，如果有token，也允许继续访问（可能是临时问题）
     if (token) {
-      console.warn(
+      debugWarn(
         '[getInitialState] 获取用户信息失败，但token存在，允许继续访问（可能是临时问题）',
       );
       return {
@@ -246,7 +247,7 @@ export async function getInitialState(): Promise<{
   // 可能是网络问题或后端问题，不应该清除token
   // 返回一个状态让权限检查通过，这样用户可以看到页面
   if (token) {
-    console.warn(
+    debugWarn(
       '[getInitialState] 有token但未获取到用户数据，允许继续访问（可能是临时问题）',
     );
     return {

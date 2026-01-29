@@ -1,6 +1,8 @@
 import services from '@/services/asin';
 import variantCheckServices from '@/services/variantCheck';
 import { exportToExcel } from '@/utils/export';
+import { buildAmazonProductUrl } from '@/utils/amazon';
+import { debugLog } from '@/utils/debug';
 import { useMessage } from '@/utils/message';
 import { MoreOutlined } from '@ant-design/icons';
 import {
@@ -186,7 +188,17 @@ const ASINManagement: React.FC<unknown> = () => {
             return '';
           }
           const asin = (record as API.ASINInfo).asin;
-          return <span>{asin || '-'}</span>;
+          if (!asin) {
+            return '-';
+          }
+          const url = buildAmazonProductUrl(asin, record.country, record.site);
+          return url ? (
+            <a href={url} target="_blank" rel="noreferrer">
+              {asin}
+            </a>
+          ) : (
+            <span>{asin}</span>
+          );
         },
       },
       {
@@ -629,7 +641,7 @@ const ASINManagement: React.FC<unknown> = () => {
             // 只传递后端需要的参数
             const { current, pageSize, keyword, country, variantStatus } =
               params;
-            console.log('ProTable请求参数:', {
+            debugLog('ProTable请求参数:', {
               current,
               pageSize,
               keyword,

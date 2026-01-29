@@ -126,6 +126,8 @@ export async function exportToExcelAsync(
   const modalState = { visible: true };
   let taskId: string | null = null;
   let unsubscribe: (() => void) | null = null;
+  let pollInterval: number | null = null;
+  let timeoutHandle: number | null = null;
 
   const updateProgress = (newProgress: number, msg: string) => {
     progress = newProgress;
@@ -143,6 +145,14 @@ export async function exportToExcelAsync(
     if (unsubscribe) {
       unsubscribe();
       unsubscribe = null;
+    }
+    if (pollInterval !== null) {
+      clearInterval(pollInterval);
+      pollInterval = null;
+    }
+    if (timeoutHandle !== null) {
+      clearTimeout(timeoutHandle);
+      timeoutHandle = null;
     }
     setTimeout(() => {
       root.unmount();
@@ -234,7 +244,7 @@ export async function exportToExcelAsync(
     });
 
     // 轮询任务状态（作为WebSocket的备用方案）
-    const pollInterval = setInterval(async () => {
+    pollInterval = window.setInterval(async () => {
       if (!taskId) return;
 
       try {
@@ -250,7 +260,10 @@ export async function exportToExcelAsync(
             const { status, progress: taskProgress, error } = statusData.data;
 
             if (status === 'completed') {
-              clearInterval(pollInterval);
+              if (pollInterval !== null) {
+                clearInterval(pollInterval);
+                pollInterval = null;
+              }
               // 下载文件
               const downloadUrl = `${baseURL}/v1/tasks/${taskId}/download`;
               const a = document.createElement('a');
@@ -267,7 +280,10 @@ export async function exportToExcelAsync(
               message.success('导出成功');
               cleanup();
             } else if (status === 'failed') {
-              clearInterval(pollInterval);
+              if (pollInterval !== null) {
+                clearInterval(pollInterval);
+                pollInterval = null;
+              }
               modalState.visible = false;
               updateProgress(0, '导出失败');
               message.error(`导出失败: ${error || '未知错误'}`);
@@ -284,8 +300,11 @@ export async function exportToExcelAsync(
     }, 2000); // 每2秒轮询一次
 
     // 设置超时（30分钟）
-    setTimeout(() => {
-      clearInterval(pollInterval);
+    timeoutHandle = window.setTimeout(() => {
+      if (pollInterval !== null) {
+        clearInterval(pollInterval);
+        pollInterval = null;
+      }
       if (modalState.visible) {
         modalState.visible = false;
         updateProgress(0, '导出超时');

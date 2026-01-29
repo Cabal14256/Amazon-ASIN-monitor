@@ -1,5 +1,7 @@
 import services from '@/services/dashboard';
+import LazyECharts from '@/components/LazyECharts';
 import { wsClient } from '@/services/websocket';
+import { debugError, debugLog } from '@/utils/debug';
 import { useMessage } from '@/utils/message';
 import { DownOutlined, UpOutlined } from '@ant-design/icons';
 import { PageContainer, StatisticCard } from '@ant-design/pro-components';
@@ -17,7 +19,6 @@ import {
   Timeline,
 } from 'antd';
 import dayjs from 'dayjs';
-import ReactECharts from 'echarts-for-react';
 import React, { useEffect, useState } from 'react';
 import styles from './index.less';
 
@@ -76,7 +77,7 @@ const HomePage: React.FC = () => {
     setLoading(true);
     try {
       const response = await getDashboardData();
-      console.log('[Dashboard] API响应:', response);
+      debugLog('[Dashboard] API响应:', response);
 
       if (response?.success && response?.data) {
         setDashboardData(response.data);
@@ -85,11 +86,11 @@ const HomePage: React.FC = () => {
           response?.errorMessage ||
           response?.data?.errorMessage ||
           '加载仪表盘数据失败';
-        console.error('[Dashboard] 响应失败:', response);
+        debugError('[Dashboard] 响应失败:', response);
         message.error(errorMessage);
       }
     } catch (error: any) {
-      console.error('[Dashboard] 加载仪表盘数据失败:', error);
+      debugError('[Dashboard] 加载仪表盘数据失败:', error);
       const errorMessage =
         error?.response?.data?.errorMessage ||
         error?.data?.errorMessage ||
@@ -105,7 +106,30 @@ const HomePage: React.FC = () => {
   useEffect(() => {
     loadDashboardData();
     // 每30秒自动刷新一次（作为WebSocket的备用）
-    const interval = setInterval(loadDashboardData, 30000);
+    let refreshInterval: number | null = null;
+    const startRefresh = () => {
+      if (refreshInterval !== null) {
+        return;
+      }
+      refreshInterval = window.setInterval(loadDashboardData, 30000);
+    };
+    const stopRefresh = () => {
+      if (refreshInterval === null) {
+        return;
+      }
+      clearInterval(refreshInterval);
+      refreshInterval = null;
+    };
+    const handleVisibility = () => {
+      if (document.hidden) {
+        stopRefresh();
+      } else {
+        loadDashboardData();
+        startRefresh();
+      }
+    };
+    startRefresh();
+    document.addEventListener('visibilitychange', handleVisibility);
 
     // 连接WebSocket
     wsClient.connect();
@@ -153,7 +177,8 @@ const HomePage: React.FC = () => {
     }, 5000);
 
     return () => {
-      clearInterval(interval);
+      stopRefresh();
+      document.removeEventListener('visibilitychange', handleVisibility);
       clearInterval(checkConnection);
       unsubscribe();
     };
@@ -765,7 +790,7 @@ const HomePage: React.FC = () => {
                   style={{ marginBottom: 16 }}
                 >
                   {countryColumnData.length > 0 ? (
-                    <ReactECharts
+                    <LazyECharts
                       option={countryBarOptions}
                       style={{ height: 200 }}
                       opts={{ renderer: 'svg' }}
@@ -782,7 +807,7 @@ const HomePage: React.FC = () => {
               <Col span={12}>
                 <Card size="small" title="状态分布">
                   {statusPieData.length > 0 ? (
-                    <ReactECharts
+                    <LazyECharts
                       option={statusPieOptions}
                       style={{ height: 200 }}
                       opts={{ renderer: 'svg' }}

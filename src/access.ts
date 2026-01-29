@@ -1,4 +1,5 @@
 import { InitialState } from '@umijs/max';
+import { debugLog } from '@/utils/debug';
 
 export default function accessFactory(initialState: InitialState) {
   const { currentUser, permissions: initialStatePermissions = [], roles: initialStateRoles = [] } = initialState || {};
@@ -19,7 +20,7 @@ export default function accessFactory(initialState: InitialState) {
   if (typeof window !== 'undefined' && process.env.NODE_ENV === 'development') {
     const pathname = window.location.pathname;
     if (pathname === '/home' || pathname === '/') {
-      console.log('[Access] 权限检查:', {
+      debugLog('[Access] 权限检查:', {
         pathname,
         hasToken,
         hasUser,

@@ -1,5 +1,7 @@
+import LazyECharts from '@/components/LazyECharts';
 import services from '@/services/asin';
 import { exportToExcel } from '@/utils/export';
+import { debugLog } from '@/utils/debug';
 import { useMessage } from '@/utils/message';
 import { DownOutlined } from '@ant-design/icons';
 import {
@@ -12,7 +14,6 @@ import {
 import { useSearchParams } from '@umijs/max';
 import { Card, Dropdown, Space, Tag } from 'antd';
 import dayjs from 'dayjs';
-import ReactECharts from 'echarts-for-react';
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 
 const {
@@ -174,7 +175,7 @@ const AbnormalDurationChart: React.FC<{ data: any }> = ({ data }) => {
   }, [data]);
 
   return (
-    <ReactECharts
+    <LazyECharts
       option={chartOption}
       style={{ height: '400px', width: '100%' }}
       opts={{ renderer: 'canvas' }}
@@ -254,7 +255,7 @@ const MonitorHistoryPage: React.FC<unknown> = () => {
       colSize: 2,
       search: {
         transform: (value: any) => {
-          console.log('时间范围transform被调用，value:', value);
+          debugLog('时间范围transform被调用，value:', value);
           if (value && Array.isArray(value) && value.length === 2) {
             const start = value[0]
               ? dayjs.isDayjs(value[0])
@@ -272,10 +273,10 @@ const MonitorHistoryPage: React.FC<unknown> = () => {
                 : undefined,
               endTime: end ? end.format('YYYY-MM-DD HH:mm:ss') : undefined,
             };
-            console.log('时间范围transform返回:', result);
+            debugLog('时间范围transform返回:', result);
             return result;
           }
-          console.log('时间范围transform返回空对象（没有选择时间范围）');
+          debugLog('时间范围transform返回空对象（没有选择时间范围）');
           return {};
         },
       },
@@ -516,8 +517,8 @@ const MonitorHistoryPage: React.FC<unknown> = () => {
           defaultCollapsed: false,
         }}
         request={async (params, sorter) => {
-          console.log('ProTable request params:', params);
-          console.log('params中的所有键:', Object.keys(params));
+          debugLog('ProTable request params:', params);
+          debugLog('params中的所有键:', Object.keys(params));
 
           const requestParams: any = {
             current: params.current || 1,
@@ -530,7 +531,7 @@ const MonitorHistoryPage: React.FC<unknown> = () => {
           const timeStart = params.startTime;
           const timeEnd = params.endTime;
 
-          console.log('时间范围检查:', {
+          debugLog('时间范围检查:', {
             timeStart,
             timeEnd,
             checkTime: params.checkTime,
@@ -543,7 +544,7 @@ const MonitorHistoryPage: React.FC<unknown> = () => {
             requestParams.endTime = timeEnd;
           }
 
-          console.log('处理后的requestParams:', requestParams);
+          debugLog('处理后的requestParams:', requestParams);
 
           // 处理其他筛选条件
           if (params.country) {
@@ -561,7 +562,7 @@ const MonitorHistoryPage: React.FC<unknown> = () => {
           // 处理ASIN搜索
           if (params.asin) {
             requestParams.asin = params.asin;
-            console.log('ASIN筛选参数:', params.asin);
+            debugLog('ASIN筛选参数:', params.asin);
           }
 
           // 如果URL中有参数，添加到请求中
@@ -619,7 +620,7 @@ const MonitorHistoryPage: React.FC<unknown> = () => {
           const chartStartTime = params.startTime || requestParams.startTime;
           const chartEndTime = params.endTime || requestParams.endTime;
 
-          console.log('检查图表显示条件:', {
+          debugLog('检查图表显示条件:', {
             hasAsinFilter,
             hasGroupFilter,
             chartStartTime,
@@ -650,14 +651,14 @@ const MonitorHistoryPage: React.FC<unknown> = () => {
                 if (type === 'asin' && id) {
                   // 从URL参数来的，是ASIN ID
                   statsParams.asinIds = [id];
-                  console.log('使用URL参数中的ASIN ID:', id);
+                  debugLog('使用URL参数中的ASIN ID:', id);
                 } else if (params.asin) {
                   // 从搜索框来的，可能是ASIN编码
                   // transform函数处理：
                   // - 单个ASIN：返回 { asin: 'ASIN001' }
                   // - 多个ASIN：返回 { asin: 'ASIN001,ASIN002' }
                   const asinValue = String(params.asin).trim();
-                  console.log('从搜索框获取ASIN值:', asinValue);
+                  debugLog('从搜索框获取ASIN值:', asinValue);
 
                   if (asinValue) {
                     // 检查是否包含逗号（多个ASIN）
@@ -668,11 +669,11 @@ const MonitorHistoryPage: React.FC<unknown> = () => {
                           .filter((s: string) => s.length > 0)
                       : [asinValue].filter((s: string) => s.length > 0);
 
-                    console.log('解析后的ASIN列表:', asinList);
+                    debugLog('解析后的ASIN列表:', asinList);
 
                     if (asinList.length > 0) {
                       statsParams.asinCodes = asinList;
-                      console.log('设置asinCodes参数:', statsParams.asinCodes);
+                      debugLog('设置asinCodes参数:', statsParams.asinCodes);
                     }
                   }
                 }
@@ -683,11 +684,11 @@ const MonitorHistoryPage: React.FC<unknown> = () => {
                 statsParams.asinIds ||
                 statsParams.asinCodes
               ) {
-                console.log('加载异常时长统计，参数:', statsParams);
+                debugLog('加载异常时长统计，参数:', statsParams);
                 const statsResult = await getAbnormalDurationStatistics(
                   statsParams,
                 );
-                console.log('异常时长统计结果:', statsResult);
+                debugLog('异常时长统计结果:', statsResult);
 
                 // 检查返回的数据结构
                 if (statsResult?.data) {
@@ -700,19 +701,19 @@ const MonitorHistoryPage: React.FC<unknown> = () => {
                   ) {
                     setAbnormalDurationData(chartData);
                     setShowChart(true);
-                    console.log('图表数据已设置，显示图表');
+                    debugLog('图表数据已设置，显示图表');
                   } else {
-                    console.log('统计数据为空，隐藏图表');
+                    debugLog('统计数据为空，隐藏图表');
                     setShowChart(false);
                     setAbnormalDurationData(null);
                   }
                 } else {
-                  console.log('统计结果为空，隐藏图表');
+                  debugLog('统计结果为空，隐藏图表');
                   setShowChart(false);
                   setAbnormalDurationData(null);
                 }
               } else {
-                console.log('缺少必要的筛选参数，隐藏图表');
+                debugLog('缺少必要的筛选参数，隐藏图表');
                 setShowChart(false);
                 setAbnormalDurationData(null);
               }
@@ -722,7 +723,7 @@ const MonitorHistoryPage: React.FC<unknown> = () => {
               setAbnormalDurationData(null);
             }
           } else {
-            console.log('不满足图表显示条件，隐藏图表');
+            debugLog('不满足图表显示条件，隐藏图表');
             setShowChart(false);
             setAbnormalDurationData(null);
           }
@@ -762,7 +763,7 @@ const MonitorHistoryPage: React.FC<unknown> = () => {
                 queryParams.asinId = id;
               }
 
-              console.log('导出使用的查询参数（与查询时一致）:', queryParams);
+              debugLog('导出使用的查询参数（与查询时一致）:', queryParams);
 
               // 添加导出类型参数
               queryParams.exportType = exportType;

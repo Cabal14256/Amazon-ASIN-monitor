@@ -147,6 +147,8 @@ declare namespace API {
     asin?: string;
     /** ASIN名称（关联查询） */
     asinName?: string;
+    /** 父变体ASIN（关联查询） */
+    parentAsin?: string;
   }
 
   /** 监控历史分页信息 */

@@ -1,3 +1,4 @@
+import LazyECharts from '@/components/LazyECharts';
 import services from '@/services/asin';
 import { exportToExcel } from '@/utils/export';
 import { useMessage } from '@/utils/message';
@@ -19,8 +20,7 @@ import {
   Tag,
 } from 'antd';
 import dayjs, { Dayjs } from 'dayjs';
-import ReactECharts from 'echarts-for-react';
-import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 
 const { RangePicker } = DatePicker;
 const {
@@ -95,6 +95,64 @@ const parseTimeLabel = (value?: string) => {
   return Number.isFinite(date.getTime()) ? date : null;
 };
 
+const formatDuration = (durationMs: number) => {
+  const totalSeconds = Math.max(0, Math.round(durationMs / 1000));
+  const hours = Math.floor(totalSeconds / 3600);
+  const minutes = Math.floor((totalSeconds % 3600) / 60);
+  const seconds = totalSeconds % 60;
+  if (hours > 0) {
+    return `${String(hours).padStart(2, '0')}:${String(minutes).padStart(
+      2,
+      '0',
+    )}:${String(seconds).padStart(2, '0')}`;
+  }
+  return `${String(minutes).padStart(2, '0')}:${String(seconds).padStart(
+    2,
+    '0',
+  )}`;
+};
+
+type ProgressProfile = Record<
+  string,
+  {
+    avgDurationMs?: number;
+    avgPerItemMs?: number;
+    lastTotal?: number;
+  }
+>;
+
+const PROGRESS_PROFILE_KEY = 'analyticsProgressProfile.v1';
+
+const readProgressProfile = (): ProgressProfile => {
+  if (typeof window === 'undefined' || !window.localStorage) {
+    return {};
+  }
+  try {
+    const raw = window.localStorage.getItem(PROGRESS_PROFILE_KEY);
+    if (!raw) {
+      return {};
+    }
+    const parsed = JSON.parse(raw);
+    if (!parsed || typeof parsed !== 'object') {
+      return {};
+    }
+    return parsed as ProgressProfile;
+  } catch {
+    return {};
+  }
+};
+
+const writeProgressProfile = (profile: ProgressProfile) => {
+  if (typeof window === 'undefined' || !window.localStorage) {
+    return;
+  }
+  try {
+    window.localStorage.setItem(PROGRESS_PROFILE_KEY, JSON.stringify(profile));
+  } catch {
+    // 忽略写入失败
+  }
+};
+
 const AnalyticsPageContent: React.FC<unknown> = () => {
   const message = useMessage();
   const [dateRange, setDateRange] = useState<[Dayjs, Dayjs]>([
@@ -105,6 +163,18 @@ const AnalyticsPageContent: React.FC<unknown> = () => {
   const [groupBy, setGroupBy] = useState<string>('hour');
   const [loading, setLoading] = useState(false);
   const [progress, setProgress] = useState(0);
+  const [progressText, setProgressText] = useState('');
+  const progressStartRef = useRef<number | null>(null);
+  const progressTimerRef = useRef<number | null>(null);
+  const completedCountRef = useRef(0);
+  const totalPromisesRef = useRef(0);
+  const runningLabelsRef = useRef<string[]>([]);
+  const lastCompletedRef = useRef<{ label: string; failed?: boolean } | null>(
+    null,
+  );
+  const taskStartTimesRef = useRef<Record<string, number>>({});
+  const taskDurationAvgRef = useRef<Record<string, number>>({});
+  const progressProfileRef = useRef<ProgressProfile>({});
   // 三个表格各自的时间槽粒度
   const [allCountriesTimeSlot, setAllCountriesTimeSlot] =
     useState<string>('hour');
@@ -178,6 +248,19 @@ const AnalyticsPageContent: React.FC<unknown> = () => {
 
       setLoading(true);
       setProgress(0);
+      setProgressText('');
+      progressStartRef.current = Date.now();
+      completedCountRef.current = 0;
+      totalPromisesRef.current = 0;
+      runningLabelsRef.current = [];
+      lastCompletedRef.current = null;
+      taskStartTimesRef.current = {};
+      progressProfileRef.current = readProgressProfile();
+      taskDurationAvgRef.current = {};
+      if (progressTimerRef.current) {
+        window.clearInterval(progressTimerRef.current);
+        progressTimerRef.current = null;
+      }
       const maxRetries = 3;
 
       try {
@@ -191,37 +274,170 @@ const AnalyticsPageContent: React.FC<unknown> = () => {
           params.country = country;
         }
 
+        const estimateRemainingMs = () => {
+          const runningLabels = runningLabelsRef.current;
+          if (runningLabels.length === 0) {
+            return 0;
+          }
+          const total = totalPromisesRef.current;
+          const completed = completedCountRef.current;
+          const avgDurations = taskDurationAvgRef.current;
+          const throughputPerTask =
+            completed > 0 && progressStartRef.current
+              ? (Date.now() - progressStartRef.current) / completed
+              : null;
+          const completedAverages = Object.values(avgDurations).filter(
+            (value) => Number.isFinite(value) && value > 0,
+          );
+          const globalAvg =
+            completedAverages.length > 0
+              ? completedAverages.reduce((sum, value) => sum + value, 0) /
+                completedAverages.length
+              : null;
+          const estimateByThroughput =
+            completed > 0 && total > completed && throughputPerTask
+              ? throughputPerTask * (total - completed)
+              : null;
+          let maxRemaining = 0;
+          for (const label of runningLabels) {
+            const startTime = taskStartTimesRef.current[label];
+            const elapsedMs = startTime ? Date.now() - startTime : 0;
+            const profile = progressProfileRef.current[label];
+            const estimateByTotal =
+              profile?.avgPerItemMs && profile?.lastTotal
+                ? profile.avgPerItemMs * profile.lastTotal
+                : null;
+            const estimate =
+              estimateByTotal ||
+              avgDurations[label] ||
+              profile?.avgDurationMs ||
+              globalAvg ||
+              throughputPerTask;
+            if (!estimate) {
+              return null;
+            }
+            const minRemaining = Math.min(Math.max(estimate * 0.1, 1000), 5000);
+            const remaining = Math.max(estimate - elapsedMs, minRemaining);
+            if (remaining > maxRemaining) {
+              maxRemaining = remaining;
+            }
+          }
+          if (estimateByThroughput) {
+            return Math.round(maxRemaining * 0.6 + estimateByThroughput * 0.4);
+          }
+          return maxRemaining;
+        };
+
+        const getTimeMeta = () => {
+          const startTime = progressStartRef.current;
+          if (!startTime) {
+            return '';
+          }
+          const elapsedMs = Date.now() - startTime;
+          const elapsedText = formatDuration(elapsedMs);
+          const remainingMs = estimateRemainingMs();
+          const remainingText =
+            remainingMs === null ? '--' : formatDuration(remainingMs);
+          return `已用时 ${elapsedText} · 预计剩余 ${remainingText}`;
+        };
+
+        const getStatusText = () => {
+          const completed = completedCountRef.current;
+          const total = totalPromisesRef.current;
+          const runningLabels = runningLabelsRef.current;
+          let statusDetail = '准备开始';
+          if (runningLabels.length > 0) {
+            const activeLabel = runningLabels[0];
+            statusDetail =
+              runningLabels.length > 1
+                ? `正在处理：${activeLabel} 等${runningLabels.length}项`
+                : `正在处理：${activeLabel}`;
+          } else if (lastCompletedRef.current?.label) {
+            statusDetail = `最近完成：${lastCompletedRef.current.label}${
+              lastCompletedRef.current.failed ? '（失败）' : ''
+            }`;
+          }
+          return `加载统计中 · 已完成 ${completed}/${total} · ${statusDetail}`;
+        };
+
+        const updateProgressText = () => {
+          setProgressText(`${getStatusText()}\n${getTimeMeta()}`);
+        };
+
         // 并行加载所有统计数据
-        const promises: any[] = [
-          getStatisticsByTime({ ...params, groupBy }),
-          // 使用ASIN当前状态统计，而不是监控历史记录
-          getASINStatisticsByCountry(),
-          getASINStatisticsByVariantGroup({ limit: 10 }),
-          getMonitorStatistics(params),
-          getAllCountriesSummary({
-            ...params,
-            timeSlotGranularity: allCountriesTimeSlot,
-          }),
-          getRegionSummary({ ...params, timeSlotGranularity: regionTimeSlot }),
-          getPeriodSummary({
-            ...params,
-            ...periodFilter,
-            timeSlotGranularity: periodTimeSlot,
-            current: periodSummary.current,
-            pageSize: periodSummary.pageSize,
-          }),
+        const tasks: Array<{ label: string; promise: Promise<any> }> = [
+          {
+            label: '时间趋势统计',
+            promise: getStatisticsByTime({ ...params, groupBy }),
+          },
+          {
+            // 使用ASIN当前状态统计，而不是监控历史记录
+            label: '国家维度统计',
+            promise: getASINStatisticsByCountry(),
+          },
+          {
+            label: '变体组Top 10',
+            promise: getASINStatisticsByVariantGroup({ limit: 10 }),
+          },
+          { label: '总体统计', promise: getMonitorStatistics(params) },
+          {
+            label: '全国家汇总',
+            promise: getAllCountriesSummary({
+              ...params,
+              timeSlotGranularity: allCountriesTimeSlot,
+            }),
+          },
+          {
+            label: '区域汇总',
+            promise: getRegionSummary({
+              ...params,
+              timeSlotGranularity: regionTimeSlot,
+            }),
+          },
+          {
+            label: '周期汇总',
+            promise: getPeriodSummary({
+              ...params,
+              ...periodFilter,
+              timeSlotGranularity: periodTimeSlot,
+              current: periodSummary.current,
+              pageSize: periodSummary.pageSize,
+            }),
+          },
         ];
 
         // 如果选择了国家，加载高峰期统计
         if (country) {
-          promises.push(getPeakHoursStatistics({ ...params, country }));
+          tasks.push({
+            label: '高峰期统计',
+            promise: getPeakHoursStatistics({ ...params, country }),
+          });
         }
 
         // 跟踪进度：为每个 promise 添加进度更新
-        const totalPromises = promises.length;
+        const totalPromises = tasks.length;
         let completedCount = 0;
+        totalPromisesRef.current = totalPromises;
+        completedCountRef.current = 0;
+        tasks.forEach((task) => {
+          const cached = progressProfileRef.current[task.label];
+          if (cached?.avgDurationMs) {
+            taskDurationAvgRef.current[task.label] = cached.avgDurationMs;
+          }
+        });
+        runningLabelsRef.current = tasks.map((task) => task.label);
+        const taskStartTimes: Record<string, number> = {};
+        const now = Date.now();
+        tasks.forEach((task) => {
+          taskStartTimes[task.label] = now;
+        });
+        taskStartTimesRef.current = taskStartTimes;
+        updateProgressText();
+        progressTimerRef.current = window.setInterval(() => {
+          updateProgressText();
+        }, 300);
 
-        const promisesWithProgress = promises.map((promise) => {
+        const promisesWithProgress = tasks.map(({ label, promise }) => {
           return promise
             .then((result) => {
               completedCount++;
@@ -229,6 +445,38 @@ const AnalyticsPageContent: React.FC<unknown> = () => {
                 (completedCount / totalPromises) * 100,
               );
               setProgress(newProgress);
+              completedCountRef.current = completedCount;
+              runningLabelsRef.current = runningLabelsRef.current.filter(
+                (item) => item !== label,
+              );
+              lastCompletedRef.current = { label, failed: false };
+              const endTime = Date.now();
+              const startTime = taskStartTimesRef.current[label];
+              if (startTime) {
+                const duration = Math.max(0, endTime - startTime);
+                const previousAvg = taskDurationAvgRef.current[label];
+                taskDurationAvgRef.current[label] = previousAvg
+                  ? Math.round(previousAvg * 0.7 + duration * 0.3)
+                  : duration;
+                const profile = progressProfileRef.current[label] || {};
+                profile.avgDurationMs = taskDurationAvgRef.current[label];
+                if (label === '周期汇总') {
+                  const total = (result as any)?.data?.total;
+                  if (Number.isFinite(total) && total > 0) {
+                    const perItemMs = duration / total;
+                    const prevPerItem = profile.avgPerItemMs;
+                    profile.avgPerItemMs = prevPerItem
+                      ? prevPerItem * 0.7 + perItemMs * 0.3
+                      : perItemMs;
+                    profile.lastTotal = total;
+                  }
+                }
+                progressProfileRef.current[label] = profile;
+                writeProgressProfile(progressProfileRef.current);
+              }
+              setProgressText(
+                `${getStatusText()}\n${getTimeMeta()}`,
+              );
               return result;
             })
             .catch((error) => {
@@ -237,6 +485,27 @@ const AnalyticsPageContent: React.FC<unknown> = () => {
                 (completedCount / totalPromises) * 100,
               );
               setProgress(newProgress);
+              completedCountRef.current = completedCount;
+              runningLabelsRef.current = runningLabelsRef.current.filter(
+                (item) => item !== label,
+              );
+              lastCompletedRef.current = { label, failed: true };
+              const endTime = Date.now();
+              const startTime = taskStartTimesRef.current[label];
+              if (startTime) {
+                const duration = Math.max(0, endTime - startTime);
+                const previousAvg = taskDurationAvgRef.current[label];
+                taskDurationAvgRef.current[label] = previousAvg
+                  ? Math.round(previousAvg * 0.7 + duration * 0.3)
+                  : duration;
+                const profile = progressProfileRef.current[label] || {};
+                profile.avgDurationMs = taskDurationAvgRef.current[label];
+                progressProfileRef.current[label] = profile;
+                writeProgressProfile(progressProfileRef.current);
+              }
+              setProgressText(
+                `${getStatusText()}\n${getTimeMeta()}`,
+              );
               throw error;
             });
         });
@@ -465,6 +734,12 @@ const AnalyticsPageContent: React.FC<unknown> = () => {
       } finally {
         setLoading(false);
         setProgress(0);
+        setProgressText('');
+        progressStartRef.current = null;
+        if (progressTimerRef.current) {
+          window.clearInterval(progressTimerRef.current);
+          progressTimerRef.current = null;
+        }
       }
     },
     [
@@ -485,6 +760,15 @@ const AnalyticsPageContent: React.FC<unknown> = () => {
   useEffect(() => {
     loadStatistics();
     // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  useEffect(() => {
+    return () => {
+      if (progressTimerRef.current) {
+        window.clearInterval(progressTimerRef.current);
+        progressTimerRef.current = null;
+      }
+    };
   }, []);
 
   // 时间趋势图表数据
@@ -1352,16 +1636,29 @@ const AnalyticsPageContent: React.FC<unknown> = () => {
               查询
             </Button>
           </Space>
-          {loading && progress > 0 && (
-            <Progress
-              percent={progress}
-              status="active"
-              strokeColor={{
-                '0%': '#108ee9',
-                '100%': '#87d068',
-              }}
-              style={{ marginTop: 8 }}
-            />
+          {loading && (progress > 0 || progressText) && (
+            <div style={{ marginTop: 8 }}>
+              <Progress
+                percent={progress}
+                status="active"
+                strokeColor={{
+                  '0%': '#108ee9',
+                  '100%': '#87d068',
+                }}
+              />
+              {progressText && (
+                <div
+                  style={{
+                    marginTop: 4,
+                    color: '#666',
+                    fontSize: 12,
+                    whiteSpace: 'pre-line',
+                  }}
+                >
+                  {progressText}
+                </div>
+              )}
+            </div>
           )}
         </Space>
       </Card>
@@ -1430,7 +1727,7 @@ const AnalyticsPageContent: React.FC<unknown> = () => {
         <Col span={24}>
           <Card title="监控趋势分析" loading={loading}>
             {timeChartData.length > 0 ? (
-              <ReactECharts
+              <LazyECharts
                 option={lineChartOptions}
                 style={{ width: '100%', height: 420 }}
                 onEvents={{
@@ -1462,7 +1759,7 @@ const AnalyticsPageContent: React.FC<unknown> = () => {
             }
           >
             {countryColumnDisplayData.length > 0 ? (
-              <ReactECharts
+              <LazyECharts
                 option={countryBarOptions}
                 style={{ width: '100%', height: 320 }}
               />
@@ -1490,7 +1787,7 @@ const AnalyticsPageContent: React.FC<unknown> = () => {
             }
           >
             {countryPieData.length > 0 ? (
-              <ReactECharts
+              <LazyECharts
                 option={countryPieOptions}
                 style={{ width: '100%', height: 320 }}
               />
@@ -1519,7 +1816,7 @@ const AnalyticsPageContent: React.FC<unknown> = () => {
             }
           >
             {variantGroupDisplayData.length > 0 ? (
-              <ReactECharts
+              <LazyECharts
                 option={variantGroupOptions}
                 style={{ width: '100%', height: 360 }}
                 onEvents={{

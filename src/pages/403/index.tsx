@@ -1,4 +1,5 @@
 import { history, useModel } from '@umijs/max';
+import { debugLog } from '@/utils/debug';
 import { Button, Result } from 'antd';
 import React, { useEffect } from 'react';
 
@@ -23,7 +24,7 @@ const NoAccessPage: React.FC = () => {
       const timer = setTimeout(() => {
         // 如果还是没有用户信息，可能是初始化问题，强制刷新页面
         if (!initialState?.currentUser?.id) {
-          console.log('[403页面] 检测到token但用户信息未加载，强制刷新页面');
+          debugLog('[403页面] 检测到token但用户信息未加载，强制刷新页面');
           window.location.href = '/home';
         }
       }, 500);
@@ -41,7 +42,7 @@ const NoAccessPage: React.FC = () => {
           initialState?.currentUser?.id &&
           !initialState?.permissions?.length
         ) {
-          console.log('[403页面] 检测到用户信息但权限未加载，刷新页面');
+          debugLog('[403页面] 检测到用户信息但权限未加载，刷新页面');
           window.location.reload();
         }
       }, 500);

@@ -1,3 +1,5 @@
+import { debugError, debugLog } from '@/utils/debug';
+
 type WebSocketMessage =
   | { type: 'connected'; message: string }
   | {
@@ -62,7 +64,7 @@ class WebSocketClient {
       this.ws = new WebSocket(this.url);
 
       this.ws.onopen = () => {
-        console.log('[WebSocket] 连接成功');
+        debugLog('[WebSocket] 连接成功');
         this.reconnectAttempts = 0;
         this.startPing();
       };
@@ -72,21 +74,21 @@ class WebSocketClient {
           const message = JSON.parse(event.data) as WebSocketMessage;
           this.messageHandlers.forEach((handler) => handler(message));
         } catch (error) {
-          console.error('[WebSocket] 解析消息失败:', error);
+          debugError('[WebSocket] 解析消息失败:', error);
         }
       };
 
       this.ws.onerror = (error) => {
-        console.error('[WebSocket] 连接错误:', error);
+        debugError('[WebSocket] 连接错误:', error);
       };
 
       this.ws.onclose = () => {
-        console.log('[WebSocket] 连接关闭');
+        debugLog('[WebSocket] 连接关闭');
         this.stopPing();
         this.attemptReconnect();
       };
     } catch (error) {
-      console.error('[WebSocket] 连接失败:', error);
+      debugError('[WebSocket] 连接失败:', error);
       this.attemptReconnect();
     }
   }
@@ -130,13 +132,13 @@ class WebSocketClient {
 
   private attemptReconnect() {
     if (this.reconnectAttempts >= this.maxReconnectAttempts) {
-      console.error('[WebSocket] 达到最大重连次数，停止重连');
+      debugError('[WebSocket] 达到最大重连次数，停止重连');
       return;
     }
 
     this.reconnectAttempts++;
     const delay = this.reconnectDelay * Math.pow(2, this.reconnectAttempts - 1);
-    console.log(
+    debugLog(
       `[WebSocket] ${delay}ms后尝试重连 (${this.reconnectAttempts}/${this.maxReconnectAttempts})`,
     );
 

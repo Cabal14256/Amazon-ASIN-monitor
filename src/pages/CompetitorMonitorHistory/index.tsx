@@ -114,8 +114,8 @@ const CompetitorMonitorHistoryPage: React.FC<unknown> = () => {
       },
     },
     {
-      title: 'ASIN名称',
-      dataIndex: 'asinName',
+      title: '父变体ASIN',
+      dataIndex: 'parentAsin',
       width: 250,
       hideInTable: type === 'group',
       render: (text: string) => text || '-',
