@@ -1,4 +1,5 @@
 const AuditLog = require('../models/AuditLog');
+const logger = require('../utils/logger');
 
 /**
  * 获取审计日志列表
@@ -35,8 +36,7 @@ async function getAuditLogList(req, res) {
       errorCode: 0,
     });
   } catch (error) {
-    console.error('获取审计日志列表失败:', error);
-    console.error('错误详情:', error.stack);
+    logger.error('获取审计日志列表失败:', error);
     res.status(500).json({
       success: false,
       errorMessage: `获取审计日志列表失败: ${error.message}`,
@@ -76,7 +76,7 @@ async function getAuditLogDetail(req, res) {
       data: log,
     });
   } catch (error) {
-    console.error('获取审计日志详情失败:', error);
+    logger.error('获取审计日志详情失败:', error);
     res.status(500).json({
       success: false,
       errorMessage: '获取审计日志详情失败',
@@ -100,7 +100,7 @@ async function getActionStatistics(req, res) {
       data: result,
     });
   } catch (error) {
-    console.error('获取操作类型统计失败:', error);
+    logger.error('获取操作类型统计失败:', error);
     res.status(500).json({
       success: false,
       errorMessage: '获取操作类型统计失败',
@@ -124,7 +124,7 @@ async function getResourceStatistics(req, res) {
       data: result,
     });
   } catch (error) {
-    console.error('获取资源类型统计失败:', error);
+    logger.error('获取资源类型统计失败:', error);
     res.status(500).json({
       success: false,
       errorMessage: '获取资源类型统计失败',

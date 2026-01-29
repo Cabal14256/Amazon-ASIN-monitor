@@ -1,5 +1,6 @@
 const Queue = require('bull');
 const monitorTaskRunner = require('./monitorTaskRunner');
+const logger = require('../utils/logger');
 
 // 构建 Redis 连接 URL
 // 支持两种方式：
@@ -63,7 +64,7 @@ monitorTaskQueue.process(async (job) => {
 });
 
 monitorTaskQueue.on('failed', (job, err) => {
-  console.error(
+  logger.error(
     `🚫 监控任务队列失败 (Job ${job.id}):`,
     err?.message || 'unknown error',
   );

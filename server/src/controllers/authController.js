@@ -3,6 +3,7 @@ const User = require('../models/User');
 const Session = require('../models/Session');
 const AuditLog = require('../models/AuditLog');
 const { expiresIn, rememberExpiresIn } = require('../config/jwt');
+const logger = require('../utils/logger');
 
 /**
  * 用户登录
@@ -61,7 +62,7 @@ exports.login = async (req, res) => {
             errorMessage: '用户不存在',
           });
         } catch (error) {
-          console.error('记录登录失败审计日志失败:', error.message);
+          logger.error('记录登录失败审计日志失败:', error.message);
         }
       });
 
@@ -90,7 +91,7 @@ exports.login = async (req, res) => {
             errorMessage: '用户已被禁用',
           });
         } catch (error) {
-          console.error('记录登录失败审计日志失败:', error.message);
+          logger.error('记录登录失败审计日志失败:', error.message);
         }
       });
 
@@ -120,7 +121,7 @@ exports.login = async (req, res) => {
             errorMessage: '用户名或密码错误',
           });
         } catch (error) {
-          console.error('记录登录失败审计日志失败:', error.message);
+          logger.error('记录登录失败审计日志失败:', error.message);
         }
       });
 
@@ -168,7 +169,7 @@ exports.login = async (req, res) => {
           responseStatus: 200,
         });
       } catch (error) {
-        console.error('记录登录审计日志失败:', error.message);
+        logger.error('记录登录审计日志失败:', error.message);
       }
     });
 
@@ -187,7 +188,7 @@ exports.login = async (req, res) => {
       errorCode: 0,
     });
   } catch (error) {
-    console.error('登录错误:', error);
+    logger.error('登录错误:', error);
     res.status(500).json({
       success: false,
       errorMessage: error.message || '登录失败',
@@ -224,7 +225,7 @@ exports.getCurrentUser = async (req, res) => {
       errorCode: 0,
     });
   } catch (error) {
-    console.error('获取用户信息错误:', error);
+    logger.error('获取用户信息错误:', error);
     res.status(500).json({
       success: false,
       errorMessage: error.message || '获取用户信息失败',
@@ -247,7 +248,7 @@ exports.logout = async (req, res) => {
       errorCode: 0,
     });
   } catch (error) {
-    console.error('登出失败:', error);
+    logger.error('登出失败:', error);
     res.status(500).json({
       success: false,
       errorMessage: '登出失败',
@@ -265,7 +266,7 @@ exports.listSessions = async (req, res) => {
       errorCode: 0,
     });
   } catch (error) {
-    console.error('获取会话列表失败:', error);
+    logger.error('获取会话列表失败:', error);
     res.status(500).json({
       success: false,
       errorMessage: '获取会话列表失败',
@@ -298,7 +299,7 @@ exports.revokeSession = async (req, res) => {
       errorCode: 0,
     });
   } catch (error) {
-    console.error('踢出会话失败:', error);
+    logger.error('踢出会话失败:', error);
     res.status(500).json({
       success: false,
       errorMessage: '踢出会话失败',
@@ -350,7 +351,7 @@ exports.changePassword = async (req, res) => {
       errorCode: 0,
     });
   } catch (error) {
-    console.error('修改密码错误:', error);
+    logger.error('修改密码错误:', error);
     res.status(500).json({
       success: false,
       errorMessage: error.message || '修改密码失败',
@@ -395,7 +396,7 @@ exports.updateProfile = async (req, res) => {
       errorCode: 0,
     });
   } catch (error) {
-    console.error('更新用户信息错误:', error);
+    logger.error('更新用户信息错误:', error);
     res.status(500).json({
       success: false,
       errorMessage: error.message || '更新用户信息失败',

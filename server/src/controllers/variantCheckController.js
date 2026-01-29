@@ -1,4 +1,5 @@
 const variantCheckService = require('../services/variantCheckService');
+const logger = require('../utils/logger');
 
 // ===============================
 // 辅助方法：把 service 返回的数据
@@ -134,7 +135,7 @@ exports.checkVariantGroup = async (req, res) => {
       errorCode: 0,
     });
   } catch (error) {
-    console.error('检查变体组错误:', error);
+    logger.error('检查变体组错误:', error);
     res.status(500).json({
       success: false,
       errorMessage: error.message || '检查失败',
@@ -166,7 +167,7 @@ exports.checkASIN = async (req, res) => {
       errorCode: 0,
     });
   } catch (error) {
-    console.error('检查ASIN错误:', error);
+    logger.error('检查ASIN错误:', error);
     res.status(500).json({
       success: false,
       errorMessage: error.message || '检查失败',
@@ -276,7 +277,7 @@ exports.batchCheckVariantGroups = async (req, res) => {
       errorCode: 0,
     });
   } catch (error) {
-    console.error('批量检查错误:', error);
+    logger.error('批量检查错误:', error);
     res.status(500).json({
       success: false,
       errorMessage: error.message || '批量检查失败',
@@ -319,7 +320,7 @@ exports.batchQueryParentAsin = async (req, res) => {
       errorCode: 0,
     });
   } catch (error) {
-    console.error('批量查询父变体错误:', error);
+    logger.error('批量查询父变体错误:', error);
     res.status(500).json({
       success: false,
       errorMessage: error.message || '批量查询失败',

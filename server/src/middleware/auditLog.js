@@ -1,4 +1,5 @@
 const AuditLog = require('../models/AuditLog');
+const logger = require('../utils/logger');
 
 /**
  * 操作审计日志中间件
@@ -217,7 +218,7 @@ async function auditLogMiddleware(req, res, next) {
         });
       } catch (error) {
         // 记录审计日志失败不应该影响主流程
-        console.error('记录审计日志失败:', error.message);
+        logger.error('记录审计日志失败:', error.message);
       }
     });
   }

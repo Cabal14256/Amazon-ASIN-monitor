@@ -1,5 +1,6 @@
 const SPAPIConfig = require('../models/SPAPIConfig');
 const riskControlService = require('../services/riskControlService');
+const logger = require('../utils/logger');
 
 const MONITOR_CONFIG_KEY = 'MONITOR_MAX_CONCURRENT_GROUP_CHECKS';
 const DEFAULT_CONCURRENCY =
@@ -35,7 +36,7 @@ async function loadMonitorConfigFromDatabase() {
       monitorConfig.maxConcurrentGroupChecks,
     );
 
-    console.log(
+    logger.info(
       `✅ 监控并发配置: ${
         monitorConfig.maxConcurrentGroupChecks
       } 个变体组（自动调整: ${
@@ -43,7 +44,7 @@ async function loadMonitorConfigFromDatabase() {
       }）`,
     );
   } catch (error) {
-    console.error('⚠️ 加载监控并发配置失败:', error.message);
+    logger.warn('⚠️ 加载监控并发配置失败:', error.message);
   }
 }
 
@@ -72,7 +73,7 @@ function getMaxConcurrentGroupChecks() {
       const oldValue = monitorConfig.maxConcurrentGroupChecks;
       monitorConfig.maxConcurrentGroupChecks =
         limitConcurrency(optimalConcurrency);
-      console.log(
+      logger.info(
         `🔄 [自动调整] 并发数已调整: ${oldValue} -> ${monitorConfig.maxConcurrentGroupChecks}`,
       );
     }
@@ -89,7 +90,7 @@ function setMaxConcurrentGroupChecks(value) {
   riskControlService.setCurrentConcurrency(
     monitorConfig.maxConcurrentGroupChecks,
   );
-  console.log(
+  logger.info(
     `📝 [手动设置] 并发数已设置为: ${monitorConfig.maxConcurrentGroupChecks}`,
   );
 }
@@ -99,7 +100,7 @@ function setMaxConcurrentGroupChecks(value) {
  */
 function setAutoAdjustEnabled(enabled) {
   monitorConfig.autoAdjustEnabled = enabled;
-  console.log(`📝 [配置] 自动调整已${enabled ? '启用' : '禁用'}`);
+  logger.info(`📝 [配置] 自动调整已${enabled ? '启用' : '禁用'}`);
 }
 
 loadMonitorConfigFromDatabase();

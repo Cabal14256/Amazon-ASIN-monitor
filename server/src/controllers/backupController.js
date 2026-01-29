@@ -1,5 +1,6 @@
 const backupService = require('../services/backupService');
 const BackupConfig = require('../models/BackupConfig');
+const logger = require('../utils/logger');
 const schedulerService = require('../services/schedulerService');
 
 /**
@@ -47,7 +48,7 @@ async function createBackup(req, res) {
       errorCode: 0,
     });
   } catch (error) {
-    console.error('创建备份失败:', error);
+    logger.error('创建备份失败:', error);
     res.status(500).json({
       success: false,
       errorMessage: error.message || '创建备份失败',
@@ -115,7 +116,7 @@ async function restoreBackup(req, res) {
       errorCode: 0,
     });
   } catch (error) {
-    console.error('恢复备份失败:', error);
+    logger.error('恢复备份失败:', error);
     res.status(500).json({
       success: false,
       errorMessage: error.message || '恢复备份失败',
@@ -137,7 +138,7 @@ async function listBackups(req, res) {
       errorCode: 0,
     });
   } catch (error) {
-    console.error('获取备份列表失败:', error);
+    logger.error('获取备份列表失败:', error);
     res.status(500).json({
       success: false,
       errorMessage: error.message || '获取备份列表失败',
@@ -169,7 +170,7 @@ async function deleteBackup(req, res) {
       errorCode: 0,
     });
   } catch (error) {
-    console.error('删除备份失败:', error);
+    logger.error('删除备份失败:', error);
     res.status(500).json({
       success: false,
       errorMessage: error.message || '删除备份失败',
@@ -203,7 +204,7 @@ async function downloadBackup(req, res) {
 
     res.send(fileBuffer);
   } catch (error) {
-    console.error('下载备份失败:', error);
+    logger.error('下载备份失败:', error);
     res.status(500).json({
       success: false,
       errorMessage: error.message || '下载备份失败',
@@ -225,7 +226,7 @@ async function getBackupConfig(req, res) {
       errorCode: 0,
     });
   } catch (error) {
-    console.error('获取备份配置失败:', error);
+    logger.error('获取备份配置失败:', error);
     res.status(500).json({
       success: false,
       errorMessage: error.message || '获取备份配置失败',
@@ -254,7 +255,7 @@ async function saveBackupConfig(req, res) {
         await schedulerService.reloadBackupSchedule();
       }
     } catch (error) {
-      console.error('重新加载备份计划失败:', error);
+      logger.error('重新加载备份计划失败:', error);
       // 不阻止响应，只记录错误
     }
 
@@ -264,7 +265,7 @@ async function saveBackupConfig(req, res) {
       errorCode: 0,
     });
   } catch (error) {
-    console.error('保存备份配置失败:', error);
+    logger.error('保存备份配置失败:', error);
     res.status(500).json({
       success: false,
       errorMessage: error.message || '保存备份配置失败',

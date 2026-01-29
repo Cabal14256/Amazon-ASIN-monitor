@@ -4,7 +4,6 @@ const logger = require('../utils/logger');
 
 // 允许的文件类型
 const ALLOWED_MIME_TYPES = [
-  'application/vnd.ms-excel',
   'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
   'text/csv',
   'application/csv',
@@ -12,7 +11,7 @@ const ALLOWED_MIME_TYPES = [
   'text/comma-separated-values',
 ];
 
-const ALLOWED_EXTENSIONS = ['.xls', '.xlsx', '.csv'];
+const ALLOWED_EXTENSIONS = ['.xlsx', '.csv'];
 
 // 文件大小限制（10MB）
 const MAX_FILE_SIZE = 10 * 1024 * 1024;

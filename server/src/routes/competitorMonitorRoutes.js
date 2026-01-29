@@ -4,6 +4,7 @@ const competitorMonitorController = require('../controllers/competitorMonitorCon
 const {
   triggerCompetitorManualCheck,
 } = require('../services/competitorMonitorTaskRunner');
+const logger = require('../utils/logger');
 
 // 竞品监控历史路由（不包含数据分析路由）
 router.get(
@@ -27,7 +28,7 @@ router.post('/competitor/monitor/trigger', async (req, res) => {
       errorMessage: result.error,
     });
   } catch (error) {
-    console.error('触发竞品监控检查错误:', error);
+    logger.error('触发竞品监控检查错误:', error);
     res.status(500).json({
       success: false,
       errorMessage: error.message || '触发失败',

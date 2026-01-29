@@ -1,12 +1,13 @@
 const User = require('../models/User');
 const Role = require('../models/Role');
+const logger = require('../utils/logger');
 
 /**
  * 获取用户列表
  */
 exports.getUserList = async (req, res) => {
   try {
-    console.log('[getUserList] 开始获取用户列表', {
+    logger.debug('[getUserList] 开始获取用户列表', {
       query: req.query,
       userId: req.userId,
     });
@@ -18,7 +19,7 @@ exports.getUserList = async (req, res) => {
       current: Number(current),
       pageSize: Number(pageSize),
     });
-    console.log('[getUserList] 查询结果:', {
+    logger.debug('[getUserList] 查询结果:', {
       total: result.total,
       listLength: result.list.length,
     });
@@ -43,7 +44,7 @@ exports.getUserList = async (req, res) => {
       errorCode: 0,
     });
   } catch (error) {
-    console.error('获取用户列表错误:', error);
+    logger.error('获取用户列表错误:', error);
     res.status(500).json({
       success: false,
       errorMessage: error.message || '获取用户列表失败',
@@ -82,7 +83,7 @@ exports.getUserDetail = async (req, res) => {
       errorCode: 0,
     });
   } catch (error) {
-    console.error('获取用户详情错误:', error);
+    logger.error('获取用户详情错误:', error);
     res.status(500).json({
       success: false,
       errorMessage: error.message || '获取用户详情失败',
@@ -141,7 +142,7 @@ exports.createUser = async (req, res) => {
       errorCode: 0,
     });
   } catch (error) {
-    console.error('创建用户错误:', error);
+    logger.error('创建用户错误:', error);
     res.status(500).json({
       success: false,
       errorMessage: error.message || '创建用户失败',
@@ -196,7 +197,7 @@ exports.updateUser = async (req, res) => {
       errorCode: 0,
     });
   } catch (error) {
-    console.error('更新用户错误:', error);
+    logger.error('更新用户错误:', error);
     res.status(500).json({
       success: false,
       errorMessage: error.message || '更新用户失败',
@@ -239,7 +240,7 @@ exports.deleteUser = async (req, res) => {
       errorCode: 0,
     });
   } catch (error) {
-    console.error('删除用户错误:', error);
+    logger.error('删除用户错误:', error);
     res.status(500).json({
       success: false,
       errorMessage: error.message || '删除用户失败',
@@ -282,7 +283,7 @@ exports.updateUserPassword = async (req, res) => {
       errorCode: 0,
     });
   } catch (error) {
-    console.error('修改密码错误:', error);
+    logger.error('修改密码错误:', error);
     res.status(500).json({
       success: false,
       errorMessage: error.message || '修改密码失败',
@@ -303,7 +304,7 @@ exports.getAllRoles = async (req, res) => {
       errorCode: 0,
     });
   } catch (error) {
-    console.error('获取角色列表错误:', error);
+    logger.error('获取角色列表错误:', error);
     res.status(500).json({
       success: false,
       errorMessage: error.message || '获取角色列表失败',

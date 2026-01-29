@@ -1,5 +1,6 @@
 const Queue = require('bull');
 const competitorMonitorTaskRunner = require('./competitorMonitorTaskRunner');
+const logger = require('../utils/logger');
 
 // 构建 Redis 连接 URL
 // 支持两种方式：
@@ -70,7 +71,7 @@ competitorMonitorTaskQueue.process(async (job) => {
 });
 
 competitorMonitorTaskQueue.on('failed', (job, err) => {
-  console.error(
+  logger.error(
     `🚫 竞品监控任务队列失败 (Job ${job.id}):`,
     err?.message || 'unknown error',
   );

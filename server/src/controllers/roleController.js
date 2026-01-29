@@ -1,16 +1,17 @@
 const Role = require('../models/Role');
 const Permission = require('../models/Permission');
+const logger = require('../utils/logger');
 
 /**
  * 获取所有角色
  */
 exports.getRoleList = async (req, res) => {
   try {
-    console.log('[getRoleList] 开始获取角色列表', {
+    logger.debug('[getRoleList] 开始获取角色列表', {
       userId: req.userId,
     });
     const roles = await Role.findAll();
-    console.log('[getRoleList] 查询到角色数量:', roles.length);
+    logger.debug('[getRoleList] 查询到角色数量:', roles.length);
 
     // 为每个角色获取权限信息
     const rolesWithPermissions = await Promise.all(
@@ -35,7 +36,7 @@ exports.getRoleList = async (req, res) => {
       errorCode: 0,
     });
   } catch (error) {
-    console.error('获取角色列表错误:', error);
+    logger.error('获取角色列表错误:', error);
     res.status(500).json({
       success: false,
       errorMessage: error.message || '获取角色列表失败',
@@ -78,7 +79,7 @@ exports.getRoleDetail = async (req, res) => {
       errorCode: 0,
     });
   } catch (error) {
-    console.error('获取角色详情错误:', error);
+    logger.error('获取角色详情错误:', error);
     res.status(500).json({
       success: false,
       errorMessage: error.message || '获取角色详情失败',
@@ -92,11 +93,11 @@ exports.getRoleDetail = async (req, res) => {
  */
 exports.getPermissionList = async (req, res) => {
   try {
-    console.log('[getPermissionList] 开始获取权限列表', {
+    logger.debug('[getPermissionList] 开始获取权限列表', {
       userId: req.userId,
     });
     const permissions = await Permission.findAll();
-    console.log('[getPermissionList] 查询到权限数量:', permissions.length);
+    logger.debug('[getPermissionList] 查询到权限数量:', permissions.length);
 
     // 按资源分组
     const groupedPermissions = permissions.reduce((acc, perm) => {
@@ -124,7 +125,7 @@ exports.getPermissionList = async (req, res) => {
       errorCode: 0,
     });
   } catch (error) {
-    console.error('获取权限列表错误:', error);
+    logger.error('获取权限列表错误:', error);
     res.status(500).json({
       success: false,
       errorMessage: error.message || '获取权限列表失败',

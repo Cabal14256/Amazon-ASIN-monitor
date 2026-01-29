@@ -7,6 +7,7 @@ const CompetitorMonitorHistory = require('../models/CompetitorMonitorHistory');
 const cacheService = require('./cacheService');
 const htmlScraperService = require('./htmlScraperService');
 const SPAPIConfig = require('../models/SPAPIConfig');
+const logger = require('../utils/logger');
 
 /**
  * 每次最多同时检查的 ASIN 数（降低并发以减少限流风险）
@@ -52,11 +53,11 @@ async function loadHtmlScraperFallbackConfig() {
         process.env.ENABLE_HTML_SCRAPER_FALLBACK === 'true' ||
         process.env.ENABLE_HTML_SCRAPER_FALLBACK === '1';
     }
-    console.log(
+    logger.info(
       `[竞品变体检查] ENABLE_HTML_SCRAPER_FALLBACK: ${ENABLE_HTML_SCRAPER_FALLBACK}`,
     );
   } catch (error) {
-    console.error(
+    logger.error(
       '[竞品变体检查] 加载 ENABLE_HTML_SCRAPER_FALLBACK 配置失败:',
       error.message,
     );
@@ -85,11 +86,11 @@ async function loadLegacyClientFallbackConfig() {
         process.env.ENABLE_LEGACY_CLIENT_FALLBACK === 'true' ||
         process.env.ENABLE_LEGACY_CLIENT_FALLBACK === '1';
     }
-    console.log(
+    logger.info(
       `[竞品变体检查] ENABLE_LEGACY_CLIENT_FALLBACK: ${ENABLE_LEGACY_CLIENT_FALLBACK}`,
     );
   } catch (error) {
-    console.error(
+    logger.error(
       '[竞品变体检查] 加载 ENABLE_LEGACY_CLIENT_FALLBACK 配置失败:',
       error.message,
     );
@@ -107,14 +108,14 @@ function getVariantCacheKey(asin, country) {
   return `competitorVariant:${country}:${cleanASIN}`;
 }
 
-function getCachedVariantResult(asin, country) {
+async function getCachedVariantResult(asin, country) {
   const key = getVariantCacheKey(asin, country);
-  return cacheService.get(key);
+  return cacheService.getAsync(key);
 }
 
-function setVariantResultCache(asin, country, result) {
+async function setVariantResultCache(asin, country, result) {
   const key = getVariantCacheKey(asin, country);
-  cacheService.set(key, result, VARIANT_CACHE_TTL_MS);
+  await cacheService.setAsync(key, result, VARIANT_CACHE_TTL_MS);
 }
 
 /**
@@ -134,15 +135,15 @@ async function checkCompetitorASINVariants(
 
   // 如果 forceRefresh 为 true，跳过缓存
   if (!forceRefresh) {
-    const cached = getCachedVariantResult(asin, country);
+    const cached = await getCachedVariantResult(asin, country);
     if (cached) {
-      console.log(
+      logger.debug(
         `[checkCompetitorASINVariants] 使用缓存结果: ${asin} (${country})`,
       );
       return cached;
     }
   } else {
-    console.log(
+    logger.debug(
       `[checkCompetitorASINVariants] 强制刷新，跳过缓存: ${asin} (${country})`,
     );
   }
@@ -158,7 +159,7 @@ async function checkCompetitorASINVariants(
   );
 
   // 使用竞品缓存键存储结果
-  setVariantResultCache(asin, country, result);
+  await setVariantResultCache(asin, country, result);
 
   return result;
 }
@@ -243,7 +244,7 @@ async function checkCompetitorVariantGroup(
           asin.variantStatus = isBroken ? 'BROKEN' : 'NORMAL';
           asin.lastCheckTime = new Date();
         } catch (error) {
-          console.error(`检查竞品ASIN ${asin.asin} 失败:`, error);
+          logger.error(`检查竞品ASIN ${asin.asin} 失败:`, error);
           checkResults[currentIndex] = {
             asin: asin.asin,
             error: error.message,
@@ -340,7 +341,7 @@ async function checkCompetitorVariantGroup(
       },
     };
   } catch (error) {
-    console.error(`检查竞品变体组 ${variantGroupId} 失败:`, error);
+    logger.error(`检查竞品变体组 ${variantGroupId} 失败:`, error);
     throw error;
   }
 }
@@ -410,7 +411,7 @@ async function checkSingleCompetitorASIN(asinId, forceRefresh = false) {
       },
     };
   } catch (error) {
-    console.error(`检查竞品ASIN ${asinId} 失败:`, error);
+    logger.error(`检查竞品ASIN ${asinId} 失败:`, error);
     throw error;
   }
 }

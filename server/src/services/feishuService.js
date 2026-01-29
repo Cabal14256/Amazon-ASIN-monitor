@@ -54,7 +54,7 @@ async function sendFeishuNotification(region, messageData) {
     if (!config || !config.webhook_url) {
       const displayCountry =
         messageData.countryDisplay || messageData.country || region;
-      console.log(
+      logger.info(
         `区域 ${region} (${displayCountry}) 未配置飞书Webhook，跳过通知`,
       );
       return { success: false };

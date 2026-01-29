@@ -1,4 +1,5 @@
 const competitorVariantCheckService = require('../services/competitorVariantCheckService');
+const logger = require('../utils/logger');
 
 // 检查变体组
 exports.checkCompetitorVariantGroup = async (req, res) => {
@@ -19,7 +20,7 @@ exports.checkCompetitorVariantGroup = async (req, res) => {
       errorCode: 0,
     });
   } catch (error) {
-    console.error('检查变体组错误:', error);
+    logger.error('检查变体组错误:', error);
     res.status(500).json({
       success: false,
       errorMessage: error.message || '检查失败',
@@ -47,7 +48,7 @@ exports.checkCompetitorASIN = async (req, res) => {
       errorCode: 0,
     });
   } catch (error) {
-    console.error('检查ASIN错误:', error);
+    logger.error('检查ASIN错误:', error);
     res.status(500).json({
       success: false,
       errorMessage: error.message || '检查失败',
@@ -102,7 +103,7 @@ exports.batchCheckCompetitorVariantGroups = async (req, res) => {
       errorCode: 0,
     });
   } catch (error) {
-    console.error('批量检查错误:', error);
+    logger.error('批量检查错误:', error);
     res.status(500).json({
       success: false,
       errorMessage: error.message || '批量检查失败',

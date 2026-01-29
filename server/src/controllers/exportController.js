@@ -1,4 +1,3 @@
-const XLSX = require('xlsx');
 const ExcelJS = require('exceljs');
 const VariantGroup = require('../models/VariantGroup');
 const ASIN = require('../models/ASIN');
@@ -129,6 +128,18 @@ function sendError(res, errorMessage) {
     }
     return false;
   }
+}
+
+function buildWorkbookFromAoa(excelData, sheetName, columnWidths = []) {
+  const workbook = new ExcelJS.Workbook();
+  const worksheet = workbook.addWorksheet(sheetName);
+  if (columnWidths.length > 0) {
+    worksheet.columns = columnWidths.map((width) => ({ width }));
+  }
+  if (Array.isArray(excelData) && excelData.length > 0) {
+    worksheet.addRows(excelData);
+  }
+  return workbook;
 }
 
 /**
@@ -289,32 +300,25 @@ async function exportASINData(req, res) {
 
     sendProgress(res, 75, '正在生成Excel文件...', 'generating');
 
-    // 创建工作簿
-    const wb = XLSX.utils.book_new();
-    const ws = XLSX.utils.aoa_to_sheet(excelData);
-
-    // 设置列宽
-    ws['!cols'] = [
-      { wch: 20 }, // 变体组名称
-      { wch: 40 }, // 变体组ID
-      { wch: 10 }, // 国家
-      { wch: 10 }, // 站点
-      { wch: 15 }, // 品牌
-      { wch: 10 }, // 变体状态
-      { wch: 15 }, // ASIN
-      { wch: 50 }, // ASIN名称
-      { wch: 15 }, // ASIN类型
-      { wch: 10 }, // ASIN状态
-      { wch: 20 }, // 创建时间
-      { wch: 20 }, // 最后检查时间
-    ];
-
-    XLSX.utils.book_append_sheet(wb, ws, 'ASIN数据');
+    const workbook = buildWorkbookFromAoa(excelData, 'ASIN数据', [
+      20, // 变体组名称
+      40, // 变体组ID
+      10, // 国家
+      10, // 站点
+      15, // 品牌
+      10, // 变体状态
+      15, // ASIN
+      50, // ASIN名称
+      15, // ASIN类型
+      10, // ASIN状态
+      20, // 创建时间
+      20, // 最后检查时间
+    ]);
 
     sendProgress(res, 90, '正在生成Excel文件...', 'generating');
 
     // 生成Excel文件
-    const excelBuffer = XLSX.write(wb, { type: 'buffer', bookType: 'xlsx' });
+    const excelBuffer = await workbook.xlsx.writeBuffer();
 
     // 设置响应头
     const filename = `ASIN数据_${getUTC8String('YYYY-MM-DD')}.xlsx`;
@@ -1011,31 +1015,24 @@ async function exportVariantGroupData(req, res) {
 
     sendProgress(res, 75, '正在生成Excel文件...', 'generating');
 
-    // 创建工作簿
-    const wb = XLSX.utils.book_new();
-    const ws = XLSX.utils.aoa_to_sheet(excelData);
-
-    // 设置列宽
-    ws['!cols'] = [
-      { wch: 30 }, // 变体组名称
-      { wch: 40 }, // 变体组ID
-      { wch: 10 }, // 国家
-      { wch: 10 }, // 站点
-      { wch: 15 }, // 品牌
-      { wch: 10 }, // 变体状态
-      { wch: 10 }, // ASIN数量
-      { wch: 12 }, // 异常ASIN数量
-      { wch: 20 }, // 创建时间
-      { wch: 20 }, // 更新时间
-      { wch: 20 }, // 最后检查时间
-    ];
-
-    XLSX.utils.book_append_sheet(wb, ws, '变体组数据');
+    const workbook = buildWorkbookFromAoa(excelData, '变体组数据', [
+      30, // 变体组名称
+      40, // 变体组ID
+      10, // 国家
+      10, // 站点
+      15, // 品牌
+      10, // 变体状态
+      10, // ASIN数量
+      12, // 异常ASIN数量
+      20, // 创建时间
+      20, // 更新时间
+      20, // 最后检查时间
+    ]);
 
     sendProgress(res, 90, '正在生成Excel文件...', 'generating');
 
     // 生成Excel文件
-    const excelBuffer = XLSX.write(wb, { type: 'buffer', bookType: 'xlsx' });
+    const excelBuffer = await workbook.xlsx.writeBuffer();
 
     // 设置响应头
     const filename = `变体组数据_${getUTC8String('YYYY-MM-DD')}.xlsx`;
@@ -1164,26 +1161,23 @@ async function exportCompetitorASINData(req, res) {
 
     sendProgress(res, 75, '正在生成Excel文件...', 'generating');
 
-    const wb = XLSX.utils.book_new();
-    const ws = XLSX.utils.aoa_to_sheet(excelData);
-    ws['!cols'] = [
-      { wch: 20 }, // 变体组名称
-      { wch: 40 }, // 变体组ID
-      { wch: 10 }, // 国家
-      { wch: 15 }, // 品牌
-      { wch: 10 }, // 变体状态
-      { wch: 15 }, // ASIN
-      { wch: 50 }, // ASIN名称
-      { wch: 15 }, // ASIN类型
-      { wch: 10 }, // ASIN状态
-      { wch: 20 }, // 创建时间
-      { wch: 20 }, // 最后检查时间
-    ];
-    XLSX.utils.book_append_sheet(wb, ws, '竞品ASIN数据');
+    const workbook = buildWorkbookFromAoa(excelData, '竞品ASIN数据', [
+      20, // 变体组名称
+      40, // 变体组ID
+      10, // 国家
+      15, // 品牌
+      10, // 变体状态
+      15, // ASIN
+      50, // ASIN名称
+      15, // ASIN类型
+      10, // ASIN状态
+      20, // 创建时间
+      20, // 最后检查时间
+    ]);
 
     sendProgress(res, 90, '正在生成Excel文件...', 'generating');
 
-    const excelBuffer = XLSX.write(wb, { type: 'buffer', bookType: 'xlsx' });
+    const excelBuffer = await workbook.xlsx.writeBuffer();
     const filename = `竞品ASIN数据_${getUTC8String('YYYY-MM-DD')}.xlsx`;
 
     if (isProgressMode) {
@@ -1294,25 +1288,22 @@ async function exportCompetitorVariantGroupData(req, res) {
 
     sendProgress(res, 75, '正在生成Excel文件...', 'generating');
 
-    const wb = XLSX.utils.book_new();
-    const ws = XLSX.utils.aoa_to_sheet(excelData);
-    ws['!cols'] = [
-      { wch: 30 }, // 变体组名称
-      { wch: 40 }, // 变体组ID
-      { wch: 10 }, // 国家
-      { wch: 15 }, // 品牌
-      { wch: 10 }, // 变体状态
-      { wch: 10 }, // ASIN数量
-      { wch: 12 }, // 异常ASIN数量
-      { wch: 20 }, // 创建时间
-      { wch: 20 }, // 更新时间
-      { wch: 20 }, // 最后检查时间
-    ];
-    XLSX.utils.book_append_sheet(wb, ws, '竞品变体组数据');
+    const workbook = buildWorkbookFromAoa(excelData, '竞品变体组数据', [
+      30, // 变体组名称
+      40, // 变体组ID
+      10, // 国家
+      15, // 品牌
+      10, // 变体状态
+      10, // ASIN数量
+      12, // 异常ASIN数量
+      20, // 创建时间
+      20, // 更新时间
+      20, // 最后检查时间
+    ]);
 
     sendProgress(res, 90, '正在生成Excel文件...', 'generating');
 
-    const excelBuffer = XLSX.write(wb, { type: 'buffer', bookType: 'xlsx' });
+    const excelBuffer = await workbook.xlsx.writeBuffer();
     const filename = `竞品变体组数据_${getUTC8String('YYYY-MM-DD')}.xlsx`;
 
     if (isProgressMode) {
@@ -1400,7 +1391,7 @@ async function exportCompetitorMonitorHistory(req, res) {
       '检查类型',
       '变体组名称',
       'ASIN',
-      'ASIN名称',
+      '父变体ASIN',
       '国家',
       '检查结果',
       '检查详情',
@@ -1446,7 +1437,7 @@ async function exportCompetitorMonitorHistory(req, res) {
         history.checkType === 'GROUP' ? '变体组' : 'ASIN',
         history.variantGroupName || '',
         history.asin || '',
-        history.asinName || '',
+        history.parentAsin || '',
         history.country || '',
         history.isBroken === 1 ? '异常' : '正常',
         checkResult,
@@ -1466,28 +1457,21 @@ async function exportCompetitorMonitorHistory(req, res) {
 
     sendProgress(res, 75, '正在生成Excel文件...', 'generating');
 
-    // 创建工作簿
-    const wb = XLSX.utils.book_new();
-    const ws = XLSX.utils.aoa_to_sheet(excelData);
-
-    // 设置列宽
-    ws['!cols'] = [
-      { wch: 20 }, // 检查时间
-      { wch: 10 }, // 检查类型
-      { wch: 30 }, // 变体组名称
-      { wch: 15 }, // ASIN
-      { wch: 50 }, // ASIN名称
-      { wch: 10 }, // 国家
-      { wch: 10 }, // 检查结果
-      { wch: 100 }, // 检查详情
-    ];
-
-    XLSX.utils.book_append_sheet(wb, ws, '竞品监控历史');
+    const workbook = buildWorkbookFromAoa(excelData, '竞品监控历史', [
+      20, // 检查时间
+      10, // 检查类型
+      30, // 变体组名称
+      15, // ASIN
+      50, // 父变体ASIN
+      10, // 国家
+      10, // 检查结果
+      100, // 检查详情
+    ]);
 
     sendProgress(res, 90, '正在生成Excel文件...', 'generating');
 
     // 生成Excel文件
-    const excelBuffer = XLSX.write(wb, { type: 'buffer', bookType: 'xlsx' });
+    const excelBuffer = await workbook.xlsx.writeBuffer();
 
     // 设置响应头
     const filename = `竞品监控历史_${getUTC8String('YYYY-MM-DD')}.xlsx`;
@@ -1717,31 +1701,24 @@ async function exportParentAsinQuery(req, res) {
 
     sendProgress(res, 90, '正在生成Excel文件...', 'generating');
 
-    // 创建工作簿
-    const wb = XLSX.utils.book_new();
-    const ws = XLSX.utils.aoa_to_sheet(excelData);
-
-    // 设置列宽
-    ws['!cols'] = [
-      { wch: 15 }, // ASIN
-      { wch: 10 }, // 国家
-      { wch: 15 }, // 是否有父变体
-      { wch: 15 }, // 父变体ASIN
-      { wch: 50 }, // 父体标题
-      { wch: 50 }, // 产品标题
-      { wch: 20 }, // 品牌
-      { wch: 15 }, // 是否有变体
-      { wch: 12 }, // 变体数量
-      { wch: 20 }, // 查询时间
-      { wch: 30 }, // 错误信息
-    ];
-
-    XLSX.utils.book_append_sheet(wb, ws, '父变体查询结果');
+    const workbook = buildWorkbookFromAoa(excelData, '父变体查询结果', [
+      15, // ASIN
+      10, // 国家
+      15, // 是否有父变体
+      15, // 父变体ASIN
+      50, // 父体标题
+      50, // 产品标题
+      20, // 品牌
+      15, // 是否有变体
+      12, // 变体数量
+      20, // 查询时间
+      30, // 错误信息
+    ]);
 
     sendProgress(res, 95, '准备下载文件...', 'generating');
 
     // 生成Excel文件
-    const excelBuffer = XLSX.write(wb, { type: 'buffer', bookType: 'xlsx' });
+    const excelBuffer = await workbook.xlsx.writeBuffer();
 
     // 设置响应头
     const filename = `ASIN父变体查询结果_${getUTC8String('YYYY-MM-DD')}.xlsx`;

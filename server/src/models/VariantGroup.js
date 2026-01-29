@@ -33,7 +33,7 @@ class VariantGroup {
       variantStatus || 'ALL'
     }:pageSize:${pageSize}`;
     if (shouldUseCache) {
-      const cachedValue = cacheService.get(cacheKey);
+      const cachedValue = await cacheService.getAsync(cacheKey);
       if (cachedValue) {
         logger.info('VariantGroup.findAll 使用缓存:', cacheKey);
         return JSON.parse(JSON.stringify(cachedValue));
@@ -279,7 +279,11 @@ class VariantGroup {
     };
 
     if (shouldUseCache) {
-      cacheService.set(cacheKey, JSON.parse(JSON.stringify(result)), 60 * 1000);
+      await cacheService.setAsync(
+        cacheKey,
+        JSON.parse(JSON.stringify(result)),
+        60 * 1000,
+      );
     }
 
     return result;
@@ -331,6 +335,7 @@ class VariantGroup {
 
   static clearCache() {
     cacheService.deleteByPrefix('variantGroups:');
+    void cacheService.deleteByPrefixAsync('variantGroups:');
   }
 
   // 根据ID查询变体组

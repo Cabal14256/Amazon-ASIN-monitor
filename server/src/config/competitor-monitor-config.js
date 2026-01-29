@@ -1,4 +1,5 @@
 const SPAPIConfig = require('../models/SPAPIConfig');
+const logger = require('../utils/logger');
 
 const COMPETITOR_MONITOR_CONFIG_KEY = 'COMPETITOR_MONITOR_ENABLED';
 
@@ -33,13 +34,13 @@ async function loadCompetitorMonitorConfig() {
     } else {
       competitorMonitorConfig.enabled = getDefaultEnabled();
     }
-    console.log(
+    logger.info(
       `[competitor-monitor] enabled: ${
         competitorMonitorConfig.enabled ? 'true' : 'false'
       }`,
     );
   } catch (error) {
-    console.error('[competitor-monitor] load failed:', error.message);
+    logger.warn('[competitor-monitor] load failed:', error.message);
   }
 }
 

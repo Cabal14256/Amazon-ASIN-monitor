@@ -1,4 +1,5 @@
 const CompetitorMonitorHistory = require('../models/CompetitorMonitorHistory');
+const logger = require('../utils/logger');
 
 // 查询监控历史列表
 exports.getCompetitorMonitorHistory = async (req, res) => {
@@ -35,7 +36,7 @@ exports.getCompetitorMonitorHistory = async (req, res) => {
       errorCode: 0,
     });
   } catch (error) {
-    console.error('查询监控历史错误:', error);
+    logger.error('查询监控历史错误:', error);
     res.status(500).json({
       success: false,
       errorMessage: error.message || '查询失败',
@@ -62,7 +63,7 @@ exports.getCompetitorMonitorHistoryById = async (req, res) => {
       errorCode: 0,
     });
   } catch (error) {
-    console.error('查询监控历史详情错误:', error);
+    logger.error('查询监控历史详情错误:', error);
     res.status(500).json({
       success: false,
       errorMessage: error.message || '查询失败',

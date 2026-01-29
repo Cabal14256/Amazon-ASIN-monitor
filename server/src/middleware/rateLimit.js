@@ -14,6 +14,16 @@ try {
 
 const User = require('../models/User');
 const logger = require('../utils/logger');
+const redisConfig = require('../config/redis');
+
+let RedisStore = null;
+try {
+  const rateLimitRedis = require('rate-limit-redis');
+  RedisStore =
+    rateLimitRedis?.RedisStore || rateLimitRedis?.default || rateLimitRedis;
+} catch (error) {
+  // rate-limit-redis 未安装，回退到内存 store
+}
 
 // 限流统计
 const rateLimitStats = {
@@ -46,6 +56,23 @@ function createRoleBasedLimiter() {
     return (req, res, next) => next();
   }
 
+  const adminStore = createRedisStore('admin');
+  const editorStore = createRedisStore('editor');
+  const readonlyStore = createRedisStore('readonly');
+  const defaultStore = createRedisStore('default');
+  const handler = (roleKey) => (req, res, _next, options) => {
+    rateLimitStats.blockedRequests++;
+    rateLimitStats.byRole[roleKey].blocked++;
+    logger.warn(`限流触发: ${roleKey} 角色, IP: ${req.ip}`);
+    const payload =
+      options?.message || {
+        success: false,
+        errorMessage: '请求过于频繁，请稍后再试',
+        errorCode: 429,
+      };
+    res.status(options?.statusCode || 429).json(payload);
+  };
+
   // 为每个角色创建独立的限流器
   const adminLimiter = rateLimit({
     windowMs: 15 * 60 * 1000,
@@ -57,11 +84,8 @@ function createRoleBasedLimiter() {
     },
     standardHeaders: true,
     legacyHeaders: false,
-    onLimitReached: (req, res, options) => {
-      rateLimitStats.blockedRequests++;
-      rateLimitStats.byRole.ADMIN.blocked++;
-      logger.warn(`限流触发: ADMIN 角色, IP: ${req.ip}`);
-    },
+    store: adminStore || undefined,
+    handler: handler('ADMIN'),
   });
 
   const editorLimiter = rateLimit({
@@ -74,11 +98,8 @@ function createRoleBasedLimiter() {
     },
     standardHeaders: true,
     legacyHeaders: false,
-    onLimitReached: (req, res, options) => {
-      rateLimitStats.blockedRequests++;
-      rateLimitStats.byRole.EDITOR.blocked++;
-      logger.warn(`限流触发: EDITOR 角色, IP: ${req.ip}`);
-    },
+    store: editorStore || undefined,
+    handler: handler('EDITOR'),
   });
 
   const readonlyLimiter = rateLimit({
@@ -91,11 +112,8 @@ function createRoleBasedLimiter() {
     },
     standardHeaders: true,
     legacyHeaders: false,
-    onLimitReached: (req, res, options) => {
-      rateLimitStats.blockedRequests++;
-      rateLimitStats.byRole.READONLY.blocked++;
-      logger.warn(`限流触发: READONLY 角色, IP: ${req.ip}`);
-    },
+    store: readonlyStore || undefined,
+    handler: handler('READONLY'),
   });
 
   const defaultLimiter = rateLimit({
@@ -108,11 +126,8 @@ function createRoleBasedLimiter() {
     },
     standardHeaders: true,
     legacyHeaders: false,
-    onLimitReached: (req, res, options) => {
-      rateLimitStats.blockedRequests++;
-      rateLimitStats.byRole.DEFAULT.blocked++;
-      logger.warn(`限流触发: DEFAULT 角色, IP: ${req.ip}`);
-    },
+    store: defaultStore || undefined,
+    handler: handler('DEFAULT'),
   });
 
   // 返回一个中间件，根据用户角色选择对应的限流器
@@ -170,12 +185,22 @@ const apiLimiter = rateLimit
         errorMessage: '请求过于频繁，请稍后再试',
         errorCode: 429,
       },
+      store: createRedisStore('api') || undefined,
       standardHeaders: true, // 返回RateLimit-* headers
       legacyHeaders: false, // 禁用X-RateLimit-* headers
-      onLimitReached: (req, res, options) => {
+      handler: (req, res, _next, options) => {
         rateLimitStats.blockedRequests++;
         rateLimitStats.byRole.DEFAULT.blocked++;
         logger.warn(`限流触发: API限流器, IP: ${req.ip}`);
+        res
+          .status(options?.statusCode || 429)
+          .json(
+            options?.message || {
+              success: false,
+              errorMessage: '请求过于频繁，请稍后再试',
+              errorCode: 429,
+            },
+          );
       },
     })
   : (req, res, next) => next(); // 如果未安装，直接通过
@@ -190,8 +215,23 @@ const strictLimiter = rateLimit
         errorMessage: '请求过于频繁，请稍后再试',
         errorCode: 429,
       },
+      store: createRedisStore('strict') || undefined,
       standardHeaders: true,
       legacyHeaders: false,
+      handler: (req, res, _next, options) => {
+        rateLimitStats.blockedRequests++;
+        rateLimitStats.byRole.DEFAULT.blocked++;
+        logger.warn(`限流触发: STRICT限流器, IP: ${req.ip}`);
+        res
+          .status(options?.statusCode || 429)
+          .json(
+            options?.message || {
+              success: false,
+              errorMessage: '请求过于频繁，请稍后再试',
+              errorCode: 429,
+            },
+          );
+      },
     })
   : (req, res, next) => next();
 
@@ -246,6 +286,27 @@ function resetRateLimitStats() {
     DEFAULT: { requests: 0, blocked: 0 },
   };
   rateLimitStats.lastReset = Date.now();
+}
+
+function createRedisStore(prefix) {
+  if (!RedisStore || typeof RedisStore !== 'function') {
+    return null;
+  }
+
+  const client = redisConfig.getRedisClient();
+  if (!client) {
+    return null;
+  }
+
+  try {
+    return new RedisStore({
+      sendCommand: (...args) => client.call(...args),
+      prefix: `rate_limit:${prefix}:`,
+    });
+  } catch (error) {
+    logger.warn('创建Redis限流器失败:', error.message);
+    return null;
+  }
 }
 
 module.exports = {

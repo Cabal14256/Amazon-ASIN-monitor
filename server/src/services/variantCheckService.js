@@ -87,14 +87,17 @@ async function runWithConcurrencyLimit(taskFn, priority = PRIORITY.SCHEDULED) {
  */
 async function getCachedVariantResult(asin, country) {
   const key = getVariantCacheKey(asin, country);
-  const cached = await cacheService.get(key);
+  const cached = await cacheService.getAsync(key);
   if (cached) {
-    try {
-      return JSON.parse(cached);
-    } catch (e) {
-      logger.warn(`[getCachedVariantResult] 缓存解析失败: ${e.message}`);
-      return null;
+    if (typeof cached === 'string') {
+      try {
+        return JSON.parse(cached);
+      } catch (e) {
+        logger.warn(`[getCachedVariantResult] 缓存解析失败: ${e.message}`);
+        return null;
+      }
     }
+    return cached;
   }
   return null;
 }
@@ -109,7 +112,7 @@ async function getCachedVariantResult(asin, country) {
 async function setVariantResultCache(asin, country, result, ttlSeconds = 600) {
   const key = getVariantCacheKey(asin, country);
   try {
-    await cacheService.set(key, JSON.stringify(result), ttlSeconds);
+    await cacheService.setAsync(key, result, ttlSeconds);
   } catch (error) {
     logger.error(`[setVariantResultCache] 设置缓存失败: ${error.message}`);
   }

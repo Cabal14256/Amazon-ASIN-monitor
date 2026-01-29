@@ -1,12 +1,38 @@
 const VariantGroup = require('../models/VariantGroup');
 const ASIN = require('../models/ASIN');
 const logger = require('../utils/logger');
+const ExcelJS = require('exceljs');
+const path = require('path');
+const { Readable } = require('stream');
 const {
   sendSuccessResponse,
   sendErrorResponse,
   validateRequiredFields,
   handleControllerError,
 } = require('../services/sharedService');
+
+function worksheetToRows(worksheet) {
+  const rows = [];
+  let maxCol = 0;
+
+  worksheet.eachRow({ includeEmpty: true }, (row) => {
+    const length = Math.max(row.values.length - 1, row.cellCount);
+    if (length > maxCol) {
+      maxCol = length;
+    }
+  });
+
+  worksheet.eachRow({ includeEmpty: true }, (row) => {
+    const rowData = [];
+    for (let col = 1; col <= maxCol; col += 1) {
+      const cell = row.getCell(col);
+      rowData.push(cell?.text ?? '');
+    }
+    rows.push(rowData);
+  });
+
+  return rows;
+}
 
 // 查询变体组列表
 exports.getVariantGroups = async (req, res) => {
@@ -343,39 +369,42 @@ exports.importFromExcel = async (req, res) => {
       size: req.file.size,
     });
 
-    const XLSX = require('xlsx');
-    let workbook;
+    const ext = path.extname(req.file.originalname || '').toLowerCase();
+    const workbook = new ExcelJS.Workbook();
     try {
-      // 处理可能的BOM（字节顺序标记）
-      let buffer = req.file.buffer;
-      // 检查并移除UTF-8 BOM (EF BB BF)
-      if (buffer[0] === 0xef && buffer[1] === 0xbb && buffer[2] === 0xbf) {
-        buffer = buffer.slice(3);
+      if (ext === '.csv') {
+        let buffer = req.file.buffer;
+        if (buffer[0] === 0xef && buffer[1] === 0xbb && buffer[2] === 0xbf) {
+          buffer = buffer.slice(3);
+        }
+        if (buffer[0] === 0xff && buffer[1] === 0xfe) {
+          buffer = buffer.slice(2);
+        }
+        if (buffer[0] === 0xfe && buffer[1] === 0xff) {
+          buffer = buffer.slice(2);
+        }
+        const stream = Readable.from(buffer);
+        await workbook.csv.read(stream);
+      } else if (ext === '.xlsx') {
+        await workbook.xlsx.load(req.file.buffer);
+      } else {
+        return res.status(400).json({
+          success: false,
+          errorMessage: '仅支持 .xlsx 或 .csv 格式',
+          errorCode: 400,
+        });
       }
-      // 检查并移除UTF-16 LE BOM (FF FE)
-      if (buffer[0] === 0xff && buffer[1] === 0xfe) {
-        buffer = buffer.slice(2);
-      }
-      // 检查并移除UTF-16 BE BOM (FE FF)
-      if (buffer[0] === 0xfe && buffer[1] === 0xff) {
-        buffer = buffer.slice(2);
-      }
-
-      workbook = XLSX.read(buffer, {
-        type: 'buffer',
-        codepage: 65001, // UTF-8
-      });
     } catch (parseError) {
       logger.error('Excel解析错误:', parseError);
       return res.status(400).json({
         success: false,
         errorMessage:
-          'Excel文件格式错误，无法解析。请确保文件是有效的 .xlsx, .xls 或 .csv 格式',
+          'Excel文件格式错误，无法解析。请确保文件是有效的 .xlsx 或 .csv 格式',
         errorCode: 400,
       });
     }
 
-    if (!workbook.SheetNames || workbook.SheetNames.length === 0) {
+    if (!workbook.worksheets || workbook.worksheets.length === 0) {
       return res.status(400).json({
         success: false,
         errorMessage: 'Excel文件不包含任何工作表',
@@ -383,15 +412,8 @@ exports.importFromExcel = async (req, res) => {
       });
     }
 
-    const sheetName = workbook.SheetNames[0];
-    const worksheet = workbook.Sheets[sheetName];
-    // 使用 header: 1 来获取原始数组数据，而不是对象
-    const data = XLSX.utils.sheet_to_json(worksheet, {
-      header: 1,
-      defval: '', // 空单元格使用空字符串
-      raw: false, // 不保留原始值，进行格式化
-      codepage: 65001, // UTF-8
-    });
+    const worksheet = workbook.worksheets[0];
+    const data = worksheetToRows(worksheet);
 
     logger.info('解析到的数据行数:', data.length);
     if (data.length > 0) {

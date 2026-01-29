@@ -1,6 +1,7 @@
 const axios = require('axios');
 const CompetitorFeishuConfig = require('../models/CompetitorFeishuConfig');
 const { getUTC8LocaleString } = require('../utils/dateTime');
+const logger = require('../utils/logger');
 
 const RATE_LIMIT_CODE = 11232;
 const REQUEST_INTERVAL_MS = 500;
@@ -21,7 +22,7 @@ function recordRateLimit(country) {
   feishuMetrics.rateLimitCount++;
   feishuMetrics.lastRateLimitAt = new Date();
   if (feishuMetrics.rateLimitCount % 5 === 0) {
-    console.warn(
+    logger.warn(
       `[竞品feishu] 累计 ${feishuMetrics.rateLimitCount} 次限频（最近一次: ${country}）`,
     );
   }
@@ -29,7 +30,7 @@ function recordRateLimit(country) {
 
 setInterval(() => {
   if (feishuMetrics.rateLimitCount > 0) {
-    console.warn(
+    logger.warn(
       `[竞品feishu] 最近 ${RATE_LIMIT_LOG_INTERVAL / 1000}s 触发 ${
         feishuMetrics.rateLimitCount
       } 次限频，上次发生在 ${feishuMetrics.lastRateLimitAt}`,
@@ -53,7 +54,7 @@ async function sendCompetitorFeishuNotification(region, messageData) {
     if (!config || !config.webhook_url) {
       const displayCountry =
         messageData.countryDisplay || messageData.country || region;
-      console.log(
+      logger.info(
         `区域 ${region} (${displayCountry}) 未配置竞品飞书Webhook，跳过通知`,
       );
       return { success: false };
@@ -80,12 +81,12 @@ async function sendCompetitorFeishuNotification(region, messageData) {
     if (response.status === 200 && response.data.code === 0) {
       const displayCountry =
         messageData.countryDisplay || messageData.country || region;
-      console.log(`✅ 竞品飞书通知发送成功: ${region} (${displayCountry})`);
+      logger.info(`✅ 竞品飞书通知发送成功: ${region} (${displayCountry})`);
       return { success: true };
     } else {
       const displayCountry =
         messageData.countryDisplay || messageData.country || region;
-      console.error(`❌ 竞品飞书通知发送失败: ${region} (${displayCountry})`, {
+      logger.error(`❌ 竞品飞书通知发送失败: ${region} (${displayCountry})`, {
         code: response.data?.code,
         msg: response.data?.msg,
       });
@@ -97,7 +98,7 @@ async function sendCompetitorFeishuNotification(region, messageData) {
   } catch (error) {
     const displayCountry =
       messageData.countryDisplay || messageData.country || region;
-    console.error(
+    logger.error(
       `❌ 发送竞品飞书通知异常: ${region} (${displayCountry})`,
       error.message,
     );
@@ -124,7 +125,7 @@ async function sendCompetitorNotificationWithRetry(region, messageData) {
       attempts < MAX_RETRY_ATTEMPTS
     ) {
       const waitMs = 2000 + Math.floor(Math.random() * 2000);
-      console.warn(
+      logger.warn(
         `[竞品feishu] 限频(${region})，第 ${
           attempts + 1
         } 次尝试前等待 ${waitMs}ms`,
@@ -323,7 +324,7 @@ async function sendCompetitorBatchNotifications(countryResults) {
           errorCode: result.errorCode,
         };
         if (result.errorCode === RATE_LIMIT_CODE) {
-          console.warn(`[竞品feishu] 国家 ${country} 限频重试失败`);
+          logger.warn(`[竞品feishu] 国家 ${country} 限频重试失败`);
           recordRateLimit(country);
         }
       }

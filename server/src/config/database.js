@@ -14,12 +14,12 @@ const dbConfig = {
   waitForConnections: true,
   connectionLimit: Number(process.env.DB_CONNECTION_LIMIT) || 50,
   queueLimit: 200,
-  acquireTimeout: 60000, // 获取连接超时时间（毫秒）
-  timeout: Number(process.env.DB_QUERY_TIMEOUT) || 120000, // 查询超时时间（毫秒），默认120秒，统计查询可能需要更长时间
+  connectTimeout: Number(process.env.DB_CONNECT_TIMEOUT) || 10000, // 连接超时时间（毫秒）
 };
 
 // 创建连接池
 const pool = mysql.createPool(dbConfig);
+const QUERY_TIMEOUT_MS = Number(process.env.DB_QUERY_TIMEOUT) || 600000;
 
 // 测试数据库连接
 async function testConnection() {
@@ -41,7 +41,11 @@ async function testConnection() {
 // 执行查询的辅助函数
 async function query(sql, params = []) {
   try {
-    const [results] = await pool.execute(sql, params);
+    const [results] = await pool.query({
+      sql,
+      values: params,
+      timeout: QUERY_TIMEOUT_MS,
+    });
     return results;
   } catch (error) {
     logger.error('数据库查询错误:', error);

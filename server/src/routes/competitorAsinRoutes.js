@@ -12,13 +12,12 @@ const upload = multer({
   fileFilter: (req, file, cb) => {
     const allowedTypes = [
       'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet', // .xlsx
-      'application/vnd.ms-excel', // .xls
       'text/csv', // .csv
       'application/csv', // .csv (某些浏览器)
       'text/x-csv', // .csv (某些浏览器)
       'text/comma-separated-values', // .csv (某些浏览器)
     ];
-    const allowedExtensions = ['.xlsx', '.xls', '.csv'];
+    const allowedExtensions = ['.xlsx', '.csv'];
     const fileExtension = file.originalname
       .toLowerCase()
       .substring(file.originalname.lastIndexOf('.'));
@@ -31,7 +30,7 @@ const upload = multer({
     } else {
       cb(
         new Error(
-          `不支持的文件类型: ${file.mimetype}，请上传 .xlsx, .xls 或 .csv 文件`,
+          `不支持的文件类型: ${file.mimetype}，请上传 .xlsx 或 .csv 文件`,
         ),
       );
     }

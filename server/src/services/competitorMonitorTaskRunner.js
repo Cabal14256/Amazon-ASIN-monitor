@@ -18,6 +18,7 @@ const {
 const {
   isCompetitorMonitorEnabled,
 } = require('../config/competitor-monitor-config');
+const logger = require('../utils/logger');
 
 let competitorMonitorSemaphore = new Semaphore(getMaxConcurrentGroupChecks());
 let isCompetitorMonitorTaskRunning = false;
@@ -120,7 +121,7 @@ async function processCompetitorCountry(
     }
 
     if (groupsList.length === 0) {
-      console.log(
+      logger.info(
         `[processCompetitorCountry] ${country} 没有需要检查的竞品变体组`,
       );
       return { checked: 0, broken: 0 };
@@ -265,7 +266,7 @@ async function processCompetitorCountry(
         try {
           await CompetitorMonitorHistory.bulkCreate(historyEntries);
         } catch (historyError) {
-          console.error(
+          logger.error(
             `  ⚠️  批量记录竞品监控历史失败:`,
             historyError.message,
           );
@@ -275,7 +276,7 @@ async function processCompetitorCountry(
 
     await Promise.all(workers);
   } catch (error) {
-    console.error(`❌ 处理竞品国家 ${country} 失败:`, error.message);
+    logger.error(`❌ 处理竞品国家 ${country} 失败:`, error.message);
     return { checked, broken };
   }
 
@@ -307,7 +308,7 @@ async function runCompetitorMonitorTask(countries, batchConfig = null) {
     pendingCompetitorRunCountries = Array.from(
       new Set([...(pendingCompetitorRunCountries || []), ...countries]),
     );
-    console.log(
+    logger.info(
       `⏳ 上一个竞品监控任务仍在运行，已缓存下一次执行的国家: ${pendingCompetitorRunCountries.join(
         ', ',
       )}`,
@@ -327,7 +328,7 @@ async function runCompetitorMonitorTask(countries, batchConfig = null) {
   const batchInfo = batchConfig
     ? ` (批次 ${batchConfig.batchIndex + 1}/${batchConfig.totalBatches})`
     : '';
-  console.log(
+  logger.info(
     `\n⏰ [${getUTC8LocaleString()}] 开始执行竞品监控任务，国家: ${countries.join(
       ', ',
     )}${batchInfo}`,
@@ -379,11 +380,11 @@ async function runCompetitorMonitorTask(countries, batchConfig = null) {
       }
     });
 
-    console.log(`\n📨 开始发送竞品飞书通知...`);
+    logger.info(`\n📨 开始发送竞品飞书通知...`);
     const notifyResults = await sendCompetitorBatchNotifications(
       countryResults,
     );
-    console.log(
+    logger.info(
       `📨 竞品通知发送完成: 总计 ${notifyResults.total}, 成功 ${notifyResults.success}, 失败 ${notifyResults.failed}, 跳过 ${notifyResults.skipped}`,
     );
 
@@ -407,12 +408,12 @@ async function runCompetitorMonitorTask(countries, batchConfig = null) {
                 1,
               );
             if (updatedCount > 0) {
-              console.log(
+              logger.info(
                 `✅ 已更新 ${country} 的 ${updatedCount} 条竞品监控历史记录为已通知状态`,
               );
             }
           } catch (error) {
-            console.error(
+            logger.error(
               `❌ 更新 ${country} 竞品监控历史记录通知状态失败:`,
               error.message,
             );
@@ -435,7 +436,7 @@ async function runCompetitorMonitorTask(countries, batchConfig = null) {
     const errorTypeText =
       errorTypeInfo.length > 0 ? ` (${errorTypeInfo.join(', ')})` : '';
 
-    console.log(
+    logger.info(
       `\n✅ 竞品监控任务完成: 检查 ${totalChecked} 个变体组, 异常 ${totalBroken} 个${errorTypeText}, 耗时 ${duration.toFixed(
         2,
       )}秒\n`,
@@ -463,7 +464,7 @@ async function runCompetitorMonitorTask(countries, batchConfig = null) {
       checkTime: toUTC8ISOString(checkTime),
     };
   } catch (error) {
-    console.error(`❌ 竞品监控任务执行失败:`, error);
+    logger.error(`❌ 竞品监控任务执行失败:`, error);
     return {
       success: false,
       error: error.message || '竞品监控任务执行失败',

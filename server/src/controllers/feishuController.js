@@ -1,4 +1,5 @@
 const FeishuConfig = require('../models/FeishuConfig');
+const logger = require('../utils/logger');
 
 // 获取所有飞书配置
 exports.getFeishuConfigs = async (req, res) => {
@@ -10,7 +11,7 @@ exports.getFeishuConfigs = async (req, res) => {
       errorCode: 0,
     });
   } catch (error) {
-    console.error('获取飞书配置错误:', error);
+    logger.error('获取飞书配置错误:', error);
     res.status(500).json({
       success: false,
       errorMessage: error.message || '获取失败',
@@ -37,7 +38,7 @@ exports.getFeishuConfigByCountry = async (req, res) => {
       errorCode: 0,
     });
   } catch (error) {
-    console.error('获取飞书配置错误:', error);
+    logger.error('获取飞书配置错误:', error);
     res.status(500).json({
       success: false,
       errorMessage: error.message || '获取失败',
@@ -71,7 +72,7 @@ exports.upsertFeishuConfig = async (req, res) => {
       errorCode: 0,
     });
   } catch (error) {
-    console.error('创建/更新飞书配置错误:', error);
+    logger.error('创建/更新飞书配置错误:', error);
     res.status(500).json({
       success: false,
       errorMessage: error.message || '操作失败',
@@ -91,7 +92,7 @@ exports.deleteFeishuConfig = async (req, res) => {
       errorCode: 0,
     });
   } catch (error) {
-    console.error('删除飞书配置错误:', error);
+    logger.error('删除飞书配置错误:', error);
     res.status(500).json({
       success: false,
       errorMessage: error.message || '删除失败',
@@ -129,7 +130,7 @@ exports.toggleFeishuConfig = async (req, res) => {
       errorCode: 0,
     });
   } catch (error) {
-    console.error('启用/禁用飞书配置错误:', error);
+    logger.error('启用/禁用飞书配置错误:', error);
     res.status(500).json({
       success: false,
       errorMessage: error.message || '操作失败',

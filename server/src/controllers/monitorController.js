@@ -453,7 +453,7 @@ exports.getRegionSummary = async (req, res) => {
       errorCode === 'PROTOCOL_SEQUENCE_TIMEOUT' ||
       errorMessage.includes('timeout') ||
       errorMessage.includes('Timeout') ||
-      duration > 100000; // 如果耗时超过100秒，也认为是超时
+      duration > 600000; // 如果耗时超过10分钟，也认为是超时
 
     if (isTimeout) {
       logger.error(
@@ -537,7 +537,7 @@ exports.getPeriodSummary = async (req, res) => {
       errorCode === 'PROTOCOL_SEQUENCE_TIMEOUT' ||
       errorMessage.includes('timeout') ||
       errorMessage.includes('Timeout') ||
-      duration > 100000; // 如果耗时超过100秒，也认为是超时
+      duration > 600000; // 如果耗时超过10分钟，也认为是超时
 
     if (isTimeout) {
       logger.error(

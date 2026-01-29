@@ -2,6 +2,7 @@
  * 风控指标收集和自动调整服务
  * 用于根据 SP-API 的错误率、限流情况等自动调整并发数
  */
+const logger = require('../utils/logger');
 
 // 指标收集窗口（最近 N 次检查）
 const METRICS_WINDOW_SIZE = 100;
@@ -209,7 +210,7 @@ function calculateOptimalConcurrency(currentConcurrency) {
       ADJUSTMENT_CONFIG.MIN_CONCURRENCY,
       currentConcurrency - ADJUSTMENT_CONFIG.ADJUSTMENT_STEP,
     );
-    console.log(
+    logger.info(
       `[风控调整] 检测到高错误率(${(errorRate * 100).toFixed(
         1,
       )}%)或频繁限流(${rateLimitCount}次)，降低并发数: ${currentConcurrency} -> ${newConcurrency}`,
@@ -228,7 +229,7 @@ function calculateOptimalConcurrency(currentConcurrency) {
 
     // 只有在并发数确实增加时才记录
     if (newConcurrency > currentConcurrency) {
-      console.log(
+      logger.info(
         `[风控调整] 错误率低(${(errorRate * 100).toFixed(
           1,
         )}%)且无限流，提高并发数: ${currentConcurrency} -> ${newConcurrency}`,
@@ -300,7 +301,7 @@ function resetMetrics() {
     recentWindow: [],
   };
   lastAdjustmentTime = 0;
-  console.log('[风控服务] 指标已重置');
+  logger.info('[风控服务] 指标已重置');
 }
 
 /**
@@ -320,7 +321,7 @@ function adjustRateLimiter(region) {
   );
 
   if (adjustment.adjusted) {
-    console.log(
+    logger.info(
       `[风控服务] ${region}区域限流器已调整: ${adjustment.previousPerMinute}/分钟 -> ${adjustment.newPerMinute}/分钟`,
     );
   }
@@ -345,18 +346,18 @@ function startRateLimiterAutoAdjustment() {
       adjustRateLimiter('US');
       adjustRateLimiter('EU');
     } catch (error) {
-      console.error('[风控服务] 自动调整限流器失败:', error.message);
+      logger.error('[风控服务] 自动调整限流器失败:', error.message);
     }
   }, 5 * 60 * 1000); // 5分钟
 
-  console.log('[风控服务] 限流器自动调整已启动（每5分钟检查一次）');
+  logger.info('[风控服务] 限流器自动调整已启动（每5分钟检查一次）');
 }
 
 function stopRateLimiterAutoAdjustment() {
   if (rateLimiterAdjustmentInterval) {
     clearInterval(rateLimiterAdjustmentInterval);
     rateLimiterAdjustmentInterval = null;
-    console.log('[风控服务] 限流器自动调整已停止');
+    logger.info('[风控服务] 限流器自动调整已停止');
   }
 }
 

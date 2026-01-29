@@ -1,4 +1,3 @@
-const XLSX = require('xlsx');
 const ExcelJS = require('exceljs');
 const fs = require('fs').promises;
 const path = require('path');
@@ -18,6 +17,18 @@ async function ensureExportDir() {
   } catch (error) {
     logger.error('创建导出目录失败:', error);
   }
+}
+
+function buildWorkbookFromAoa(excelData, sheetName, columnWidths = []) {
+  const workbook = new ExcelJS.Workbook();
+  const worksheet = workbook.addWorksheet(sheetName);
+  if (columnWidths.length > 0) {
+    worksheet.columns = columnWidths.map((width) => ({ width }));
+  }
+  if (Array.isArray(excelData) && excelData.length > 0) {
+    worksheet.addRows(excelData);
+  }
+  return workbook;
 }
 
 /**
@@ -263,27 +274,24 @@ async function processASINExport(job, taskId, params, userId) {
 
   updateProgress(job, taskId, 75, '正在生成Excel文件...', userId);
 
-  const wb = XLSX.utils.book_new();
-  const ws = XLSX.utils.aoa_to_sheet(excelData);
-  ws['!cols'] = [
-    { wch: 20 },
-    { wch: 40 },
-    { wch: 10 },
-    { wch: 10 },
-    { wch: 15 },
-    { wch: 10 },
-    { wch: 15 },
-    { wch: 50 },
-    { wch: 15 },
-    { wch: 10 },
-    { wch: 20 },
-    { wch: 20 },
-  ];
-  XLSX.utils.book_append_sheet(wb, ws, 'ASIN数据');
+  const workbook = buildWorkbookFromAoa(excelData, 'ASIN数据', [
+    20,
+    40,
+    10,
+    10,
+    15,
+    10,
+    15,
+    50,
+    15,
+    10,
+    20,
+    20,
+  ]);
 
   updateProgress(job, taskId, 90, '正在生成Excel文件...', userId);
 
-  const excelBuffer = XLSX.write(wb, { type: 'buffer', bookType: 'xlsx' });
+  const excelBuffer = await workbook.xlsx.writeBuffer();
   const filename = `ASIN数据_${getUTC8String('YYYY-MM-DD')}.xlsx`;
   const filepath = path.join(EXPORT_DIR, `${taskId}.xlsx`);
   await fs.writeFile(filepath, excelBuffer);
@@ -564,26 +572,23 @@ async function processVariantGroupExport(job, taskId, params, userId) {
 
   updateProgress(job, taskId, 75, '正在生成Excel文件...', userId);
 
-  const wb = XLSX.utils.book_new();
-  const ws = XLSX.utils.aoa_to_sheet(excelData);
-  ws['!cols'] = [
-    { wch: 30 },
-    { wch: 40 },
-    { wch: 10 },
-    { wch: 10 },
-    { wch: 15 },
-    { wch: 10 },
-    { wch: 10 },
-    { wch: 12 },
-    { wch: 20 },
-    { wch: 20 },
-    { wch: 20 },
-  ];
-  XLSX.utils.book_append_sheet(wb, ws, '变体组数据');
+  const workbook = buildWorkbookFromAoa(excelData, '变体组数据', [
+    30,
+    40,
+    10,
+    10,
+    15,
+    10,
+    10,
+    12,
+    20,
+    20,
+    20,
+  ]);
 
   updateProgress(job, taskId, 90, '正在生成Excel文件...', userId);
 
-  const excelBuffer = XLSX.write(wb, { type: 'buffer', bookType: 'xlsx' });
+  const excelBuffer = await workbook.xlsx.writeBuffer();
   const filename = `变体组数据_${getUTC8String('YYYY-MM-DD')}.xlsx`;
   const filepath = path.join(EXPORT_DIR, `${taskId}.xlsx`);
   await fs.writeFile(filepath, excelBuffer);
@@ -637,7 +642,7 @@ async function processCompetitorMonitorHistoryExport(
     '检查类型',
     '变体组名称',
     'ASIN',
-    'ASIN名称',
+    '父变体ASIN',
     '国家',
     '检查结果',
     '检查详情',
@@ -668,7 +673,7 @@ async function processCompetitorMonitorHistoryExport(
       history.checkType === 'GROUP' ? '变体组' : 'ASIN',
       history.variantGroupName || '',
       history.asin || '',
-      history.asinName || '',
+      history.parentAsin || '',
       history.country || '',
       history.isBroken === 1 ? '异常' : '正常',
       checkResult,
@@ -688,23 +693,20 @@ async function processCompetitorMonitorHistoryExport(
 
   updateProgress(job, taskId, 75, '正在生成Excel文件...', userId);
 
-  const wb = XLSX.utils.book_new();
-  const ws = XLSX.utils.aoa_to_sheet(excelData);
-  ws['!cols'] = [
-    { wch: 20 },
-    { wch: 10 },
-    { wch: 30 },
-    { wch: 15 },
-    { wch: 50 },
-    { wch: 10 },
-    { wch: 10 },
-    { wch: 100 },
-  ];
-  XLSX.utils.book_append_sheet(wb, ws, '竞品监控历史');
+  const workbook = buildWorkbookFromAoa(excelData, '竞品监控历史', [
+    20,
+    10,
+    30,
+    15,
+    50,
+    10,
+    10,
+    100,
+  ]);
 
   updateProgress(job, taskId, 90, '正在生成Excel文件...', userId);
 
-  const excelBuffer = XLSX.write(wb, { type: 'buffer', bookType: 'xlsx' });
+  const excelBuffer = await workbook.xlsx.writeBuffer();
   const filename = `竞品监控历史_${getUTC8String('YYYY-MM-DD')}.xlsx`;
   const filepath = path.join(EXPORT_DIR, `${taskId}.xlsx`);
   await fs.writeFile(filepath, excelBuffer);

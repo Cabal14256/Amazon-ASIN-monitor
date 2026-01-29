@@ -1,6 +1,7 @@
 const { query } = require('../config/competitor-database');
 const { v4: uuidv4 } = require('uuid');
 const cacheService = require('../services/cacheService');
+const logger = require('../utils/logger');
 
 // 转换ASIN类型：将旧格式(MAIN_LINK/SUB_REVIEW)转换为新格式(1/2)
 function normalizeAsinType(asinType) {
@@ -32,9 +33,9 @@ class CompetitorVariantGroup {
       variantStatus || 'ALL'
     }:pageSize:${pageSize}`;
     if (shouldUseCache) {
-      const cachedValue = cacheService.get(cacheKey);
+      const cachedValue = await cacheService.getAsync(cacheKey);
       if (cachedValue) {
-        console.log('CompetitorVariantGroup.findAll 使用缓存:', cacheKey);
+        logger.debug('CompetitorVariantGroup.findAll 使用缓存:', cacheKey);
         return JSON.parse(JSON.stringify(cachedValue));
       }
     }
@@ -123,11 +124,11 @@ class CompetitorVariantGroup {
     sql += ` ORDER BY vg.create_time DESC LIMIT ${limit} OFFSET ${offset}`;
 
     // 调试日志
-    console.log('执行SQL:', sql);
-    console.log('查询参数:', queryValues);
+    logger.debug('执行SQL:', sql);
+    logger.debug('查询参数:', queryValues);
 
     const list = await query(sql, queryValues);
-    console.log('查询到的竞品变体组数量:', list.length);
+    logger.debug('查询到的竞品变体组数量:', list.length);
 
     // 优化：使用批量查询替代N+1查询
     // 一次性获取所有变体组的ASIN数据，然后在应用层分组
@@ -159,7 +160,10 @@ class CompetitorVariantGroup {
       // 为每个变体组分配ASIN数据
       for (const group of list) {
         const asins = asinsByGroupId[group.id] || [];
-        console.log(`竞品变体组 ${group.id} 查询到的ASIN数量:`, asins.length);
+        logger.debug(
+          `竞品变体组 ${group.id} 查询到的ASIN数量:`,
+          asins.length,
+        );
 
         group.children = asins.map((asin) => ({
           id: asin.id,
@@ -217,7 +221,11 @@ class CompetitorVariantGroup {
     };
 
     if (shouldUseCache) {
-      cacheService.set(cacheKey, JSON.parse(JSON.stringify(result)), 60 * 1000);
+      await cacheService.setAsync(
+        cacheKey,
+        JSON.parse(JSON.stringify(result)),
+        60 * 1000,
+      );
     }
 
     return result;
@@ -263,6 +271,7 @@ class CompetitorVariantGroup {
 
   static clearCache() {
     cacheService.deleteByPrefix('competitorVariantGroups:');
+    void cacheService.deleteByPrefixAsync('competitorVariantGroups:');
   }
 
   // 根据ID查询变体组

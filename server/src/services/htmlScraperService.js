@@ -1,4 +1,5 @@
 const axios = require('axios');
+const logger = require('../utils/logger');
 
 /**
  * HTML 抓取服务 - 作为 SP-API 的最终兜底方案
@@ -89,7 +90,7 @@ function extractParentAsin(html) {
       const parentAsin = matches[1].toUpperCase();
       // 验证 ASIN 格式（10个字符，以字母开头）
       if (/^[A-Z][A-Z0-9]{9}$/.test(parentAsin)) {
-        console.log(
+        logger.debug(
           `[HTML抓取] 使用模式 ${i + 1} 提取到 parentAsin: ${parentAsin}`,
         );
         return parentAsin;
@@ -105,7 +106,7 @@ function extractParentAsin(html) {
       if (extracted && extracted[1]) {
         const parentAsin = extracted[1].toUpperCase();
         if (/^[A-Z][A-Z0-9]{9}$/.test(parentAsin)) {
-          console.log(
+          logger.debug(
             `[HTML抓取] 使用全局搜索提取到 parentAsin: ${parentAsin}`,
           );
           return parentAsin;
@@ -162,7 +163,7 @@ function extractVariantAsins(html) {
  */
 async function checkASINVariantsByHTML(asin, country) {
   const startTime = Date.now();
-  console.log(`[HTML抓取] 开始抓取 ASIN ${asin} (${country})`);
+  logger.info(`[HTML抓取] 开始抓取 ASIN ${asin} (${country})`);
 
   try {
     const url = buildProductUrl(asin, country);
@@ -170,8 +171,8 @@ async function checkASINVariantsByHTML(asin, country) {
     const acceptLanguage =
       COUNTRY_LANGUAGE_MAP[country] || COUNTRY_LANGUAGE_MAP.US;
 
-    console.log(`[HTML抓取] 请求URL: ${url}`);
-    console.log(`[HTML抓取] User-Agent: ${userAgent.substring(0, 50)}...`);
+    logger.debug(`[HTML抓取] 请求URL: ${url}`);
+    logger.debug(`[HTML抓取] User-Agent: ${userAgent.substring(0, 50)}...`);
 
     const response = await axios.get(url, {
       headers: {
@@ -193,7 +194,7 @@ async function checkASINVariantsByHTML(asin, country) {
       throw new Error('HTML 响应为空或格式不正确');
     }
 
-    console.log(`[HTML抓取] 获取到 HTML，长度: ${html.length} 字符`);
+    logger.debug(`[HTML抓取] 获取到 HTML，长度: ${html.length} 字符`);
 
     // 提取 parentAsin
     const parentAsin = extractParentAsin(html);
@@ -208,8 +209,8 @@ async function checkASINVariantsByHTML(asin, country) {
     const variantCount = variantAsins.length;
 
     const duration = Date.now() - startTime;
-    console.log(`[HTML抓取] 抓取完成，耗时: ${duration}ms`);
-    console.log(
+    logger.info(`[HTML抓取] 抓取完成，耗时: ${duration}ms`);
+    logger.debug(
       `[HTML抓取] 结果: hasVariants=${hasVariants}, variantCount=${variantCount}, parentAsin=${
         parentAsin || 'N/A'
       }`,
@@ -228,7 +229,7 @@ async function checkASINVariantsByHTML(asin, country) {
     };
   } catch (error) {
     const duration = Date.now() - startTime;
-    console.error(`[HTML抓取] 抓取失败 (${duration}ms):`, error.message);
+    logger.error(`[HTML抓取] 抓取失败 (${duration}ms):`, error.message);
 
     // 如果是超时错误
     if (error.code === 'ECONNABORTED' || error.message.includes('timeout')) {

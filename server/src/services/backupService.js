@@ -6,6 +6,7 @@ const {
   getUTC8String,
   toUTC8ISOString,
 } = require('../utils/dateTime');
+const logger = require('../utils/logger');
 
 // 备份文件存储目录
 const BACKUP_DIR = path.join(__dirname, '../../backups');
@@ -15,7 +16,7 @@ async function ensureBackupDir() {
   try {
     await fs.mkdir(BACKUP_DIR, { recursive: true });
   } catch (error) {
-    console.error('创建备份目录失败:', error);
+    logger.error('创建备份目录失败:', error);
     throw error;
   }
 }
@@ -164,16 +165,16 @@ async function createBackup(options = {}) {
       throw new Error('没有找到要备份的表');
     }
 
-    console.log(`准备备份 ${tablesToBackup.length} 个表:`, tablesToBackup);
+    logger.info(`准备备份 ${tablesToBackup.length} 个表:`, tablesToBackup);
 
     // 备份每个表
     for (const tableName of tablesToBackup) {
       if (!tableName || typeof tableName !== 'string') {
-        console.warn(`跳过无效的表名: ${tableName}`);
+        logger.warn(`跳过无效的表名: ${tableName}`);
         continue;
       }
 
-      console.log(`正在备份表: ${tableName}`);
+      logger.info(`正在备份表: ${tableName}`);
 
       try {
         // 生成 CREATE TABLE 语句
@@ -194,7 +195,7 @@ async function createBackup(options = {}) {
         const tableData = await getTableData(connection, tableName);
         sqlContent += tableData + '\n';
       } catch (error) {
-        console.error(`备份表 ${tableName} 时出错:`, error.message);
+        logger.error(`备份表 ${tableName} 时出错:`, error.message);
         throw error;
       }
     }
@@ -212,7 +213,7 @@ async function createBackup(options = {}) {
       createdAt: getUTC8ISOString(),
     };
   } catch (error) {
-    console.error('备份失败:', error);
+    logger.error('备份失败:', error);
     // 如果文件已创建但备份失败，删除文件
     try {
       await fs.unlink(filepath);
@@ -286,7 +287,7 @@ async function restoreBackup(filepath) {
     }
 
     // 执行所有 SQL 语句
-    console.log(`开始恢复备份，共 ${statements.length} 条 SQL 语句`);
+    logger.info(`开始恢复备份，共 ${statements.length} 条 SQL 语句`);
 
     // 禁用外键检查
     await connection.execute('SET FOREIGN_KEY_CHECKS = 0');
@@ -297,7 +298,7 @@ async function restoreBackup(filepath) {
         try {
           await connection.execute(statement);
           if ((i + 1) % 100 === 0) {
-            console.log(`已执行 ${i + 1}/${statements.length} 条语句`);
+            logger.debug(`已执行 ${i + 1}/${statements.length} 条语句`);
           }
         } catch (error) {
           // 忽略某些错误（如表已存在等）
@@ -305,11 +306,11 @@ async function restoreBackup(filepath) {
             !error.message.includes('already exists') &&
             !error.message.includes('Unknown table')
           ) {
-            console.warn(
+            logger.warn(
               `执行语句时出错 (${i + 1}/${statements.length}):`,
               error.message,
             );
-            console.warn(`语句: ${statement.substring(0, 100)}...`);
+            logger.warn(`语句: ${statement.substring(0, 100)}...`);
           }
         }
       }
@@ -318,9 +319,9 @@ async function restoreBackup(filepath) {
     // 启用外键检查
     await connection.execute('SET FOREIGN_KEY_CHECKS = 1');
 
-    console.log('备份恢复完成');
+    logger.info('备份恢复完成');
   } catch (error) {
-    console.error('恢复失败:', error);
+    logger.error('恢复失败:', error);
     throw new Error(`恢复失败: ${error.message}`);
   } finally {
     if (connection) {
@@ -359,7 +360,7 @@ async function listBackups() {
 
     return backups;
   } catch (error) {
-    console.error('获取备份列表失败:', error);
+    logger.error('获取备份列表失败:', error);
     throw new Error(`获取备份列表失败: ${error.message}`);
   }
 }

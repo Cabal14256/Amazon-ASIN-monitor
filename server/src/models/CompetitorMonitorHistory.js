@@ -1,5 +1,32 @@
 const { query } = require('../config/competitor-database');
 const cacheService = require('../services/cacheService');
+const logger = require('../utils/logger');
+
+function extractParentAsinFromCheckResult(checkResult) {
+  if (!checkResult) return null;
+  let parsedResult = checkResult;
+  if (typeof checkResult === 'string') {
+    if (!checkResult.includes('parentAsin')) return null;
+    try {
+      parsedResult = JSON.parse(checkResult);
+    } catch (error) {
+      return null;
+    }
+  }
+
+  const directParent =
+    parsedResult.parentAsin || parsedResult.details?.parentAsin || null;
+  if (directParent) {
+    return String(directParent).trim().toUpperCase();
+  }
+
+  const resultParent = parsedResult.result?.details?.parentAsin || null;
+  if (resultParent) {
+    return String(resultParent).trim().toUpperCase();
+  }
+
+  return null;
+}
 
 class CompetitorMonitorHistory {
   // 查询监控历史列表
@@ -22,10 +49,18 @@ class CompetitorMonitorHistory {
         mh.*,
         vg.name as variant_group_name,
         a.asin,
-        a.name as asin_name
+        a.name as asin_name,
+        parent_asin.parent_asin
       FROM competitor_monitor_history mh
       LEFT JOIN competitor_variant_groups vg ON vg.id = mh.variant_group_id
       LEFT JOIN competitor_asins a ON a.id = mh.asin_id
+      LEFT JOIN (
+        SELECT
+          variant_group_id,
+          MAX(CASE WHEN asin_type IN ('1', 'MAIN_LINK') THEN asin END) AS parent_asin
+        FROM competitor_asins
+        GROUP BY variant_group_id
+      ) parent_asin ON parent_asin.variant_group_id = mh.variant_group_id
       WHERE 1=1
     `;
     const conditions = [];
@@ -75,7 +110,7 @@ class CompetitorMonitorHistory {
     }:${asinId || 'ALL'}:${asin || 'ALL'}:${country || 'ALL'}:${
       checkType || 'ALL'
     }:${isBroken || 'ALL'}:${startTime || 'ALL'}:${endTime || 'ALL'}`;
-    let total = cacheService.get(countKey);
+    let total = await cacheService.getAsync(countKey);
     if (total === null) {
       // 获取总数
       const countSql = sql.replace(
@@ -84,9 +119,9 @@ class CompetitorMonitorHistory {
       );
       const countResult = await query(countSql, conditions);
       total = countResult[0]?.total || 0;
-      cacheService.set(countKey, total, 60 * 1000);
+      await cacheService.setAsync(countKey, total, 60 * 1000);
     } else {
-      console.log('CompetitorMonitorHistory.findAll 使用缓存总数:', countKey);
+      logger.debug('CompetitorMonitorHistory.findAll 使用缓存总数:', countKey);
     }
 
     // 分页 - LIMIT 和 OFFSET 不能使用参数绑定，必须直接拼接（确保是整数）
@@ -97,16 +132,22 @@ class CompetitorMonitorHistory {
     const list = await query(sql, conditions);
 
     // 转换字段名：数据库下划线命名 -> 前端驼峰命名
-    const formattedList = list.map((item) => ({
-      ...item,
-      checkTime: item.check_time,
-      checkType: item.check_type,
-      isBroken: item.is_broken,
-      notificationSent: item.notification_sent,
-      variantGroupName: item.variant_group_name,
-      asinName: item.asin_name,
-      createTime: item.create_time,
-    }));
+    const formattedList = list.map((item) => {
+      const parentAsinFromCheckResult = extractParentAsinFromCheckResult(
+        item.check_result,
+      );
+      return {
+        ...item,
+        checkTime: item.check_time,
+        checkType: item.check_type,
+        isBroken: item.is_broken,
+        notificationSent: item.notification_sent,
+        variantGroupName: item.variant_group_name,
+        asinName: item.asin_name,
+        parentAsin: parentAsinFromCheckResult || item.parent_asin || null,
+        createTime: item.create_time,
+      };
+    });
 
     return {
       list: formattedList,
@@ -123,16 +164,27 @@ class CompetitorMonitorHistory {
         mh.*,
         vg.name as variant_group_name,
         a.asin,
-        a.name as asin_name
+        a.name as asin_name,
+        parent_asin.parent_asin
       FROM competitor_monitor_history mh
       LEFT JOIN competitor_variant_groups vg ON vg.id = mh.variant_group_id
       LEFT JOIN competitor_asins a ON a.id = mh.asin_id
+      LEFT JOIN (
+        SELECT
+          variant_group_id,
+          MAX(CASE WHEN asin_type IN ('1', 'MAIN_LINK') THEN asin END) AS parent_asin
+        FROM competitor_asins
+        GROUP BY variant_group_id
+      ) parent_asin ON parent_asin.variant_group_id = mh.variant_group_id
       WHERE mh.id = ?`,
       [id],
     );
 
     if (history) {
       // 转换字段名：数据库下划线命名 -> 前端驼峰命名
+      const parentAsinFromCheckResult = extractParentAsinFromCheckResult(
+        history.check_result,
+      );
       return {
         ...history,
         checkTime: history.check_time,
@@ -141,6 +193,7 @@ class CompetitorMonitorHistory {
         notificationSent: history.notification_sent,
         variantGroupName: history.variant_group_name,
         asinName: history.asin_name,
+        parentAsin: parentAsinFromCheckResult || history.parent_asin || null,
         createTime: history.create_time,
       };
     }
@@ -186,24 +239,29 @@ class CompetitorMonitorHistory {
       return [];
     }
 
+    const placeholders = [];
+    const values = [];
+    for (const entry of entries) {
+      placeholders.push('(?, ?, ?, ?, ?, ?, ?, ?)');
+      values.push(
+        entry.variantGroupId || null,
+        entry.asinId || null,
+        entry.checkType || 'GROUP',
+        entry.country || null,
+        entry.isBroken ? 1 : 0,
+        entry.checkResult ? JSON.stringify(entry.checkResult) : null,
+        entry.checkTime || new Date(),
+        entry.notificationSent ? 1 : 0,
+      );
+    }
+
     const sql = `
       INSERT INTO competitor_monitor_history 
       (variant_group_id, asin_id, check_type, country, is_broken, check_result, check_time, notification_sent)
-      VALUES ?
+      VALUES ${placeholders.join(', ')}
     `;
 
-    const values = entries.map((entry) => [
-      entry.variantGroupId || null,
-      entry.asinId || null,
-      entry.checkType || 'GROUP',
-      entry.country,
-      entry.isBroken ? 1 : 0,
-      entry.checkResult ? JSON.stringify(entry.checkResult) : null,
-      entry.checkTime || new Date(),
-      entry.notificationSent ? 1 : 0,
-    ]);
-
-    const result = await query(sql, [values]);
+    const result = await query(sql, values);
     return result;
   }
 
