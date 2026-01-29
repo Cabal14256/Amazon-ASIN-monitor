@@ -6,6 +6,24 @@ server {
     listen 80;
     server_name _;  # 使用公网IP时，可以设置为_或具体IP
 
+    # 上传限制（与后端保持一致或略高）
+    client_max_body_size 20m;
+
+    # 启用 gzip 压缩（静态资源与 API 响应）
+    gzip on;
+    gzip_min_length 1024;
+    gzip_comp_level 6;
+    gzip_types
+        text/plain
+        text/css
+        application/json
+        application/javascript
+        application/xml
+        application/rss+xml
+        application/atom+xml
+        image/svg+xml;
+    gzip_vary on;
+
     # 前端静态文件目录
     root /opt/amazon-asin-monitor/dist;
     index index.html;
@@ -52,9 +70,9 @@ server {
         proxy_cache_bypass $http_upgrade;
         
         # 超时设置
-        proxy_connect_timeout 300s;
-        proxy_send_timeout 300s;
-        proxy_read_timeout 300s;
+        proxy_connect_timeout 600s;
+        proxy_send_timeout 600s;
+        proxy_read_timeout 600s;
     }
 
     # 健康检查端点
