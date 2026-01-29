@@ -19,7 +19,14 @@ database/
 │   ├── 009_remove_user_email_and_reset_table.sql
 │   ├── 010_add_sessions_table.sql
 │   ├── 011_add_variant_group_fields.sql
-│   └── 012_add_composite_indexes.sql
+│   ├── 012_add_composite_indexes.sql
+│   ├── 013_add_competitor_variant_group_fields.sql
+│   ├── 016_add_snapshot_fields_to_monitor_history.sql
+│   ├── 017_optimize_monitor_history_indexes.sql
+│   ├── 018_add_analytics_query_index.sql
+│   ├── 020_add_status_change_indexes.sql
+│   ├── 021_add_monitor_history_agg_table.sql
+│   └── 022_add_monitor_history_agg_peak.sql
 ├── MIGRATION.md                # 迁移说明文档
 └── README.md                   # 本文件
 ```
@@ -87,6 +94,13 @@ mysql -u root -p < server/database/competitor-init.sql
 - `010_add_sessions_table.sql`: 添加多设备会话记录表
 - `011_add_variant_group_fields.sql`: 为变体组表添加监控字段
 - `012_add_composite_indexes.sql`: 添加复合索引优化查询性能
+- `013_add_competitor_variant_group_fields.sql`: 为竞品变体组表添加监控字段
+- `016_add_snapshot_fields_to_monitor_history.sql`: 为监控历史表补充快照字段
+- `017_optimize_monitor_history_indexes.sql`: 优化监控历史表索引
+- `018_add_analytics_query_index.sql`: 添加数据分析查询索引
+- `020_add_status_change_indexes.sql`: 添加状态变化查询索引
+- `021_add_monitor_history_agg_table.sql`: 添加监控历史聚合表（数据分析加速）
+- `022_add_monitor_history_agg_peak.sql`: 聚合表补充高峰期字段（period-summary 加速）
 
 **执行方式**:
 
@@ -153,6 +167,7 @@ mysql -u root -p amazon_asin_monitor < server/database/migrations/002_add_monito
 - `variant_groups`: 变体组表（包含监控字段和通知开关）
 - `asins`: ASIN 表（包含类型、监控时间、通知开关等字段）
 - `monitor_history`: 监控历史表（包含复合索引优化查询）
+- `monitor_history_agg`: 监控历史聚合表（数据分析加速）
 
 ### 配置表
 
@@ -196,5 +211,7 @@ mysql -u root -p amazon_asin_monitor < server/database/migrations/002_add_monito
 - **v1.9**: 添加多设备会话表（010）
 - **v2.0**: 为变体组表添加监控字段（011）
 - **v2.1**: 添加复合索引优化查询性能（012）
+- **v2.2**: 添加监控历史聚合表（021）
+- **v2.3**: 聚合表补充高峰期字段（022）
 
-**当前版本**: v2.1（init.sql 已包含所有变更）
+**当前版本**: v2.3（init.sql 已包含所有变更）

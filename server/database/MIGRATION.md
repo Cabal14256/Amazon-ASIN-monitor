@@ -17,8 +17,15 @@
 | 010 | `010_add_sessions_table.sql` | 添加多设备会话记录表 | ✅ 已整合到 init.sql |
 | 011 | `011_add_variant_group_fields.sql` | 为变体组表添加监控字段 | ✅ 已整合到 init.sql |
 | 012 | `012_add_composite_indexes.sql` | 添加复合索引优化查询性能 | ✅ 已整合到 init.sql |
+| 013 | `013_add_competitor_variant_group_fields.sql` | 为竞品变体组表添加监控字段 | ?? 仅用于升级 |
+| 016 | `016_add_snapshot_fields_to_monitor_history.sql` | 为监控历史表补充快照字段 | ✅ 已整合到 init.sql |
+| 017 | `017_optimize_monitor_history_indexes.sql` | 优化监控历史表索引 | ✅ 已整合到 init.sql |
+| 018 | `018_add_analytics_query_index.sql` | 添加数据分析查询索引 | ✅ 已整合到 init.sql |
+| 020 | `020_add_status_change_indexes.sql` | 添加状态变化查询索引 | ✅ 已整合到 init.sql |
+| 021 | `021_add_monitor_history_agg_table.sql` | 添加监控历史聚合表 | ✅ 已整合到 init.sql |
+| 022 | `022_add_monitor_history_agg_peak.sql` | 聚合表补充高峰期字段 | ✅ 已整合到 init.sql |
 
-> **注意**: 所有标记为 "✅ 已整合到 init.sql" 的迁移脚本，其功能已包含在 `init.sql` 中。新安装系统时直接使用 `init.sql` 即可，无需执行这些迁移脚本。
+> **注意**: 所有标记为 "✅ 已整合到 init.sql" 的迁移脚本，其功能已包含在 `init.sql` 中。新安装系统时直接使用 `init.sql` 即可，无需执行这些迁移脚本。竞品数据库相关的迁移脚本已整合到 `competitor-init.sql`。
 
 ---
 
@@ -257,6 +264,137 @@ mysql -u root -p amazon_asin_monitor < server/database/migrations/012_add_compos
 
 ---
 
+### 013: 为竞品变体组表添加监控字段
+
+**文件**: `013_add_competitor_variant_group_fields.sql`
+
+**说明**: 为竞品数据库的 `competitor_variant_groups` 表添加监控更新时间字段。
+
+**变更内容**:
+
+- 添加 `last_check_time` 字段：`DATETIME`，记录上一次检查的时间
+- 添加索引 `idx_last_check_time`
+
+**执行方式**:
+
+```bash
+mysql -u root -p amazon_competitor_monitor < server/database/migrations/013_add_competitor_variant_group_fields.sql
+```
+
+---
+
+### 016: 为监控历史表补充快照字段
+
+**文件**: `016_add_snapshot_fields_to_monitor_history.sql`
+
+**说明**: 为监控历史表添加名称/编码快照字段，便于历史回溯与统计。
+
+**变更内容**:
+
+- 添加 `variant_group_name`、`asin_code`、`asin_name` 等快照字段
+- 回填已有数据快照（基于关联表）
+
+**执行方式**:
+
+```bash
+mysql -u root -p amazon_asin_monitor < server/database/migrations/016_add_snapshot_fields_to_monitor_history.sql
+```
+
+---
+
+### 017: 优化监控历史表索引
+
+**文件**: `017_optimize_monitor_history_indexes.sql`
+
+**说明**: 根据常见查询模式添加复合索引，提高统计与筛选性能。
+
+**变更内容**:
+
+- 添加 `idx_check_time_country_broken` 索引
+- 添加 `idx_asin_code_country_check_time` 索引
+
+**执行方式**:
+
+```bash
+mysql -u root -p amazon_asin_monitor < server/database/migrations/017_optimize_monitor_history_indexes.sql
+```
+
+---
+
+### 018: 添加数据分析查询索引
+
+**文件**: `018_add_analytics_query_index.sql`
+
+**说明**: 针对数据分析统计查询添加复合索引。
+
+**变更内容**:
+
+- 添加 `idx_country_time_broken_asin` 索引
+
+**执行方式**:
+
+```bash
+mysql -u root -p amazon_asin_monitor < server/database/migrations/018_add_analytics_query_index.sql
+```
+
+---
+
+### 020: 添加状态变化查询索引
+
+**文件**: `020_add_status_change_indexes.sql`
+
+**说明**: 为状态变化窗口函数查询添加索引。
+
+**变更内容**:
+
+- 添加 `idx_asin_country_check_time_broken` 索引
+- 确保 `idx_asin_id` 索引存在
+
+**执行方式**:
+
+```bash
+mysql -u root -p amazon_asin_monitor < server/database/migrations/020_add_status_change_indexes.sql
+```
+
+---
+
+### 021: 添加监控历史聚合表
+
+**文件**: `021_add_monitor_history_agg_table.sql`
+
+**说明**: 创建预聚合表，用于加速数据分析汇总接口。
+
+**变更内容**:
+
+- 新增 `monitor_history_agg` 表
+- 按 `granularity + time_slot + country + asin_key` 作为主键
+
+**执行方式**:
+
+```bash
+mysql -u root -p amazon_asin_monitor < server/database/migrations/021_add_monitor_history_agg_table.sql
+```
+
+---
+
+### 022: 聚合表补充高峰期字段
+
+**文件**: `022_add_monitor_history_agg_peak.sql`
+
+**说明**: 为聚合表补充 `has_peak` 字段，用于 period-summary 统计加速。
+
+**变更内容**:
+
+- 添加 `has_peak` 字段
+
+**执行方式**:
+
+```bash
+mysql -u root -p amazon_asin_monitor < server/database/migrations/022_add_monitor_history_agg_peak.sql
+```
+
+---
+
 ## 迁移执行顺序
 
 如果您的数据库是从旧版本升级，请按以下顺序执行迁移脚本：
@@ -277,6 +415,18 @@ mysql -u root -p amazon_asin_monitor < server/database/migrations/009_remove_use
 mysql -u root -p amazon_asin_monitor < server/database/migrations/010_add_sessions_table.sql
 mysql -u root -p amazon_asin_monitor < server/database/migrations/011_add_variant_group_fields.sql
 mysql -u root -p amazon_asin_monitor < server/database/migrations/012_add_composite_indexes.sql
+mysql -u root -p amazon_asin_monitor < server/database/migrations/016_add_snapshot_fields_to_monitor_history.sql
+mysql -u root -p amazon_asin_monitor < server/database/migrations/017_optimize_monitor_history_indexes.sql
+mysql -u root -p amazon_asin_monitor < server/database/migrations/018_add_analytics_query_index.sql
+mysql -u root -p amazon_asin_monitor < server/database/migrations/020_add_status_change_indexes.sql
+mysql -u root -p amazon_asin_monitor < server/database/migrations/021_add_monitor_history_agg_table.sql
+mysql -u root -p amazon_asin_monitor < server/database/migrations/022_add_monitor_history_agg_peak.sql
+```
+
+竞品数据库迁移（如使用竞品监控功能）：
+
+```bash
+mysql -u root -p amazon_competitor_monitor < server/database/migrations/013_add_competitor_variant_group_fields.sql
 ```
 
 > **注意**: 如果您的数据库已经包含某些迁移的变更，可以跳过对应的迁移脚本。

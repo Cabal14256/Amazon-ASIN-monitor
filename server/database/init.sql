@@ -83,10 +83,32 @@ CREATE TABLE IF NOT EXISTS `monitor_history` (
   INDEX `idx_country_check_time` (`country`, `check_time`),
   INDEX `idx_variant_group_check_time_broken` (`variant_group_id`, `check_time`, `is_broken`),
   INDEX `idx_country_check_time_broken` (`country`, `check_time`, `is_broken`),
+  INDEX `idx_check_time_country_broken` (`check_time`, `country`, `is_broken`),
+  INDEX `idx_asin_code_country_check_time` (`asin_code`, `country`, `check_time`),
+  INDEX `idx_country_time_broken_asin` (`country`, `check_time`, `is_broken`, `asin_id`),
   INDEX `idx_asin_country_check_time_broken` (`asin_id`, `country`, `check_time`, `is_broken`) COMMENT '状态变化查询优化索引，优化窗口函数查询性能',
   FOREIGN KEY (`variant_group_id`) REFERENCES `variant_groups`(`id`) ON DELETE SET NULL,
   FOREIGN KEY (`asin_id`) REFERENCES `asins`(`id`) ON DELETE SET NULL
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='监控历史表';
+
+-- 监控历史聚合表（用于数据分析加速）
+CREATE TABLE IF NOT EXISTS `monitor_history_agg` (
+  `granularity` ENUM('hour','day') NOT NULL COMMENT '时间粒度',
+  `time_slot` DATETIME NOT NULL COMMENT '时间槽（按小时或按天对齐）',
+  `country` VARCHAR(10) NOT NULL COMMENT '国家',
+  `asin_key` VARCHAR(50) NOT NULL COMMENT 'ASIN主键（asin_id或asin_code）',
+  `check_count` INT NOT NULL COMMENT '检查次数',
+  `broken_count` INT NOT NULL COMMENT '异常次数',
+  `has_broken` TINYINT(1) NOT NULL COMMENT '是否存在异常',
+  `has_peak` TINYINT(1) NOT NULL COMMENT '是否包含高峰期检查',
+  `first_check_time` DATETIME NOT NULL COMMENT '该时间槽内最早检查时间',
+  `last_check_time` DATETIME NOT NULL COMMENT '该时间槽内最晚检查时间',
+  `updated_at` DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT '更新时间',
+  PRIMARY KEY (`granularity`, `time_slot`, `country`, `asin_key`),
+  INDEX `idx_time_slot` (`time_slot`),
+  INDEX `idx_country_time_slot` (`country`, `time_slot`),
+  INDEX `idx_granularity_time_slot` (`granularity`, `time_slot`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='监控历史聚合表（按时间槽/国家/ASIN）';
 
 -- 飞书通知配置表（按区域配置：US和EU）
 CREATE TABLE IF NOT EXISTS `feishu_config` (

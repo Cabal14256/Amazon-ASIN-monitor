@@ -16,10 +16,12 @@ CREATE TABLE IF NOT EXISTS `competitor_variant_groups` (
   `feishu_notify_enabled` TINYINT(1) DEFAULT 0 COMMENT '飞书通知开关: 0-关闭, 1-开启（默认关闭）',
   `create_time` DATETIME DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
   `update_time` DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT '更新时间',
+  `last_check_time` DATETIME DEFAULT NULL COMMENT '监控更新时间（上一次检查的时间）',
   INDEX `idx_country` (`country`),
   INDEX `idx_brand` (`brand`),
   INDEX `idx_is_broken` (`is_broken`),
   INDEX `idx_create_time` (`create_time`),
+  INDEX `idx_last_check_time` (`last_check_time`),
   INDEX `idx_feishu_notify_enabled` (`feishu_notify_enabled`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='竞品变体组表';
 
