@@ -818,7 +818,7 @@ curl -X POST http://localhost:3001/api/v1/monitor/trigger \
 
 **Q4: 如何修改定时任务的执行时间？**
 
-编辑 `server/src/services/schedulerService.js` 文件中的 `getCountriesToCheck` 函数，修改时间判断逻辑。
+编辑 `server/src/services/monitorTaskRunner.js` 文件中的 `getCountriesToCheck` 函数，修改时间判断逻辑。
 
 **Q5: 如何查看监控历史？**
 
