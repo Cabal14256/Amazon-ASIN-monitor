@@ -37,6 +37,9 @@ function buildRedisUrl() {
 }
 
 const redisUrl = buildRedisUrl();
+const LIMITER_MAX = Number(process.env.MONITOR_QUEUE_LIMITER_MAX) || 1;
+const LIMITER_DURATION_MS =
+  Number(process.env.MONITOR_QUEUE_LIMITER_DURATION_MS) || 200;
 
 const monitorTaskQueue = new Queue('monitor-task-queue', redisUrl, {
   defaultJobOptions: {
@@ -50,8 +53,8 @@ const monitorTaskQueue = new Queue('monitor-task-queue', redisUrl, {
   },
   // 限流器：每 200ms 最多处理 1 个任务（相当于 5 rps）
   limiter: {
-    max: 1,
-    duration: 200,
+    max: LIMITER_MAX,
+    duration: LIMITER_DURATION_MS,
   },
 });
 
@@ -80,4 +83,8 @@ function enqueue(countries, batchConfig = null) {
 module.exports = {
   enqueue,
   queue: monitorTaskQueue,
+  limiterConfig: {
+    max: LIMITER_MAX,
+    duration: LIMITER_DURATION_MS,
+  },
 };

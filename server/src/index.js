@@ -25,6 +25,7 @@ const exportRoutes = require('./routes/exportRoutes');
 const taskRoutes = require('./routes/taskRoutes');
 const systemRoutes = require('./routes/systemRoutes');
 const backupRoutes = require('./routes/backupRoutes');
+const opsRoutes = require('./routes/opsRoutes');
 const websocketService = require('./services/websocketService');
 const auditLogMiddleware = require('./middleware/auditLog');
 const metricsMiddleware = require('./middleware/metrics');
@@ -127,6 +128,7 @@ app.use('/api/v1', exportRoutes); // 导出路由
 app.use('/api/v1', taskRoutes); // 任务管理路由
 app.use('/api/v1', systemRoutes); // 系统级别配置
 app.use('/api/v1', backupRoutes); // 备份恢复路由
+app.use('/api/v1', opsRoutes); // 运维观测路由
 
 app.get('/metrics', async (req, res) => {
   res.set('Content-Type', metricsService.register.contentType);

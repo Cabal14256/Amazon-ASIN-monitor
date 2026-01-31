@@ -14,12 +14,72 @@ const {
 const BackupConfig = require('../models/BackupConfig');
 const backupService = require('./backupService');
 const { refreshRecentMonitorHistoryAgg } = require('./analyticsAggService');
+const metricsService = require('./metricsService');
+const { getUTC8ISOString } = require('../utils/dateTime');
 
 // 分批处理配置
 const TOTAL_BATCHES = Number(process.env.MONITOR_BATCH_COUNT) || 1; // 默认不分批
 
 // EU国家检查顺序：UK, DE, FR, ES, IT
 const EU_COUNTRIES_ORDER = ['UK', 'DE', 'FR', 'ES', 'IT'];
+const US_CRON_EXPRESSION = '0,30 * * * *';
+const EU_CRON_EXPRESSION = '0 * * * *';
+const ANALYTICS_CRON_EXPRESSION = '5 * * * *';
+
+const schedulerStatus = {
+  us: {
+    schedule: US_CRON_EXPRESSION,
+    lastStandardRun: null,
+    lastCompetitorRun: null,
+  },
+  eu: {
+    schedule: EU_CRON_EXPRESSION,
+    lastStandardRun: null,
+    lastCompetitorRun: null,
+  },
+  analyticsAgg: {
+    enabled: process.env.ANALYTICS_AGG_ENABLED !== '0',
+    schedule: ANALYTICS_CRON_EXPRESSION,
+    lastRun: null,
+    lastSuccess: null,
+    lastError: null,
+  },
+  backup: {
+    enabled: false,
+    schedule: null,
+    lastRun: null,
+    lastSuccess: null,
+    lastError: null,
+  },
+};
+
+function recordSchedulerRun(type, durationSec) {
+  metricsService.recordSchedulerRun({ type, durationSec });
+}
+
+function updateLastRun(target, field) {
+  schedulerStatus[target][field] = getUTC8ISOString();
+}
+
+async function runAnalyticsAgg(source) {
+  const start = Date.now();
+  schedulerStatus.analyticsAgg.lastRun = getUTC8ISOString();
+  try {
+    const result = await refreshRecentMonitorHistoryAgg();
+    if (result?.success) {
+      schedulerStatus.analyticsAgg.lastSuccess = getUTC8ISOString();
+      schedulerStatus.analyticsAgg.lastError = null;
+    } else if (result?.skipped) {
+      schedulerStatus.analyticsAgg.lastError = result.reason || 'skipped';
+    }
+    return result;
+  } catch (error) {
+    schedulerStatus.analyticsAgg.lastError = error.message;
+    throw error;
+  } finally {
+    recordSchedulerRun(`analytics_${source}`, (Date.now() - start) / 1000);
+  }
+}
 
 // 自动备份任务引用
 let backupTask = null;
@@ -33,7 +93,8 @@ function initScheduler() {
   );
 
   // US区域：每小时整点和30分执行
-  cron.schedule('0,30 * * * *', () => {
+  cron.schedule(US_CRON_EXPRESSION, () => {
+    const start = Date.now();
     const now = new Date();
     const minute = now.getMinutes();
     const hour = now.getHours();
@@ -42,6 +103,7 @@ function initScheduler() {
     const usCountries = getCountriesToCheck('US', minute);
 
     if (usCountries.length > 0) {
+      updateLastRun('us', 'lastStandardRun');
       // 如果启用分批处理，计算当前批次
       if (TOTAL_BATCHES > 1) {
         // 基于小时和分钟计算批次索引（0 到 TOTAL_BATCHES-1）
@@ -68,6 +130,7 @@ function initScheduler() {
       const competitorUsCountries = getCountriesToCheck('US', minute);
 
       if (competitorUsCountries.length > 0) {
+        updateLastRun('us', 'lastCompetitorRun');
         if (TOTAL_BATCHES > 1) {
           const batchIndex = (hour * 60 + minute) % TOTAL_BATCHES;
           logger.info(
@@ -86,11 +149,14 @@ function initScheduler() {
     } else {
       logger.info('[定时任务] 竞品监控已关闭，跳过本次US任务');
     }
+
+    recordSchedulerRun('us', (Date.now() - start) / 1000);
   });
 
   // EU区域：每小时整点执行
   // EU国家按顺序依次检查：UK, DE, FR, ES, IT
-  cron.schedule('0 * * * *', () => {
+  cron.schedule(EU_CRON_EXPRESSION, () => {
+    const start = Date.now();
     const now = new Date();
     const minute = now.getMinutes();
     const hour = now.getHours();
@@ -104,6 +170,7 @@ function initScheduler() {
     );
 
     if (orderedEuCountries.length > 0) {
+      updateLastRun('eu', 'lastStandardRun');
       // 如果启用分批处理，计算当前批次
       if (TOTAL_BATCHES > 1) {
         // 基于小时和分钟计算批次索引（0 到 TOTAL_BATCHES-1）
@@ -143,6 +210,7 @@ function initScheduler() {
       );
 
       if (orderedCompetitorEuCountries.length > 0) {
+        updateLastRun('eu', 'lastCompetitorRun');
         if (TOTAL_BATCHES > 1) {
           const batchIndex = (hour * 60 + minute) % TOTAL_BATCHES;
           logger.info(
@@ -171,6 +239,8 @@ function initScheduler() {
     } else {
       logger.info('[定时任务] 竞品监控已关闭，跳过本次EU任务');
     }
+
+    recordSchedulerRun('eu', (Date.now() - start) / 1000);
   });
 
   logger.info('✅ 定时任务已启动');
@@ -183,13 +253,13 @@ function initScheduler() {
   // 数据分析聚合刷新（默认开启，可通过 ANALYTICS_AGG_ENABLED=0 关闭）
   if (process.env.ANALYTICS_AGG_ENABLED !== '0') {
     // 启动时先执行一次（异步，不阻塞启动）
-    refreshRecentMonitorHistoryAgg().catch((error) => {
+    runAnalyticsAgg('startup').catch((error) => {
       logger.error('❌ 初始化数据分析聚合失败:', error.message);
     });
 
     // 每小时第5分钟刷新一次最近聚合数据
-    cron.schedule('5 * * * *', () => {
-      refreshRecentMonitorHistoryAgg().catch((error) => {
+    cron.schedule(ANALYTICS_CRON_EXPRESSION, () => {
+      runAnalyticsAgg('scheduled').catch((error) => {
         logger.error('❌ 定时聚合刷新失败:', error.message);
       });
     });
@@ -261,6 +331,8 @@ async function initBackupScheduler() {
     const config = await BackupConfig.findOne();
 
     if (!config || !config.enabled) {
+      schedulerStatus.backup.enabled = false;
+      schedulerStatus.backup.schedule = null;
       logger.info('ℹ️  自动备份未启用');
       return;
     }
@@ -272,6 +344,7 @@ async function initBackupScheduler() {
     );
 
     if (!cronExpression) {
+      schedulerStatus.backup.enabled = false;
       logger.error('❌ 无效的备份计划配置');
       return;
     }
@@ -283,6 +356,7 @@ async function initBackupScheduler() {
 
     // 创建新的定时任务
     backupTask = cron.schedule(cronExpression, async () => {
+      schedulerStatus.backup.lastRun = getUTC8ISOString();
       try {
         logger.info('🔄 开始执行自动备份...');
         const now = new Date();
@@ -291,12 +365,17 @@ async function initBackupScheduler() {
           .slice(0, 19)
           .replace('T', ' ')}`;
         await backupService.createBackup({ description });
+        schedulerStatus.backup.lastSuccess = getUTC8ISOString();
+        schedulerStatus.backup.lastError = null;
         logger.info('✅ 自动备份完成');
       } catch (error) {
+        schedulerStatus.backup.lastError = error.message;
         logger.error('❌ 自动备份失败:', error.message);
       }
     });
 
+    schedulerStatus.backup.enabled = true;
+    schedulerStatus.backup.schedule = cronExpression;
     logger.info('✅ 自动备份定时任务已启动');
     logger.info(`📅 备份计划: ${config.scheduleType}`);
     if (config.scheduleType === 'weekly') {
@@ -310,6 +389,8 @@ async function initBackupScheduler() {
       logger.info(`   每天 ${config.backupTime} 执行`);
     }
   } catch (error) {
+    schedulerStatus.backup.enabled = false;
+    schedulerStatus.backup.lastError = error.message;
     logger.error('❌ 初始化自动备份任务失败:', error.message);
   }
 }
@@ -333,4 +414,5 @@ module.exports = {
   runCompetitorMonitorTask, // 导出竞品监控任务运行器供手动触发使用
   initBackupScheduler,
   reloadBackupSchedule,
+  getSchedulerStatus: () => ({ ...schedulerStatus }),
 };
