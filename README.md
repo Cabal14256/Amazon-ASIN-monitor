@@ -636,10 +636,6 @@ MONITOR_MAX_GROUPS_PER_TASK=0
 # 启用后，系统会根据限流情况自动调整并发数
 AUTO_ADJUST_CONCURRENCY=true
 
-# 请求延迟（避免限流，已废弃，由令牌桶限流器替代）
-SP_API_REQUEST_DELAY_INTERVAL=20
-SP_API_REQUEST_DELAY_MS=150
-
 # SP-API速率限制配置（令牌桶限流器）
 # 每分钟允许的请求数（默认60）
 SP_API_RATE_LIMIT_PER_MINUTE=60
@@ -818,7 +814,7 @@ curl -X POST http://localhost:3001/api/v1/monitor/trigger \
 
 **Q4: 如何修改定时任务的执行时间？**
 
-编辑 `server/src/services/schedulerService.js` 文件中的 `getCountriesToCheck` 函数，修改时间判断逻辑。
+编辑 `server/src/services/monitorTaskRunner.js` 文件中的 `getCountriesToCheck` 函数，修改时间判断逻辑。
 
 **Q5: 如何查看监控历史？**
 

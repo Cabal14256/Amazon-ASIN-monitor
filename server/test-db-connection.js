@@ -2,7 +2,10 @@
  * 数据库连接测试脚本
  * 运行: node test-db-connection.js
  */
-require('dotenv').config();
+const path = require('path');
+const { loadEnv } = require('./scripts/utils/loadEnv');
+
+loadEnv(path.join(__dirname, '.env'));
 const mysql = require('mysql2/promise');
 
 async function testConnection() {

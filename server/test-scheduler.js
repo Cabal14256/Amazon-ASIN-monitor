@@ -4,7 +4,10 @@
  * 示例: node test-scheduler.js US UK
  */
 
-require('dotenv').config();
+const path = require('path');
+const { loadEnv } = require('./scripts/utils/loadEnv');
+
+loadEnv(path.join(__dirname, '.env'));
 const { triggerManualCheck } = require('./src/services/schedulerService');
 
 async function test() {

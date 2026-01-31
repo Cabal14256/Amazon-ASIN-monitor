@@ -7,7 +7,9 @@
  */
 
 const path = require('path');
-require('dotenv').config({ path: path.join(__dirname, '../.env') });
+const { loadEnv } = require('./utils/loadEnv');
+
+loadEnv(path.join(__dirname, '../.env'));
 
 const Redis = require('ioredis');
 const Queue = require('bull');

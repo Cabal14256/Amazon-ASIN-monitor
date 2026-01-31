@@ -5,7 +5,9 @@
 
 const mysql = require('mysql2/promise');
 const path = require('path');
-require('dotenv').config({ path: path.join(__dirname, '../.env') });
+const { loadEnv } = require('./utils/loadEnv');
+
+loadEnv(path.join(__dirname, '../.env'));
 
 const dbConfig = {
   host: process.env.DB_HOST || 'localhost',
@@ -65,7 +67,11 @@ async function analyzeQuotaUsage() {
     console.log('='.repeat(60));
     console.log('📊 SP-API 配额使用分析报告');
     console.log('='.repeat(60));
-    console.log(`分析时间: ${new Date().toLocaleString('zh-CN', { timeZone: 'Asia/Shanghai' })}\n`);
+    console.log(
+      `分析时间: ${new Date().toLocaleString('zh-CN', {
+        timeZone: 'Asia/Shanghai',
+      })}\n`,
+    );
 
     // 统计区域数据
     const regionStats = {
@@ -111,18 +117,27 @@ async function analyzeQuotaUsage() {
     console.log('─'.repeat(60));
     console.log(`US区域 (${regionStats.US.countries.join(', ') || '无'}):`);
     console.log(`  - 标准ASIN: ${regionStats.US.asins.toLocaleString()} 个`);
-    console.log(`  - 竞品ASIN: ${regionStats.US.competitorAsins.toLocaleString()} 个`);
+    console.log(
+      `  - 竞品ASIN: ${regionStats.US.competitorAsins.toLocaleString()} 个`,
+    );
     console.log(`  - 变体组: ${regionStats.US.groups.toLocaleString()} 个`);
     console.log(`EU区域 (${regionStats.EU.countries.join(', ') || '无'}):`);
     console.log(`  - 标准ASIN: ${regionStats.EU.asins.toLocaleString()} 个`);
-    console.log(`  - 竞品ASIN: ${regionStats.EU.competitorAsins.toLocaleString()} 个`);
+    console.log(
+      `  - 竞品ASIN: ${regionStats.EU.competitorAsins.toLocaleString()} 个`,
+    );
     console.log(`  - 变体组: ${regionStats.EU.groups.toLocaleString()} 个`);
     console.log(`总计:`);
     const totalAsins = regionStats.US.asins + regionStats.EU.asins;
-    const totalCompetitorAsins = regionStats.US.competitorAsins + regionStats.EU.competitorAsins;
+    const totalCompetitorAsins =
+      regionStats.US.competitorAsins + regionStats.EU.competitorAsins;
     console.log(`  - 标准ASIN: ${totalAsins.toLocaleString()} 个`);
     console.log(`  - 竞品ASIN: ${totalCompetitorAsins.toLocaleString()} 个`);
-    console.log(`  - 总ASIN: ${(totalAsins + totalCompetitorAsins).toLocaleString()} 个\n`);
+    console.log(
+      `  - 总ASIN: ${(
+        totalAsins + totalCompetitorAsins
+      ).toLocaleString()} 个\n`,
+    );
 
     // 计算配额使用
     // US区域：每小时2次（整点和30分），每次检查所有US的ASIN
@@ -157,17 +172,43 @@ async function analyzeQuotaUsage() {
     console.log(`  - US区域: 每小时2次（整点和30分）`);
     console.log(`  - EU区域: 每小时1次（整点）`);
     console.log(`  - 任务类型: 标准监控 + 竞品监控（双倍调用）`);
-    console.log(`  - 分批处理: ${MONITOR_BATCH_COUNT === 1 ? '未启用' : `已启用 (${MONITOR_BATCH_COUNT}批)`}\n`);
+    console.log(
+      `  - 分批处理: ${
+        MONITOR_BATCH_COUNT === 1
+          ? '未启用'
+          : `已启用 (${MONITOR_BATCH_COUNT}批)`
+      }\n`,
+    );
 
     console.log('预计调用频率：');
-    console.log(`  US区域: ${Math.ceil(usCallsPerHour).toLocaleString()} 次/小时 (${usCallsPerMinute.toFixed(2)} 次/分钟)`);
-    console.log(`  EU区域: ${Math.ceil(euCallsPerHour).toLocaleString()} 次/小时 (${euCallsPerMinute.toFixed(2)} 次/分钟)`);
-    console.log(`  总计: ${Math.ceil(totalCallsPerHour).toLocaleString()} 次/小时 (${totalCallsPerMinute.toFixed(2)} 次/分钟)\n`);
+    console.log(
+      `  US区域: ${Math.ceil(
+        usCallsPerHour,
+      ).toLocaleString()} 次/小时 (${usCallsPerMinute.toFixed(2)} 次/分钟)`,
+    );
+    console.log(
+      `  EU区域: ${Math.ceil(
+        euCallsPerHour,
+      ).toLocaleString()} 次/小时 (${euCallsPerMinute.toFixed(2)} 次/分钟)`,
+    );
+    console.log(
+      `  总计: ${Math.ceil(
+        totalCallsPerHour,
+      ).toLocaleString()} 次/小时 (${totalCallsPerMinute.toFixed(
+        2,
+      )} 次/分钟)\n`,
+    );
 
     console.log('⚖️  配额对比：');
     console.log('─'.repeat(60));
-    console.log(`配额限制: ${QUOTA_PER_MINUTE} 次/分钟, ${QUOTA_PER_HOUR.toLocaleString()} 次/小时`);
-    console.log(`预计使用: ${totalCallsPerMinute.toFixed(2)} 次/分钟, ${Math.ceil(totalCallsPerHour).toLocaleString()} 次/小时\n`);
+    console.log(
+      `配额限制: ${QUOTA_PER_MINUTE} 次/分钟, ${QUOTA_PER_HOUR.toLocaleString()} 次/小时`,
+    );
+    console.log(
+      `预计使用: ${totalCallsPerMinute.toFixed(2)} 次/分钟, ${Math.ceil(
+        totalCallsPerHour,
+      ).toLocaleString()} 次/小时\n`,
+    );
 
     // 安全评估
     const minuteUsage = (totalCallsPerMinute / QUOTA_PER_MINUTE) * 100;
@@ -175,8 +216,16 @@ async function analyzeQuotaUsage() {
 
     console.log('✅ 安全评估：');
     console.log('─'.repeat(60));
-    console.log(`分钟配额使用率: ${minuteUsage.toFixed(1)}% (${totalCallsPerMinute.toFixed(2)}/${QUOTA_PER_MINUTE})`);
-    console.log(`小时配额使用率: ${hourUsage.toFixed(1)}% (${Math.ceil(totalCallsPerHour)}/${QUOTA_PER_HOUR.toLocaleString()})\n`);
+    console.log(
+      `分钟配额使用率: ${minuteUsage.toFixed(
+        1,
+      )}% (${totalCallsPerMinute.toFixed(2)}/${QUOTA_PER_MINUTE})`,
+    );
+    console.log(
+      `小时配额使用率: ${hourUsage.toFixed(1)}% (${Math.ceil(
+        totalCallsPerHour,
+      )}/${QUOTA_PER_HOUR.toLocaleString()})\n`,
+    );
 
     if (minuteUsage <= 70 && hourUsage <= 70) {
       console.log('✅ 状态: 配额使用率健康（<70%）');
@@ -186,8 +235,12 @@ async function analyzeQuotaUsage() {
       console.log('   建议监控配额使用情况，避免突发流量。\n');
       console.log('💡 优化建议：');
       if (MONITOR_BATCH_COUNT === 1) {
-        const recommendedBatch = Math.ceil(totalCallsPerHour / (QUOTA_PER_HOUR * 0.8));
-        console.log(`   - 考虑启用分批处理: MONITOR_BATCH_COUNT=${recommendedBatch}`);
+        const recommendedBatch = Math.ceil(
+          totalCallsPerHour / (QUOTA_PER_HOUR * 0.8),
+        );
+        console.log(
+          `   - 考虑启用分批处理: MONITOR_BATCH_COUNT=${recommendedBatch}`,
+        );
       }
       console.log('   - 监控实际调用情况，根据需要进行调整\n');
     } else if (minuteUsage <= 95 && hourUsage <= 95) {
@@ -195,12 +248,20 @@ async function analyzeQuotaUsage() {
       console.log('   需要立即优化，否则可能触发限流！\n');
       console.log('💡 优化建议：');
       if (MONITOR_BATCH_COUNT === 1) {
-        const recommendedBatch = Math.ceil(totalCallsPerHour / (QUOTA_PER_HOUR * 0.8));
-        console.log(`   1. 立即启用分批处理: MONITOR_BATCH_COUNT=${recommendedBatch}`);
+        const recommendedBatch = Math.ceil(
+          totalCallsPerHour / (QUOTA_PER_HOUR * 0.8),
+        );
+        console.log(
+          `   1. 立即启用分批处理: MONITOR_BATCH_COUNT=${recommendedBatch}`,
+        );
       } else {
-        const recommendedBatch = Math.ceil(totalCallsPerHour / (QUOTA_PER_HOUR * 0.8));
+        const recommendedBatch = Math.ceil(
+          totalCallsPerHour / (QUOTA_PER_HOUR * 0.8),
+        );
         if (recommendedBatch > MONITOR_BATCH_COUNT) {
-          console.log(`   1. 增加分批数量: MONITOR_BATCH_COUNT=${recommendedBatch}`);
+          console.log(
+            `   1. 增加分批数量: MONITOR_BATCH_COUNT=${recommendedBatch}`,
+          );
         }
       }
       console.log('   2. 考虑增加缓存时间（减少重复检查）');
@@ -209,8 +270,12 @@ async function analyzeQuotaUsage() {
       console.log('❌ 状态: 配额使用率过高（>95%）！');
       console.log('   超过配额限制，系统将被限流！\n');
       console.log('🚨 紧急优化建议：');
-      const recommendedBatch = Math.ceil(totalCallsPerHour / (QUOTA_PER_HOUR * 0.8));
-      console.log(`   1. 立即启用分批处理: MONITOR_BATCH_COUNT=${recommendedBatch} 或更高`);
+      const recommendedBatch = Math.ceil(
+        totalCallsPerHour / (QUOTA_PER_HOUR * 0.8),
+      );
+      console.log(
+        `   1. 立即启用分批处理: MONITOR_BATCH_COUNT=${recommendedBatch} 或更高`,
+      );
       console.log('   2. 增加缓存时间，减少API调用');
       console.log('   3. 考虑减少检查频率（修改scheduler配置）');
       console.log('   4. 考虑申请更高配额');
@@ -226,8 +291,14 @@ async function analyzeQuotaUsage() {
       console.log(`当前预计调用: ${Math.ceil(totalCallsPerHour)} 次/小时`);
       console.log(`安全阈值（80%）: ${Math.ceil(safeHourCalls)} 次/小时`);
       console.log(`建议分批数量: ${recommendedBatch}`);
-      console.log(`分批后预计调用: ${Math.ceil(totalCallsPerHour / recommendedBatch)} 次/小时\n`);
-      console.log(`在 .env 文件中设置: MONITOR_BATCH_COUNT=${recommendedBatch}\n`);
+      console.log(
+        `分批后预计调用: ${Math.ceil(
+          totalCallsPerHour / recommendedBatch,
+        )} 次/小时\n`,
+      );
+      console.log(
+        `在 .env 文件中设置: MONITOR_BATCH_COUNT=${recommendedBatch}\n`,
+      );
     }
 
     // 显示缓存建议
@@ -241,7 +312,6 @@ async function analyzeQuotaUsage() {
     }
 
     console.log('='.repeat(60));
-
   } catch (error) {
     console.error('❌ 分析失败:', error.message);
     if (error.code === 'ER_ACCESS_DENIED_ERROR') {
@@ -264,4 +334,3 @@ analyzeQuotaUsage().catch((error) => {
   console.error('脚本执行失败:', error);
   process.exit(1);
 });
-
