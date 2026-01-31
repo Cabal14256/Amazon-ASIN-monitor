@@ -636,10 +636,6 @@ MONITOR_MAX_GROUPS_PER_TASK=0
 # 启用后，系统会根据限流情况自动调整并发数
 AUTO_ADJUST_CONCURRENCY=true
 
-# 请求延迟（避免限流，已废弃，由令牌桶限流器替代）
-SP_API_REQUEST_DELAY_INTERVAL=20
-SP_API_REQUEST_DELAY_MS=150
-
 # SP-API速率限制配置（令牌桶限流器）
 # 每分钟允许的请求数（默认60）
 SP_API_RATE_LIMIT_PER_MINUTE=60

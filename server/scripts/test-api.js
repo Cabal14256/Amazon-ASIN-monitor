@@ -8,7 +8,9 @@
 
 const axios = require('axios');
 const path = require('path');
-require('dotenv').config({ path: path.join(__dirname, '../.env') });
+const { loadEnv } = require('./utils/loadEnv');
+
+loadEnv(path.join(__dirname, '../.env'));
 
 // 颜色输出辅助函数
 const colors = {

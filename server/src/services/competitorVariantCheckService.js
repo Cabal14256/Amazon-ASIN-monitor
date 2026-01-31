@@ -15,14 +15,6 @@ const logger = require('../utils/logger');
 const MAX_CONCURRENT_ASIN_CHECKS = 3;
 const VARIANT_CACHE_TTL_MS = 12 * 60 * 1000; // 12分钟缓存
 
-// 请求延迟配置（每 N 个请求延迟 M 毫秒）
-const REQUEST_DELAY_INTERVAL =
-  Number(process.env.SP_API_REQUEST_DELAY_INTERVAL) || 20;
-const REQUEST_DELAY_MS = Number(process.env.SP_API_REQUEST_DELAY_MS) || 150;
-
-// 全局请求计数器（用于延迟控制）
-let globalRequestCounter = 0;
-
 // SP-API 版本列表（按优先级排序）
 const API_VERSIONS = ['2022-04-01', '2020-12-01'];
 

@@ -8,6 +8,7 @@
 
 const fs = require('fs');
 const path = require('path');
+const { loadEnv } = require('../server/scripts/utils/loadEnv');
 
 // 颜色输出辅助函数
 const colors = {
@@ -82,12 +83,15 @@ async function testEnvConfig() {
   const envTemplatePath = path.join(__dirname, '../server/env.template');
 
   logInfo('检查环境变量文件...');
-  if (fs.existsSync(envPath)) {
-    logSuccess(`找到 .env 文件: ${envPath}`);
-    // 加载环境变量
-    require('dotenv').config({ path: envPath });
+  const envLoadResult = loadEnv(envPath);
+  if (envLoadResult.loaded) {
+    logSuccess(`找到 .env 文件: ${envLoadResult.path}`);
+    if (!envLoadResult.usedDotenv) {
+      logWarning('dotenv 不可用，已使用简化解析器加载 .env');
+      results.warnings++;
+    }
   } else {
-    logError(`未找到 .env 文件: ${envPath}`);
+    logError(`未找到 .env 文件: ${envLoadResult.path}`);
     logWarning('请复制 env.template 为 .env 并配置相应值');
     if (fs.existsSync(envTemplatePath)) {
       logInfo(`参考模板文件: ${envTemplatePath}`);
