@@ -225,6 +225,33 @@ async function testEnvConfig() {
 
   console.log('');
 
+  // 检查 SP-API AWS 签名配置（仅在启用时校验）
+  const useAwsSignature = process.env.SP_API_USE_AWS_SIGNATURE === 'true';
+  if (useAwsSignature) {
+    logInfo('检测到启用 AWS 签名，检查 AWS 凭证配置...');
+    const awsVars = [
+      'SP_API_ACCESS_KEY_ID',
+      'SP_API_SECRET_ACCESS_KEY',
+      'SP_API_ROLE_ARN',
+    ];
+    let awsConfigValid = true;
+    for (const key of awsVars) {
+      const value = process.env[key];
+      if (value && value.trim() !== '') {
+        logSuccess(`${key}: 已设置`);
+        results.passed++;
+      } else {
+        logError(`${key}: 未设置（启用 AWS 签名时必填）`);
+        awsConfigValid = false;
+        results.failed++;
+      }
+    }
+    if (!awsConfigValid) {
+      logWarning('AWS 签名配置不完整，SP-API 调用可能失败');
+    }
+    console.log('');
+  }
+
   // 检查竞品数据库配置（可选）
   logInfo('检查竞品数据库配置（可选）...');
   const competitorDbVars = ['COMPETITOR_DB_HOST', 'COMPETITOR_DB_NAME'];
