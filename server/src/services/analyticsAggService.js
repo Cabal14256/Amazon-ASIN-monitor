@@ -122,8 +122,8 @@ async function refreshRecentMonitorHistoryAgg() {
     const dayResult = await refreshMonitorHistoryAgg('day');
     return { success: true, hourResult, dayResult };
   } catch (error) {
-    logger.error('[聚合刷新] 执行失败:', error);
-    return { success: false, error };
+    logger.error('[聚合刷新] 执行失败:', error.message);
+    return { success: false, error: error.message };
   } finally {
     isRefreshing = false;
   }
@@ -132,4 +132,10 @@ async function refreshRecentMonitorHistoryAgg() {
 module.exports = {
   refreshMonitorHistoryAgg,
   refreshRecentMonitorHistoryAgg,
+  getAggStatus: () => ({
+    enabled: AGG_ENABLED,
+    backfillHours: BACKFILL_HOURS,
+    backfillDays: BACKFILL_DAYS,
+    isRefreshing,
+  }),
 };

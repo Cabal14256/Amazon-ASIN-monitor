@@ -22,6 +22,15 @@ const DEFAULT_CLEANUP_INTERVAL_MS =
   Number(process.env.CACHE_CLEANUP_INTERVAL_MS) || 60 * 1000;
 const redisConfig = require('../config/redis');
 const logger = require('../utils/logger');
+const metricsService = require('./metricsService');
+
+function getCachePrefix(key) {
+  if (!key || typeof key !== 'string') {
+    return 'unknown';
+  }
+  const [prefix] = key.split(':');
+  return prefix || 'unknown';
+}
 
 class CacheService {
   constructor() {
@@ -104,10 +113,12 @@ class CacheService {
   async getAsync(key) {
     const memoryValue = this.get(key);
     if (memoryValue !== null) {
+      metricsService.recordCacheHit(getCachePrefix(key));
       return memoryValue;
     }
 
     if (!redisConfig.isRedisAvailable()) {
+      metricsService.recordCacheMiss(getCachePrefix(key));
       return null;
     }
 
@@ -120,15 +131,18 @@ class CacheService {
       const rawValue = result?.[0]?.[1];
       const ttlMs = result?.[1]?.[1];
       if (!rawValue) {
+        metricsService.recordCacheMiss(getCachePrefix(key));
         return null;
       }
       const parsed = JSON.parse(rawValue);
       const fallbackTtl =
         typeof ttlMs === 'number' && ttlMs > 0 ? ttlMs : this.ttl;
       this.set(key, parsed, fallbackTtl);
+      metricsService.recordCacheHit(getCachePrefix(key));
       return parsed;
     } catch (error) {
       logger.warn('Redis缓存读取失败:', error.message);
+      metricsService.recordCacheMiss(getCachePrefix(key));
       return null;
     }
   }
