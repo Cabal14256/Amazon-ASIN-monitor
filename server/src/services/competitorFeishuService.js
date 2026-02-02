@@ -175,6 +175,21 @@ function buildCompetitorFeishuCard(data) {
   const spApiErrorCount = brokenByType?.SP_API_ERROR || 0;
   const noVariantsCount = brokenByType?.NO_VARIANTS || 0;
   const totalBrokenASINs = brokenASINs.length;
+  const buildAmazonAsinUrl = (asin) => {
+    if (!asin) {
+      return '';
+    }
+    const domainMap = {
+      US: 'amazon.com',
+      UK: 'amazon.co.uk',
+      DE: 'amazon.de',
+      FR: 'amazon.fr',
+      IT: 'amazon.it',
+      ES: 'amazon.es',
+    };
+    const domain = domainMap[country] || 'amazon.com';
+    return `https://www.${domain}/dp/${encodeURIComponent(asin)}`;
+  };
 
   // 构建通知内容主体
   let contentText = `【${timeStr}】【${countryName}】\n\n`;
@@ -219,7 +234,9 @@ function buildCompetitorFeishuCard(data) {
         for (const asinItem of asinsByGroup[groupName]) {
           const asin = asinItem.asin || '';
           const brand = asinItem.brand || '';
-          contentText += `- ${asin}`;
+          const asinUrl = buildAmazonAsinUrl(asin);
+          const asinLabel = asinUrl ? `[${asin}](${asinUrl})` : asin;
+          contentText += `- ${asinLabel}`;
           if (brand) {
             contentText += ` ⚠️ 品牌：${brand}`;
           }
