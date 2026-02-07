@@ -34,6 +34,41 @@ const metricsService = require('./services/metricsService');
 const app = express();
 const PORT = process.env.PORT || 3001;
 
+const apiRateLimitEnabled = !['false', '0', 'no', 'off'].includes(
+  String(process.env.API_RATE_LIMIT_ENABLED || 'true')
+    .trim()
+    .toLowerCase(),
+);
+
+function parseTrustProxy(value) {
+  if (value === undefined || value === null) {
+    return undefined;
+  }
+
+  const normalized = String(value).trim().toLowerCase();
+  if (['true', '1', 'yes', 'on'].includes(normalized)) {
+    return true;
+  }
+  if (['false', '0', 'no', 'off'].includes(normalized)) {
+    return false;
+  }
+  if (/^\d+$/.test(normalized)) {
+    return Number(normalized);
+  }
+
+  return value;
+}
+
+const trustProxy = parseTrustProxy(process.env.TRUST_PROXY);
+if (trustProxy !== undefined) {
+  app.set('trust proxy', trustProxy);
+  logger.info(`✅ trust proxy 已启用: ${process.env.TRUST_PROXY}`);
+}
+
+if (!apiRateLimitEnabled) {
+  logger.info('⚠️ API限流器已禁用（API_RATE_LIMIT_ENABLED=false）');
+}
+
 // 中间件
 app.use(
   cors({
@@ -94,11 +129,13 @@ app.use('/api/v1/dashboard', timeout(120000));
 app.use('/api/v1', timeout(300000));
 
 // API限流（应用到所有API路由）
-try {
-  const { apiLimiter } = require('./middleware/rateLimit');
-  app.use('/api/v1/', apiLimiter);
-} catch (error) {
-  // 限流中间件加载失败，继续运行
+if (apiRateLimitEnabled) {
+  try {
+    const { apiLimiter } = require('./middleware/rateLimit');
+    app.use('/api/v1/', apiLimiter);
+  } catch (error) {
+    // 限流中间件加载失败，继续运行
+  }
 }
 
 // 健康检查
