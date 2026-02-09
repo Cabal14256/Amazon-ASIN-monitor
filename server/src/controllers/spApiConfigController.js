@@ -11,6 +11,7 @@ const {
   reloadHtmlScraperFallbackConfig,
   reloadLegacyClientFallbackConfig,
 } = require('../services/variantCheckService');
+const { reloadMonitorSchedule } = require('../services/schedulerService');
 const rateLimiter = require('../services/rateLimiter');
 const errorStatsService = require('../services/errorStatsService');
 const riskControlService = require('../services/riskControlService');
@@ -124,6 +125,13 @@ exports.updateSPAPIConfig = async (req, res) => {
       logger.error('?? 重新加载竞品监控开关失败:', competitorError);
     }
 
+    try {
+      await reloadMonitorSchedule();
+      logger.info('✅ 监控频率配置已重新加载');
+    } catch (scheduleError) {
+      logger.error('⚠️ 重新加载监控频率配置失败:', scheduleError);
+    }
+
     res.json({
       success: true,
       data: results,
@@ -159,6 +167,8 @@ exports.getSPAPIConfigForDisplay = async (req, res) => {
       'SP_API_SECRET_ACCESS_KEY',
       'SP_API_ROLE_ARN',
       'MONITOR_MAX_CONCURRENT_GROUP_CHECKS',
+      'MONITOR_US_SCHEDULE_MINUTES',
+      'MONITOR_EU_SCHEDULE_MINUTES',
       'COMPETITOR_MONITOR_ENABLED',
       'SP_API_USE_AWS_SIGNATURE',
       'ENABLE_HTML_SCRAPER_FALLBACK',
@@ -187,7 +197,15 @@ exports.getSPAPIConfigForDisplay = async (req, res) => {
         const envKey = key;
         value = process.env[envKey];
         if (value === undefined || value === '') {
-          value = key === 'COMPETITOR_MONITOR_ENABLED' ? 'true' : '';
+          if (key === 'COMPETITOR_MONITOR_ENABLED') {
+            value = 'true';
+          } else if (key === 'MONITOR_US_SCHEDULE_MINUTES') {
+            value = '30';
+          } else if (key === 'MONITOR_EU_SCHEDULE_MINUTES') {
+            value = '60';
+          } else {
+            value = '';
+          }
         }
       }
       if (value === undefined || value === null) {
@@ -253,6 +271,8 @@ function getConfigDescription(key) {
     SP_API_SECRET_ACCESS_KEY: 'AWS Secret Access Key（US+EU共用）',
     SP_API_ROLE_ARN: 'AWS IAM Role ARN（US+EU共用）',
     MONITOR_MAX_CONCURRENT_GROUP_CHECKS: '每次并发检查的变体组数量',
+    MONITOR_US_SCHEDULE_MINUTES: 'US 区域定时监控间隔（分钟）',
+    MONITOR_EU_SCHEDULE_MINUTES: 'EU 区域定时监控间隔（分钟）',
     COMPETITOR_MONITOR_ENABLED: '竞品监控开关',
     SP_API_USE_AWS_SIGNATURE:
       '是否启用AWS签名（简化模式：关闭，标准模式：开启）',

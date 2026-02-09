@@ -25,6 +25,10 @@ const QUOTA_PER_HOUR = Number(process.env.SP_API_RATE_LIMIT_PER_HOUR) || 1000;
 
 // 调度配置
 const MONITOR_BATCH_COUNT = Number(process.env.MONITOR_BATCH_COUNT) || 1;
+const MONITOR_US_SCHEDULE_MINUTES =
+  Number(process.env.MONITOR_US_SCHEDULE_MINUTES) || 30;
+const MONITOR_EU_SCHEDULE_MINUTES =
+  Number(process.env.MONITOR_EU_SCHEDULE_MINUTES) || 60;
 
 async function analyzeQuotaUsage() {
   let connection;
@@ -140,8 +144,7 @@ async function analyzeQuotaUsage() {
     );
 
     // 计算配额使用
-    // US区域：每小时2次（整点和30分），每次检查所有US的ASIN
-    // EU区域：每小时1次（整点），每次检查所有EU的ASIN
+    // US/EU 区域按配置的分钟间隔执行
     // 标准监控 + 竞品监控 = 双倍调用
 
     const usTotalAsins = regionStats.US.asins + regionStats.US.competitorAsins;
@@ -149,14 +152,16 @@ async function analyzeQuotaUsage() {
 
     // 如果不分批，计算高峰期的调用
     let usCallsPerHour, euCallsPerHour;
+    const usRunsPerHour = 60 / MONITOR_US_SCHEDULE_MINUTES;
+    const euRunsPerHour = 60 / MONITOR_EU_SCHEDULE_MINUTES;
     if (MONITOR_BATCH_COUNT === 1) {
       // 不分批：每次任务检查所有ASIN
-      usCallsPerHour = usTotalAsins * 2 * 2; // 2次/小时 × 2个任务（标准+竞品）
-      euCallsPerHour = euTotalAsins * 1 * 2; // 1次/小时 × 2个任务（标准+竞品）
+      usCallsPerHour = usTotalAsins * usRunsPerHour * 2;
+      euCallsPerHour = euTotalAsins * euRunsPerHour * 2;
     } else {
       // 分批：每次任务只检查 1/MONITOR_BATCH_COUNT 的ASIN
-      usCallsPerHour = (usTotalAsins / MONITOR_BATCH_COUNT) * 2 * 2;
-      euCallsPerHour = (euTotalAsins / MONITOR_BATCH_COUNT) * 1 * 2;
+      usCallsPerHour = (usTotalAsins / MONITOR_BATCH_COUNT) * usRunsPerHour * 2;
+      euCallsPerHour = (euTotalAsins / MONITOR_BATCH_COUNT) * euRunsPerHour * 2;
     }
 
     const usCallsPerMinute = usCallsPerHour / 60;
@@ -169,8 +174,12 @@ async function analyzeQuotaUsage() {
     console.log('📊 预计API调用频率：');
     console.log('─'.repeat(60));
     console.log('调度配置：');
-    console.log(`  - US区域: 每小时2次（整点和30分）`);
-    console.log(`  - EU区域: 每小时1次（整点）`);
+    console.log(
+      `  - US区域: 每${MONITOR_US_SCHEDULE_MINUTES}分钟执行 (${usRunsPerHour} 次/小时)`,
+    );
+    console.log(
+      `  - EU区域: 每${MONITOR_EU_SCHEDULE_MINUTES}分钟执行 (${euRunsPerHour} 次/小时)`,
+    );
     console.log(`  - 任务类型: 标准监控 + 竞品监控（双倍调用）`);
     console.log(
       `  - 分批处理: ${

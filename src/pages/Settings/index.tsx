@@ -95,6 +95,13 @@ const SettingsPage: React.FC<unknown> = () => {
             config.configValue === true ||
             config.configValue === '1' ||
             config.configValue === 1;
+        } else if (
+          config.configKey === 'MONITOR_US_SCHEDULE_MINUTES' ||
+          config.configKey === 'MONITOR_EU_SCHEDULE_MINUTES'
+        ) {
+          value = config.configValue
+            ? Number.parseInt(config.configValue, 10)
+            : '';
         } else {
           value = config.configValue || '';
         }
@@ -318,6 +325,8 @@ const SettingsPage: React.FC<unknown> = () => {
     COMPETITOR_MONITOR_ENABLED: '是否启用竞品监控任务',
     ENABLE_HTML_SCRAPER_FALLBACK: '是否启用HTML抓取兜底（SP-API失败时使用）',
     ENABLE_LEGACY_CLIENT_FALLBACK: '是否启用旧客户端备用（SP-API失败时使用）',
+    MONITOR_US_SCHEDULE_MINUTES: 'US 区域定时监控间隔（分钟）',
+    MONITOR_EU_SCHEDULE_MINUTES: 'EU 区域定时监控间隔（分钟）',
   };
 
   // 保存指定配置组的配置项
@@ -627,6 +636,65 @@ const SettingsPage: React.FC<unknown> = () => {
               />
             </ProForm>
           </Card>
+
+          <Card title="定时监控频率">
+            <Alert
+              message="频率说明"
+              description="调整监控频率会同时影响标准监控和竞品监控任务，请结合配额与业务需求设置。"
+              type="info"
+              showIcon
+              style={{ marginBottom: 16 }}
+            />
+            <ProForm
+              form={spApiForm}
+              autoFocusFirstInput={false}
+              onFinish={async (values) => {
+                await saveConfigGroup(
+                  [
+                    'MONITOR_US_SCHEDULE_MINUTES',
+                    'MONITOR_EU_SCHEDULE_MINUTES',
+                  ],
+                  values,
+                );
+              }}
+              submitter={{
+                resetButtonProps: {
+                  onClick: () => {
+                    loadConfigs();
+                  },
+                },
+              }}
+            >
+              <ProFormSelect
+                name="MONITOR_US_SCHEDULE_MINUTES"
+                label="US 区域监控间隔（分钟）"
+                placeholder="请选择 US 区域监控间隔"
+                options={[
+                  { label: '15 分钟', value: 15 },
+                  { label: '30 分钟', value: 30 },
+                  { label: '60 分钟', value: 60 },
+                ]}
+                rules={[{ required: true, message: '请选择 US 区域监控间隔' }]}
+                fieldProps={{
+                  style: { width: '100%' },
+                }}
+              />
+              <ProFormSelect
+                name="MONITOR_EU_SCHEDULE_MINUTES"
+                label="EU 区域监控间隔（分钟）"
+                placeholder="请选择 EU 区域监控间隔"
+                options={[
+                  { label: '15 分钟', value: 15 },
+                  { label: '30 分钟', value: 30 },
+                  { label: '60 分钟', value: 60 },
+                ]}
+                rules={[{ required: true, message: '请选择 EU 区域监控间隔' }]}
+                fieldProps={{
+                  style: { width: '100%' },
+                }}
+              />
+            </ProForm>
+          </Card>
         </Space>
       ),
     },
@@ -834,7 +902,7 @@ const SettingsPage: React.FC<unknown> = () => {
           <Card title="自动备份配置">
             <Alert
               message="备份时间建议"
-              description="定时任务执行时间：美国区域(US)每小时整点和30分执行，欧洲区域(EU)每小时整点执行。建议将备份时间设置在非高峰期，如凌晨2-6点。"
+              description="定时任务执行时间可在系统设置中调整。建议将备份时间设置在监控低峰期，如凌晨2-6点。"
               type="warning"
               showIcon
               style={{ marginBottom: 16 }}

@@ -26,6 +26,9 @@ const {
   getUTC8LocaleString,
   toUTC8ISOString,
 } = require('../utils/dateTime');
+const {
+  getMonitorScheduleConfig,
+} = require('../config/monitor-schedule-config');
 
 let monitorSemaphore = new Semaphore(getMaxConcurrentGroupChecks());
 let isMonitorTaskRunning = false;
@@ -62,14 +65,18 @@ function syncSemaphoreLimit() {
 }
 
 function getCountriesToCheck(region, minute) {
+  const { usIntervalMinutes, euIntervalMinutes } = getMonitorScheduleConfig();
+  const intervalMinutes =
+    region === 'US' ? usIntervalMinutes : euIntervalMinutes;
+
+  if (!intervalMinutes || minute % intervalMinutes !== 0) {
+    return [];
+  }
+
   const countries = [];
   for (const [country, countryRegion] of Object.entries(REGION_MAP)) {
     if (countryRegion !== region) continue;
-    if (region === 'US' && (minute === 0 || minute === 30)) {
-      countries.push(country);
-    } else if (region === 'EU' && minute === 0) {
-      countries.push(country);
-    }
+    countries.push(country);
   }
   return countries;
 }

@@ -19,6 +19,9 @@ const {
   isCompetitorMonitorEnabled,
 } = require('../config/competitor-monitor-config');
 const logger = require('../utils/logger');
+const {
+  getMonitorScheduleConfig,
+} = require('../config/monitor-schedule-config');
 
 let competitorMonitorSemaphore = new Semaphore(getMaxConcurrentGroupChecks());
 let isCompetitorMonitorTaskRunning = false;
@@ -43,14 +46,18 @@ function syncCompetitorSemaphoreLimit() {
 }
 
 function getCountriesToCheck(region, minute) {
+  const { usIntervalMinutes, euIntervalMinutes } = getMonitorScheduleConfig();
+  const intervalMinutes =
+    region === 'US' ? usIntervalMinutes : euIntervalMinutes;
+
+  if (!intervalMinutes || minute % intervalMinutes !== 0) {
+    return [];
+  }
+
   const countries = [];
   for (const [country, countryRegion] of Object.entries(REGION_MAP)) {
     if (countryRegion !== region) continue;
-    if (region === 'US' && (minute === 0 || minute === 30)) {
-      countries.push(country);
-    } else if (region === 'EU' && minute === 0) {
-      countries.push(country);
-    }
+    countries.push(country);
   }
   return countries;
 }
@@ -266,10 +273,7 @@ async function processCompetitorCountry(
         try {
           await CompetitorMonitorHistory.bulkCreate(historyEntries);
         } catch (historyError) {
-          logger.error(
-            `  ⚠️  批量记录竞品监控历史失败:`,
-            historyError.message,
-          );
+          logger.error(`  ⚠️  批量记录竞品监控历史失败:`, historyError.message);
         }
       }
     });
