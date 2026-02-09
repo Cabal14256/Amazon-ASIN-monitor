@@ -16,24 +16,26 @@ const backupService = require('./backupService');
 const { refreshRecentMonitorHistoryAgg } = require('./analyticsAggService');
 const metricsService = require('./metricsService');
 const { getUTC8ISOString } = require('../utils/dateTime');
+const {
+  getMonitorScheduleConfig,
+  reloadMonitorScheduleConfig,
+} = require('../config/monitor-schedule-config');
 
 // 分批处理配置
 const TOTAL_BATCHES = Number(process.env.MONITOR_BATCH_COUNT) || 1; // 默认不分批
 
 // EU国家检查顺序：UK, DE, FR, ES, IT
 const EU_COUNTRIES_ORDER = ['UK', 'DE', 'FR', 'ES', 'IT'];
-const US_CRON_EXPRESSION = '0,30 * * * *';
-const EU_CRON_EXPRESSION = '0 * * * *';
 const ANALYTICS_CRON_EXPRESSION = '5 * * * *';
 
 const schedulerStatus = {
   us: {
-    schedule: US_CRON_EXPRESSION,
+    schedule: null,
     lastStandardRun: null,
     lastCompetitorRun: null,
   },
   eu: {
-    schedule: EU_CRON_EXPRESSION,
+    schedule: null,
     lastStandardRun: null,
     lastCompetitorRun: null,
   },
@@ -83,6 +85,187 @@ async function runAnalyticsAgg(source) {
 
 // 自动备份任务引用
 let backupTask = null;
+let usMonitorTask = null;
+let euMonitorTask = null;
+
+function buildMonitorCronExpression(intervalMinutes) {
+  if (!intervalMinutes || intervalMinutes <= 0) {
+    return '0 * * * *';
+  }
+  if (intervalMinutes === 60) {
+    return '0 * * * *';
+  }
+  return `*/${intervalMinutes} * * * *`;
+}
+
+function runUSMonitorSchedule() {
+  const start = Date.now();
+  const now = new Date();
+  const minute = now.getMinutes();
+  const hour = now.getHours();
+
+  // --- Standard Monitor Task ---
+  const usCountries = getCountriesToCheck('US', minute);
+
+  if (usCountries.length > 0) {
+    updateLastRun('us', 'lastStandardRun');
+    // 如果启用分批处理，计算当前批次
+    if (TOTAL_BATCHES > 1) {
+      // 基于小时和分钟计算批次索引（0 到 TOTAL_BATCHES-1）
+      // 使用 (hour * 60 + minute) % TOTAL_BATCHES 来分散批次
+      const batchIndex = (hour * 60 + minute) % TOTAL_BATCHES;
+      logger.info(
+        `[定时任务] 标准监控（US）当前批次: ${batchIndex + 1}/${TOTAL_BATCHES}`,
+      );
+      monitorTaskQueue.enqueue(usCountries, {
+        batchIndex,
+        totalBatches: TOTAL_BATCHES,
+      });
+    } else {
+      // 不分批，直接处理所有国家
+      monitorTaskQueue.enqueue(usCountries);
+    }
+  }
+
+  // --- Competitor Monitor Task ---
+  // 竞品监控使用相同的时间表
+  if (isCompetitorMonitorEnabled()) {
+    const competitorUsCountries = getCountriesToCheck('US', minute);
+
+    if (competitorUsCountries.length > 0) {
+      updateLastRun('us', 'lastCompetitorRun');
+      if (TOTAL_BATCHES > 1) {
+        const batchIndex = (hour * 60 + minute) % TOTAL_BATCHES;
+        logger.info(
+          `[定时任务] 竞品监控（US）当前批次: ${
+            batchIndex + 1
+          }/${TOTAL_BATCHES}`,
+        );
+        competitorMonitorTaskQueue.enqueue(competitorUsCountries, {
+          batchIndex,
+          totalBatches: TOTAL_BATCHES,
+        });
+      } else {
+        competitorMonitorTaskQueue.enqueue(competitorUsCountries);
+      }
+    }
+  } else {
+    logger.info('[定时任务] 竞品监控已关闭，跳过本次US任务');
+  }
+
+  recordSchedulerRun('us', (Date.now() - start) / 1000);
+}
+
+function runEUMonitorSchedule() {
+  const start = Date.now();
+  const now = new Date();
+  const minute = now.getMinutes();
+  const hour = now.getHours();
+
+  // --- Standard Monitor Task ---
+  const euCountries = getCountriesToCheck('EU', minute);
+
+  // 按指定顺序排序EU国家
+  const orderedEuCountries = EU_COUNTRIES_ORDER.filter((country) =>
+    euCountries.includes(country),
+  );
+
+  if (orderedEuCountries.length > 0) {
+    updateLastRun('eu', 'lastStandardRun');
+    // 如果启用分批处理，计算当前批次
+    if (TOTAL_BATCHES > 1) {
+      // 基于小时和分钟计算批次索引（0 到 TOTAL_BATCHES-1）
+      const batchIndex = (hour * 60 + minute) % TOTAL_BATCHES;
+      logger.info(
+        `[定时任务] 标准监控（EU）当前批次: ${batchIndex + 1}/${TOTAL_BATCHES}`,
+      );
+      // 按顺序依次加入队列，每个国家单独一个任务
+      orderedEuCountries.forEach((country, index) => {
+        setTimeout(() => {
+          monitorTaskQueue.enqueue([country], {
+            batchIndex,
+            totalBatches: TOTAL_BATCHES,
+          });
+        }, index * 1000); // 每个国家间隔1秒加入队列
+      });
+    } else {
+      // 不分批，按顺序依次加入队列
+      orderedEuCountries.forEach((country, index) => {
+        setTimeout(() => {
+          monitorTaskQueue.enqueue([country]);
+        }, index * 1000); // 每个国家间隔1秒加入队列
+      });
+    }
+  }
+
+  // --- Competitor Monitor Task ---
+  // 竞品监控使用相同的时间表，也按顺序执行
+  if (isCompetitorMonitorEnabled()) {
+    const competitorEuCountries = getCountriesToCheck('EU', minute);
+
+    // 按指定顺序排序EU国家
+    const orderedCompetitorEuCountries = EU_COUNTRIES_ORDER.filter((country) =>
+      competitorEuCountries.includes(country),
+    );
+
+    if (orderedCompetitorEuCountries.length > 0) {
+      updateLastRun('eu', 'lastCompetitorRun');
+      if (TOTAL_BATCHES > 1) {
+        const batchIndex = (hour * 60 + minute) % TOTAL_BATCHES;
+        logger.info(
+          `[定时任务] 竞品监控（EU）当前批次: ${
+            batchIndex + 1
+          }/${TOTAL_BATCHES}`,
+        );
+        // 按顺序依次加入队列，每个国家单独一个任务
+        orderedCompetitorEuCountries.forEach((country, index) => {
+          setTimeout(() => {
+            competitorMonitorTaskQueue.enqueue([country], {
+              batchIndex,
+              totalBatches: TOTAL_BATCHES,
+            });
+          }, index * 1000); // 每个国家间隔1秒加入队列
+        });
+      } else {
+        // 不分批，按顺序依次加入队列
+        orderedCompetitorEuCountries.forEach((country, index) => {
+          setTimeout(() => {
+            competitorMonitorTaskQueue.enqueue([country]);
+          }, index * 1000); // 每个国家间隔1秒加入队列
+        });
+      }
+    }
+  } else {
+    logger.info('[定时任务] 竞品监控已关闭，跳过本次EU任务');
+  }
+
+  recordSchedulerRun('eu', (Date.now() - start) / 1000);
+}
+
+function scheduleMonitorTasks() {
+  if (usMonitorTask) {
+    usMonitorTask.stop();
+  }
+  if (euMonitorTask) {
+    euMonitorTask.stop();
+  }
+
+  const { usIntervalMinutes, euIntervalMinutes } = getMonitorScheduleConfig();
+  const usCronExpression = buildMonitorCronExpression(usIntervalMinutes);
+  const euCronExpression = buildMonitorCronExpression(euIntervalMinutes);
+
+  schedulerStatus.us.schedule = usCronExpression;
+  schedulerStatus.eu.schedule = euCronExpression;
+
+  usMonitorTask = cron.schedule(usCronExpression, runUSMonitorSchedule);
+  euMonitorTask = cron.schedule(euCronExpression, runEUMonitorSchedule);
+
+  logger.info('📅 执行时间:');
+  logger.info(`   - 美国区域 (US): 每${usIntervalMinutes}分钟`);
+  logger.info(
+    `   - 欧洲区域 (EU): 每${euIntervalMinutes}分钟，按顺序依次检查: UK → DE → FR → ES → IT`,
+  );
+}
 
 function initScheduler() {
   logger.info('🕐 初始化定时任务...');
@@ -92,163 +275,16 @@ function initScheduler() {
     }）`,
   );
 
-  // US区域：每小时整点和30分执行
-  cron.schedule(US_CRON_EXPRESSION, () => {
-    const start = Date.now();
-    const now = new Date();
-    const minute = now.getMinutes();
-    const hour = now.getHours();
-
-    // --- Standard Monitor Task ---
-    const usCountries = getCountriesToCheck('US', minute);
-
-    if (usCountries.length > 0) {
-      updateLastRun('us', 'lastStandardRun');
-      // 如果启用分批处理，计算当前批次
-      if (TOTAL_BATCHES > 1) {
-        // 基于小时和分钟计算批次索引（0 到 TOTAL_BATCHES-1）
-        // 使用 (hour * 60 + minute) % TOTAL_BATCHES 来分散批次
-        const batchIndex = (hour * 60 + minute) % TOTAL_BATCHES;
-        logger.info(
-          `[定时任务] 标准监控（US）当前批次: ${
-            batchIndex + 1
-          }/${TOTAL_BATCHES}`,
-        );
-        monitorTaskQueue.enqueue(usCountries, {
-          batchIndex,
-          totalBatches: TOTAL_BATCHES,
-        });
-      } else {
-        // 不分批，直接处理所有国家
-        monitorTaskQueue.enqueue(usCountries);
-      }
-    }
-
-    // --- Competitor Monitor Task ---
-    // 竞品监控使用相同的时间表
-    if (isCompetitorMonitorEnabled()) {
-      const competitorUsCountries = getCountriesToCheck('US', minute);
-
-      if (competitorUsCountries.length > 0) {
-        updateLastRun('us', 'lastCompetitorRun');
-        if (TOTAL_BATCHES > 1) {
-          const batchIndex = (hour * 60 + minute) % TOTAL_BATCHES;
-          logger.info(
-            `[定时任务] 竞品监控（US）当前批次: ${
-              batchIndex + 1
-            }/${TOTAL_BATCHES}`,
-          );
-          competitorMonitorTaskQueue.enqueue(competitorUsCountries, {
-            batchIndex,
-            totalBatches: TOTAL_BATCHES,
-          });
-        } else {
-          competitorMonitorTaskQueue.enqueue(competitorUsCountries);
-        }
-      }
-    } else {
-      logger.info('[定时任务] 竞品监控已关闭，跳过本次US任务');
-    }
-
-    recordSchedulerRun('us', (Date.now() - start) / 1000);
-  });
-
-  // EU区域：每小时整点执行
-  // EU国家按顺序依次检查：UK, DE, FR, ES, IT
-  cron.schedule(EU_CRON_EXPRESSION, () => {
-    const start = Date.now();
-    const now = new Date();
-    const minute = now.getMinutes();
-    const hour = now.getHours();
-
-    // --- Standard Monitor Task ---
-    const euCountries = getCountriesToCheck('EU', minute);
-
-    // 按指定顺序排序EU国家
-    const orderedEuCountries = EU_COUNTRIES_ORDER.filter((country) =>
-      euCountries.includes(country),
-    );
-
-    if (orderedEuCountries.length > 0) {
-      updateLastRun('eu', 'lastStandardRun');
-      // 如果启用分批处理，计算当前批次
-      if (TOTAL_BATCHES > 1) {
-        // 基于小时和分钟计算批次索引（0 到 TOTAL_BATCHES-1）
-        const batchIndex = (hour * 60 + minute) % TOTAL_BATCHES;
-        logger.info(
-          `[定时任务] 标准监控（EU）当前批次: ${
-            batchIndex + 1
-          }/${TOTAL_BATCHES}`,
-        );
-        // 按顺序依次加入队列，每个国家单独一个任务
-        orderedEuCountries.forEach((country, index) => {
-          setTimeout(() => {
-            monitorTaskQueue.enqueue([country], {
-              batchIndex,
-              totalBatches: TOTAL_BATCHES,
-            });
-          }, index * 1000); // 每个国家间隔1秒加入队列
-        });
-      } else {
-        // 不分批，按顺序依次加入队列
-        orderedEuCountries.forEach((country, index) => {
-          setTimeout(() => {
-            monitorTaskQueue.enqueue([country]);
-          }, index * 1000); // 每个国家间隔1秒加入队列
-        });
-      }
-    }
-
-    // --- Competitor Monitor Task ---
-    // 竞品监控使用相同的时间表，也按顺序执行
-    if (isCompetitorMonitorEnabled()) {
-      const competitorEuCountries = getCountriesToCheck('EU', minute);
-
-      // 按指定顺序排序EU国家
-      const orderedCompetitorEuCountries = EU_COUNTRIES_ORDER.filter(
-        (country) => competitorEuCountries.includes(country),
-      );
-
-      if (orderedCompetitorEuCountries.length > 0) {
-        updateLastRun('eu', 'lastCompetitorRun');
-        if (TOTAL_BATCHES > 1) {
-          const batchIndex = (hour * 60 + minute) % TOTAL_BATCHES;
-          logger.info(
-            `[定时任务] 竞品监控（EU）当前批次: ${
-              batchIndex + 1
-            }/${TOTAL_BATCHES}`,
-          );
-          // 按顺序依次加入队列，每个国家单独一个任务
-          orderedCompetitorEuCountries.forEach((country, index) => {
-            setTimeout(() => {
-              competitorMonitorTaskQueue.enqueue([country], {
-                batchIndex,
-                totalBatches: TOTAL_BATCHES,
-              });
-            }, index * 1000); // 每个国家间隔1秒加入队列
-          });
-        } else {
-          // 不分批，按顺序依次加入队列
-          orderedCompetitorEuCountries.forEach((country, index) => {
-            setTimeout(() => {
-              competitorMonitorTaskQueue.enqueue([country]);
-            }, index * 1000); // 每个国家间隔1秒加入队列
-          });
-        }
-      }
-    } else {
-      logger.info('[定时任务] 竞品监控已关闭，跳过本次EU任务');
-    }
-
-    recordSchedulerRun('eu', (Date.now() - start) / 1000);
-  });
+  void reloadMonitorScheduleConfig()
+    .then(() => {
+      scheduleMonitorTasks();
+    })
+    .catch((error) => {
+      logger.warn('⚠️ 加载监控频率配置失败，使用默认值:', error.message);
+      scheduleMonitorTasks();
+    });
 
   logger.info('✅ 定时任务已启动');
-  logger.info('📅 执行时间:');
-  logger.info('   - 美国区域 (US): 每小时整点和30分');
-  logger.info(
-    '   - 欧洲区域 (EU): 每小时整点，按顺序依次检查: UK → DE → FR → ES → IT',
-  );
 
   // 数据分析聚合刷新（默认开启，可通过 ANALYTICS_AGG_ENABLED=0 关闭）
   if (process.env.ANALYTICS_AGG_ENABLED !== '0') {
@@ -407,6 +443,15 @@ async function reloadBackupSchedule() {
   await initBackupScheduler();
 }
 
+/**
+ * 重新加载监控频率配置（配置更新时调用）
+ */
+async function reloadMonitorSchedule() {
+  logger.info('🔄 重新加载监控频率配置...');
+  await reloadMonitorScheduleConfig();
+  scheduleMonitorTasks();
+}
+
 module.exports = {
   initScheduler,
   triggerManualCheck,
@@ -414,5 +459,6 @@ module.exports = {
   runCompetitorMonitorTask, // 导出竞品监控任务运行器供手动触发使用
   initBackupScheduler,
   reloadBackupSchedule,
+  reloadMonitorSchedule,
   getSchedulerStatus: () => ({ ...schedulerStatus }),
 };
