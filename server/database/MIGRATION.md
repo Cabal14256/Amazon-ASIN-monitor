@@ -24,6 +24,7 @@
 | 020 | `020_add_status_change_indexes.sql` | 添加状态变化查询索引 | ✅ 已整合到 init.sql |
 | 021 | `021_add_monitor_history_agg_table.sql` | 添加监控历史聚合表 | ✅ 已整合到 init.sql |
 | 022 | `022_add_monitor_history_agg_peak.sql` | 聚合表补充高峰期字段 | ✅ 已整合到 init.sql |
+| 023 | `023_add_analytics_fastpath.sql` | 数据分析快路径优化（快照维度、时间槽生成列、聚合维度表） | ✅ 已整合到 init.sql |
 
 > **注意**: 所有标记为 "✅ 已整合到 init.sql" 的迁移脚本，其功能已包含在 `init.sql` 中。新安装系统时直接使用 `init.sql` 即可，无需执行这些迁移脚本。竞品数据库相关的迁移脚本已整合到 `competitor-init.sql`。
 
@@ -421,6 +422,7 @@ mysql -u root -p amazon_asin_monitor < server/database/migrations/018_add_analyt
 mysql -u root -p amazon_asin_monitor < server/database/migrations/020_add_status_change_indexes.sql
 mysql -u root -p amazon_asin_monitor < server/database/migrations/021_add_monitor_history_agg_table.sql
 mysql -u root -p amazon_asin_monitor < server/database/migrations/022_add_monitor_history_agg_peak.sql
+mysql -u root -p amazon_asin_monitor < server/database/migrations/023_add_analytics_fastpath.sql
 ```
 
 竞品数据库迁移（如使用竞品监控功能）：

@@ -1057,6 +1057,8 @@ async function checkSingleASIN(asinId, forceRefresh = false) {
       asinId,
       asinCode: asinRecord.asin || null,
       asinName: asinRecord.name || null,
+      siteSnapshot: asinRecord.site || null,
+      brandSnapshot: asinRecord.brand || null,
       variantGroupId: asinRecord.variantGroupId || null,
       variantGroupName: variantGroupName,
       checkType: 'ASIN',

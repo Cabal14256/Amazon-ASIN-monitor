@@ -20,6 +20,7 @@ const dbConfig = {
 // 创建连接池
 const pool = mysql.createPool(dbConfig);
 const QUERY_TIMEOUT_MS = Number(process.env.DB_QUERY_TIMEOUT) || 600000;
+const SLOW_QUERY_MS = Number(process.env.DB_SLOW_QUERY_MS) || 1500;
 
 // 测试数据库连接
 async function testConnection() {
@@ -41,11 +42,19 @@ async function testConnection() {
 // 执行查询的辅助函数
 async function query(sql, params = []) {
   try {
+    const start = Date.now();
     const [results] = await pool.query({
       sql,
       values: params,
       timeout: QUERY_TIMEOUT_MS,
     });
+    const duration = Date.now() - start;
+    if (duration >= SLOW_QUERY_MS) {
+      const compactSql = String(sql).replace(/\s+/g, ' ').trim().slice(0, 240);
+      logger.warn(
+        `[慢查询] 耗时${duration}ms, 参数数量=${params.length}, SQL=${compactSql}`,
+      );
+    }
     return results;
   } catch (error) {
     logger.error('数据库查询错误:', error);

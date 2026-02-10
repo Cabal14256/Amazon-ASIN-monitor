@@ -377,6 +377,8 @@ async function processCountry(
               asinId: asinInfo.id,
               asinCode: asinInfo.asin || null,
               asinName: asinInfo.name || null,
+              siteSnapshot: asinInfo.site || null,
+              brandSnapshot: asinInfo.brand || null,
               variantGroupId: group.id,
               variantGroupName: variantGroupName,
               checkType: 'ASIN',

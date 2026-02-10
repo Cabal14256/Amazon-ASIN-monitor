@@ -20,7 +20,13 @@ import {
   Tag,
 } from 'antd';
 import dayjs, { Dayjs } from 'dayjs';
-import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import React, {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from 'react';
 
 const { RangePicker } = DatePicker;
 const {
@@ -365,44 +371,47 @@ const AnalyticsPageContent: React.FC<unknown> = () => {
         };
 
         // 并行加载所有统计数据
-        const tasks: Array<{ label: string; promise: Promise<any> }> = [
+        const tasks: Array<{ label: string; run: () => Promise<any> }> = [
           {
             label: '时间趋势统计',
-            promise: getStatisticsByTime({ ...params, groupBy }),
+            run: () => getStatisticsByTime({ ...params, groupBy }),
           },
           {
             // 使用ASIN当前状态统计，而不是监控历史记录
             label: '国家维度统计',
-            promise: getASINStatisticsByCountry(),
+            run: () => getASINStatisticsByCountry(),
           },
           {
             label: '变体组Top 10',
-            promise: getASINStatisticsByVariantGroup({ limit: 10 }),
+            run: () => getASINStatisticsByVariantGroup({ limit: 10 }),
           },
-          { label: '总体统计', promise: getMonitorStatistics(params) },
+          { label: '总体统计', run: () => getMonitorStatistics(params) },
           {
             label: '全国家汇总',
-            promise: getAllCountriesSummary({
-              ...params,
-              timeSlotGranularity: allCountriesTimeSlot,
-            }),
+            run: () =>
+              getAllCountriesSummary({
+                ...params,
+                timeSlotGranularity: allCountriesTimeSlot,
+              }),
           },
           {
             label: '区域汇总',
-            promise: getRegionSummary({
-              ...params,
-              timeSlotGranularity: regionTimeSlot,
-            }),
+            run: () =>
+              getRegionSummary({
+                ...params,
+                timeSlotGranularity: regionTimeSlot,
+              }),
           },
           {
             label: '周期汇总',
-            promise: getPeriodSummary({
-              ...params,
-              ...periodFilter,
-              timeSlotGranularity: periodTimeSlot,
-              current: periodSummary.current,
-              pageSize: periodSummary.pageSize,
-            }),
+            run: () =>
+              getPeriodSummary({
+                ...params,
+                ...periodFilter,
+                timeSlotGranularity: periodTimeSlot,
+                current: periodSummary.current,
+                pageSize: periodSummary.pageSize,
+              }),
           },
         ];
 
@@ -410,7 +419,7 @@ const AnalyticsPageContent: React.FC<unknown> = () => {
         if (country) {
           tasks.push({
             label: '高峰期统计',
-            promise: getPeakHoursStatistics({ ...params, country }),
+            run: () => getPeakHoursStatistics({ ...params, country }),
           });
         }
 
@@ -437,8 +446,13 @@ const AnalyticsPageContent: React.FC<unknown> = () => {
           updateProgressText();
         }, 300);
 
-        const promisesWithProgress = tasks.map(({ label, promise }) => {
-          return promise
+        const runTaskWithProgress = async (task: {
+          label: string;
+          run: () => Promise<any>;
+        }) => {
+          const { label, run } = task;
+          taskStartTimesRef.current[label] = Date.now();
+          return run()
             .then((result) => {
               completedCount++;
               const newProgress = Math.round(
@@ -474,9 +488,7 @@ const AnalyticsPageContent: React.FC<unknown> = () => {
                 progressProfileRef.current[label] = profile;
                 writeProgressProfile(progressProfileRef.current);
               }
-              setProgressText(
-                `${getStatusText()}\n${getTimeMeta()}`,
-              );
+              setProgressText(`${getStatusText()}\n${getTimeMeta()}`);
               return result;
             })
             .catch((error) => {
@@ -503,15 +515,37 @@ const AnalyticsPageContent: React.FC<unknown> = () => {
                 progressProfileRef.current[label] = profile;
                 writeProgressProfile(progressProfileRef.current);
               }
-              setProgressText(
-                `${getStatusText()}\n${getTimeMeta()}`,
-              );
+              setProgressText(`${getStatusText()}\n${getTimeMeta()}`);
               throw error;
             });
-        });
+        };
 
-        // 使用 Promise.allSettled 允许部分失败
-        const results = await Promise.allSettled(promisesWithProgress);
+        // 限制并发，避免一次性压垮后端统计查询
+        const maxConcurrency = 3;
+        const results: PromiseSettledResult<any>[] = new Array(tasks.length);
+        let taskCursor = 0;
+
+        const workers = Array.from(
+          { length: Math.min(maxConcurrency, tasks.length) },
+          async () => {
+            while (true) {
+              const currentIndex = taskCursor;
+              taskCursor += 1;
+              if (currentIndex >= tasks.length) {
+                return;
+              }
+
+              try {
+                const value = await runTaskWithProgress(tasks[currentIndex]);
+                results[currentIndex] = { status: 'fulfilled', value };
+              } catch (reason) {
+                results[currentIndex] = { status: 'rejected', reason };
+              }
+            }
+          },
+        );
+
+        await Promise.all(workers);
 
         // 检查是否有失败的请求
         const failedCount = results.filter(
