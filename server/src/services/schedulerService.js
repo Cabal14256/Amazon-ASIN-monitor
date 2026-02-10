@@ -26,7 +26,8 @@ const TOTAL_BATCHES = Number(process.env.MONITOR_BATCH_COUNT) || 1; // 默认不
 
 // EU国家检查顺序：UK, DE, FR, ES, IT
 const EU_COUNTRIES_ORDER = ['UK', 'DE', 'FR', 'ES', 'IT'];
-const ANALYTICS_CRON_EXPRESSION = '5 * * * *';
+const ANALYTICS_CRON_EXPRESSION =
+  process.env.ANALYTICS_AGG_CRON_EXPRESSION || '*/10 * * * *';
 
 const schedulerStatus = {
   us: {

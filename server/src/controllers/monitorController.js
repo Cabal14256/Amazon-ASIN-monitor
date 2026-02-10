@@ -518,9 +518,7 @@ exports.getPeriodSummary = async (req, res) => {
     logger.info(
       `[统计查询] getPeriodSummary 完成，总耗时${duration}ms，返回${
         result?.list?.length || 0
-      }条记录，总计${result?.total || 0}条，数据量: ${
-        JSON.stringify(result?.list || []).length
-      } bytes`,
+      }条记录，总计${result?.total || 0}条`,
     );
 
     res.json({
