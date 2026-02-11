@@ -26,3 +26,16 @@ export async function getPermissionList(options?: { [key: string]: any }) {
     ...(options || {}),
   });
 }
+
+/** 更新角色权限 PUT /api/v1/roles/:roleId/permissions */
+export async function updateRolePermissions(
+  roleId: string,
+  body: { permissionIds: string[] },
+  options?: { [key: string]: any },
+) {
+  return request<API.Result_void_>(`/api/v1/roles/${roleId}/permissions`, {
+    method: 'PUT',
+    data: body,
+    ...(options || {}),
+  });
+}

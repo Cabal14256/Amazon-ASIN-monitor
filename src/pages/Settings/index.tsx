@@ -611,7 +611,15 @@ const SettingsPage: React.FC<unknown> = () => {
               />
             </ProForm>
           </Card>
+        </Space>
+      ),
+    },
 
+    {
+      key: 'monitor',
+      label: '监控设置',
+      children: (
+        <Space direction="vertical" size="large" style={{ width: '100%' }}>
           <Card title="监控功能开关">
             <ProForm
               form={spApiForm}
