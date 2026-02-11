@@ -1,4 +1,4 @@
-const { query } = require('../config/database');
+const { query, pool } = require('../config/database');
 
 class Role {
   // 查询所有角色
@@ -34,17 +34,33 @@ class Role {
 
   // 更新角色权限
   static async updateRolePermissions(roleId, permissionIds = []) {
-    await query(`DELETE FROM role_permissions WHERE role_id = ?`, [roleId]);
+    const connection = await pool.getConnection();
 
-    if (!permissionIds.length) {
-      return;
+    try {
+      await connection.beginTransaction();
+
+      await connection.query(`DELETE FROM role_permissions WHERE role_id = ?`, [
+        roleId,
+      ]);
+
+      if (permissionIds.length) {
+        const values = permissionIds.map((permissionId) => [
+          roleId,
+          permissionId,
+        ]);
+        await connection.query(
+          `INSERT INTO role_permissions (role_id, permission_id) VALUES ?`,
+          [values],
+        );
+      }
+
+      await connection.commit();
+    } catch (error) {
+      await connection.rollback();
+      throw error;
+    } finally {
+      connection.release();
     }
-
-    const values = permissionIds.map((permissionId) => [roleId, permissionId]);
-    await query(
-      `INSERT INTO role_permissions (role_id, permission_id) VALUES ?`,
-      [values],
-    );
   }
 
   // 获取拥有该角色的用户ID
