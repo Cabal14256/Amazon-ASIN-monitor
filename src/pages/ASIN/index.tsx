@@ -1,8 +1,8 @@
 import services from '@/services/asin';
 import variantCheckServices from '@/services/variantCheck';
-import { exportToExcel } from '@/utils/export';
 import { buildAmazonProductUrl } from '@/utils/amazon';
 import { debugLog } from '@/utils/debug';
+import { exportToExcel } from '@/utils/export';
 import { useMessage } from '@/utils/message';
 import { MoreOutlined } from '@ant-design/icons';
 import {
@@ -152,12 +152,17 @@ const ASINManagement: React.FC<unknown> = () => {
         },
       },
       {
-        title: '名称',
+        title: '名称/ASIN',
         dataIndex: 'name',
-        width: 200,
+        width: 280,
         hideInSearch: true,
         render: (_: any, record: API.VariantGroup | API.ASINInfo) => {
           const isGroup = (record as API.VariantGroup).parentId === undefined;
+          const asin = (record as API.ASINInfo).asin;
+          const asinUrl = asin
+            ? buildAmazonProductUrl(asin, record.country, record.site)
+            : undefined;
+
           return (
             <div
               style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}
@@ -172,32 +177,22 @@ const ASINManagement: React.FC<unknown> = () => {
               <div style={{ marginTop: '4px' }}>
                 <span>{record.name || '-'}</span>
               </div>
+              {!isGroup && (
+                <div>
+                  {asin ? (
+                    asinUrl ? (
+                      <a href={asinUrl} target="_blank" rel="noreferrer">
+                        {asin}
+                      </a>
+                    ) : (
+                      <span>{asin}</span>
+                    )
+                  ) : (
+                    <span>-</span>
+                  )}
+                </div>
+              )}
             </div>
-          );
-        },
-      },
-      {
-        title: 'ASIN',
-        dataIndex: 'asin',
-        width: 150,
-        align: 'left',
-        hideInSearch: true,
-        render: (_: any, record: API.VariantGroup | API.ASINInfo) => {
-          // 变体组不显示ASIN，返回空字符串以保持列对齐
-          if ((record as API.VariantGroup).parentId === undefined) {
-            return '';
-          }
-          const asin = (record as API.ASINInfo).asin;
-          if (!asin) {
-            return '-';
-          }
-          const url = buildAmazonProductUrl(asin, record.country, record.site);
-          return url ? (
-            <a href={url} target="_blank" rel="noreferrer">
-              {asin}
-            </a>
-          ) : (
-            <span>{asin}</span>
           );
         },
       },
