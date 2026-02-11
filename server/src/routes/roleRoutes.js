@@ -1,7 +1,11 @@
 const express = require('express');
 const router = express.Router();
 const roleController = require('../controllers/roleController');
-const { authenticateToken, checkPermission } = require('../middleware/auth');
+const {
+  authenticateToken,
+  checkPermission,
+  checkRole,
+} = require('../middleware/auth');
 
 // 所有路由都需要认证
 router.use(authenticateToken);
@@ -21,6 +25,14 @@ router.get(
   '/permissions',
   checkPermission('user:read'),
   roleController.getPermissionList,
+);
+
+// 更新角色权限（仅管理员）
+router.put(
+  '/roles/:roleId/permissions',
+  checkRole('ADMIN'),
+  checkPermission('user:write'),
+  roleController.updateRolePermissions,
 );
 
 module.exports = router;
