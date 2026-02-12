@@ -37,6 +37,16 @@ async function authenticateToken(req, res, next) {
         errorCode: 403,
       });
     }
+
+    if (Session.isExpired(session)) {
+      await Session.markExpired(sessionId);
+      return res.status(401).json({
+        success: false,
+        errorMessage: '会话已过期',
+        errorCode: 401,
+      });
+    }
+
     await Session.touch(sessionId);
     const user = await User.findByIdWithPassword(decoded.userId);
 
@@ -150,16 +160,16 @@ function checkRole(roleCodes) {
 
       const hasRole = allowedRoles.some((role) => userRoleCodes.includes(role));
 
-    if (!hasRole) {
-      return res.status(403).json({
-        success: false,
-        errorMessage: '没有权限执行此操作',
-        errorCode: 403,
-      });
-    }
+      if (!hasRole) {
+        return res.status(403).json({
+          success: false,
+          errorMessage: '没有权限执行此操作',
+          errorCode: 403,
+        });
+      }
 
-    next();
-  } catch (error) {
+      next();
+    } catch (error) {
       logger.error('角色检查错误:', error);
       return res.status(500).json({
         success: false,

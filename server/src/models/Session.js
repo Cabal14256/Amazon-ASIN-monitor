@@ -30,6 +30,13 @@ class Session {
     return session;
   }
 
+  static isExpired(session) {
+    if (!session || !session.expires_at) {
+      return false;
+    }
+    return new Date(session.expires_at) <= new Date();
+  }
+
   static async findByUserId(userId) {
     return query(
       `SELECT * FROM sessions WHERE user_id = ? ORDER BY created_at DESC`,
@@ -60,6 +67,20 @@ class Session {
     await query(`UPDATE sessions SET last_active_at = NOW() WHERE id = ?`, [
       id,
     ]);
+  }
+
+  static async markExpired(sessionId) {
+    await query(
+      `UPDATE sessions SET status = 'REVOKED', last_active_at = NOW() WHERE id = ?`,
+      [sessionId],
+    );
+  }
+
+  static async cleanExpiredSessions() {
+    const result = await query(
+      `DELETE FROM sessions WHERE expires_at IS NOT NULL AND expires_at <= NOW()`,
+    );
+    return result.affectedRows || 0;
   }
 }
 

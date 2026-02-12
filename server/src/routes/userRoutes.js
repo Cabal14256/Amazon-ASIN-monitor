@@ -9,6 +9,13 @@ router.use(authenticateToken);
 // 获取用户列表（需要 user:read 权限）
 router.get('/users', checkPermission('user:read'), userController.getUserList);
 
+// 获取所有角色（用于下拉选择，需要 user:read 权限）
+router.get(
+  '/users/roles/all',
+  checkPermission('user:read'),
+  userController.getAllRoles,
+);
+
 // 获取用户详情（需要 user:read 权限）
 router.get(
   '/users/:userId',
@@ -38,13 +45,6 @@ router.put(
   '/users/:userId/password',
   checkPermission('user:write'),
   userController.updateUserPassword,
-);
-
-// 获取所有角色（用于下拉选择，需要 user:read 权限）
-router.get(
-  '/users/roles/all',
-  checkPermission('user:read'),
-  userController.getAllRoles,
 );
 
 module.exports = router;

@@ -1,5 +1,6 @@
 // 运行时配置
 import GlobalAlert from '@/components/GlobalAlert';
+import { logout } from '@/services/auth/AuthController';
 import { debugError, debugLog, debugWarn } from '@/utils/debug';
 import { clearToken, getToken } from '@/utils/token';
 import * as Icons from '@ant-design/icons';
@@ -179,9 +180,7 @@ export async function getInitialState(): Promise<{
       errorCode === 401 ||
       errorCode === 403
     ) {
-      debugWarn(
-        '[getInitialState] Token无效或过期，清除token并重定向到登录页',
-      );
+      debugWarn('[getInitialState] Token无效或过期，清除token并重定向到登录页');
       clearToken();
       // 如果不在登录页，重定向到登录页
       if (!isLoginPage) {
@@ -458,13 +457,21 @@ export const layout = ({ initialState, setInitialState }: any) => {
       const displayName =
         currentUser.real_name || currentUser.username || '用户';
       const handleLogout = async () => {
-        clearToken();
-        await setInitialState({
-          currentUser: undefined,
-          permissions: [],
-          roles: [],
-        });
-        history.push('/login');
+        try {
+          await logout();
+        } catch (error) {
+          debugWarn('[handleLogout] 调用后端登出接口失败，继续本地登出', {
+            error,
+          });
+        } finally {
+          clearToken();
+          await setInitialState({
+            currentUser: undefined,
+            permissions: [],
+            roles: [],
+          });
+          history.push('/login');
+        }
       };
 
       const menuItems = [
