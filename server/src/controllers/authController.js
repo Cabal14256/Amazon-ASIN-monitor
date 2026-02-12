@@ -4,6 +4,8 @@ const Session = require('../models/Session');
 const AuditLog = require('../models/AuditLog');
 const { expiresIn, rememberExpiresIn } = require('../config/jwt');
 const logger = require('../utils/logger');
+const loginAttemptService = require('../services/loginAttemptService');
+const passwordHistoryService = require('../services/passwordHistoryService');
 
 /**
  * 用户登录
@@ -47,6 +49,7 @@ exports.login = async (req, res) => {
       req.ip || req.headers['x-forwarded-for'] || req.connection.remoteAddress;
 
     if (!user) {
+      await loginAttemptService.recordAttempt(username, clientIp, false);
       // 记录登录失败审计日志
       setImmediate(async () => {
         try {
@@ -59,7 +62,7 @@ exports.login = async (req, res) => {
             ipAddress: clientIp,
             userAgent: req.headers['user-agent'] || 'unknown',
             responseStatus: 401,
-            errorMessage: '用户不存在',
+            errorMessage: '用户名或密码错误',
           });
         } catch (error) {
           logger.error('记录登录失败审计日志失败:', error.message);
@@ -68,8 +71,19 @@ exports.login = async (req, res) => {
 
       return res.status(401).json({
         success: false,
-        errorMessage: '用户不存在',
+        errorMessage: '用户名或密码错误',
         errorCode: 401,
+      });
+    }
+
+    const accountLocked = await loginAttemptService.isAccountLocked(user.id);
+    if (accountLocked) {
+      const remainingMinutes =
+        await loginAttemptService.getLockoutRemainingMinutes(user.id);
+      return res.status(423).json({
+        success: false,
+        errorMessage: `账户已锁定，请 ${remainingMinutes || 0} 分钟后再试`,
+        errorCode: 423,
       });
     }
 
@@ -105,6 +119,10 @@ exports.login = async (req, res) => {
     // 验证密码
     const isValidPassword = await User.verifyPassword(user, password);
     if (!isValidPassword) {
+      await loginAttemptService.recordAttempt(username, clientIp, false);
+      const shouldLock = await loginAttemptService.incrementFailedAttempts(
+        user.id,
+      );
       // 记录登录失败审计日志
       setImmediate(async () => {
         try {
@@ -118,7 +136,9 @@ exports.login = async (req, res) => {
             ipAddress: clientIp,
             userAgent: req.headers['user-agent'] || 'unknown',
             responseStatus: 401,
-            errorMessage: '用户名或密码错误',
+            errorMessage: shouldLock
+              ? '账户因登录失败次数过多被锁定'
+              : '用户名或密码错误',
           });
         } catch (error) {
           logger.error('记录登录失败审计日志失败:', error.message);
@@ -144,6 +164,8 @@ exports.login = async (req, res) => {
 
     // 更新登录信息（clientIp已在上面定义）
     await User.updateLoginInfo(user.id, clientIp);
+    await loginAttemptService.recordAttempt(username, clientIp, true);
+    await loginAttemptService.resetFailedAttempts(user.id);
 
     await Session.create({
       id: sessionId,
@@ -341,6 +363,20 @@ exports.changePassword = async (req, res) => {
         errorCode: 400,
       });
     }
+
+    const isPasswordReused = await passwordHistoryService.checkPasswordHistory(
+      userId,
+      newPassword,
+    );
+    if (isPasswordReused) {
+      return res.status(400).json({
+        success: false,
+        errorMessage: `新密码不能与最近 ${passwordHistoryService.MAX_PASSWORD_HISTORY} 次使用过的密码相同`,
+        errorCode: 400,
+      });
+    }
+
+    await passwordHistoryService.savePasswordHistory(userId, user.password);
 
     // 更新密码
     await User.updatePassword(userId, newPassword);
