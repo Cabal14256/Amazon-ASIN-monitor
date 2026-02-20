@@ -1,15 +1,20 @@
 import services from '@/services/asin';
 import { debugError } from '@/utils/debug';
 import { useMessage } from '@/utils/message';
-import { DownloadOutlined, UploadOutlined } from '@ant-design/icons';
-import type { ProColumns } from '@ant-design/pro-components';
-import { EditableProTable } from '@ant-design/pro-components';
-import type { UploadFile, UploadProps } from 'antd';
+import {
+  DeleteOutlined,
+  DownloadOutlined,
+  PlusOutlined,
+  UploadOutlined,
+} from '@ant-design/icons';
+import type { TableColumnsType, UploadFile, UploadProps } from 'antd';
 import {
   Alert,
   Button,
+  Input,
   Modal,
   Progress,
+  Select,
   Space,
   Table,
   Tabs,
@@ -17,6 +22,7 @@ import {
 } from 'antd';
 import type { RcFile } from 'antd/es/upload';
 import React, { useState } from 'react';
+import './ExcelImportModal.less';
 
 const { importFromExcel } = services.ASINController;
 
@@ -37,17 +43,43 @@ interface ImportResult {
 
 interface OnlineImportRow {
   id: string;
-  groupName?: string;
-  country?: string;
-  site?: string;
-  brand?: string;
-  asin?: string;
-  asinType?: string;
+  groupName: string;
+  country: string;
+  site: string;
+  brand: string;
+  asin: string;
+  asinType: string;
 }
+
+const ONLINE_FIELDS = [
+  'groupName',
+  'country',
+  'site',
+  'brand',
+  'asin',
+  'asinType',
+] as const;
+const DEFAULT_ONLINE_ROW_COUNT = 12;
+
+type OnlineField = (typeof ONLINE_FIELDS)[number];
+
+type ActiveCell = {
+  rowId: string;
+  field: OnlineField;
+};
 
 const EMPTY_ROW = (): OnlineImportRow => ({
   id: `${Date.now()}-${Math.random()}`,
+  groupName: '',
+  country: '',
+  site: '',
+  brand: '',
+  asin: '',
+  asinType: '',
 });
+
+const createInitialRows = () =>
+  Array.from({ length: DEFAULT_ONLINE_ROW_COUNT }, () => EMPTY_ROW());
 
 const ExcelImportModal: React.FC<ExcelImportModalProps> = (props) => {
   const { visible, open, onCancel, onSuccess } = props;
@@ -57,10 +89,9 @@ const ExcelImportModal: React.FC<ExcelImportModalProps> = (props) => {
   const [uploading, setUploading] = useState(false);
   const [importResult, setImportResult] = useState<ImportResult | null>(null);
   const [progress, setProgress] = useState(0);
-  const [onlineRows, setOnlineRows] = useState<OnlineImportRow[]>([
-    EMPTY_ROW(),
-  ]);
-  const [editableRowKeys, setEditableRowKeys] = useState<React.Key[]>([]);
+  const [onlineRows, setOnlineRows] =
+    useState<OnlineImportRow[]>(createInitialRows);
+  const [activeCell, setActiveCell] = useState<ActiveCell | null>(null);
 
   const submitImport = async (file: RcFile | File) => {
     setUploading(true);
@@ -114,7 +145,6 @@ const ExcelImportModal: React.FC<ExcelImportModalProps> = (props) => {
         error.response?.data?.errorMessage || error.message || '导入失败';
       debugError('导入错误详情:', error);
       message.error(errorMessage);
-      // 如果有错误响应数据，也设置到结果中
       if (error.response?.data?.data) {
         setImportResult(error.response.data.data);
       }
@@ -124,19 +154,104 @@ const ExcelImportModal: React.FC<ExcelImportModalProps> = (props) => {
     }
   };
 
+  const updateOnlineCell = (
+    rowId: string,
+    field: OnlineField,
+    value: string,
+  ) => {
+    setOnlineRows((prev) =>
+      prev.map((row) => (row.id === rowId ? { ...row, [field]: value } : row)),
+    );
+  };
+
+  const appendOnlineRows = (count: number) => {
+    const safeCount = Math.max(1, count);
+    setOnlineRows((prev) => [
+      ...prev,
+      ...Array.from({ length: safeCount }, () => EMPTY_ROW()),
+    ]);
+  };
+
+  const removeLastRow = () => {
+    setOnlineRows((prev) => (prev.length > 1 ? prev.slice(0, -1) : prev));
+  };
+
+  const handleOnlineSheetPaste = (
+    event: React.ClipboardEvent<HTMLDivElement>,
+  ) => {
+    if (!activeCell) {
+      return;
+    }
+
+    const clipboardText = event.clipboardData.getData('text/plain');
+    if (
+      !clipboardText ||
+      (!clipboardText.includes('\n') && !clipboardText.includes('\t'))
+    ) {
+      return;
+    }
+
+    const matrix = clipboardText
+      .replace(/\r/g, '')
+      .split('\n')
+      .filter(
+        (line, index, arr) => !(index === arr.length - 1 && line.trim() === ''),
+      )
+      .map((line) => line.split('\t'));
+
+    if (matrix.length === 0) {
+      return;
+    }
+
+    event.preventDefault();
+
+    setOnlineRows((prev) => {
+      const rowIndex = prev.findIndex((row) => row.id === activeCell.rowId);
+      const fieldIndex = ONLINE_FIELDS.indexOf(activeCell.field);
+
+      if (rowIndex < 0 || fieldIndex < 0) {
+        return prev;
+      }
+
+      const requiredRows = rowIndex + matrix.length;
+      const nextRows = [...prev];
+      while (nextRows.length < requiredRows) {
+        nextRows.push(EMPTY_ROW());
+      }
+
+      matrix.forEach((cells, rowOffset) => {
+        const targetIndex = rowIndex + rowOffset;
+        const targetRow = { ...nextRows[targetIndex] };
+        cells.forEach((cellValue, cellOffset) => {
+          const targetField = ONLINE_FIELDS[fieldIndex + cellOffset];
+          if (targetField) {
+            targetRow[targetField] = cellValue.trim();
+          }
+        });
+        nextRows[targetIndex] = targetRow;
+      });
+
+      return nextRows;
+    });
+  };
+
   const handleCancel = () => {
     setFileList([]);
     setImportResult(null);
     setProgress(0);
-    setOnlineRows([EMPTY_ROW()]);
-    setEditableRowKeys([]);
+    setOnlineRows(createInitialRows());
+    setActiveCell(null);
     onCancel();
   };
 
   const handleOnlineImport = async () => {
     const validRows = onlineRows.filter(
       (row) =>
-        row.groupName || row.country || row.site || row.brand || row.asin,
+        row.groupName.trim() ||
+        row.country.trim() ||
+        row.site.trim() ||
+        row.brand.trim() ||
+        row.asin.trim(),
     );
 
     if (validRows.length === 0) {
@@ -211,42 +326,129 @@ const ExcelImportModal: React.FC<ExcelImportModalProps> = (props) => {
     }
   };
 
-  const onlineColumns: ProColumns<OnlineImportRow>[] = [
+  const renderRequiredTitle = (title: string) => (
+    <span>
+      {title}
+      <span style={{ color: '#ff4d4f', marginLeft: 4 }}>*</span>
+    </span>
+  );
+
+  const onlineColumns: TableColumnsType<OnlineImportRow> = [
     {
-      title: '变体组名称',
+      title: '#',
+      dataIndex: 'rowNo',
+      width: 52,
+      fixed: 'left',
+      className: 'row-index-cell',
+      render: (_, __, index) => index + 1,
+    },
+    {
+      title: renderRequiredTitle('变体组名称'),
       dataIndex: 'groupName',
-      width: 180,
-      formItemProps: { required: true },
+      width: 220,
+      render: (_, record) => (
+        <Input
+          className="online-cell-input"
+          value={record.groupName}
+          placeholder="如：iPhone 15 Pro 变体组"
+          onFocus={() =>
+            setActiveCell({ rowId: record.id, field: 'groupName' })
+          }
+          onChange={(event) =>
+            updateOnlineCell(record.id, 'groupName', event.target.value)
+          }
+        />
+      ),
     },
     {
-      title: '国家',
+      title: renderRequiredTitle('国家'),
       dataIndex: 'country',
-      width: 90,
-      formItemProps: { required: true },
+      width: 120,
+      render: (_, record) => (
+        <Input
+          className="online-cell-input"
+          value={record.country}
+          placeholder="US"
+          onFocus={() => setActiveCell({ rowId: record.id, field: 'country' })}
+          onChange={(event) =>
+            updateOnlineCell(record.id, 'country', event.target.value)
+          }
+        />
+      ),
     },
     {
-      title: '站点',
+      title: renderRequiredTitle('站点'),
       dataIndex: 'site',
-      width: 90,
-      formItemProps: { required: true },
+      width: 120,
+      render: (_, record) => (
+        <Input
+          className="online-cell-input"
+          value={record.site}
+          placeholder="12"
+          onFocus={() => setActiveCell({ rowId: record.id, field: 'site' })}
+          onChange={(event) =>
+            updateOnlineCell(record.id, 'site', event.target.value)
+          }
+        />
+      ),
     },
     {
-      title: '品牌',
+      title: renderRequiredTitle('品牌'),
       dataIndex: 'brand',
-      width: 130,
-      formItemProps: { required: true },
+      width: 160,
+      render: (_, record) => (
+        <Input
+          className="online-cell-input"
+          value={record.brand}
+          placeholder="品牌名称"
+          onFocus={() => setActiveCell({ rowId: record.id, field: 'brand' })}
+          onChange={(event) =>
+            updateOnlineCell(record.id, 'brand', event.target.value)
+          }
+        />
+      ),
     },
     {
-      title: 'ASIN',
+      title: renderRequiredTitle('ASIN'),
       dataIndex: 'asin',
-      width: 140,
-      formItemProps: { required: true },
+      width: 180,
+      render: (_, record) => (
+        <Input
+          className="online-cell-input"
+          value={record.asin}
+          placeholder="B0XXXXXXXX"
+          onFocus={() => setActiveCell({ rowId: record.id, field: 'asin' })}
+          onChange={(event) =>
+            updateOnlineCell(record.id, 'asin', event.target.value)
+          }
+        />
+      ),
     },
-    { title: 'ASIN类型', dataIndex: 'asinType', width: 110 },
+    {
+      title: 'ASIN类型',
+      dataIndex: 'asinType',
+      width: 130,
+      render: (_, record) => (
+        <Select
+          className="online-cell-select"
+          value={record.asinType || undefined}
+          placeholder="可选"
+          options={[
+            { value: '1', label: '1 主链' },
+            { value: '2', label: '2 副评' },
+          ]}
+          onFocus={() => setActiveCell({ rowId: record.id, field: 'asinType' })}
+          onChange={(value) =>
+            updateOnlineCell(record.id, 'asinType', value || '')
+          }
+          allowClear
+          style={{ width: '100%' }}
+        />
+      ),
+    },
   ];
 
   const downloadTemplate = () => {
-    // 创建模板数据（不包含ASIN名称列）
     const templateData = [
       ['变体组名称', '国家', '站点', '品牌', 'ASIN', 'ASIN类型'],
       ['iPhone 15 Pro 变体组', 'US', '12', 'Apple', 'B0CHX1W1XY', '1'],
@@ -254,7 +456,6 @@ const ExcelImportModal: React.FC<ExcelImportModalProps> = (props) => {
       ['MacBook Pro 变体组', 'UK', '15', 'Apple', 'B09JQL8KP9', ''],
     ];
 
-    // 转换为CSV格式
     const csvContent = templateData.map((row) => row.join(',')).join('\n');
     const blob = new Blob(['\ufeff' + csvContent], {
       type: 'text/csv;charset=utf-8;',
@@ -289,7 +490,7 @@ const ExcelImportModal: React.FC<ExcelImportModalProps> = (props) => {
       open={modalVisible}
       onCancel={handleCancel}
       footer={null}
-      width={700}
+      width={1060}
     >
       <Tabs
         items={[
@@ -360,39 +561,45 @@ const ExcelImportModal: React.FC<ExcelImportModalProps> = (props) => {
               <>
                 <Alert
                   message="在线录入说明"
-                  description="可直接在表格中录入多行数据后提交，系统会自动转为CSV并按Excel导入规则校验。"
+                  description="表格支持单元格直接编辑；可从 Excel 复制多行多列后，选中起始单元格直接粘贴。"
                   type="info"
                   showIcon
                   style={{ marginBottom: 12 }}
                 />
-                <EditableProTable<OnlineImportRow>
-                  rowKey="id"
-                  columns={onlineColumns}
-                  value={onlineRows}
-                  onChange={(value) => setOnlineRows([...value])}
-                  recordCreatorProps={false}
-                  editable={{
-                    type: 'multiple',
-                    editableKeys: editableRowKeys,
-                    onChange: setEditableRowKeys,
-                  }}
-                  scroll={{ x: 760 }}
-                />
-                <Space>
+                <div
+                  className="online-import-sheet"
+                  onPaste={handleOnlineSheetPaste}
+                >
+                  <Table<OnlineImportRow>
+                    rowKey="id"
+                    columns={onlineColumns}
+                    dataSource={onlineRows}
+                    pagination={false}
+                    size="small"
+                    bordered
+                    sticky
+                    scroll={{ x: 980, y: 360 }}
+                  />
+                </div>
+                <Space wrap>
                   <Button
-                    onClick={() => {
-                      const newRow = EMPTY_ROW();
-                      setOnlineRows((prev) => [...prev, newRow]);
-                      setEditableRowKeys((prev) => [...prev, newRow.id]);
-                    }}
+                    icon={<PlusOutlined />}
+                    onClick={() => appendOnlineRows(5)}
                     disabled={uploading}
                   >
-                    新增一行
+                    新增5行
+                  </Button>
+                  <Button
+                    icon={<DeleteOutlined />}
+                    onClick={removeLastRow}
+                    disabled={uploading || onlineRows.length <= 1}
+                  >
+                    删除末行
                   </Button>
                   <Button
                     onClick={() => {
-                      setOnlineRows([EMPTY_ROW()]);
-                      setEditableRowKeys([]);
+                      setOnlineRows(createInitialRows());
+                      setActiveCell(null);
                     }}
                     disabled={uploading}
                   >
