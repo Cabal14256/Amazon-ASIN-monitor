@@ -75,13 +75,29 @@ exports.getMonitorHistory = async (req, res) => {
       pageSize,
     } = req.query;
 
-    // 处理多ASIN查询：如果asin是逗号分隔的字符串，转换为数组
+    // 处理多ASIN查询：支持逗号/空白符分隔，多个值走精确匹配
     let asinParam = asin;
-    if (asin && typeof asin === 'string' && asin.includes(',')) {
-      asinParam = asin
-        .split(',')
-        .map((s) => s.trim())
-        .filter((s) => s.length > 0);
+    if (asin && typeof asin === 'string') {
+      const trimmed = asin.trim();
+      if (trimmed) {
+        const asinList = [
+          ...new Set(
+            trimmed
+              .split(/[,\s]+/)
+              .map((s) => s.trim())
+              .filter((s) => s.length > 0),
+          ),
+        ];
+        if (asinList.length > 1) {
+          asinParam = asinList;
+        } else if (asinList.length === 1) {
+          asinParam = asinList[0];
+        } else {
+          asinParam = '';
+        }
+      } else {
+        asinParam = '';
+      }
     }
 
     const result = await MonitorHistory.findAll({
