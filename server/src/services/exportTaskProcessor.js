@@ -125,6 +125,55 @@ function formatCheckResult(checkResult) {
 }
 
 /**
+ * 规范化ASIN筛选参数
+ * - 单个值：保持字符串（兼容模糊搜索）
+ * - 多个值：返回数组（精确匹配）
+ */
+function normalizeAsinFilter(asinValue) {
+  if (!asinValue) {
+    return '';
+  }
+
+  if (Array.isArray(asinValue)) {
+    const normalized = [
+      ...new Set(
+        asinValue
+          .map((item) => String(item || '').trim())
+          .filter((item) => item.length > 0),
+      ),
+    ];
+    if (normalized.length === 0) {
+      return '';
+    }
+    return normalized.length === 1 ? normalized[0] : normalized;
+  }
+
+  if (typeof asinValue === 'string') {
+    const trimmed = asinValue.trim();
+    if (!trimmed) {
+      return '';
+    }
+    if (!/[,\s]/.test(trimmed)) {
+      return trimmed;
+    }
+    const normalized = [
+      ...new Set(
+        trimmed
+          .split(/[,\s]+/)
+          .map((item) => item.trim())
+          .filter((item) => item.length > 0),
+      ),
+    ];
+    if (normalized.length === 0) {
+      return '';
+    }
+    return normalized.length === 1 ? normalized[0] : normalized;
+  }
+
+  return '';
+}
+
+/**
  * 更新任务进度
  */
 function updateProgress(job, taskId, progress, message, userId = null) {
@@ -274,20 +323,11 @@ async function processASINExport(job, taskId, params, userId) {
 
   updateProgress(job, taskId, 75, '正在生成Excel文件...', userId);
 
-  const workbook = buildWorkbookFromAoa(excelData, 'ASIN数据', [
-    20,
-    40,
-    10,
-    10,
-    15,
-    10,
-    15,
-    50,
-    15,
-    10,
-    20,
-    20,
-  ]);
+  const workbook = buildWorkbookFromAoa(
+    excelData,
+    'ASIN数据',
+    [20, 40, 10, 10, 15, 10, 15, 50, 15, 10, 20, 20],
+  );
 
   updateProgress(job, taskId, 90, '正在生成Excel文件...', userId);
 
@@ -384,13 +424,8 @@ async function processMonitorHistoryExport(job, taskId, params, userId) {
     fgColor: { argb: 'FFE0E0E0' },
   };
 
-  let asinParam = asin || '';
-  if (asinParam && typeof asinParam === 'string' && asinParam.includes(',')) {
-    asinParam = asinParam
-      .split(',')
-      .map((s) => s.trim())
-      .filter((s) => s.length > 0);
-  }
+  const asinParam = normalizeAsinFilter(asin);
+  const effectiveEndTime = endTime || getUTC8String('YYYY-MM-DD HH:mm:ss');
 
   const queryParams = {
     country: country || '',
@@ -399,42 +434,36 @@ async function processMonitorHistoryExport(job, taskId, params, userId) {
     asinId: asinId || '',
     asin: asinParam,
     startTime: startTime || '',
-    endTime: endTime || '',
+    endTime: effectiveEndTime,
     isBroken: isBroken || '',
   };
 
-  const firstPage = isStatusChanges
-    ? await MonitorHistory.findStatusChanges({
-        ...queryParams,
-        current: 1,
-        pageSize: 1,
-      })
-    : await MonitorHistory.findAll({
-        ...queryParams,
-        current: 1,
-        pageSize: 1,
-      });
-
-  const total = firstPage.total || 0;
-  updateProgress(job, taskId, 15, `找到 ${total} 条记录，开始处理...`, userId);
-
-  let processedCount = 0;
   const batchSize = 10000;
-  const totalPages = Math.ceil(total / batchSize);
 
-  for (let page = 1; page <= totalPages; page++) {
+  const queryBatch = async (page) => {
     const batchParams = {
       ...queryParams,
       current: page,
       pageSize: batchSize,
+      skipCount: true,
     };
 
-    const batch = isStatusChanges
+    return isStatusChanges
       ? await MonitorHistory.findStatusChanges(batchParams)
       : await MonitorHistory.findAll(batchParams);
+  };
 
+  const firstBatch = await queryBatch(1);
+  const total = Number(firstBatch?.total) || 0;
+  const totalMessage =
+    total > 0 ? `找到 ${total} 条记录，开始处理...` : '开始处理记录...';
+  updateProgress(job, taskId, 15, totalMessage, userId);
+
+  let processedCount = 0;
+
+  const processBatch = (batch) => {
     const rowsData = [];
-    for (const history of batch.list) {
+    for (const history of batch.list || []) {
       const checkTimeStr = formatCheckTime(
         history.check_time || history.checkTime,
       );
@@ -474,17 +503,31 @@ async function processMonitorHistoryExport(job, taskId, params, userId) {
       processedCount += rowsData.length;
     }
 
+    const progressDenominator = total > 0 ? total : processedCount + batchSize;
     const progress = Math.min(
-      15 + Math.floor((processedCount / total) * 60),
+      15 + Math.floor((processedCount / progressDenominator) * 60),
       75,
     );
+    const progressText =
+      total > 0 ? `${processedCount}/${total}` : `${processedCount} 条`;
     updateProgress(
       job,
       taskId,
       progress,
-      `正在处理数据... (${processedCount}/${total})`,
+      `正在处理数据... (${progressText})`,
       userId,
     );
+  };
+
+  let currentBatch = firstBatch;
+  let page = 1;
+  while ((currentBatch.list || []).length > 0) {
+    processBatch(currentBatch);
+    if ((currentBatch.list || []).length < batchSize) {
+      break;
+    }
+    page += 1;
+    currentBatch = await queryBatch(page);
   }
 
   updateProgress(job, taskId, 80, '正在生成Excel文件...', userId);
@@ -572,19 +615,11 @@ async function processVariantGroupExport(job, taskId, params, userId) {
 
   updateProgress(job, taskId, 75, '正在生成Excel文件...', userId);
 
-  const workbook = buildWorkbookFromAoa(excelData, '变体组数据', [
-    30,
-    40,
-    10,
-    10,
-    15,
-    10,
-    10,
-    12,
-    20,
-    20,
-    20,
-  ]);
+  const workbook = buildWorkbookFromAoa(
+    excelData,
+    '变体组数据',
+    [30, 40, 10, 10, 15, 10, 10, 12, 20, 20, 20],
+  );
 
   updateProgress(job, taskId, 90, '正在生成Excel文件...', userId);
 
@@ -693,16 +728,11 @@ async function processCompetitorMonitorHistoryExport(
 
   updateProgress(job, taskId, 75, '正在生成Excel文件...', userId);
 
-  const workbook = buildWorkbookFromAoa(excelData, '竞品监控历史', [
-    20,
-    10,
-    30,
-    15,
-    50,
-    10,
-    10,
-    100,
-  ]);
+  const workbook = buildWorkbookFromAoa(
+    excelData,
+    '竞品监控历史',
+    [20, 10, 30, 15, 50, 10, 10, 100],
+  );
 
   updateProgress(job, taskId, 90, '正在生成Excel文件...', userId);
 

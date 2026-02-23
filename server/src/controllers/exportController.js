@@ -401,6 +401,55 @@ function formatCheckResult(checkResult) {
 }
 
 /**
+ * 规范化ASIN筛选参数
+ * - 单个值：保持字符串（兼容模糊搜索）
+ * - 多个值：返回数组（精确匹配）
+ */
+function normalizeAsinFilter(asinValue) {
+  if (!asinValue) {
+    return '';
+  }
+
+  if (Array.isArray(asinValue)) {
+    const normalized = [
+      ...new Set(
+        asinValue
+          .map((item) => String(item || '').trim())
+          .filter((item) => item.length > 0),
+      ),
+    ];
+    if (normalized.length === 0) {
+      return '';
+    }
+    return normalized.length === 1 ? normalized[0] : normalized;
+  }
+
+  if (typeof asinValue === 'string') {
+    const trimmed = asinValue.trim();
+    if (!trimmed) {
+      return '';
+    }
+    if (!/[,\s]/.test(trimmed)) {
+      return trimmed;
+    }
+    const normalized = [
+      ...new Set(
+        trimmed
+          .split(/[,\s]+/)
+          .map((item) => item.trim())
+          .filter((item) => item.length > 0),
+      ),
+    ];
+    if (normalized.length === 0) {
+      return '';
+    }
+    return normalized.length === 1 ? normalized[0] : normalized;
+  }
+
+  return '';
+}
+
+/**
  * 导出监控历史数据为Excel（优化版本，使用流式查询和ExcelJS）
  */
 async function exportMonitorHistory(req, res) {
@@ -577,21 +626,16 @@ async function exportMonitorHistory(req, res) {
       fgColor: { argb: 'FFE0E0E0' },
     };
 
-    if (!sendProgress(res, 10, '正在查询数据...', 'querying')) {
-      logger.warn('无法发送查询进度消息，连接可能已断开');
-      return;
+    if (isProgressMode) {
+      if (!sendProgress(res, 10, '正在查询数据...', 'querying')) {
+        logger.warn('无法发送查询进度消息，连接可能已断开');
+        return;
+      }
     }
 
-    // 使用流式查询（批量分页）
-    // 处理 asin 参数：如果是逗号分隔的字符串，转换为数组以支持多ASIN精确查询
-    let asinParam = asin || '';
-    if (asinParam && typeof asinParam === 'string' && asinParam.includes(',')) {
-      // 逗号分隔的字符串转换为数组
-      asinParam = asinParam
-        .split(',')
-        .map((s) => s.trim())
-        .filter((s) => s.length > 0);
-    }
+    // 使用固定快照时间导出，避免导出过程中新增数据导致分页偏移
+    const effectiveEndTime = endTime || getUTC8String('YYYY-MM-DD HH:mm:ss');
+    const asinParam = normalizeAsinFilter(asin);
 
     const queryParams = {
       country: country || '',
@@ -600,64 +644,53 @@ async function exportMonitorHistory(req, res) {
       asinId: asinId || '',
       asin: asinParam,
       startTime: startTime || '',
-      endTime: endTime || '',
+      endTime: effectiveEndTime,
       isBroken: isBroken || '',
     };
 
-    // 先获取总数用于进度计算
-    // 在查询前检查连接状态
-    if (isProgressMode) {
-      if (req._clientDisconnected && req._clientDisconnected()) {
-        logger.info('查询前检测到客户端已断开连接');
-        return;
-      }
-      if (!isResponseValid(res)) {
-        logger.info('查询前检测到响应连接无效');
-        return;
-      }
-    }
+    const batchSize = 10000; // 每批处理10000条
 
-    const firstPage = isStatusChanges
-      ? await MonitorHistory.findStatusChanges({
-          ...queryParams,
-          current: 1,
-          pageSize: 1,
-        })
-      : await MonitorHistory.findAll({
-          ...queryParams,
-          current: 1,
-          pageSize: 1,
-        });
-
-    // 查询后再次检查连接状态
-    if (isProgressMode) {
-      if (req._clientDisconnected && req._clientDisconnected()) {
-        logger.info('查询后检测到客户端已断开连接');
-        return;
+    const queryBatch = async (page) => {
+      if (isProgressMode) {
+        if (req._clientDisconnected && req._clientDisconnected()) {
+          logger.info('客户端已断开连接，停止查询');
+          throw new Error('客户端断开连接');
+        }
+        if (!isResponseValid(res)) {
+          logger.info('响应连接无效，停止查询');
+          throw new Error('响应连接无效');
+        }
       }
-      if (!isResponseValid(res)) {
-        logger.info('查询后检测到响应连接无效');
-        return;
-      }
-    }
 
-    const total = firstPage.total || 0;
+      const batchParams = {
+        ...queryParams,
+        current: page,
+        pageSize: batchSize,
+        skipCount: true,
+      };
+
+      return isStatusChanges
+        ? await MonitorHistory.findStatusChanges(batchParams)
+        : await MonitorHistory.findAll(batchParams);
+    };
+
+    const firstBatch = await queryBatch(1);
+    const total = Number(firstBatch?.total) || 0;
 
     // 更新进度，告知总数
     if (isProgressMode) {
-      if (
-        !sendProgress(res, 15, `找到 ${total} 条记录，开始处理...`, 'querying')
-      ) {
+      const totalMessage =
+        total > 0 ? `找到 ${total} 条记录，开始处理...` : '开始处理记录...';
+      if (!sendProgress(res, 15, totalMessage, 'querying')) {
         logger.warn('无法发送总数进度消息，连接可能已断开');
         return;
       }
     }
 
     let processedCount = 0;
-    const batchSize = 10000; // 每批处理10000条
 
     // 流式处理数据
-    const processBatch = async (page) => {
+    const processBatch = async (batch) => {
       // 检查客户端是否断开连接
       if (isProgressMode) {
         if (req._clientDisconnected && req._clientDisconnected()) {
@@ -670,19 +703,9 @@ async function exportMonitorHistory(req, res) {
         }
       }
 
-      const batchParams = {
-        ...queryParams,
-        current: page,
-        pageSize: batchSize,
-      };
-
-      const batch = isStatusChanges
-        ? await MonitorHistory.findStatusChanges(batchParams)
-        : await MonitorHistory.findAll(batchParams);
-
       // 优化：先收集所有行数据，然后批量添加（性能提升：批量添加比逐条添加快5-10倍）
       const rowsData = [];
-      for (const history of batch.list) {
+      for (const history of batch.list || []) {
         const checkTimeStr = formatCheckTime(
           history.check_time || history.checkTime,
         );
@@ -733,15 +756,19 @@ async function exportMonitorHistory(req, res) {
           logger.info('批处理完成后检测到响应连接无效');
           throw new Error('响应连接无效');
         }
+        const progressDenominator =
+          total > 0 ? total : processedCount + batchSize;
         const progress = Math.min(
-          10 + Math.floor((processedCount / total) * 60),
+          10 + Math.floor((processedCount / progressDenominator) * 60),
           70,
         );
+        const progressText =
+          total > 0 ? `${processedCount}/${total}` : `${processedCount} 条`;
         if (
           !sendProgress(
             res,
             progress,
-            `正在处理数据... (${processedCount}/${total})`,
+            `正在处理数据... (${progressText})`,
             'processing',
           )
         ) {
@@ -752,10 +779,19 @@ async function exportMonitorHistory(req, res) {
     };
 
     // 分批处理所有数据
-    const totalPages = Math.ceil(total / batchSize);
     try {
-      for (let page = 1; page <= totalPages; page++) {
-        await processBatch(page);
+      let currentBatch = firstBatch;
+      let page = 1;
+
+      while ((currentBatch.list || []).length > 0) {
+        await processBatch(currentBatch);
+
+        if ((currentBatch.list || []).length < batchSize) {
+          break;
+        }
+
+        page += 1;
+        currentBatch = await queryBatch(page);
       }
     } catch (batchError) {
       // 如果是客户端断开连接的错误，直接返回
@@ -783,9 +819,11 @@ async function exportMonitorHistory(req, res) {
       }
     }
 
-    if (!sendProgress(res, 75, '正在生成Excel文件...', 'generating')) {
-      logger.warn('无法发送生成Excel进度消息，连接可能已断开');
-      return;
+    if (isProgressMode) {
+      if (!sendProgress(res, 75, '正在生成Excel文件...', 'generating')) {
+        logger.warn('无法发送生成Excel进度消息，连接可能已断开');
+        return;
+      }
     }
 
     // 生成Excel文件

@@ -48,6 +48,7 @@ class MonitorHistory {
       endTime = '',
       current = 1,
       pageSize = 10,
+      skipCount = false,
     } = params;
 
     let sql = `
@@ -126,81 +127,86 @@ class MonitorHistory {
       conditions.push(endTime);
     }
 
-    const countKey = `monitorHistoryCount:${variantGroupId || 'ALL'}:${
-      asinId || 'ALL'
-    }:${asin || 'ALL'}:${country || 'ALL'}:${checkType || 'ALL'}:${
-      isBroken || 'ALL'
-    }:${startTime || 'ALL'}:${endTime || 'ALL'}`;
-    let total = await cacheService.getAsync(countKey);
-    if (total === null) {
-      // 优化：COUNT查询直接查询monitor_history表，避免LEFT JOIN
-      // 构建独立的COUNT查询，只使用monitor_history表的字段
-      let countSql = `SELECT COUNT(*) as total FROM monitor_history mh WHERE 1=1`;
-      const countConditions = [];
-
-      if (variantGroupId) {
-        countSql += ` AND mh.variant_group_id = ?`;
-        countConditions.push(variantGroupId);
-      }
-
-      if (asinId) {
-        countSql += ` AND mh.asin_id = ?`;
-        countConditions.push(asinId);
-      }
-
-      if (asin) {
-        // 支持多ASIN查询：如果asin是数组，使用IN查询；否则使用LIKE查询（向后兼容）
-        if (Array.isArray(asin) && asin.length > 0) {
-          const placeholders = asin.map(() => '?').join(',');
-          countSql += ` AND mh.asin_code IN (${placeholders})`;
-          countConditions.push(...asin);
-        } else if (typeof asin === 'string') {
-          // 只搜索快照字段，避免JOIN
-          countSql += ` AND mh.asin_code LIKE ?`;
-          countConditions.push(`%${asin}%`);
+    let total = null;
+    if (!skipCount) {
+      const countKey = `monitorHistoryCount:${variantGroupId || 'ALL'}:${
+        asinId || 'ALL'
+      }:${asin || 'ALL'}:${country || 'ALL'}:${checkType || 'ALL'}:${
+        isBroken || 'ALL'
+      }:${startTime || 'ALL'}:${endTime || 'ALL'}`;
+      total = await cacheService.getAsync(countKey);
+      if (total === null) {
+        // COUNT查询必须和列表查询保持同样的筛选语义，否则分页总数可能不准确
+        let countSql = `SELECT COUNT(*) as total FROM monitor_history mh`;
+        if (asin) {
+          countSql += ` LEFT JOIN asins a ON a.id = mh.asin_id`;
         }
-      }
+        countSql += ` WHERE 1=1`;
+        const countConditions = [];
 
-      if (country) {
-        if (country === 'EU') {
-          countSql += ` AND mh.country IN ('UK', 'DE', 'FR', 'IT', 'ES')`;
-        } else {
-          countSql += ` AND mh.country = ?`;
-          countConditions.push(country);
+        if (variantGroupId) {
+          countSql += ` AND mh.variant_group_id = ?`;
+          countConditions.push(variantGroupId);
         }
-      }
 
-      if (checkType) {
-        countSql += ` AND mh.check_type = ?`;
-        countConditions.push(checkType);
-      }
+        if (asinId) {
+          countSql += ` AND mh.asin_id = ?`;
+          countConditions.push(asinId);
+        }
 
-      if (isBroken !== '') {
-        countSql += ` AND mh.is_broken = ?`;
-        countConditions.push(isBroken === '1' || isBroken === 1 ? 1 : 0);
-      }
+        if (asin) {
+          // 与列表查询保持一致：优先快照字段，缺失时回退到关联表
+          if (Array.isArray(asin) && asin.length > 0) {
+            const placeholders = asin.map(() => '?').join(',');
+            countSql += ` AND (COALESCE(mh.asin_code, a.asin) IN (${placeholders}))`;
+            countConditions.push(...asin);
+          } else if (typeof asin === 'string') {
+            countSql += ` AND (COALESCE(mh.asin_code, a.asin) LIKE ?)`;
+            countConditions.push(`%${asin}%`);
+          }
+        }
 
-      if (startTime) {
-        countSql += ` AND mh.check_time >= ?`;
-        countConditions.push(startTime);
-      }
+        if (country) {
+          if (country === 'EU') {
+            countSql += ` AND mh.country IN ('UK', 'DE', 'FR', 'IT', 'ES')`;
+          } else {
+            countSql += ` AND mh.country = ?`;
+            countConditions.push(country);
+          }
+        }
 
-      if (endTime) {
-        countSql += ` AND mh.check_time <= ?`;
-        countConditions.push(endTime);
-      }
+        if (checkType) {
+          countSql += ` AND mh.check_type = ?`;
+          countConditions.push(checkType);
+        }
 
-      const countResult = await query(countSql, countConditions);
-      total = countResult[0]?.total || 0;
-      await cacheService.setAsync(countKey, total, 60 * 1000);
-    } else {
-      logger.info('MonitorHistory.findAll 使用缓存总数:', countKey);
+        if (isBroken !== '') {
+          countSql += ` AND mh.is_broken = ?`;
+          countConditions.push(isBroken === '1' || isBroken === 1 ? 1 : 0);
+        }
+
+        if (startTime) {
+          countSql += ` AND mh.check_time >= ?`;
+          countConditions.push(startTime);
+        }
+
+        if (endTime) {
+          countSql += ` AND mh.check_time <= ?`;
+          countConditions.push(endTime);
+        }
+
+        const countResult = await query(countSql, countConditions);
+        total = countResult[0]?.total || 0;
+        await cacheService.setAsync(countKey, total, 60 * 1000);
+      } else {
+        logger.info('MonitorHistory.findAll 使用缓存总数:', countKey);
+      }
     }
 
     // 分页 - LIMIT 和 OFFSET 不能使用参数绑定，必须直接拼接（确保是整数）
     const offset = (Number(current) - 1) * Number(pageSize);
     const limit = Number(pageSize);
-    sql += ` ORDER BY mh.check_time DESC LIMIT ${limit} OFFSET ${offset}`;
+    sql += ` ORDER BY mh.check_time DESC, mh.id DESC LIMIT ${limit} OFFSET ${offset}`;
 
     const list = await query(sql, conditions);
 
@@ -219,7 +225,7 @@ class MonitorHistory {
 
     return {
       list: formattedList,
-      total,
+      total: skipCount ? null : total,
       current: Number(current),
       pageSize: Number(pageSize),
     };
@@ -2342,6 +2348,7 @@ class MonitorHistory {
       endTime = '',
       current = 1,
       pageSize = 10,
+      skipCount = false,
     } = params;
 
     // 构建基础查询，使用窗口函数识别状态变化
@@ -2364,7 +2371,7 @@ class MonitorHistory {
           a.asin_type as asin_type,
           LAG(mh.is_broken) OVER (
             PARTITION BY mh.asin_id, mh.country 
-            ORDER BY mh.check_time
+            ORDER BY mh.check_time, mh.id
           ) as prev_is_broken
         FROM monitor_history mh
         LEFT JOIN variant_groups vg ON vg.id = mh.variant_group_id
@@ -2424,88 +2431,94 @@ class MonitorHistory {
       SELECT * FROM status_history
       WHERE prev_is_broken IS NOT NULL
         AND prev_is_broken != is_broken
-      ORDER BY check_time DESC
+      ORDER BY check_time DESC, id DESC
     `;
 
-    // 计算总数（先查询总数）
-    const countKey = `statusChangesCount:${variantGroupId || 'ALL'}:${
-      asinId || 'ALL'
-    }:${asin || 'ALL'}:${country || 'ALL'}:${checkType || 'ALL'}:${
-      startTime || 'ALL'
-    }:${endTime || 'ALL'}`;
-    let total = await cacheService.getAsync(countKey);
-    if (total === null) {
-      let countSql = `
-        WITH status_history AS (
-          SELECT 
-            mh.id,
-            mh.asin_id,
-            mh.country,
-            mh.is_broken,
-            LAG(mh.is_broken) OVER (
-              PARTITION BY mh.asin_id, mh.country 
-              ORDER BY mh.check_time
-            ) as prev_is_broken
-          FROM monitor_history mh
-          WHERE 1=1
-      `;
-      const countConditions = [];
-
-      if (variantGroupId) {
-        countSql += ` AND mh.variant_group_id = ?`;
-        countConditions.push(variantGroupId);
-      }
-
-      if (asinId) {
-        countSql += ` AND mh.asin_id = ?`;
-        countConditions.push(asinId);
-      }
-
-      if (asin) {
-        if (Array.isArray(asin) && asin.length > 0) {
-          const placeholders = asin.map(() => '?').join(',');
-          countSql += ` AND mh.asin_code IN (${placeholders})`;
-          countConditions.push(...asin);
-        } else if (typeof asin === 'string') {
-          countSql += ` AND mh.asin_code LIKE ?`;
-          countConditions.push(`%${asin}%`);
+    let total = null;
+    if (!skipCount) {
+      // 计算总数（先查询总数）
+      const countKey = `statusChangesCount:${variantGroupId || 'ALL'}:${
+        asinId || 'ALL'
+      }:${asin || 'ALL'}:${country || 'ALL'}:${checkType || 'ALL'}:${
+        startTime || 'ALL'
+      }:${endTime || 'ALL'}`;
+      total = await cacheService.getAsync(countKey);
+      if (total === null) {
+        let countSql = `
+          WITH status_history AS (
+            SELECT 
+              mh.id,
+              mh.asin_id,
+              mh.country,
+              mh.is_broken,
+              LAG(mh.is_broken) OVER (
+                PARTITION BY mh.asin_id, mh.country 
+                ORDER BY mh.check_time, mh.id
+              ) as prev_is_broken
+            FROM monitor_history mh
+        `;
+        if (asin) {
+          countSql += ` LEFT JOIN asins a ON a.id = mh.asin_id`;
         }
-      }
+        countSql += ` WHERE 1=1`;
+        const countConditions = [];
 
-      if (country) {
-        if (country === 'EU') {
-          countSql += ` AND mh.country IN ('UK', 'DE', 'FR', 'IT', 'ES')`;
-        } else {
-          countSql += ` AND mh.country = ?`;
-          countConditions.push(country);
+        if (variantGroupId) {
+          countSql += ` AND mh.variant_group_id = ?`;
+          countConditions.push(variantGroupId);
         }
+
+        if (asinId) {
+          countSql += ` AND mh.asin_id = ?`;
+          countConditions.push(asinId);
+        }
+
+        if (asin) {
+          if (Array.isArray(asin) && asin.length > 0) {
+            const placeholders = asin.map(() => '?').join(',');
+            countSql += ` AND (COALESCE(mh.asin_code, a.asin) IN (${placeholders}))`;
+            countConditions.push(...asin);
+          } else if (typeof asin === 'string') {
+            countSql += ` AND (COALESCE(mh.asin_code, a.asin) LIKE ?)`;
+            countConditions.push(`%${asin}%`);
+          }
+        }
+
+        if (country) {
+          if (country === 'EU') {
+            countSql += ` AND mh.country IN ('UK', 'DE', 'FR', 'IT', 'ES')`;
+          } else {
+            countSql += ` AND mh.country = ?`;
+            countConditions.push(country);
+          }
+        }
+
+        if (checkType) {
+          countSql += ` AND mh.check_type = ?`;
+          countConditions.push(checkType);
+        }
+
+        if (startTime) {
+          countSql += ` AND mh.check_time >= ?`;
+          countConditions.push(startTime);
+        }
+
+        if (endTime) {
+          countSql += ` AND mh.check_time <= ?`;
+          countConditions.push(endTime);
+        }
+
+        countSql += `
+          )
+          SELECT COUNT(*) as total FROM status_history
+          WHERE prev_is_broken IS NOT NULL
+            AND prev_is_broken != is_broken
+        `;
+
+        const countResult = await query(countSql, countConditions);
+        total = countResult[0]?.total || 0;
+        await cacheService.setAsync(countKey, total, 60 * 1000);
       }
-
-      if (checkType) {
-        countSql += ` AND mh.check_type = ?`;
-        countConditions.push(checkType);
-      }
-
-      if (startTime) {
-        countSql += ` AND mh.check_time >= ?`;
-        countConditions.push(startTime);
-      }
-
-      if (endTime) {
-        countSql += ` AND mh.check_time <= ?`;
-        countConditions.push(endTime);
-      }
-
-      countSql += `
-        )
-        SELECT COUNT(*) as total FROM status_history
-        WHERE prev_is_broken IS NOT NULL
-          AND prev_is_broken != is_broken
-      `;
-
-      const countResult = await query(countSql, countConditions);
-      total = countResult[0]?.total || 0;
-      await cacheService.setAsync(countKey, total, 60 * 1000);
     }
 
     // 分页
@@ -2532,7 +2545,7 @@ class MonitorHistory {
 
     return {
       list: formattedList,
-      total,
+      total: skipCount ? null : total,
       current: Number(current),
       pageSize: Number(pageSize),
     };
@@ -2570,11 +2583,14 @@ class MonitorHistory {
             mh.is_broken,
             LAG(mh.is_broken) OVER (
               PARTITION BY mh.asin_id, mh.country 
-              ORDER BY mh.check_time
+              ORDER BY mh.check_time, mh.id
             ) as prev_is_broken
           FROM monitor_history mh
-          WHERE 1=1
       `;
+      if (asin) {
+        countSql += ` LEFT JOIN asins a ON a.id = mh.asin_id`;
+      }
+      countSql += ` WHERE 1=1`;
       const countConditions = [];
 
       if (variantGroupId) {
@@ -2590,10 +2606,10 @@ class MonitorHistory {
       if (asin) {
         if (Array.isArray(asin) && asin.length > 0) {
           const placeholders = asin.map(() => '?').join(',');
-          countSql += ` AND mh.asin_code IN (${placeholders})`;
+          countSql += ` AND (COALESCE(mh.asin_code, a.asin) IN (${placeholders}))`;
           countConditions.push(...asin);
         } else if (typeof asin === 'string') {
-          countSql += ` AND mh.asin_code LIKE ?`;
+          countSql += ` AND (COALESCE(mh.asin_code, a.asin) LIKE ?)`;
           countConditions.push(`%${asin}%`);
         }
       }
@@ -2659,7 +2675,7 @@ class MonitorHistory {
             a.asin_type as asin_type,
             LAG(mh.is_broken) OVER (
               PARTITION BY mh.asin_id, mh.country 
-              ORDER BY mh.check_time
+              ORDER BY mh.check_time, mh.id
             ) as prev_is_broken
           FROM monitor_history mh
           LEFT JOIN variant_groups vg ON vg.id = mh.variant_group_id
@@ -2718,7 +2734,7 @@ class MonitorHistory {
         SELECT * FROM status_history
         WHERE prev_is_broken IS NOT NULL
           AND prev_is_broken != is_broken
-        ORDER BY check_time DESC
+        ORDER BY check_time DESC, id DESC
         LIMIT ${limit} OFFSET ${offset}
       `;
 
