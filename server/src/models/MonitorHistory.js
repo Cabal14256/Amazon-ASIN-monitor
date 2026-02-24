@@ -54,6 +54,9 @@ class MonitorHistory {
       skipCount = false,
     } = params;
     const normalizedAsinType = asinType ? String(asinType).trim() : '';
+    const includeAsinRowsForGroupFilter =
+      checkType === 'GROUP' && (variantGroupId || variantGroupName);
+    const effectiveCheckType = includeAsinRowsForGroupFilter ? '' : checkType;
 
     let sql = `
       SELECT 
@@ -135,9 +138,9 @@ class MonitorHistory {
       }
     }
 
-    if (checkType) {
+    if (effectiveCheckType) {
       sql += ` AND mh.check_type = ?`;
-      conditions.push(checkType);
+      conditions.push(effectiveCheckType);
     }
 
     if (isBroken !== '') {
@@ -161,9 +164,9 @@ class MonitorHistory {
         asinId || 'ALL'
       }:${asin || 'ALL'}:${variantGroupName || 'ALL'}:${asinName || 'ALL'}:${
         normalizedAsinType || 'ALL'
-      }:${country || 'ALL'}:${checkType || 'ALL'}:${isBroken || 'ALL'}:${
-        startTime || 'ALL'
-      }:${endTime || 'ALL'}`;
+      }:${country || 'ALL'}:${effectiveCheckType || 'ALL'}:${
+        isBroken || 'ALL'
+      }:${startTime || 'ALL'}:${endTime || 'ALL'}`;
       total = await cacheService.getAsync(countKey);
       if (total === null) {
         // COUNT查询必须和列表查询保持同样的筛选语义，否则分页总数可能不准确
@@ -235,9 +238,9 @@ class MonitorHistory {
           }
         }
 
-        if (checkType) {
+        if (effectiveCheckType) {
           countSql += ` AND mh.check_type = ?`;
-          countConditions.push(checkType);
+          countConditions.push(effectiveCheckType);
         }
 
         if (isBroken !== '') {
@@ -2414,6 +2417,9 @@ class MonitorHistory {
       skipCount = false,
     } = params;
     const normalizedAsinType = asinType ? String(asinType).trim() : '';
+    const includeAsinRowsForGroupFilter =
+      checkType === 'GROUP' && (variantGroupId || variantGroupName);
+    const effectiveCheckType = includeAsinRowsForGroupFilter ? '' : checkType;
 
     // 构建基础查询，使用窗口函数识别状态变化
     let sql = `
@@ -2498,9 +2504,9 @@ class MonitorHistory {
       }
     }
 
-    if (checkType) {
+    if (effectiveCheckType) {
       sql += ` AND mh.check_type = ?`;
-      conditions.push(checkType);
+      conditions.push(effectiveCheckType);
     }
 
     if (startTime) {
@@ -2529,9 +2535,9 @@ class MonitorHistory {
         asinId || 'ALL'
       }:${asin || 'ALL'}:${variantGroupName || 'ALL'}:${asinName || 'ALL'}:${
         normalizedAsinType || 'ALL'
-      }:${country || 'ALL'}:${checkType || 'ALL'}:${startTime || 'ALL'}:${
-        endTime || 'ALL'
-      }`;
+      }:${country || 'ALL'}:${effectiveCheckType || 'ALL'}:${
+        startTime || 'ALL'
+      }:${endTime || 'ALL'}`;
       total = await cacheService.getAsync(countKey);
       if (total === null) {
         let countSql = `
@@ -2613,9 +2619,9 @@ class MonitorHistory {
           }
         }
 
-        if (checkType) {
+        if (effectiveCheckType) {
           countSql += ` AND mh.check_type = ?`;
-          countConditions.push(checkType);
+          countConditions.push(effectiveCheckType);
         }
 
         if (startTime) {
@@ -2687,15 +2693,18 @@ class MonitorHistory {
       endTime = '',
     } = params;
     const normalizedAsinType = asinType ? String(asinType).trim() : '';
+    const includeAsinRowsForGroupFilter =
+      checkType === 'GROUP' && (variantGroupId || variantGroupName);
+    const effectiveCheckType = includeAsinRowsForGroupFilter ? '' : checkType;
 
     // 先获取总数
     const countKey = `statusChangesCount:${variantGroupId || 'ALL'}:${
       asinId || 'ALL'
     }:${asin || 'ALL'}:${variantGroupName || 'ALL'}:${asinName || 'ALL'}:${
       normalizedAsinType || 'ALL'
-    }:${country || 'ALL'}:${checkType || 'ALL'}:${startTime || 'ALL'}:${
-      endTime || 'ALL'
-    }`;
+    }:${country || 'ALL'}:${effectiveCheckType || 'ALL'}:${
+      startTime || 'ALL'
+    }:${endTime || 'ALL'}`;
     let total = await cacheService.getAsync(countKey);
 
     if (total === null) {
@@ -2776,9 +2785,9 @@ class MonitorHistory {
         }
       }
 
-      if (checkType) {
+      if (effectiveCheckType) {
         countSql += ` AND mh.check_type = ?`;
-        countConditions.push(checkType);
+        countConditions.push(effectiveCheckType);
       }
 
       if (startTime) {
@@ -2891,9 +2900,9 @@ class MonitorHistory {
         }
       }
 
-      if (checkType) {
+      if (effectiveCheckType) {
         sql += ` AND mh.check_type = ?`;
-        conditions.push(checkType);
+        conditions.push(effectiveCheckType);
       }
 
       if (startTime) {

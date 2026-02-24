@@ -2,7 +2,6 @@ import LazyECharts from '@/components/LazyECharts';
 import services from '@/services/asin';
 import { debugLog } from '@/utils/debug';
 import { exportToExcel } from '@/utils/export';
-import { useMessage } from '@/utils/message';
 import { DownOutlined } from '@ant-design/icons';
 import {
   ActionType,
@@ -185,7 +184,6 @@ const AbnormalDurationChart: React.FC<{ data: any }> = ({ data }) => {
 };
 
 const MonitorHistoryPage: React.FC<unknown> = () => {
-  const message = useMessage();
   const actionRef = useRef<ActionType>();
   const formRef = useRef<ProFormInstance>();
   const [searchParams] = useSearchParams();
@@ -338,7 +336,7 @@ const MonitorHistoryPage: React.FC<unknown> = () => {
       hideInSearch: selectedCheckType === 'GROUP',
       render: (text: string) => text || '-',
       fieldProps: {
-        placeholder: '请输入ASIN编码，多个ASIN用空格分隔（最多5个）',
+        placeholder: '请输入ASIN编码，多个ASIN用空格分隔',
       },
       search: {
         transform: (value: any) => {
@@ -350,12 +348,6 @@ const MonitorHistoryPage: React.FC<unknown> = () => {
             .trim()
             .split(/\s+/)
             .filter((asin) => asin.length > 0);
-
-          // 验证最多5个ASIN
-          if (asinList.length > 5) {
-            message.warning('最多只能输入5个ASIN，已自动截取前5个');
-            return { asin: asinList.slice(0, 5).join(',') };
-          }
 
           if (asinList.length === 0) {
             return {};
