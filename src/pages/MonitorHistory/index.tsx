@@ -1,13 +1,14 @@
 import LazyECharts from '@/components/LazyECharts';
 import services from '@/services/asin';
-import { exportToExcel } from '@/utils/export';
 import { debugLog } from '@/utils/debug';
+import { exportToExcel } from '@/utils/export';
 import { useMessage } from '@/utils/message';
 import { DownOutlined } from '@ant-design/icons';
 import {
   ActionType,
   PageContainer,
   ProColumns,
+  ProFormInstance,
   ProTable,
   StatisticCard,
 } from '@ant-design/pro-components';
@@ -186,11 +187,13 @@ const AbnormalDurationChart: React.FC<{ data: any }> = ({ data }) => {
 const MonitorHistoryPage: React.FC<unknown> = () => {
   const message = useMessage();
   const actionRef = useRef<ActionType>();
+  const formRef = useRef<ProFormInstance>();
   const [searchParams] = useSearchParams();
   const [statistics, setStatistics] = useState<API.MonitorStatistics>({});
   const [peakHoursStatistics, setPeakHoursStatistics] =
     useState<API.PeakHoursStatistics>({});
   const [selectedCountry, setSelectedCountry] = useState<string>('');
+  const [selectedCheckType, setSelectedCheckType] = useState<string>('');
   const [abnormalDurationData, setAbnormalDurationData] = useState<any>(null);
   const [showChart, setShowChart] = useState(false);
   // 保存当前的查询参数，用于导出
@@ -298,6 +301,22 @@ const MonitorHistoryPage: React.FC<unknown> = () => {
         GROUP: { text: '变体组', status: 'Default' },
         ASIN: { text: 'ASIN', status: 'Processing' },
       },
+      fieldProps: {
+        onChange: (value: string) => {
+          setSelectedCheckType(value || '');
+          if (value === 'GROUP') {
+            formRef.current?.setFieldsValue({
+              asin: undefined,
+              asinName: undefined,
+              asinType: undefined,
+            });
+          } else if (value === 'ASIN') {
+            formRef.current?.setFieldsValue({
+              variantGroupName: undefined,
+            });
+          }
+        },
+      },
       render: (_: any, record: API.MonitorHistory) => (
         <Tag color={record.checkType === 'GROUP' ? 'blue' : 'default'}>
           {record.checkType === 'GROUP' ? '变体组' : 'ASIN'}
@@ -308,6 +327,7 @@ const MonitorHistoryPage: React.FC<unknown> = () => {
       title: '变体组',
       dataIndex: 'variantGroupName',
       width: 200,
+      hideInSearch: selectedCheckType === 'ASIN',
       render: (text: string) => text || '-',
     },
     {
@@ -315,6 +335,7 @@ const MonitorHistoryPage: React.FC<unknown> = () => {
       dataIndex: 'asin',
       width: 150,
       hideInTable: type === 'group', // 如果是从变体组查看，隐藏ASIN列
+      hideInSearch: selectedCheckType === 'GROUP',
       render: (text: string) => text || '-',
       fieldProps: {
         placeholder: '请输入ASIN编码，多个ASIN用空格分隔（最多5个）',
@@ -355,6 +376,7 @@ const MonitorHistoryPage: React.FC<unknown> = () => {
       dataIndex: 'asinName',
       width: 250,
       hideInTable: type === 'group',
+      hideInSearch: selectedCheckType === 'GROUP',
       render: (text: string) => text || '-',
     },
     {
@@ -362,6 +384,7 @@ const MonitorHistoryPage: React.FC<unknown> = () => {
       dataIndex: 'asinType',
       width: 100,
       hideInTable: type === 'group',
+      hideInSearch: selectedCheckType === 'GROUP',
       valueType: 'select' as const,
       valueEnum: {
         '1': { text: '主链', status: 'Success' },
@@ -511,10 +534,14 @@ const MonitorHistoryPage: React.FC<unknown> = () => {
       <ProTable<API.MonitorHistory>
         headerTitle="监控历史记录"
         actionRef={actionRef}
+        formRef={formRef}
         rowKey="id"
         search={{
           labelWidth: 100,
           defaultCollapsed: false,
+          onReset: () => {
+            setSelectedCheckType('');
+          },
         }}
         request={async (params, sorter) => {
           debugLog('ProTable request params:', params);
@@ -556,11 +583,22 @@ const MonitorHistoryPage: React.FC<unknown> = () => {
           if (params.checkType) {
             requestParams.checkType = params.checkType;
           }
+          const isGroupType = params.checkType === 'GROUP';
+          const isAsinType = params.checkType === 'ASIN';
           if (params.isBroken !== undefined && params.isBroken !== '') {
             requestParams.isBroken = params.isBroken;
           }
+          if (!isAsinType && params.variantGroupName) {
+            requestParams.variantGroupName = params.variantGroupName;
+          }
+          if (!isGroupType && params.asinName) {
+            requestParams.asinName = params.asinName;
+          }
+          if (!isGroupType && params.asinType) {
+            requestParams.asinType = params.asinType;
+          }
           // 处理ASIN搜索
-          if (params.asin) {
+          if (!isGroupType && params.asin) {
             requestParams.asin = params.asin;
             debugLog('ASIN筛选参数:', params.asin);
           }
@@ -589,6 +627,15 @@ const MonitorHistoryPage: React.FC<unknown> = () => {
             requestParams.isBroken !== ''
           ) {
             paramsToSave.isBroken = requestParams.isBroken;
+          }
+          if (requestParams.variantGroupName) {
+            paramsToSave.variantGroupName = requestParams.variantGroupName;
+          }
+          if (requestParams.asinName) {
+            paramsToSave.asinName = requestParams.asinName;
+          }
+          if (requestParams.asinType) {
+            paramsToSave.asinType = requestParams.asinType;
           }
           if (requestParams.asin) paramsToSave.asin = requestParams.asin;
           if (requestParams.variantGroupId)

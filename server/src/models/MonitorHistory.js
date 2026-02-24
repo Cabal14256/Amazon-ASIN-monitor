@@ -41,6 +41,9 @@ class MonitorHistory {
       variantGroupId = '',
       asinId = '',
       asin = '',
+      variantGroupName = '',
+      asinName = '',
+      asinType = '',
       country = '',
       checkType = '',
       isBroken = '',
@@ -50,6 +53,7 @@ class MonitorHistory {
       pageSize = 10,
       skipCount = false,
     } = params;
+    const normalizedAsinType = asinType ? String(asinType).trim() : '';
 
     let sql = `
       SELECT 
@@ -97,6 +101,30 @@ class MonitorHistory {
       }
     }
 
+    if (variantGroupName) {
+      sql += ` AND (COALESCE(mh.variant_group_name, vg.name) LIKE ?)`;
+      conditions.push(`%${variantGroupName}%`);
+    }
+
+    if (asinName) {
+      sql += ` AND (COALESCE(mh.asin_name, a.name) LIKE ?)`;
+      conditions.push(`%${asinName}%`);
+    }
+
+    if (normalizedAsinType) {
+      if (normalizedAsinType === '1' || normalizedAsinType === 'MAIN_LINK') {
+        sql += ` AND a.asin_type IN ('1', 'MAIN_LINK')`;
+      } else if (
+        normalizedAsinType === '2' ||
+        normalizedAsinType === 'SUB_REVIEW'
+      ) {
+        sql += ` AND a.asin_type IN ('2', 'SUB_REVIEW')`;
+      } else {
+        sql += ` AND a.asin_type = ?`;
+        conditions.push(normalizedAsinType);
+      }
+    }
+
     if (country) {
       if (country === 'EU') {
         // EU汇总：包含所有欧洲国家
@@ -131,14 +159,19 @@ class MonitorHistory {
     if (!skipCount) {
       const countKey = `monitorHistoryCount:${variantGroupId || 'ALL'}:${
         asinId || 'ALL'
-      }:${asin || 'ALL'}:${country || 'ALL'}:${checkType || 'ALL'}:${
-        isBroken || 'ALL'
-      }:${startTime || 'ALL'}:${endTime || 'ALL'}`;
+      }:${asin || 'ALL'}:${variantGroupName || 'ALL'}:${asinName || 'ALL'}:${
+        normalizedAsinType || 'ALL'
+      }:${country || 'ALL'}:${checkType || 'ALL'}:${isBroken || 'ALL'}:${
+        startTime || 'ALL'
+      }:${endTime || 'ALL'}`;
       total = await cacheService.getAsync(countKey);
       if (total === null) {
         // COUNT查询必须和列表查询保持同样的筛选语义，否则分页总数可能不准确
         let countSql = `SELECT COUNT(*) as total FROM monitor_history mh`;
-        if (asin) {
+        if (variantGroupName) {
+          countSql += ` LEFT JOIN variant_groups vg ON vg.id = mh.variant_group_id`;
+        }
+        if (asin || asinName || normalizedAsinType) {
           countSql += ` LEFT JOIN asins a ON a.id = mh.asin_id`;
         }
         countSql += ` WHERE 1=1`;
@@ -163,6 +196,33 @@ class MonitorHistory {
           } else if (typeof asin === 'string') {
             countSql += ` AND (COALESCE(mh.asin_code, a.asin) LIKE ?)`;
             countConditions.push(`%${asin}%`);
+          }
+        }
+
+        if (variantGroupName) {
+          countSql += ` AND (COALESCE(mh.variant_group_name, vg.name) LIKE ?)`;
+          countConditions.push(`%${variantGroupName}%`);
+        }
+
+        if (asinName) {
+          countSql += ` AND (COALESCE(mh.asin_name, a.name) LIKE ?)`;
+          countConditions.push(`%${asinName}%`);
+        }
+
+        if (normalizedAsinType) {
+          if (
+            normalizedAsinType === '1' ||
+            normalizedAsinType === 'MAIN_LINK'
+          ) {
+            countSql += ` AND a.asin_type IN ('1', 'MAIN_LINK')`;
+          } else if (
+            normalizedAsinType === '2' ||
+            normalizedAsinType === 'SUB_REVIEW'
+          ) {
+            countSql += ` AND a.asin_type IN ('2', 'SUB_REVIEW')`;
+          } else {
+            countSql += ` AND a.asin_type = ?`;
+            countConditions.push(normalizedAsinType);
           }
         }
 
@@ -2342,6 +2402,9 @@ class MonitorHistory {
       variantGroupId = '',
       asinId = '',
       asin = '',
+      variantGroupName = '',
+      asinName = '',
+      asinType = '',
       country = '',
       checkType = '',
       startTime = '',
@@ -2350,6 +2413,7 @@ class MonitorHistory {
       pageSize = 10,
       skipCount = false,
     } = params;
+    const normalizedAsinType = asinType ? String(asinType).trim() : '';
 
     // 构建基础查询，使用窗口函数识别状态变化
     let sql = `
@@ -2401,6 +2465,30 @@ class MonitorHistory {
       }
     }
 
+    if (variantGroupName) {
+      sql += ` AND (COALESCE(mh.variant_group_name, vg.name) LIKE ?)`;
+      conditions.push(`%${variantGroupName}%`);
+    }
+
+    if (asinName) {
+      sql += ` AND (COALESCE(mh.asin_name, a.name) LIKE ?)`;
+      conditions.push(`%${asinName}%`);
+    }
+
+    if (normalizedAsinType) {
+      if (normalizedAsinType === '1' || normalizedAsinType === 'MAIN_LINK') {
+        sql += ` AND a.asin_type IN ('1', 'MAIN_LINK')`;
+      } else if (
+        normalizedAsinType === '2' ||
+        normalizedAsinType === 'SUB_REVIEW'
+      ) {
+        sql += ` AND a.asin_type IN ('2', 'SUB_REVIEW')`;
+      } else {
+        sql += ` AND a.asin_type = ?`;
+        conditions.push(normalizedAsinType);
+      }
+    }
+
     if (country) {
       if (country === 'EU') {
         sql += ` AND mh.country IN ('UK', 'DE', 'FR', 'IT', 'ES')`;
@@ -2439,9 +2527,11 @@ class MonitorHistory {
       // 计算总数（先查询总数）
       const countKey = `statusChangesCount:${variantGroupId || 'ALL'}:${
         asinId || 'ALL'
-      }:${asin || 'ALL'}:${country || 'ALL'}:${checkType || 'ALL'}:${
-        startTime || 'ALL'
-      }:${endTime || 'ALL'}`;
+      }:${asin || 'ALL'}:${variantGroupName || 'ALL'}:${asinName || 'ALL'}:${
+        normalizedAsinType || 'ALL'
+      }:${country || 'ALL'}:${checkType || 'ALL'}:${startTime || 'ALL'}:${
+        endTime || 'ALL'
+      }`;
       total = await cacheService.getAsync(countKey);
       if (total === null) {
         let countSql = `
@@ -2457,7 +2547,10 @@ class MonitorHistory {
               ) as prev_is_broken
             FROM monitor_history mh
         `;
-        if (asin) {
+        if (variantGroupName) {
+          countSql += ` LEFT JOIN variant_groups vg ON vg.id = mh.variant_group_id`;
+        }
+        if (asin || asinName || normalizedAsinType) {
           countSql += ` LEFT JOIN asins a ON a.id = mh.asin_id`;
         }
         countSql += ` WHERE 1=1`;
@@ -2481,6 +2574,33 @@ class MonitorHistory {
           } else if (typeof asin === 'string') {
             countSql += ` AND (COALESCE(mh.asin_code, a.asin) LIKE ?)`;
             countConditions.push(`%${asin}%`);
+          }
+        }
+
+        if (variantGroupName) {
+          countSql += ` AND (COALESCE(mh.variant_group_name, vg.name) LIKE ?)`;
+          countConditions.push(`%${variantGroupName}%`);
+        }
+
+        if (asinName) {
+          countSql += ` AND (COALESCE(mh.asin_name, a.name) LIKE ?)`;
+          countConditions.push(`%${asinName}%`);
+        }
+
+        if (normalizedAsinType) {
+          if (
+            normalizedAsinType === '1' ||
+            normalizedAsinType === 'MAIN_LINK'
+          ) {
+            countSql += ` AND a.asin_type IN ('1', 'MAIN_LINK')`;
+          } else if (
+            normalizedAsinType === '2' ||
+            normalizedAsinType === 'SUB_REVIEW'
+          ) {
+            countSql += ` AND a.asin_type IN ('2', 'SUB_REVIEW')`;
+          } else {
+            countSql += ` AND a.asin_type = ?`;
+            countConditions.push(normalizedAsinType);
           }
         }
 
@@ -2558,18 +2678,24 @@ class MonitorHistory {
       variantGroupId = '',
       asinId = '',
       asin = '',
+      variantGroupName = '',
+      asinName = '',
+      asinType = '',
       country = '',
       checkType = '',
       startTime = '',
       endTime = '',
     } = params;
+    const normalizedAsinType = asinType ? String(asinType).trim() : '';
 
     // 先获取总数
     const countKey = `statusChangesCount:${variantGroupId || 'ALL'}:${
       asinId || 'ALL'
-    }:${asin || 'ALL'}:${country || 'ALL'}:${checkType || 'ALL'}:${
-      startTime || 'ALL'
-    }:${endTime || 'ALL'}`;
+    }:${asin || 'ALL'}:${variantGroupName || 'ALL'}:${asinName || 'ALL'}:${
+      normalizedAsinType || 'ALL'
+    }:${country || 'ALL'}:${checkType || 'ALL'}:${startTime || 'ALL'}:${
+      endTime || 'ALL'
+    }`;
     let total = await cacheService.getAsync(countKey);
 
     if (total === null) {
@@ -2587,7 +2713,10 @@ class MonitorHistory {
             ) as prev_is_broken
           FROM monitor_history mh
       `;
-      if (asin) {
+      if (variantGroupName) {
+        countSql += ` LEFT JOIN variant_groups vg ON vg.id = mh.variant_group_id`;
+      }
+      if (asin || asinName || normalizedAsinType) {
         countSql += ` LEFT JOIN asins a ON a.id = mh.asin_id`;
       }
       countSql += ` WHERE 1=1`;
@@ -2611,6 +2740,30 @@ class MonitorHistory {
         } else if (typeof asin === 'string') {
           countSql += ` AND (COALESCE(mh.asin_code, a.asin) LIKE ?)`;
           countConditions.push(`%${asin}%`);
+        }
+      }
+
+      if (variantGroupName) {
+        countSql += ` AND (COALESCE(mh.variant_group_name, vg.name) LIKE ?)`;
+        countConditions.push(`%${variantGroupName}%`);
+      }
+
+      if (asinName) {
+        countSql += ` AND (COALESCE(mh.asin_name, a.name) LIKE ?)`;
+        countConditions.push(`%${asinName}%`);
+      }
+
+      if (normalizedAsinType) {
+        if (normalizedAsinType === '1' || normalizedAsinType === 'MAIN_LINK') {
+          countSql += ` AND a.asin_type IN ('1', 'MAIN_LINK')`;
+        } else if (
+          normalizedAsinType === '2' ||
+          normalizedAsinType === 'SUB_REVIEW'
+        ) {
+          countSql += ` AND a.asin_type IN ('2', 'SUB_REVIEW')`;
+        } else {
+          countSql += ` AND a.asin_type = ?`;
+          countConditions.push(normalizedAsinType);
         }
       }
 
@@ -2702,6 +2855,30 @@ class MonitorHistory {
         } else if (typeof asin === 'string') {
           sql += ` AND (COALESCE(mh.asin_code, a.asin) LIKE ?)`;
           conditions.push(`%${asin}%`);
+        }
+      }
+
+      if (variantGroupName) {
+        sql += ` AND (COALESCE(mh.variant_group_name, vg.name) LIKE ?)`;
+        conditions.push(`%${variantGroupName}%`);
+      }
+
+      if (asinName) {
+        sql += ` AND (COALESCE(mh.asin_name, a.name) LIKE ?)`;
+        conditions.push(`%${asinName}%`);
+      }
+
+      if (normalizedAsinType) {
+        if (normalizedAsinType === '1' || normalizedAsinType === 'MAIN_LINK') {
+          sql += ` AND a.asin_type IN ('1', 'MAIN_LINK')`;
+        } else if (
+          normalizedAsinType === '2' ||
+          normalizedAsinType === 'SUB_REVIEW'
+        ) {
+          sql += ` AND a.asin_type IN ('2', 'SUB_REVIEW')`;
+        } else {
+          sql += ` AND a.asin_type = ?`;
+          conditions.push(normalizedAsinType);
         }
       }
 
