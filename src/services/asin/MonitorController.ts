@@ -12,6 +12,12 @@ export async function queryMonitorHistory(
     asinId?: string;
     /** ASIN编码（字符串） */
     asin?: string;
+    /** 变体组名称（模糊匹配） */
+    variantGroupName?: string;
+    /** ASIN名称（模糊匹配） */
+    asinName?: string;
+    /** ASIN类型（1/2 或 MAIN_LINK/SUB_REVIEW） */
+    asinType?: string;
     /** 国家筛选 */
     country?: string;
     /** 检查类型 */
