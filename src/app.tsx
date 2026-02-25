@@ -554,15 +554,41 @@ export function rootContainer(container: React.ReactElement) {
   return React.createElement(AntdApp, null, container);
 }
 
+function normalizeApiBaseURL(rawBaseURL?: string): string {
+  if (!rawBaseURL) {
+    return '';
+  }
+
+  const trimmedBaseURL = rawBaseURL.trim().replace(/\/+$/, '');
+  if (trimmedBaseURL.endsWith('/api/v1')) {
+    return trimmedBaseURL.slice(0, -7);
+  }
+  if (trimmedBaseURL.endsWith('/api')) {
+    return trimmedBaseURL.slice(0, -4);
+  }
+  return trimmedBaseURL;
+}
+
 // 请求配置
 export const request = {
-  baseURL:
-    process.env.NODE_ENV === 'production'
-      ? process.env.API_BASE_URL || '/api'
-      : '/api',
+  baseURL: normalizeApiBaseURL(process.env.API_BASE_URL),
   // 请求拦截器 - 添加Token
   requestInterceptors: [
     (config: any) => {
+      // 避免 baseURL 与 url 都带 /api 时出现 /api/api/v1 的重复前缀
+      if (
+        typeof config.baseURL === 'string' &&
+        typeof config.url === 'string'
+      ) {
+        const normalizedBaseURL = config.baseURL.replace(/\/+$/, '');
+        if (
+          normalizedBaseURL.endsWith('/api') &&
+          config.url.startsWith('/api/')
+        ) {
+          config.url = config.url.replace(/^\/api/, '');
+        }
+      }
+
       const token = getToken();
       if (token && config.headers) {
         config.headers.Authorization = `Bearer ${token}`;
