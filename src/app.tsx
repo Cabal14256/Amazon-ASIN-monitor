@@ -10,6 +10,7 @@ import {
   SettingOutlined,
 } from '@ant-design/icons';
 import { history, request as umiRequest } from '@umijs/max';
+import type { MenuProps } from 'antd';
 import { App as AntdApp, Avatar, Badge, Button, Dropdown, Space } from 'antd';
 import React, { useEffect } from 'react';
 
@@ -474,7 +475,7 @@ export const layout = ({ initialState, setInitialState }: any) => {
         }
       };
 
-      const menuItems = [
+      const menuItems: MenuProps['items'] = [
         {
           key: 'profile',
           label: '个人中心',
@@ -491,7 +492,7 @@ export const layout = ({ initialState, setInitialState }: any) => {
           icon: <SettingOutlined />,
         },
         {
-          type: 'divider',
+          type: 'divider' as const,
         },
         {
           key: 'logout',
@@ -500,7 +501,7 @@ export const layout = ({ initialState, setInitialState }: any) => {
           danger: true,
         },
       ];
-      const handleMenuClick = ({ key }: any) => {
+      const handleMenuClick: MenuProps['onClick'] = ({ key }) => {
         if (key === 'profile') {
           history.push('/profile');
         } else if (key === 'audit') {
@@ -555,6 +556,10 @@ export function rootContainer(container: React.ReactElement) {
 
 // 请求配置
 export const request = {
+  baseURL:
+    process.env.NODE_ENV === 'production'
+      ? process.env.API_BASE_URL || '/api'
+      : '/api',
   // 请求拦截器 - 添加Token
   requestInterceptors: [
     (config: any) => {

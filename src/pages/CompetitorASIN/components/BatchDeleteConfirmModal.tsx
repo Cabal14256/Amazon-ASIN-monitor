@@ -102,6 +102,7 @@ const BatchDeleteConfirmModal: React.FC<BatchDeleteConfirmModalProps> = ({
         <ul style={{ margin: 0, paddingLeft: 20 }}>
           {items.slice(0, 10).map((item) => {
             const isGroup = (item as API.VariantGroup).parentId === undefined;
+            const groupChildren = (item as API.VariantGroup).children || [];
             return (
               <li key={item.id} style={{ marginBottom: 4 }}>
                 {isGroup ? (
@@ -115,12 +116,11 @@ const BatchDeleteConfirmModal: React.FC<BatchDeleteConfirmModalProps> = ({
                         {item.country}
                       </Tag>
                     )}
-                    {(item as API.VariantGroup).children?.length > 0 && (
+                    {groupChildren.length > 0 && (
                       <span
                         style={{ marginLeft: 8, color: '#999', fontSize: 12 }}
                       >
-                        （包含 {(item as API.VariantGroup).children.length} 个
-                        ASIN）
+                        （包含 {groupChildren.length} 个 ASIN）
                       </span>
                     )}
                   </>

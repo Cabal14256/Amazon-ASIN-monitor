@@ -2,7 +2,7 @@ declare namespace API {
   type SPAPIConfig = {
     id?: number;
     configKey?: string;
-    configValue?: string;
+    configValue?: string | number | boolean;
     displayValue?: string;
     hasValue?: boolean;
     description?: string;

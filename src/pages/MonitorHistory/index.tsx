@@ -1,8 +1,6 @@
-import LazyECharts from '@/components/LazyECharts';
 import services from '@/services/asin';
 import { debugLog } from '@/utils/debug';
 import { exportToExcel } from '@/utils/export';
-import { useMessage } from '@/utils/message';
 import { DownOutlined } from '@ant-design/icons';
 import {
   ActionType,
@@ -13,7 +11,8 @@ import {
   StatisticCard,
 } from '@ant-design/pro-components';
 import { useSearchParams } from '@umijs/max';
-import { Card, Dropdown, Space, Tag } from 'antd';
+import type { TableProps } from 'antd';
+import { Card, Dropdown, Space, Table, Tag } from 'antd';
 import dayjs from 'dayjs';
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 
@@ -37,155 +36,34 @@ const countryMap: Record<
   ES: { text: '西班牙', color: 'magenta', region: 'EU' },
 };
 
-// 异常时长统计图表组件
-const AbnormalDurationChart: React.FC<{ data: any }> = ({ data }) => {
-  const chartOption = useMemo(() => {
-    if (!data || !data.data || data.data.length === 0) {
-      return {
-        title: {
-          text: '暂无数据',
-          left: 'center',
-          top: 'middle',
-          textStyle: {
-            color: '#999',
-          },
-        },
-      };
-    }
+interface AbnormalDurationSummaryRow {
+  key: string;
+  asin: string;
+  country: string;
+  queryTimeRange: string;
+  abnormalCount: number;
+  averageAbnormalDuration: number;
+  minAbnormalDuration: number;
+  maxAbnormalDuration: number;
+  maxAbnormalTime: string;
+}
 
-    // 按ASIN分组数据
-    const asinMap = new Map<string, any[]>();
-    data.data.forEach((item: any) => {
-      const asin = item.asin || `ASIN-${item.asinId}`;
-      if (!asinMap.has(asin)) {
-        asinMap.set(asin, []);
-      }
-      asinMap.get(asin)!.push(item);
-    });
+interface AbnormalDurationSummaryAccumulator {
+  key: string;
+  asin: string;
+  country: string;
+  queryTimeRange: string;
+  abnormalCount: number;
+  totalAbnormalDuration: number;
+  durationBucketCount: number;
+  minAbnormalDuration: number;
+  maxAbnormalDuration: number;
+  maxAbnormalTime: string;
+}
 
-    // 获取所有时间点（去重并排序）
-    const timeSet = new Set<string>();
-    data.data.forEach((item: any) => {
-      timeSet.add(item.timePeriod);
-    });
-    const timeList = Array.from(timeSet).sort();
-
-    // 构建系列数据
-    const series: any[] = [];
-    const colors = ['#5470c6', '#91cc75', '#fac858', '#ee6666', '#73c0de'];
-    let colorIndex = 0;
-
-    asinMap.forEach((items, asin) => {
-      const abnormalDurationData = timeList.map((time) => {
-        const item = items.find((i) => i.timePeriod === time);
-        return item ? item.abnormalDuration : 0;
-      });
-
-      const normalDurationData = timeList.map((time) => {
-        const item = items.find((i) => i.timePeriod === time);
-        if (item) {
-          // 正常时长 = 总时长 - 异常时长
-          const normalDuration =
-            (item.totalDuration || 0) - (item.abnormalDuration || 0);
-          return normalDuration > 0 ? normalDuration : 0;
-        }
-        return 0;
-      });
-
-      const color = colors[colorIndex % colors.length];
-      const normalColor = colors[(colorIndex + 1) % colors.length];
-      colorIndex += 2;
-
-      // 异常时长系列
-      series.push({
-        name: `${asin} - 异常时长`,
-        type: 'line',
-        yAxisIndex: 0,
-        data: abnormalDurationData,
-        itemStyle: { color },
-        lineStyle: { color },
-        symbol: 'circle',
-        symbolSize: 6,
-      });
-
-      // 正常时长系列
-      series.push({
-        name: `${asin} - 正常时长`,
-        type: 'line',
-        yAxisIndex: 0,
-        data: normalDurationData,
-        itemStyle: { color: normalColor },
-        lineStyle: { color: normalColor, type: 'dotted' },
-        symbol: 'rect',
-        symbolSize: 6,
-      });
-    });
-
-    return {
-      tooltip: {
-        trigger: 'axis',
-        axisPointer: {
-          type: 'cross',
-        },
-        formatter: (params: any) => {
-          let result = `<div style="margin-bottom: 4px;"><strong>${params[0].axisValue}</strong></div>`;
-          params.forEach((param: any) => {
-            const value = `${param.value} 小时`;
-            result += `<div style="margin: 2px 0;">
-              <span style="display:inline-block;width:10px;height:10px;background-color:${param.color};margin-right:5px;"></span>
-              ${param.seriesName}: ${value}
-            </div>`;
-          });
-          return result;
-        },
-      },
-      legend: {
-        data: Array.from(asinMap.keys())
-          .map((asin) => [`${asin} - 异常时长`, `${asin} - 正常时长`])
-          .flat(),
-        bottom: 0,
-        type: 'scroll',
-      },
-      grid: {
-        left: '3%',
-        right: '4%',
-        bottom: '15%',
-        containLabel: true,
-      },
-      xAxis: {
-        type: 'category',
-        boundaryGap: false,
-        data: timeList,
-        axisLabel: {
-          rotate: 45,
-          interval: 'auto',
-        },
-      },
-      yAxis: [
-        {
-          type: 'value',
-          name: '时长（小时）',
-          position: 'left',
-          axisLabel: {
-            formatter: '{value} h',
-          },
-        },
-      ],
-      series,
-    };
-  }, [data]);
-
-  return (
-    <LazyECharts
-      option={chartOption}
-      style={{ height: '400px', width: '100%' }}
-      opts={{ renderer: 'canvas' }}
-    />
-  );
-};
+const formatDuration = (value: number) => `${value.toFixed(2)} 小时`;
 
 const MonitorHistoryPage: React.FC<unknown> = () => {
-  const message = useMessage();
   const actionRef = useRef<ActionType>();
   const formRef = useRef<ProFormInstance>();
   const [searchParams] = useSearchParams();
@@ -194,14 +72,164 @@ const MonitorHistoryPage: React.FC<unknown> = () => {
     useState<API.PeakHoursStatistics>({});
   const [selectedCountry, setSelectedCountry] = useState<string>('');
   const [selectedCheckType, setSelectedCheckType] = useState<string>('');
-  const [abnormalDurationData, setAbnormalDurationData] = useState<any>(null);
-  const [showChart, setShowChart] = useState(false);
+  const [abnormalDurationData, setAbnormalDurationData] =
+    useState<API.AbnormalDurationStatistics | null>(null);
+  const [showAbnormalDurationTable, setShowAbnormalDurationTable] =
+    useState(false);
+  const [abnormalDurationQueryRange, setAbnormalDurationQueryRange] = useState<{
+    startTime: string;
+    endTime: string;
+  } | null>(null);
   // 保存当前的查询参数，用于导出
   const currentQueryParamsRef = useRef<Record<string, any>>({});
 
   // 从URL参数获取筛选条件
   const type = searchParams.get('type') || '';
   const id = searchParams.get('id') || '';
+
+  const abnormalDurationSummaryData = useMemo<
+    AbnormalDurationSummaryRow[]
+  >(() => {
+    if (!abnormalDurationData?.data || abnormalDurationData.data.length === 0) {
+      return [];
+    }
+
+    const queryTimeRange =
+      abnormalDurationQueryRange?.startTime &&
+      abnormalDurationQueryRange.endTime
+        ? `${abnormalDurationQueryRange.startTime} ~ ${abnormalDurationQueryRange.endTime}`
+        : '-';
+
+    const summaryMap = new Map<string, AbnormalDurationSummaryAccumulator>();
+
+    abnormalDurationData.data.forEach((item) => {
+      if (!item.asin && !item.asinId) {
+        return;
+      }
+
+      const asin = item.asin || `ASIN-${item.asinId}`;
+      const country = item.country || '';
+      const key = `${item.asinId || asin}-${country}`;
+
+      if (!summaryMap.has(key)) {
+        summaryMap.set(key, {
+          key,
+          asin,
+          country,
+          queryTimeRange,
+          abnormalCount: 0,
+          totalAbnormalDuration: 0,
+          durationBucketCount: 0,
+          minAbnormalDuration: Number.POSITIVE_INFINITY,
+          maxAbnormalDuration: 0,
+          maxAbnormalTime: '-',
+        });
+      }
+
+      const summary = summaryMap.get(key)!;
+      const brokenCount = Number(item.brokenCount || 0);
+      const abnormalDuration = Number(item.abnormalDuration || 0);
+
+      summary.abnormalCount += brokenCount;
+
+      if (abnormalDuration > 0) {
+        summary.totalAbnormalDuration += abnormalDuration;
+        summary.durationBucketCount += 1;
+        summary.minAbnormalDuration = Math.min(
+          summary.minAbnormalDuration,
+          abnormalDuration,
+        );
+
+        if (abnormalDuration > summary.maxAbnormalDuration) {
+          summary.maxAbnormalDuration = abnormalDuration;
+          summary.maxAbnormalTime = item.timePeriod || '-';
+        }
+      }
+    });
+
+    return Array.from(summaryMap.values())
+      .map((item) => {
+        const avgDuration =
+          item.durationBucketCount > 0
+            ? item.totalAbnormalDuration / item.durationBucketCount
+            : 0;
+        const minDuration =
+          item.durationBucketCount > 0 ? item.minAbnormalDuration : 0;
+
+        return {
+          key: item.key,
+          asin: item.asin,
+          country: item.country,
+          queryTimeRange: item.queryTimeRange,
+          abnormalCount: item.abnormalCount,
+          averageAbnormalDuration: Number(avgDuration.toFixed(2)),
+          minAbnormalDuration: Number(minDuration.toFixed(2)),
+          maxAbnormalDuration: Number(item.maxAbnormalDuration.toFixed(2)),
+          maxAbnormalTime: item.maxAbnormalTime,
+        };
+      })
+      .sort((a, b) => {
+        if (b.abnormalCount !== a.abnormalCount) {
+          return b.abnormalCount - a.abnormalCount;
+        }
+        return b.maxAbnormalDuration - a.maxAbnormalDuration;
+      });
+  }, [abnormalDurationData, abnormalDurationQueryRange]);
+
+  const abnormalDurationColumns: TableProps<AbnormalDurationSummaryRow>['columns'] =
+    [
+      {
+        title: 'ASIN',
+        dataIndex: 'asin',
+        width: 180,
+        render: (value: string) => value || '-',
+      },
+      {
+        title: '国家',
+        dataIndex: 'country',
+        width: 110,
+        render: (value: string) => {
+          const countryInfo = value ? countryMap[value] : undefined;
+          if (countryInfo) {
+            return <Tag color={countryInfo.color}>{countryInfo.text}</Tag>;
+          }
+          return value || '-';
+        },
+      },
+      {
+        title: '查询时间段',
+        dataIndex: 'queryTimeRange',
+        width: 340,
+      },
+      {
+        title: '异常次数',
+        dataIndex: 'abnormalCount',
+        width: 100,
+      },
+      {
+        title: '平均异常时长',
+        dataIndex: 'averageAbnormalDuration',
+        width: 140,
+        render: (value: number) => formatDuration(value || 0),
+      },
+      {
+        title: '最短异常时长',
+        dataIndex: 'minAbnormalDuration',
+        width: 140,
+        render: (value: number) => formatDuration(value || 0),
+      },
+      {
+        title: '最长异常时长',
+        dataIndex: 'maxAbnormalDuration',
+        width: 140,
+        render: (value: number) => formatDuration(value || 0),
+      },
+      {
+        title: '最长异常时间',
+        dataIndex: 'maxAbnormalTime',
+        width: 180,
+      },
+    ];
 
   // 加载统计信息
   const loadStatistics = async (country?: string) => {
@@ -328,7 +356,7 @@ const MonitorHistoryPage: React.FC<unknown> = () => {
       dataIndex: 'variantGroupName',
       width: 200,
       hideInSearch: selectedCheckType === 'ASIN',
-      render: (text: string) => text || '-',
+      renderText: (text) => text || '-',
     },
     {
       title: 'ASIN',
@@ -336,9 +364,9 @@ const MonitorHistoryPage: React.FC<unknown> = () => {
       width: 150,
       hideInTable: type === 'group', // 如果是从变体组查看，隐藏ASIN列
       hideInSearch: selectedCheckType === 'GROUP',
-      render: (text: string) => text || '-',
+      renderText: (text) => text || '-',
       fieldProps: {
-        placeholder: '请输入ASIN编码，多个ASIN用空格分隔（最多5个）',
+        placeholder: '请输入ASIN编码，多个ASIN用空格分隔',
       },
       search: {
         transform: (value: any) => {
@@ -350,12 +378,6 @@ const MonitorHistoryPage: React.FC<unknown> = () => {
             .trim()
             .split(/\s+/)
             .filter((asin) => asin.length > 0);
-
-          // 验证最多5个ASIN
-          if (asinList.length > 5) {
-            message.warning('最多只能输入5个ASIN，已自动截取前5个');
-            return { asin: asinList.slice(0, 5).join(',') };
-          }
 
           if (asinList.length === 0) {
             return {};
@@ -377,7 +399,7 @@ const MonitorHistoryPage: React.FC<unknown> = () => {
       width: 250,
       hideInTable: type === 'group',
       hideInSearch: selectedCheckType === 'GROUP',
-      render: (text: string) => text || '-',
+      renderText: (text) => text || '-',
     },
     {
       title: 'ASIN类型',
@@ -539,9 +561,6 @@ const MonitorHistoryPage: React.FC<unknown> = () => {
         search={{
           labelWidth: 100,
           defaultCollapsed: false,
-          onReset: () => {
-            setSelectedCheckType('');
-          },
         }}
         request={async (params, sorter) => {
           debugLog('ProTable request params:', params);
@@ -664,14 +683,14 @@ const MonitorHistoryPage: React.FC<unknown> = () => {
           // 获取时间范围
           // transform函数会将checkTime转换为startTime和endTime
           // 但需要检查params中是否有这些值
-          const chartStartTime = params.startTime || requestParams.startTime;
-          const chartEndTime = params.endTime || requestParams.endTime;
+          const statsStartTime = params.startTime || requestParams.startTime;
+          const statsEndTime = params.endTime || requestParams.endTime;
 
-          debugLog('检查图表显示条件:', {
+          debugLog('检查异常时长统计表显示条件:', {
             hasAsinFilter,
             hasGroupFilter,
-            chartStartTime,
-            chartEndTime,
+            statsStartTime,
+            statsEndTime,
             asinValue: params.asin,
             paramsKeys: Object.keys(params),
             hasStartTime: !!params.startTime,
@@ -682,14 +701,18 @@ const MonitorHistoryPage: React.FC<unknown> = () => {
 
           if (
             (hasAsinFilter || hasGroupFilter) &&
-            chartStartTime &&
-            chartEndTime
+            statsStartTime &&
+            statsEndTime
           ) {
             try {
               const statsParams: any = {
-                startTime: chartStartTime,
-                endTime: chartEndTime,
+                startTime: statsStartTime,
+                endTime: statsEndTime,
               };
+
+              if (params.country || requestParams.country) {
+                statsParams.country = params.country || requestParams.country;
+              }
 
               if (hasGroupFilter) {
                 statsParams.variantGroupId = id;
@@ -739,40 +762,61 @@ const MonitorHistoryPage: React.FC<unknown> = () => {
 
                 // 检查返回的数据结构
                 if (statsResult?.data) {
-                  const chartData = statsResult.data;
+                  const statsData = statsResult.data;
                   // 检查是否有数据
                   if (
-                    chartData.data &&
-                    Array.isArray(chartData.data) &&
-                    chartData.data.length > 0
+                    statsData.data &&
+                    Array.isArray(statsData.data) &&
+                    statsData.data.length > 0
                   ) {
-                    setAbnormalDurationData(chartData);
-                    setShowChart(true);
-                    debugLog('图表数据已设置，显示图表');
+                    const hasValidAsin = statsData.data.some(
+                      (item) => item?.asin || item?.asinId,
+                    );
+                    if (hasValidAsin) {
+                      setAbnormalDurationData(statsData);
+                      setShowAbnormalDurationTable(true);
+                      setAbnormalDurationQueryRange({
+                        startTime: statsStartTime,
+                        endTime: statsEndTime,
+                      });
+                      debugLog('异常时长统计表数据已设置，显示表格');
+                    } else {
+                      debugLog(
+                        '统计结果不包含有效ASIN数据，隐藏异常时长统计表',
+                      );
+                      setShowAbnormalDurationTable(false);
+                      setAbnormalDurationData(null);
+                      setAbnormalDurationQueryRange(null);
+                    }
                   } else {
-                    debugLog('统计数据为空，隐藏图表');
-                    setShowChart(false);
+                    debugLog('统计数据为空，隐藏异常时长统计表');
+                    setShowAbnormalDurationTable(false);
                     setAbnormalDurationData(null);
+                    setAbnormalDurationQueryRange(null);
                   }
                 } else {
-                  debugLog('统计结果为空，隐藏图表');
-                  setShowChart(false);
+                  debugLog('统计结果为空，隐藏异常时长统计表');
+                  setShowAbnormalDurationTable(false);
                   setAbnormalDurationData(null);
+                  setAbnormalDurationQueryRange(null);
                 }
               } else {
-                debugLog('缺少必要的筛选参数，隐藏图表');
-                setShowChart(false);
+                debugLog('缺少必要的筛选参数，隐藏异常时长统计表');
+                setShowAbnormalDurationTable(false);
                 setAbnormalDurationData(null);
+                setAbnormalDurationQueryRange(null);
               }
             } catch (error) {
               console.error('加载异常时长统计失败:', error);
-              setShowChart(false);
+              setShowAbnormalDurationTable(false);
               setAbnormalDurationData(null);
+              setAbnormalDurationQueryRange(null);
             }
           } else {
-            debugLog('不满足图表显示条件，隐藏图表');
-            setShowChart(false);
+            debugLog('不满足异常时长统计表显示条件，隐藏表格');
+            setShowAbnormalDurationTable(false);
             setAbnormalDurationData(null);
+            setAbnormalDurationQueryRange(null);
           }
 
           return {
@@ -854,23 +898,39 @@ const MonitorHistoryPage: React.FC<unknown> = () => {
         }}
       />
 
-      {/* 异常时长统计图表 - 放在表格下方 */}
-      {showChart && abnormalDurationData && (
+      {/* 异常时长统计表格 - 放在主表格下方 */}
+      {showAbnormalDurationTable && abnormalDurationData && (
         <Card
           title="异常时长统计"
           style={{ marginTop: 16 }}
           extra={
-            <Tag>
-              时间粒度:{' '}
-              {abnormalDurationData.timeGranularity === 'hour'
-                ? '按小时'
-                : abnormalDurationData.timeGranularity === 'day'
-                ? '按天'
-                : '按周'}
-            </Tag>
+            <Space size="small">
+              <Tag>
+                时间粒度:{' '}
+                {abnormalDurationData.timeGranularity === 'hour'
+                  ? '按小时'
+                  : abnormalDurationData.timeGranularity === 'day'
+                  ? '按天'
+                  : '按周'}
+              </Tag>
+              <Tag>ASIN数: {abnormalDurationSummaryData.length}</Tag>
+            </Space>
           }
         >
-          <AbnormalDurationChart data={abnormalDurationData} />
+          <Table<AbnormalDurationSummaryRow>
+            rowKey="key"
+            columns={abnormalDurationColumns}
+            dataSource={abnormalDurationSummaryData}
+            scroll={{ x: 1450 }}
+            pagination={{
+              defaultPageSize: 10,
+              showSizeChanger: true,
+              showQuickJumper: true,
+              showTotal: (total, range) =>
+                `第 ${range[0]}-${range[1]} 条/总共 ${total} 条`,
+              pageSizeOptions: ['10', '20', '50', '100'],
+            }}
+          />
         </Card>
       )}
     </PageContainer>

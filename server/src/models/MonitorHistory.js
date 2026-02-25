@@ -54,6 +54,7 @@ class MonitorHistory {
       skipCount = false,
     } = params;
     const normalizedAsinType = asinType ? String(asinType).trim() : '';
+    const normalizedCheckType = checkType ? String(checkType).trim() : '';
 
     let sql = `
       SELECT 
@@ -135,9 +136,9 @@ class MonitorHistory {
       }
     }
 
-    if (checkType) {
+    if (normalizedCheckType) {
       sql += ` AND mh.check_type = ?`;
-      conditions.push(checkType);
+      conditions.push(normalizedCheckType);
     }
 
     if (isBroken !== '') {
@@ -161,9 +162,9 @@ class MonitorHistory {
         asinId || 'ALL'
       }:${asin || 'ALL'}:${variantGroupName || 'ALL'}:${asinName || 'ALL'}:${
         normalizedAsinType || 'ALL'
-      }:${country || 'ALL'}:${checkType || 'ALL'}:${isBroken || 'ALL'}:${
-        startTime || 'ALL'
-      }:${endTime || 'ALL'}`;
+      }:${country || 'ALL'}:${normalizedCheckType || 'ALL'}:${
+        isBroken || 'ALL'
+      }:${startTime || 'ALL'}:${endTime || 'ALL'}`;
       total = await cacheService.getAsync(countKey);
       if (total === null) {
         // COUNT查询必须和列表查询保持同样的筛选语义，否则分页总数可能不准确
@@ -235,9 +236,9 @@ class MonitorHistory {
           }
         }
 
-        if (checkType) {
+        if (normalizedCheckType) {
           countSql += ` AND mh.check_type = ?`;
-          countConditions.push(checkType);
+          countConditions.push(normalizedCheckType);
         }
 
         if (isBroken !== '') {
@@ -2118,6 +2119,7 @@ class MonitorHistory {
       asinIds = [],
       asinCodes = [],
       variantGroupId = '',
+      country = '',
       startTime = '',
       endTime = '',
     } = params;
@@ -2173,6 +2175,11 @@ class MonitorHistory {
       conditions.push(...asinCodes);
     }
 
+    if (country) {
+      whereClause += ` AND COALESCE(mh.country, a.country) = ?`;
+      conditions.push(country);
+    }
+
     if (startTime) {
       whereClause += ` AND mh.check_time >= ?`;
       conditions.push(startTime);
@@ -2192,6 +2199,7 @@ class MonitorHistory {
         ${dateFormat} as time_period,
         mh.asin_id,
         COALESCE(mh.asin_code, a.asin) as asin,
+        COALESCE(mh.country, a.country) as country,
         COUNT(*) as total_checks,
         SUM(CASE WHEN mh.is_broken = 1 THEN 1 ELSE 0 END) as broken_count,
         SUM(CASE WHEN mh.is_broken = 0 THEN 1 ELSE 0 END) as normal_count
@@ -2199,8 +2207,8 @@ class MonitorHistory {
       LEFT JOIN asins a ON a.id = mh.asin_id
       ${whereClause}
       AND mh.asin_id IS NOT NULL
-      GROUP BY ${dateFormat}, mh.asin_id, COALESCE(mh.asin_code, a.asin)
-      ORDER BY time_period ASC, mh.asin_id ASC
+      GROUP BY ${dateFormat}, mh.asin_id, COALESCE(mh.asin_code, a.asin), COALESCE(mh.country, a.country)
+      ORDER BY time_period ASC, country ASC, mh.asin_id ASC
     `;
 
     const results = await query(sql, conditions);
@@ -2228,6 +2236,7 @@ class MonitorHistory {
         timePeriod: row.time_period,
         asinId: row.asin_id,
         asin: row.asin,
+        country: row.country,
         abnormalDuration: Number(abnormalDuration.toFixed(2)),
         totalDuration: totalDuration,
         abnormalRatio: Number(abnormalRatio.toFixed(2)),
@@ -2245,7 +2254,13 @@ class MonitorHistory {
       const asinSet = new Set();
       processedData.forEach((item) => {
         if (item.asinId) {
-          asinSet.add(JSON.stringify({ asinId: item.asinId, asin: item.asin }));
+          asinSet.add(
+            JSON.stringify({
+              asinId: item.asinId,
+              asin: item.asin,
+              country: item.country,
+            }),
+          );
         }
       });
 
@@ -2295,11 +2310,14 @@ class MonitorHistory {
       // 为每个ASIN填充完整的时间序列
       const filledData = [];
       asinSet.forEach((asinKey) => {
-        const { asinId, asin } = JSON.parse(asinKey);
+        const { asinId, asin, country: asinCountry } = JSON.parse(asinKey);
         timeSeries.forEach((timePeriod) => {
           // 查找是否有该时间点的数据
           const existingData = processedData.find(
-            (item) => item.timePeriod === timePeriod && item.asinId === asinId,
+            (item) =>
+              item.timePeriod === timePeriod &&
+              item.asinId === asinId &&
+              (item.country || '') === (asinCountry || ''),
           );
 
           if (existingData) {
@@ -2311,6 +2329,7 @@ class MonitorHistory {
               timePeriod: timePeriod,
               asinId: asinId,
               asin: asin,
+              country: asinCountry,
               abnormalDuration: 0,
               totalDuration: intervalHours,
               abnormalRatio: 0,
@@ -2328,6 +2347,7 @@ class MonitorHistory {
             timePeriod: timePeriod,
             asinId: null,
             asin: null,
+            country: null,
             abnormalDuration: 0,
             totalDuration: intervalHours,
             abnormalRatio: 0,
@@ -2414,6 +2434,9 @@ class MonitorHistory {
       skipCount = false,
     } = params;
     const normalizedAsinType = asinType ? String(asinType).trim() : '';
+    const includeAsinRowsForGroupFilter =
+      checkType === 'GROUP' && (variantGroupId || variantGroupName);
+    const effectiveCheckType = includeAsinRowsForGroupFilter ? '' : checkType;
 
     // 构建基础查询，使用窗口函数识别状态变化
     let sql = `
@@ -2498,9 +2521,9 @@ class MonitorHistory {
       }
     }
 
-    if (checkType) {
+    if (effectiveCheckType) {
       sql += ` AND mh.check_type = ?`;
-      conditions.push(checkType);
+      conditions.push(effectiveCheckType);
     }
 
     if (startTime) {
@@ -2529,9 +2552,9 @@ class MonitorHistory {
         asinId || 'ALL'
       }:${asin || 'ALL'}:${variantGroupName || 'ALL'}:${asinName || 'ALL'}:${
         normalizedAsinType || 'ALL'
-      }:${country || 'ALL'}:${checkType || 'ALL'}:${startTime || 'ALL'}:${
-        endTime || 'ALL'
-      }`;
+      }:${country || 'ALL'}:${effectiveCheckType || 'ALL'}:${
+        startTime || 'ALL'
+      }:${endTime || 'ALL'}`;
       total = await cacheService.getAsync(countKey);
       if (total === null) {
         let countSql = `
@@ -2613,9 +2636,9 @@ class MonitorHistory {
           }
         }
 
-        if (checkType) {
+        if (effectiveCheckType) {
           countSql += ` AND mh.check_type = ?`;
-          countConditions.push(checkType);
+          countConditions.push(effectiveCheckType);
         }
 
         if (startTime) {
@@ -2687,15 +2710,18 @@ class MonitorHistory {
       endTime = '',
     } = params;
     const normalizedAsinType = asinType ? String(asinType).trim() : '';
+    const includeAsinRowsForGroupFilter =
+      checkType === 'GROUP' && (variantGroupId || variantGroupName);
+    const effectiveCheckType = includeAsinRowsForGroupFilter ? '' : checkType;
 
     // 先获取总数
     const countKey = `statusChangesCount:${variantGroupId || 'ALL'}:${
       asinId || 'ALL'
     }:${asin || 'ALL'}:${variantGroupName || 'ALL'}:${asinName || 'ALL'}:${
       normalizedAsinType || 'ALL'
-    }:${country || 'ALL'}:${checkType || 'ALL'}:${startTime || 'ALL'}:${
-      endTime || 'ALL'
-    }`;
+    }:${country || 'ALL'}:${effectiveCheckType || 'ALL'}:${
+      startTime || 'ALL'
+    }:${endTime || 'ALL'}`;
     let total = await cacheService.getAsync(countKey);
 
     if (total === null) {
@@ -2776,9 +2802,9 @@ class MonitorHistory {
         }
       }
 
-      if (checkType) {
+      if (effectiveCheckType) {
         countSql += ` AND mh.check_type = ?`;
-        countConditions.push(checkType);
+        countConditions.push(effectiveCheckType);
       }
 
       if (startTime) {
@@ -2891,9 +2917,9 @@ class MonitorHistory {
         }
       }
 
-      if (checkType) {
+      if (effectiveCheckType) {
         sql += ` AND mh.check_type = ?`;
-        conditions.push(checkType);
+        conditions.push(effectiveCheckType);
       }
 
       if (startTime) {

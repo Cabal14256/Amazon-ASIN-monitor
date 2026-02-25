@@ -1,16 +1,21 @@
-import { InitialState } from '@umijs/max';
 import { debugLog } from '@/utils/debug';
+import type { InitialStateType } from '@@/plugin-initialState/@@initialState';
 
-export default function accessFactory(initialState: InitialState) {
-  const { currentUser, permissions: initialStatePermissions = [], roles: initialStateRoles = [] } = initialState || {};
-  
+export default function accessFactory(initialState: InitialStateType) {
+  const {
+    currentUser,
+    permissions: initialStatePermissions = [],
+    roles: initialStateRoles = [],
+  } = initialState || {};
+
   // 从 initialState 根级别获取权限和角色（不是从 currentUser 中）
   const permissions = initialStatePermissions || [];
   const roles = initialStateRoles || [];
 
   // 检查是否有 token（用于判断是否正在加载中）
-  const hasToken = typeof window !== 'undefined' && !!localStorage.getItem('token');
-  
+  const hasToken =
+    typeof window !== 'undefined' && !!localStorage.getItem('token');
+
   // 检查是否已登录（有用户信息）
   // 如果有 token 但用户信息还没加载完，也认为是已登录（数据正在加载中）
   const hasUser = !!currentUser?.id;
@@ -25,7 +30,9 @@ export default function accessFactory(initialState: InitialState) {
         hasToken,
         hasUser,
         isLogin,
-        currentUser: currentUser ? { id: currentUser.id, username: currentUser.username } : null,
+        currentUser: currentUser
+          ? { id: currentUser.id, username: currentUser.username }
+          : null,
         permissions: permissions.length > 0 ? permissions : 'empty',
         roles: roles.length > 0 ? roles : 'empty',
       });

@@ -3,8 +3,8 @@ import {
   default as variantCheckServices,
 } from '@/services/competitor';
 import { buildAmazonProductUrl } from '@/utils/amazon';
-import { exportToExcel } from '@/utils/export';
 import { debugLog } from '@/utils/debug';
+import { exportToExcel } from '@/utils/export';
 import { useMessage } from '@/utils/message';
 import { MoreOutlined } from '@ant-design/icons';
 import {
@@ -12,6 +12,7 @@ import {
   FooterToolbar,
   PageContainer,
   ProColumns,
+  ProFormInstance,
   ProTable,
 } from '@ant-design/pro-components';
 import { Access, history, useAccess } from '@umijs/max';
@@ -52,6 +53,7 @@ const countryMap: Record<
 const CompetitorASINManagement: React.FC<unknown> = () => {
   const message = useMessage();
   const actionRef = useRef<ActionType>();
+  const formRef = useRef<ProFormInstance>();
   const requestCacheRef = useRef<
     Map<
       string,
@@ -252,9 +254,9 @@ const CompetitorASINManagement: React.FC<unknown> = () => {
 
           // 对于ASIN，显示ASIN类型
           const asinType = (record as API.ASINInfo).asinType;
-          if (asinType === '1' || asinType === 1) {
+          if (asinType === '1') {
             return <Tag color="green">主链</Tag>;
-          } else if (asinType === '2' || asinType === 2) {
+          } else if (asinType === '2') {
             return (
               <Tag
                 color="default"
@@ -510,6 +512,7 @@ const CompetitorASINManagement: React.FC<unknown> = () => {
       <ProTable<API.VariantGroup | API.ASINInfo>
         headerTitle="竞品变体组列表"
         actionRef={actionRef}
+        formRef={formRef}
         rowKey="id"
         search={{
           labelWidth: 120,
@@ -566,7 +569,7 @@ const CompetitorASINManagement: React.FC<unknown> = () => {
           <Access key="export-asin" accessible={access.canReadASIN}>
             <Button
               onClick={async () => {
-                const formValues = actionRef.current?.getFieldsValue?.() || {};
+                const formValues = formRef.current?.getFieldsValue?.() || {};
                 await exportToExcel(
                   '/api/v1/export/competitor-asin',
                   {
@@ -584,7 +587,7 @@ const CompetitorASINManagement: React.FC<unknown> = () => {
           <Access key="export-group" accessible={access.canReadASIN}>
             <Button
               onClick={async () => {
-                const formValues = actionRef.current?.getFieldsValue?.() || {};
+                const formValues = formRef.current?.getFieldsValue?.() || {};
                 await exportToExcel(
                   '/api/v1/export/competitor-variant-group',
                   {
@@ -601,6 +604,10 @@ const CompetitorASINManagement: React.FC<unknown> = () => {
           </Access>,
         ]}
         request={async (params) => {
+          type VariantGroupQueryData = API.PageInfo_VariantGroup_ & {
+            totalASINs?: number;
+          };
+
           const cacheKey = JSON.stringify({
             keyword: params.keyword || '',
             country: params.country || '',
@@ -643,26 +650,26 @@ const CompetitorASINManagement: React.FC<unknown> = () => {
             // 后端返回格式: { success: true, data: { list: [], total: 0 } }
             // 所以 response 应该是 { list: [], total: 0 }
             // 但如果响应拦截器返回整个 response，则 response 是 { success: true, data: { list: [], total: 0 } }
-            let data;
+            let data: VariantGroupQueryData = { list: [], total: 0 };
             let success = true;
 
             if (response && typeof response === 'object') {
               // 如果 response 有 data 属性，说明是完整的响应对象
-              if ('data' in response) {
-                data = response.data;
+              if (
+                'data' in response &&
+                response.data &&
+                typeof response.data === 'object'
+              ) {
+                data = response.data as VariantGroupQueryData;
                 success = response.success !== false;
               } else if ('list' in response) {
                 // 如果 response 直接是 data 对象（有 list 属性）
-                data = response;
-              } else {
-                data = { list: [], total: 0 };
+                data = response as VariantGroupQueryData;
               }
-            } else {
-              data = { list: [], total: 0 };
             }
 
             // 处理树形数据，为每个节点添加parentId标记
-            const treeData = data?.list?.map((group: any) => {
+            const treeData = (data.list || []).map((group: any) => {
               const groupWithParentId = {
                 ...group,
                 parentId: undefined, // 标记为变体组
@@ -679,11 +686,11 @@ const CompetitorASINManagement: React.FC<unknown> = () => {
               return groupWithParentId;
             });
             const finalData = treeData || [];
-            const totalASINsValue = data?.totalASINs || 0;
+            const totalASINsValue = data.totalASINs || 0;
             setTotalASINs(totalASINsValue);
             requestCacheRef.current.set(cacheKey, {
               data: finalData,
-              total: data?.total || 0,
+              total: data.total || 0,
               totalASINs: totalASINsValue,
               timestamp: Date.now(),
             });
@@ -691,7 +698,7 @@ const CompetitorASINManagement: React.FC<unknown> = () => {
             return {
               data: treeData || [],
               success,
-              total: data?.total || 0,
+              total: data.total || 0,
             };
           } catch (error) {
             console.error('获取变体组列表失败:', error);

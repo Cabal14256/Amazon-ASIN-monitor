@@ -3,7 +3,7 @@ import { request } from '@umijs/max';
 
 /** 获取SP-API配置（用于显示） */
 export async function getSPAPIConfigs(options?: { [key: string]: any }) {
-  return request<API.Result_SPAPIConfig_[]>('/api/v1/sp-api-configs', {
+  return request<API.Result_SPAPIConfig_List_>('/api/v1/sp-api-configs', {
     method: 'GET',
     ...(options || {}),
   });
@@ -35,7 +35,7 @@ export async function updateSPAPIConfig(
   },
   options?: { [key: string]: any },
 ) {
-  return request<API.Result_SPAPIConfig_[]>('/api/v1/sp-api-configs', {
+  return request<API.Result_SPAPIConfig_List_>('/api/v1/sp-api-configs', {
     method: 'PUT',
     headers: {
       'Content-Type': 'application/json',

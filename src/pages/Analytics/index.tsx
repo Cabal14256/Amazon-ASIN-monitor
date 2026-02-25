@@ -871,7 +871,7 @@ const AnalyticsPageContent: React.FC<unknown> = () => {
     });
   }, [timeStatistics]);
 
-  const lineTypes = ['所有ASIN异常占比', '所有ASIN异常占比-去重'] as const;
+  const lineTypes = ['所有ASIN异常占比', '所有ASIN异常占比-去重'];
   const lineColorMap: Record<string, string> = {
     所有ASIN异常占比: '#ff4d4f',
     '所有ASIN异常占比-去重': '#1890ff',
@@ -1005,7 +1005,7 @@ const AnalyticsPageContent: React.FC<unknown> = () => {
   }, [groupBy, country, timeChartData]);
 
   const lineChartOptions = useMemo(() => {
-    const series = lineTypes.map((type, index) => {
+    const series: any[] = lineTypes.map((type, index) => {
       const data = timeChartData
         .filter((item) => item.type === type)
         .map((item) => [
@@ -1089,7 +1089,7 @@ const AnalyticsPageContent: React.FC<unknown> = () => {
           data: [], // 空数据，不显示线条
           lineStyle: {
             width: 0,
-            opacity: 0,
+            color: 'transparent',
           },
           itemStyle: {
             color: region.color.replace('0.15', '0.8'), // 使用不透明的颜色用于图例
@@ -1573,7 +1573,7 @@ const AnalyticsPageContent: React.FC<unknown> = () => {
   const { totalChecks, brokenCount, normalCount } = normalizedOverall;
 
   // 导出数据
-  const handleExport = async () => {
+  const handleExport = async (format: 'excel' | 'csv' = 'excel') => {
     try {
       const startTime = dateRange[0].format('YYYY-MM-DD 00:00:00');
       const endTime = dateRange[1].format('YYYY-MM-DD 23:59:59');
@@ -1593,7 +1593,7 @@ const AnalyticsPageContent: React.FC<unknown> = () => {
         queryParams,
         `监控历史_${dateRange[0].format('YYYY-MM-DD')}_${dateRange[1].format(
           'YYYY-MM-DD',
-        )}`,
+        )}_${format.toUpperCase()}`,
       );
     } catch (error) {
       console.error('导出失败:', error);
@@ -1617,7 +1617,7 @@ const AnalyticsPageContent: React.FC<unknown> = () => {
         <Button
           key="refresh"
           type="primary"
-          onClick={loadStatistics}
+          onClick={() => void loadStatistics()}
           loading={loading}
         >
           刷新
@@ -1666,7 +1666,11 @@ const AnalyticsPageContent: React.FC<unknown> = () => {
               <Select.Option value="week">按周</Select.Option>
               <Select.Option value="month">按月</Select.Option>
             </Select>
-            <Button type="primary" onClick={loadStatistics} loading={loading}>
+            <Button
+              type="primary"
+              onClick={() => void loadStatistics()}
+              loading={loading}
+            >
               查询
             </Button>
           </Space>
@@ -2175,7 +2179,7 @@ const AnalyticsPageContent: React.FC<unknown> = () => {
                 </Select>
                 <Button
                   type="primary"
-                  onClick={loadStatistics}
+                  onClick={() => void loadStatistics()}
                   loading={loading}
                 >
                   查询

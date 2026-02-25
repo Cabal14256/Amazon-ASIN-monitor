@@ -78,6 +78,7 @@ declare namespace API {
     current?: number;
     pageSize?: number;
     total?: number;
+    totalASINs?: number;
     list?: VariantGroup[];
   }
 
@@ -147,6 +148,8 @@ declare namespace API {
     asin?: string;
     /** ASIN名称（关联查询） */
     asinName?: string;
+    /** ASIN类型（关联查询） */
+    asinType?: '1' | '2' | 'MAIN_LINK' | 'SUB_REVIEW';
     /** 父变体ASIN（关联查询） */
     parentAsin?: string;
   }

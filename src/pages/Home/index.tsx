@@ -1,5 +1,5 @@
-import services from '@/services/dashboard';
 import LazyECharts from '@/components/LazyECharts';
+import services from '@/services/dashboard';
 import { wsClient } from '@/services/websocket';
 import { debugError, debugLog } from '@/utils/debug';
 import { useMessage } from '@/utils/message';
@@ -82,10 +82,7 @@ const HomePage: React.FC = () => {
       if (response?.success && response?.data) {
         setDashboardData(response.data);
       } else {
-        const errorMessage =
-          response?.errorMessage ||
-          response?.data?.errorMessage ||
-          '加载仪表盘数据失败';
+        const errorMessage = response?.errorMessage || '加载仪表盘数据失败';
         debugError('[Dashboard] 响应失败:', response);
         message.error(errorMessage);
       }
