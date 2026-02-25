@@ -628,8 +628,18 @@ exports.getASINStatisticsByVariantGroup = async (req, res) => {
 // 获取异常时长统计
 exports.getAbnormalDurationStatistics = async (req, res) => {
   try {
-    const { asinIds, asinCodes, variantGroupId, country, startTime, endTime } =
-      req.query;
+    const {
+      asinIds,
+      asinCodes,
+      variantGroupId,
+      country,
+      startTime,
+      endTime,
+      includeSeries = '1',
+      asinType,
+      asinName,
+      variantGroupName,
+    } = req.query;
 
     // 处理asinIds参数：可能是逗号分隔的字符串或数组
     let asinIdsArray = [];
@@ -664,6 +674,10 @@ exports.getAbnormalDurationStatistics = async (req, res) => {
       country,
       startTime,
       endTime,
+      includeSeries,
+      asinType,
+      asinName,
+      variantGroupName,
     });
 
     res.json({
