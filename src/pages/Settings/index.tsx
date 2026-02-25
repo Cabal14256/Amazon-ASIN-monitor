@@ -99,9 +99,10 @@ const SettingsPage: React.FC<unknown> = () => {
           config.configKey === 'MONITOR_US_SCHEDULE_MINUTES' ||
           config.configKey === 'MONITOR_EU_SCHEDULE_MINUTES'
         ) {
-          value = config.configValue
-            ? Number.parseInt(config.configValue, 10)
-            : '';
+          value =
+            config.configValue !== undefined && config.configValue !== null
+              ? Number.parseInt(String(config.configValue), 10)
+              : '';
         } else {
           value = config.configValue || '';
         }
@@ -850,13 +851,23 @@ const SettingsPage: React.FC<unknown> = () => {
                     <Space>
                       <Button
                         type="link"
-                        onClick={() => handleDownloadBackup(record.filename)}
+                        onClick={() => {
+                          if (!record.filename) {
+                            message.warning('备份文件名缺失');
+                            return;
+                          }
+                          void handleDownloadBackup(record.filename);
+                        }}
                       >
                         下载
                       </Button>
                       <Button
                         type="link"
                         onClick={() => {
+                          if (!record.filename) {
+                            message.warning('备份文件名缺失');
+                            return;
+                          }
                           setRestoreFilename(record.filename);
                           setRestoreModalVisible(true);
                         }}
@@ -865,7 +876,13 @@ const SettingsPage: React.FC<unknown> = () => {
                       </Button>
                       <Popconfirm
                         title="确定要删除这个备份吗？"
-                        onConfirm={() => handleDeleteBackup(record.filename)}
+                        onConfirm={() => {
+                          if (!record.filename) {
+                            message.warning('备份文件名缺失');
+                            return;
+                          }
+                          void handleDeleteBackup(record.filename);
+                        }}
                         okText="确定"
                         cancelText="取消"
                       >
@@ -943,11 +960,16 @@ const SettingsPage: React.FC<unknown> = () => {
               />
               <ProForm.Item
                 noStyle
-                shouldUpdate={(prevValues, currentValues) =>
-                  prevValues.scheduleType !== currentValues.scheduleType
-                }
+                shouldUpdate={(
+                  prevValues: Record<string, unknown>,
+                  currentValues: Record<string, unknown>,
+                ) => prevValues.scheduleType !== currentValues.scheduleType}
               >
-                {({ getFieldValue }) => {
+                {({
+                  getFieldValue,
+                }: {
+                  getFieldValue: (name: string) => unknown;
+                }) => {
                   const scheduleType = getFieldValue('scheduleType');
                   if (scheduleType === 'weekly') {
                     return (

@@ -1,6 +1,6 @@
-import { history, useModel } from '@umijs/max';
 import { debugLog } from '@/utils/debug';
-import { Button, Result } from 'antd';
+import { history, useModel } from '@umijs/max';
+import { Button, Result, Spin } from 'antd';
 import React, { useEffect } from 'react';
 
 const NoAccessPage: React.FC = () => {
@@ -59,11 +59,9 @@ const NoAccessPage: React.FC = () => {
   // 如果有token但用户信息还没加载完（可能是初始化阶段），显示加载中
   if (hasToken && !isLogin) {
     return (
-      <Result
-        status="loading"
-        title="加载中..."
-        subTitle="正在验证您的身份，请稍候"
-      />
+      <div style={{ display: 'flex', justifyContent: 'center', padding: 48 }}>
+        <Spin tip="正在验证您的身份，请稍候" />
+      </div>
     );
   }
 

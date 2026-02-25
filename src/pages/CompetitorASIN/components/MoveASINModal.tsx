@@ -27,10 +27,20 @@ const MoveASINModal: React.FC<MoveASINModalProps> = (props) => {
         current: 1,
         pageSize: 1000,
       });
-      const data = response.data || response;
+      const payload =
+        response && typeof response === 'object' && 'data' in response
+          ? response.data
+          : response;
+      const list =
+        payload &&
+        typeof payload === 'object' &&
+        'list' in payload &&
+        Array.isArray(payload.list)
+          ? (payload.list as API.VariantGroup[])
+          : [];
       // 过滤掉当前变体组
-      const groups = (data?.list || []).filter(
-        (group) => group.id !== currentGroupId,
+      const groups = list.filter(
+        (group: API.VariantGroup) => group.id !== currentGroupId,
       );
       setVariantGroups(groups);
     } catch (error) {

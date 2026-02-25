@@ -4,6 +4,7 @@ import {
   ActionType,
   PageContainer,
   ProColumns,
+  ProFormInstance,
   ProTable,
 } from '@ant-design/pro-components';
 import { useSearchParams } from '@umijs/max';
@@ -28,6 +29,7 @@ const countryMap: Record<
 
 const CompetitorMonitorHistoryPage: React.FC<unknown> = () => {
   const actionRef = useRef<ActionType>();
+  const formRef = useRef<ProFormInstance>();
   const [searchParams] = useSearchParams();
 
   // 从URL参数获取筛选条件
@@ -101,14 +103,14 @@ const CompetitorMonitorHistoryPage: React.FC<unknown> = () => {
       title: '变体组',
       dataIndex: 'variantGroupName',
       width: 200,
-      render: (text: string) => text || '-',
+      renderText: (text) => text || '-',
     },
     {
       title: 'ASIN',
       dataIndex: 'asin',
       width: 150,
       hideInTable: type === 'group', // 如果是从变体组查看，隐藏ASIN列
-      render: (text: string) => text || '-',
+      renderText: (text) => text || '-',
       fieldProps: {
         placeholder: '请输入ASIN编码',
       },
@@ -118,7 +120,7 @@ const CompetitorMonitorHistoryPage: React.FC<unknown> = () => {
       dataIndex: 'parentAsin',
       width: 250,
       hideInTable: type === 'group',
-      render: (text: string) => text || '-',
+      renderText: (text) => text || '-',
     },
     {
       title: '所属国家',
@@ -180,6 +182,7 @@ const CompetitorMonitorHistoryPage: React.FC<unknown> = () => {
       <ProTable<API.MonitorHistory>
         headerTitle="竞品监控历史记录"
         actionRef={actionRef}
+        formRef={formRef}
         rowKey="id"
         search={{
           labelWidth: 100,
@@ -227,8 +230,11 @@ const CompetitorMonitorHistoryPage: React.FC<unknown> = () => {
           }
 
           const response = await queryCompetitorMonitorHistory(requestParams);
-          const data = response.data || response;
-          const success = response.success !== false;
+          const data =
+            response?.data && typeof response.data === 'object'
+              ? response.data
+              : (response as any);
+          const success = response?.success !== false;
 
           return {
             data: data?.list || [],
@@ -251,7 +257,7 @@ const CompetitorMonitorHistoryPage: React.FC<unknown> = () => {
             onClick={async () => {
               try {
                 // 获取当前表格的筛选条件
-                const formValues = actionRef.current?.getFieldsValue?.() || {};
+                const formValues = formRef.current?.getFieldsValue?.() || {};
 
                 // 构建查询参数对象
                 const queryParams: Record<string, any> = {};

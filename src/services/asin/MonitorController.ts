@@ -327,6 +327,8 @@ export async function getAbnormalDurationStatistics(
     asinCodes?: string | string[];
     /** 变体组ID */
     variantGroupId?: string;
+    /** 国家筛选 */
+    country?: string;
     /** 开始时间 */
     startTime?: string;
     /** 结束时间 */

@@ -57,9 +57,9 @@ const AuditLogPage: React.FC<unknown> = () => {
       title: '用户',
       dataIndex: 'username',
       width: 120,
-      render: (text: string, record: API.AuditLog) => (
+      render: (_: React.ReactNode, record: API.AuditLog) => (
         <Space>
-          <span>{text || '-'}</span>
+          <span>{record.username || '-'}</span>
           {record.userId && (
             <Tag color="default" style={{ fontSize: '11px' }}>
               {record.userId.substring(0, 8)}...
@@ -92,13 +92,17 @@ const AuditLogPage: React.FC<unknown> = () => {
         acc[key] = { text: resourceMap[key] };
         return acc;
       }, {} as Record<string, { text: string }>),
-      render: (text: string) => (text ? resourceMap[text] || text : '-'),
+      render: (_: React.ReactNode, record: API.AuditLog) => {
+        const text = record.resource;
+        return text ? resourceMap[text] || text : '-';
+      },
     },
     {
       title: '资源名称',
       dataIndex: 'resourceName',
       width: 200,
-      render: (text: string) => text || '-',
+      render: (_: React.ReactNode, record: API.AuditLog) =>
+        record.resourceName || '-',
     },
     {
       title: '请求路径',
@@ -112,30 +116,34 @@ const AuditLogPage: React.FC<unknown> = () => {
       dataIndex: 'method',
       width: 100,
       hideInSearch: true,
-      render: (text: string) => (
-        <Tag
-          color={
-            text === 'GET'
-              ? 'blue'
-              : text === 'POST'
-              ? 'green'
-              : text === 'PUT'
-              ? 'orange'
-              : text === 'DELETE'
-              ? 'red'
-              : 'default'
-          }
-        >
-          {text}
-        </Tag>
-      ),
+      render: (_: React.ReactNode, record: API.AuditLog) => {
+        const text = record.method || '-';
+        return (
+          <Tag
+            color={
+              text === 'GET'
+                ? 'blue'
+                : text === 'POST'
+                ? 'green'
+                : text === 'PUT'
+                ? 'orange'
+                : text === 'DELETE'
+                ? 'red'
+                : 'default'
+            }
+          >
+            {text}
+          </Tag>
+        );
+      },
     },
     {
       title: '响应状态',
       dataIndex: 'responseStatus',
       width: 100,
       hideInSearch: true,
-      render: (status: number) => {
+      render: (_: React.ReactNode, record: API.AuditLog) => {
+        const status = record.responseStatus;
         if (!status) return '-';
         const color =
           status >= 200 && status < 300
@@ -158,7 +166,12 @@ const AuditLogPage: React.FC<unknown> = () => {
       width: 200,
       ellipsis: true,
       hideInSearch: true,
-      render: (text: string) => (text ? <Tag color="error">{text}</Tag> : '-'),
+      render: (_: React.ReactNode, record: API.AuditLog) =>
+        record.errorMessage ? (
+          <Tag color="error">{record.errorMessage}</Tag>
+        ) : (
+          '-'
+        ),
     },
   ];
 

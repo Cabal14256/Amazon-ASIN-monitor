@@ -2121,6 +2121,7 @@ class MonitorHistory {
       asinIds = [],
       asinCodes = [],
       variantGroupId = '',
+      country = '',
       startTime = '',
       endTime = '',
     } = params;
@@ -2176,6 +2177,11 @@ class MonitorHistory {
       conditions.push(...asinCodes);
     }
 
+    if (country) {
+      whereClause += ` AND COALESCE(mh.country, a.country) = ?`;
+      conditions.push(country);
+    }
+
     if (startTime) {
       whereClause += ` AND mh.check_time >= ?`;
       conditions.push(startTime);
@@ -2195,6 +2201,7 @@ class MonitorHistory {
         ${dateFormat} as time_period,
         mh.asin_id,
         COALESCE(mh.asin_code, a.asin) as asin,
+        COALESCE(mh.country, a.country) as country,
         COUNT(*) as total_checks,
         SUM(CASE WHEN mh.is_broken = 1 THEN 1 ELSE 0 END) as broken_count,
         SUM(CASE WHEN mh.is_broken = 0 THEN 1 ELSE 0 END) as normal_count
@@ -2202,8 +2209,8 @@ class MonitorHistory {
       LEFT JOIN asins a ON a.id = mh.asin_id
       ${whereClause}
       AND mh.asin_id IS NOT NULL
-      GROUP BY ${dateFormat}, mh.asin_id, COALESCE(mh.asin_code, a.asin)
-      ORDER BY time_period ASC, mh.asin_id ASC
+      GROUP BY ${dateFormat}, mh.asin_id, COALESCE(mh.asin_code, a.asin), COALESCE(mh.country, a.country)
+      ORDER BY time_period ASC, country ASC, mh.asin_id ASC
     `;
 
     const results = await query(sql, conditions);
@@ -2231,6 +2238,7 @@ class MonitorHistory {
         timePeriod: row.time_period,
         asinId: row.asin_id,
         asin: row.asin,
+        country: row.country,
         abnormalDuration: Number(abnormalDuration.toFixed(2)),
         totalDuration: totalDuration,
         abnormalRatio: Number(abnormalRatio.toFixed(2)),
@@ -2248,7 +2256,13 @@ class MonitorHistory {
       const asinSet = new Set();
       processedData.forEach((item) => {
         if (item.asinId) {
-          asinSet.add(JSON.stringify({ asinId: item.asinId, asin: item.asin }));
+          asinSet.add(
+            JSON.stringify({
+              asinId: item.asinId,
+              asin: item.asin,
+              country: item.country,
+            }),
+          );
         }
       });
 
@@ -2298,11 +2312,14 @@ class MonitorHistory {
       // 为每个ASIN填充完整的时间序列
       const filledData = [];
       asinSet.forEach((asinKey) => {
-        const { asinId, asin } = JSON.parse(asinKey);
+        const { asinId, asin, country: asinCountry } = JSON.parse(asinKey);
         timeSeries.forEach((timePeriod) => {
           // 查找是否有该时间点的数据
           const existingData = processedData.find(
-            (item) => item.timePeriod === timePeriod && item.asinId === asinId,
+            (item) =>
+              item.timePeriod === timePeriod &&
+              item.asinId === asinId &&
+              (item.country || '') === (asinCountry || ''),
           );
 
           if (existingData) {
@@ -2314,6 +2331,7 @@ class MonitorHistory {
               timePeriod: timePeriod,
               asinId: asinId,
               asin: asin,
+              country: asinCountry,
               abnormalDuration: 0,
               totalDuration: intervalHours,
               abnormalRatio: 0,
@@ -2331,6 +2349,7 @@ class MonitorHistory {
             timePeriod: timePeriod,
             asinId: null,
             asin: null,
+            country: null,
             abnormalDuration: 0,
             totalDuration: intervalHours,
             abnormalRatio: 0,

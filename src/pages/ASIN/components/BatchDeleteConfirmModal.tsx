@@ -1,6 +1,5 @@
-import { Modal } from 'antd';
+import { Modal, Tag } from 'antd';
 import React from 'react';
-import { Tag } from 'antd';
 
 interface BatchDeleteConfirmModalProps {
   visible: boolean;
@@ -53,7 +52,14 @@ const BatchDeleteConfirmModal: React.FC<BatchDeleteConfirmModalProps> = ({
       </div>
 
       {/* 统计信息 */}
-      <div style={{ marginBottom: 16, padding: 12, background: '#f5f5f5', borderRadius: 4 }}>
+      <div
+        style={{
+          marginBottom: 16,
+          padding: 12,
+          background: '#f5f5f5',
+          borderRadius: 4,
+        }}
+      >
         {hasGroups && (
           <div style={{ marginBottom: 8 }}>
             <Tag color="blue">变体组</Tag>
@@ -96,6 +102,7 @@ const BatchDeleteConfirmModal: React.FC<BatchDeleteConfirmModalProps> = ({
         <ul style={{ margin: 0, paddingLeft: 20 }}>
           {items.slice(0, 10).map((item) => {
             const isGroup = (item as API.VariantGroup).parentId === undefined;
+            const groupChildren = (item as API.VariantGroup).children || [];
             return (
               <li key={item.id} style={{ marginBottom: 4 }}>
                 {isGroup ? (
@@ -109,9 +116,11 @@ const BatchDeleteConfirmModal: React.FC<BatchDeleteConfirmModalProps> = ({
                         {item.country}
                       </Tag>
                     )}
-                    {(item as API.VariantGroup).children?.length > 0 && (
-                      <span style={{ marginLeft: 8, color: '#999', fontSize: 12 }}>
-                        （包含 {(item as API.VariantGroup).children.length} 个 ASIN）
+                    {groupChildren.length > 0 && (
+                      <span
+                        style={{ marginLeft: 8, color: '#999', fontSize: 12 }}
+                      >
+                        （包含 {groupChildren.length} 个 ASIN）
                       </span>
                     )}
                   </>
@@ -149,4 +158,3 @@ const BatchDeleteConfirmModal: React.FC<BatchDeleteConfirmModalProps> = ({
 };
 
 export default BatchDeleteConfirmModal;
-

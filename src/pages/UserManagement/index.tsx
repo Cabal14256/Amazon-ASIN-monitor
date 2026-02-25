@@ -203,7 +203,9 @@ const UserManagement: React.FC<unknown> = () => {
                 新建用户
               </Button>,
             ]}
-            request={async (params) => {
+            request={async (params, sort, filter) => {
+              void sort;
+              void filter;
               try {
                 const { current, pageSize, username, status } = params;
                 const response = await getUserList({
@@ -213,23 +215,14 @@ const UserManagement: React.FC<unknown> = () => {
                   status: status as string,
                 });
 
-                let data;
-                if (response && typeof response === 'object') {
-                  if ('data' in response) {
-                    data = response.data;
-                  } else if ('list' in response) {
-                    data = response;
-                  } else {
-                    data = { list: [], total: 0 };
-                  }
-                } else {
-                  data = { list: [], total: 0 };
-                }
+                const data = response?.data;
+                const list = Array.isArray(data?.list) ? data.list : [];
+                const total = Number(data?.total) || 0;
 
                 return {
-                  data: data?.list || [],
+                  data: list,
                   success: true,
-                  total: data?.total || 0,
+                  total,
                 };
               } catch (error: any) {
                 console.error('获取用户列表失败:', error);

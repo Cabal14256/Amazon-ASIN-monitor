@@ -48,8 +48,18 @@ const ASINForm: React.FC<ASINFormProps> = (props) => {
         current: 1,
         pageSize: 1000,
       });
-      const data = response.data || response;
-      setVariantGroups(data?.list || []);
+      const payload =
+        response && typeof response === 'object' && 'data' in response
+          ? response.data
+          : response;
+      const list =
+        payload &&
+        typeof payload === 'object' &&
+        'list' in payload &&
+        Array.isArray(payload.list)
+          ? (payload.list as API.VariantGroup[])
+          : [];
+      setVariantGroups(list);
     } catch (error) {
       console.error('加载竞品变体组列表失败:', error);
     }

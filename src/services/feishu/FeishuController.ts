@@ -3,7 +3,7 @@ import { request } from '@umijs/max';
 
 /** 获取所有飞书配置 */
 export async function getFeishuConfigs(options?: { [key: string]: any }) {
-  return request<API.Result_FeishuConfig_[]>('/api/v1/feishu-configs', {
+  return request<API.Result_FeishuConfig_List_>('/api/v1/feishu-configs', {
     method: 'GET',
     ...(options || {}),
   });
