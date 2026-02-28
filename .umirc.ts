@@ -3,6 +3,7 @@ import { defineConfig } from '@umijs/max';
 export default defineConfig({
   antd: {},
   model: {},
+  request: {},
   initialState: {},
   access: {
     // 权限控制配置

@@ -2,16 +2,34 @@ import { Modal, Progress, message } from 'antd';
 import React from 'react';
 import ReactDOM from 'react-dom/client';
 
+function normalizeBaseURL(baseURL: string): string {
+  return baseURL.endsWith('/') ? baseURL.slice(0, -1) : baseURL;
+}
+
+function mergeApiURL(baseURL: string, path: string): string {
+  const normalizedBaseURL = normalizeBaseURL(baseURL);
+  const normalizedPath = path.startsWith('/') ? path : `/${path}`;
+
+  if (
+    /\/api$/i.test(normalizedBaseURL) &&
+    /^\/api(\/|$)/i.test(normalizedPath)
+  ) {
+    return `${normalizedBaseURL.slice(0, -4)}${normalizedPath}`;
+  }
+
+  return `${normalizedBaseURL}${normalizedPath}`;
+}
+
 /**
  * 获取API基础URL
  */
 export function getBaseURL(): string {
   // 生产环境：使用环境变量或默认值
   if (process.env.NODE_ENV === 'production') {
-    return process.env.API_BASE_URL || '/api';
+    return normalizeBaseURL(process.env.API_BASE_URL || '/api');
   }
   // 开发环境：使用代理路径
-  return '/api';
+  return normalizeBaseURL('/api');
 }
 
 /**
@@ -24,10 +42,7 @@ export function buildExportURL(
   params: Record<string, any> = {},
 ): string {
   const baseURL = getBaseURL();
-  const normalizedBaseURL = baseURL.endsWith('/')
-    ? baseURL.slice(0, -1)
-    : baseURL;
-  const normalizedPath = path.startsWith('/') ? path : `/${path}`;
+  const fullURL = mergeApiURL(baseURL, path);
 
   const queryParams = new URLSearchParams();
   Object.keys(params).forEach((key) => {
@@ -41,8 +56,8 @@ export function buildExportURL(
   });
 
   return queryParams.toString()
-    ? `${normalizedBaseURL}${normalizedPath}?${queryParams.toString()}`
-    : `${normalizedBaseURL}${normalizedPath}`;
+    ? `${fullURL}?${queryParams.toString()}`
+    : fullURL;
 }
 
 /**
@@ -165,17 +180,20 @@ export async function exportToExcelAsync(
     const token = localStorage.getItem('token');
 
     // 创建导出任务
-    const createTaskResponse = await fetch(`${baseURL}/v1/tasks/export`, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        Authorization: `Bearer ${token}`,
+    const createTaskResponse = await fetch(
+      mergeApiURL(baseURL, '/v1/tasks/export'),
+      {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify({
+          exportType,
+          params,
+        }),
       },
-      body: JSON.stringify({
-        exportType,
-        params,
-      }),
-    });
+    );
 
     if (!createTaskResponse.ok) {
       const errorData = await createTaskResponse.json().catch(() => ({}));
@@ -218,7 +236,7 @@ export async function exportToExcelAsync(
         updateProgress(100, '导出完成，正在下载...');
 
         // 下载文件
-        const downloadUrl = `${baseURL}${msg.downloadUrl}`;
+        const downloadUrl = mergeApiURL(baseURL, msg.downloadUrl);
         const a = document.createElement('a');
         a.href = downloadUrl;
         a.download =
@@ -248,11 +266,14 @@ export async function exportToExcelAsync(
       if (!taskId) return;
 
       try {
-        const statusResponse = await fetch(`${baseURL}/v1/tasks/${taskId}`, {
-          headers: {
-            Authorization: `Bearer ${token}`,
+        const statusResponse = await fetch(
+          mergeApiURL(baseURL, `/v1/tasks/${taskId}`),
+          {
+            headers: {
+              Authorization: `Bearer ${token}`,
+            },
           },
-        });
+        );
 
         if (statusResponse.ok) {
           const statusData = await statusResponse.json();
@@ -265,7 +286,10 @@ export async function exportToExcelAsync(
                 pollInterval = null;
               }
               // 下载文件
-              const downloadUrl = `${baseURL}/v1/tasks/${taskId}/download`;
+              const downloadUrl = mergeApiURL(
+                baseURL,
+                `/v1/tasks/${taskId}/download`,
+              );
               const a = document.createElement('a');
               a.href = downloadUrl;
               a.download = filename
@@ -379,11 +403,7 @@ export async function exportToExcel(
 
     // 获取baseURL并构建完整URL
     const baseURL = getBaseURL();
-    const normalizedBaseURL = baseURL.endsWith('/')
-      ? baseURL.slice(0, -1)
-      : baseURL;
-    const normalizedUrl = url.startsWith('/') ? url : `/${url}`;
-    const fullUrl = `${normalizedBaseURL}${normalizedUrl}?${queryParams.toString()}`;
+    const fullUrl = `${mergeApiURL(baseURL, url)}?${queryParams.toString()}`;
 
     // 使用 fetch + ReadableStream 接收 SSE 进度更新（因为需要自定义 headers）
     const response = await fetch(fullUrl, {

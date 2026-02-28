@@ -1,7 +1,7 @@
 import services from '@/services/asin';
 import { debugLog } from '@/utils/debug';
 import { exportToExcel } from '@/utils/export';
-import { DownOutlined } from '@ant-design/icons';
+import { DownloadOutlined, DownOutlined } from '@ant-design/icons';
 import {
   ActionType,
   PageContainer,
@@ -12,7 +12,7 @@ import {
 } from '@ant-design/pro-components';
 import { useSearchParams } from '@umijs/max';
 import type { TableProps } from 'antd';
-import { Card, Dropdown, Space, Table, Tag } from 'antd';
+import { Button, Card, Dropdown, message, Space, Table, Tag } from 'antd';
 import dayjs from 'dayjs';
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 
@@ -62,6 +62,11 @@ interface AbnormalDurationSummaryAccumulator {
 }
 
 const formatDuration = (value: number) => `${value.toFixed(2)} 小时`;
+
+const toCsvCell = (value: unknown): string => {
+  const raw = String(value ?? '');
+  return `"${raw.replace(/"/g, '""')}"`;
+};
 
 const MonitorHistoryPage: React.FC<unknown> = () => {
   const actionRef = useRef<ActionType>();
@@ -230,6 +235,67 @@ const MonitorHistoryPage: React.FC<unknown> = () => {
         width: 180,
       },
     ];
+
+  const handleExportAbnormalDuration = async () => {
+    try {
+      if (!abnormalDurationSummaryData.length) {
+        message.warning('暂无可导出的异常时长统计数据');
+        return;
+      }
+
+      const headers = [
+        'ASIN',
+        '国家',
+        '查询时间段',
+        '异常次数',
+        '平均异常时长',
+        '最短异常时长',
+        '最长异常时长',
+        '最长异常时间',
+      ];
+
+      const rows = abnormalDurationSummaryData.map((item) => [
+        item.asin,
+        countryMap[item.country]?.text || item.country || '-',
+        item.queryTimeRange || '-',
+        String(item.abnormalCount ?? 0),
+        formatDuration(item.averageAbnormalDuration || 0),
+        formatDuration(item.minAbnormalDuration || 0),
+        formatDuration(item.maxAbnormalDuration || 0),
+        item.maxAbnormalTime || '-',
+      ]);
+
+      const csvContent = [
+        headers.map((item) => toCsvCell(item)).join(','),
+        ...rows.map((row) => row.map((item) => toCsvCell(item)).join(',')),
+      ].join('\r\n');
+
+      const rangeText =
+        abnormalDurationQueryRange?.startTime &&
+        abnormalDurationQueryRange?.endTime
+          ? `${abnormalDurationQueryRange.startTime}_${abnormalDurationQueryRange.endTime}`
+          : dayjs().format('YYYY-MM-DD_HH-mm-ss');
+
+      const safeRangeText = rangeText.replace(/[\\/:*?"<>|\s]+/g, '-');
+      const filename = `异常时长统计_${safeRangeText}.csv`;
+
+      const blob = new Blob([`\uFEFF${csvContent}`], {
+        type: 'text/csv;charset=utf-8;',
+      });
+      const downloadURL = window.URL.createObjectURL(blob);
+      const link = document.createElement('a');
+      link.href = downloadURL;
+      link.download = filename;
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
+      window.URL.revokeObjectURL(downloadURL);
+      message.success('异常时长统计导出成功');
+    } catch (error) {
+      console.error('导出异常时长统计失败:', error);
+      message.error('导出失败，请重试');
+    }
+  };
 
   // 加载统计信息
   const loadStatistics = async (country?: string) => {
@@ -905,6 +971,16 @@ const MonitorHistoryPage: React.FC<unknown> = () => {
           style={{ marginTop: 16 }}
           extra={
             <Space size="small">
+              <Button
+                size="small"
+                icon={<DownloadOutlined />}
+                disabled={!abnormalDurationSummaryData.length}
+                onClick={() => {
+                  void handleExportAbnormalDuration();
+                }}
+              >
+                导出数据
+              </Button>
               <Tag>
                 时间粒度:{' '}
                 {abnormalDurationData.timeGranularity === 'hour'

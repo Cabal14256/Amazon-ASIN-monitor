@@ -170,11 +170,54 @@ CREATE TABLE IF NOT EXISTS `users` (
   `status` TINYINT(1) DEFAULT 1 COMMENT '状态: 0-禁用, 1-启用',
   `last_login_time` DATETIME COMMENT '最后登录时间',
   `last_login_ip` VARCHAR(50) COMMENT '最后登录IP',
+  `password_expires_at` DATETIME DEFAULT NULL COMMENT '密码过期时间',
+  `password_changed_at` DATETIME DEFAULT NULL COMMENT '密码最后修改时间',
+  `force_password_change` TINYINT(1) DEFAULT 0 COMMENT '是否强制修改密码',
+  `failed_login_attempts` INT DEFAULT 0 COMMENT '登录失败次数',
+  `locked_until` DATETIME DEFAULT NULL COMMENT '账户锁定到期时间',
+  `last_failed_login` DATETIME DEFAULT NULL COMMENT '最后失败登录时间',
   `create_time` DATETIME DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
   `update_time` DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT '更新时间',
   INDEX `idx_username` (`username`),
   INDEX `idx_status` (`status`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='用户表';
+
+-- 密码历史表（存储用户最近5个密码）
+CREATE TABLE IF NOT EXISTS `password_history` (
+  `id` BIGINT AUTO_INCREMENT PRIMARY KEY COMMENT '密码历史ID',
+  `user_id` VARCHAR(50) NOT NULL COMMENT '用户ID',
+  `password_hash` VARCHAR(255) NOT NULL COMMENT '密码哈希值',
+  `created_at` DATETIME DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
+  INDEX `idx_user_id` (`user_id`),
+  INDEX `idx_user_created` (`user_id`, `created_at`),
+  FOREIGN KEY (`user_id`) REFERENCES `users`(`id`) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='密码历史表';
+
+-- 登录尝试记录表
+CREATE TABLE IF NOT EXISTS `login_attempts` (
+  `id` BIGINT AUTO_INCREMENT PRIMARY KEY COMMENT '登录尝试ID',
+  `username` VARCHAR(50) NOT NULL COMMENT '用户名',
+  `ip_address` VARCHAR(64) COMMENT 'IP地址',
+  `success` TINYINT(1) NOT NULL COMMENT '是否成功: 0-失败, 1-成功',
+  `created_at` DATETIME DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
+  INDEX `idx_username_time` (`username`, `created_at`),
+  INDEX `idx_ip_time` (`ip_address`, `created_at`),
+  INDEX `idx_created_at` (`created_at`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='登录尝试记录表';
+
+-- 用户状态变更历史表
+CREATE TABLE IF NOT EXISTS `user_status_history` (
+  `id` BIGINT AUTO_INCREMENT PRIMARY KEY COMMENT '历史记录ID',
+  `user_id` VARCHAR(50) NOT NULL COMMENT '用户ID',
+  `old_status` VARCHAR(20) COMMENT '旧状态',
+  `new_status` VARCHAR(20) NOT NULL COMMENT '新状态',
+  `reason` VARCHAR(255) COMMENT '变更原因',
+  `changed_by` VARCHAR(50) COMMENT '变更操作人ID',
+  `created_at` DATETIME DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
+  INDEX `idx_user_id` (`user_id`),
+  INDEX `idx_created_at` (`created_at`),
+  FOREIGN KEY (`user_id`) REFERENCES `users`(`id`) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='用户状态变更历史表';
 
 -- 会话表（多设备登录）
 CREATE TABLE IF NOT EXISTS `sessions` (
