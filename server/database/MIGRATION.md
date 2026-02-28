@@ -17,7 +17,8 @@
 | 010 | `010_add_sessions_table.sql` | 添加多设备会话记录表 | ✅ 已整合到 init.sql |
 | 011 | `011_add_variant_group_fields.sql` | 为变体组表添加监控字段 | ✅ 已整合到 init.sql |
 | 012 | `012_add_composite_indexes.sql` | 添加复合索引优化查询性能 | ✅ 已整合到 init.sql |
-| 013 | `013_add_competitor_variant_group_fields.sql` | 为竞品变体组表添加监控字段 | ?? 仅用于升级 |
+| 013 | `013_add_password_security_tables.sql` | 添加密码安全与登录安全相关表 | ✅ 已整合到 init.sql |
+| 013 | `013_add_competitor_variant_group_fields.sql` | 为竞品变体组表添加监控字段 | ⚠️ 仅用于升级（竞品库） |
 | 016 | `016_add_snapshot_fields_to_monitor_history.sql` | 为监控历史表补充快照字段 | ✅ 已整合到 init.sql |
 | 017 | `017_optimize_monitor_history_indexes.sql` | 优化监控历史表索引 | ✅ 已整合到 init.sql |
 | 018 | `018_add_analytics_query_index.sql` | 添加数据分析查询索引 | ✅ 已整合到 init.sql |
@@ -25,6 +26,7 @@
 | 021 | `021_add_monitor_history_agg_table.sql` | 添加监控历史聚合表 | ✅ 已整合到 init.sql |
 | 022 | `022_add_monitor_history_agg_peak.sql` | 聚合表补充高峰期字段 | ✅ 已整合到 init.sql |
 | 023 | `023_add_analytics_fastpath.sql` | 数据分析快路径优化（快照维度、时间槽生成列、聚合维度表） | ✅ 已整合到 init.sql |
+| 024 | `024_fix_missing_password_security_schema.sql` | 修复旧版 init.sql 缺失的密码安全字段与表 | ⚠️ 仅用于升级 |
 
 > **注意**: 所有标记为 "✅ 已整合到 init.sql" 的迁移脚本，其功能已包含在 `init.sql` 中。新安装系统时直接使用 `init.sql` 即可，无需执行这些迁移脚本。竞品数据库相关的迁移脚本已整合到 `competitor-init.sql`。
 

@@ -554,15 +554,38 @@ export function rootContainer(container: React.ReactElement) {
   return React.createElement(AntdApp, null, container);
 }
 
-// 请求配置
-export const request = {
-  baseURL:
+function normalizeBaseURL(baseURL: string): string {
+  return baseURL.endsWith('/') ? baseURL.slice(0, -1) : baseURL;
+}
+
+function resolveRequestBaseURL(): string {
+  const baseURL =
     process.env.NODE_ENV === 'production'
       ? process.env.API_BASE_URL || '/api'
-      : '/api',
+      : '/api';
+  return normalizeBaseURL(baseURL);
+}
+
+function dedupeApiPrefix(baseURL: string | undefined, url: string | undefined) {
+  if (!baseURL || !url) {
+    return baseURL;
+  }
+  const normalizedBaseURL = normalizeBaseURL(baseURL);
+  if (/\/api$/i.test(normalizedBaseURL) && /^\/api(\/|$)/i.test(url)) {
+    return normalizedBaseURL.slice(0, -4);
+  }
+  return normalizedBaseURL;
+}
+
+// 请求配置
+export const request = {
+  baseURL: resolveRequestBaseURL(),
   // 请求拦截器 - 添加Token
   requestInterceptors: [
     (config: any) => {
+      if (typeof config.url === 'string') {
+        config.baseURL = dedupeApiPrefix(config.baseURL, config.url);
+      }
       const token = getToken();
       if (token && config.headers) {
         config.headers.Authorization = `Bearer ${token}`;

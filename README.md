@@ -947,6 +947,7 @@ mysql -u root -p < server/database/init.sql
 | 019 | `019_add_backup_config_table.sql` | 添加备份配置表 | ✅ 已整合到 init.sql |
 | 020 | `020_add_status_change_indexes.sql` | 添加状态变更索引 | ✅ 已整合到 init.sql |
 | 021 | `021_optimize_variant_group_indexes.sql` | 优化变体组索引 | ✅ 已整合到 init.sql |
+| 024 | `024_fix_missing_password_security_schema.sql` | 修复旧版 init.sql 缺失的密码安全字段与表 | ⚠️ 仅用于升级 |
 
 > **注意**: 所有标记为 "✅ 已整合到 init.sql" 的迁移脚本，其功能已包含在 `init.sql` 中。新安装系统时直接使用 `init.sql` 即可，无需执行这些迁移脚本。
 
