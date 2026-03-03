@@ -25,24 +25,6 @@ function getExportDateSuffix(): string {
   return formatBeijingNow('YYYY-MM-DD');
 }
 
-function normalizeBaseURL(baseURL: string): string {
-  return baseURL.endsWith('/') ? baseURL.slice(0, -1) : baseURL;
-}
-
-function mergeApiURL(baseURL: string, path: string): string {
-  const normalizedBaseURL = normalizeBaseURL(baseURL);
-  const normalizedPath = path.startsWith('/') ? path : `/${path}`;
-
-  if (
-    /\/api$/i.test(normalizedBaseURL) &&
-    /^\/api(\/|$)/i.test(normalizedPath)
-  ) {
-    return `${normalizedBaseURL.slice(0, -4)}${normalizedPath}`;
-  }
-
-  return `${normalizedBaseURL}${normalizedPath}`;
-}
-
 /**
  * 获取API基础URL
  */
