@@ -89,7 +89,9 @@ async function getTableData(connection, tableName) {
           return value;
         }
         if (value instanceof Date) {
-          return escapeSQL(value.toISOString().slice(0, 19).replace('T', ' '));
+          return escapeSQL(
+            toUTC8ISOString(value).slice(0, 19).replace('T', ' '),
+          );
         }
         if (Buffer.isBuffer(value)) {
           return `0x${value.toString('hex')}`;

@@ -1,4 +1,5 @@
 import services from '@/services/competitor';
+import { toBeijingDayjs } from '@/utils/beijingTime';
 import { exportToExcel } from '@/utils/export';
 import {
   ActionType,
@@ -9,7 +10,6 @@ import {
 } from '@ant-design/pro-components';
 import { useSearchParams } from '@umijs/max';
 import { Button, Tag } from 'antd';
-import dayjs from 'dayjs';
 import React, { useRef } from 'react';
 
 const { queryCompetitorMonitorHistory } = services.CompetitorMonitorController;
@@ -55,16 +55,8 @@ const CompetitorMonitorHistoryPage: React.FC<unknown> = () => {
       search: {
         transform: (value: any) => {
           if (value && Array.isArray(value) && value.length === 2) {
-            const start = value[0]
-              ? dayjs.isDayjs(value[0])
-                ? value[0]
-                : dayjs(value[0])
-              : null;
-            const end = value[1]
-              ? dayjs.isDayjs(value[1])
-                ? value[1]
-                : dayjs(value[1])
-              : null;
+            const start = value[0] ? toBeijingDayjs(value[0]) : null;
+            const end = value[1] ? toBeijingDayjs(value[1]) : null;
             return {
               startTime: start
                 ? start.format('YYYY-MM-DD HH:mm:ss')

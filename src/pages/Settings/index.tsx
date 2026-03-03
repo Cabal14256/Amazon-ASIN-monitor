@@ -1,5 +1,6 @@
 import backupServices from '@/services/backup';
 import services from '@/services/settings';
+import { formatBeijing } from '@/utils/beijingTime';
 import { useMessage } from '@/utils/message';
 import {
   PageContainer,
@@ -841,8 +842,7 @@ const SettingsPage: React.FC<unknown> = () => {
                   title: '创建时间',
                   dataIndex: 'createdAt',
                   key: 'createdAt',
-                  render: (time: string) =>
-                    dayjs(time).format('YYYY-MM-DD HH:mm:ss'),
+                  render: (time: string) => formatBeijing(time),
                 },
                 {
                   title: '操作',

@@ -512,6 +512,14 @@ class MonitorHistory {
     };
   }
 
+  // 仅统计真实ASIN（排除父变体 asin_type=1/MAIN_LINK）
+  static getRealAsinFilter(fieldExpr = 'asin_id') {
+    return `${fieldExpr} IN (
+      SELECT id FROM asins
+      WHERE asin_type IS NULL OR asin_type NOT IN ('1', 'MAIN_LINK')
+    )`;
+  }
+
   static async getStatisticsByTimeFromRaw(params = {}) {
     const {
       country = '',
@@ -544,6 +552,8 @@ class MonitorHistory {
       whereClause += ` AND check_time <= ?`;
       conditions.push(endTime);
     }
+
+    whereClause += ` AND ${MonitorHistory.getRealAsinFilter('asin_id')}`;
 
     // 由于多个子查询都需要相同的参数，需要将参数数组重复多次
     const allConditions = [...conditions, ...conditions, ...conditions];
@@ -594,27 +604,27 @@ class MonitorHistory {
           SELECT 
             ${config.rawPeriodExpr} as time_period,
             country,
-            COALESCE(asin_id, asin_code) as asin_key,
+            COALESCE(NULLIF(asin_code, ''), CONCAT('ID#', asin_id)) as asin_key,
             MAX(CASE WHEN is_broken = 1 THEN 1 ELSE 0 END) as has_broken
           FROM monitor_history
           ${whereClause}
-          AND (asin_id IS NOT NULL OR asin_code IS NOT NULL)
-          GROUP BY ${config.rawPeriodExpr}, country, COALESCE(asin_id, asin_code)
+          AND (asin_id IS NOT NULL OR NULLIF(asin_code, '') IS NOT NULL)
+          GROUP BY ${config.rawPeriodExpr}, country, COALESCE(NULLIF(asin_code, ''), CONCAT('ID#', asin_id))
         ) dedup_grouped
         GROUP BY time_period
       ) dedup_stats ON t.time_period = dedup_stats.time_period
       LEFT JOIN (
         SELECT 
           ${config.rawPeriodExpr} as time_period,
-          COUNT(DISTINCT COALESCE(asin_id, asin_code)) as total_asins,
+          COUNT(DISTINCT COALESCE(NULLIF(asin_code, ''), CONCAT('ID#', asin_id))) as total_asins,
           COUNT(
             DISTINCT CASE 
-              WHEN is_broken = 1 THEN COALESCE(asin_id, asin_code) 
+              WHEN is_broken = 1 THEN COALESCE(NULLIF(asin_code, ''), CONCAT('ID#', asin_id)) 
             END
           ) as broken_asins
         FROM monitor_history
         ${whereClause}
-        AND (asin_id IS NOT NULL OR asin_code IS NOT NULL)
+        AND (asin_id IS NOT NULL OR NULLIF(asin_code, '') IS NOT NULL)
         GROUP BY ${config.rawPeriodExpr}
       ) asin_stats ON t.time_period = asin_stats.time_period
       ORDER BY t.time_period ASC
@@ -1301,6 +1311,8 @@ class MonitorHistory {
       conditions.push(endTime);
     }
 
+    whereClause += ` AND ${MonitorHistory.getRealAsinFilter('mh.asin_id')}`;
+
     const sql = `
       SELECT
         SUM(sub.check_count) as total_checks,
@@ -1315,15 +1327,15 @@ class MonitorHistory {
         SELECT
           ${slotExpr} as slot_raw,
           mh.country,
-          COALESCE(mh.asin_id, mh.asin_code) as asin_key,
+          COALESCE(NULLIF(mh.asin_code, ''), CONCAT('ID#', mh.asin_id)) as asin_key,
           COUNT(*) as check_count,
           SUM(CASE WHEN mh.is_broken = 1 THEN 1 ELSE 0 END) as broken_count,
           MAX(mh.is_broken) as has_broken,
           MAX(${isPeakCase}) as has_peak
         FROM monitor_history mh
         ${whereClause}
-        AND (mh.asin_id IS NOT NULL OR mh.asin_code IS NOT NULL)
-        GROUP BY ${slotExpr}, mh.country, COALESCE(mh.asin_id, mh.asin_code)
+        AND (mh.asin_id IS NOT NULL OR NULLIF(mh.asin_code, '') IS NOT NULL)
+        GROUP BY ${slotExpr}, mh.country, COALESCE(NULLIF(mh.asin_code, ''), CONCAT('ID#', mh.asin_id))
       ) sub
     `;
 
@@ -1495,6 +1507,8 @@ class MonitorHistory {
         conditions.push(endTime);
       }
 
+      whereClause += ` AND ${MonitorHistory.getRealAsinFilter('mh.asin_id')}`;
+
       const sql = `
         SELECT
           CASE WHEN sub.country = 'US' THEN 'US' ELSE 'EU' END as region_code,
@@ -1510,16 +1524,16 @@ class MonitorHistory {
           SELECT
             ${slotExpr} as slot_raw,
             mh.country,
-            COALESCE(mh.asin_id, mh.asin_code) as asin_key,
+            COALESCE(NULLIF(mh.asin_code, ''), CONCAT('ID#', mh.asin_id)) as asin_key,
             COUNT(*) as check_count,
             SUM(CASE WHEN mh.is_broken = 1 THEN 1 ELSE 0 END) as broken_count,
             MAX(mh.is_broken) as has_broken,
             MAX(${isPeakCase}) as has_peak
           FROM monitor_history mh
           ${whereClause}
-          AND (mh.asin_id IS NOT NULL OR mh.asin_code IS NOT NULL)
+          AND (mh.asin_id IS NOT NULL OR NULLIF(mh.asin_code, '') IS NOT NULL)
           AND mh.country IN ('US', 'UK', 'DE', 'FR', 'IT', 'ES')
-          GROUP BY ${slotExpr}, mh.country, COALESCE(mh.asin_id, mh.asin_code)
+          GROUP BY ${slotExpr}, mh.country, COALESCE(NULLIF(mh.asin_code, ''), CONCAT('ID#', mh.asin_id))
         ) sub
         GROUP BY CASE WHEN sub.country = 'US' THEN 'US' ELSE 'EU' END
       `;
@@ -1834,7 +1848,7 @@ class MonitorHistory {
     // 优化：WHERE子句条件顺序与索引匹配（先country，后check_time）
     // 使用 idx_country_check_time 或 idx_country_check_time_broken 索引
     let whereClause =
-      'WHERE (mh.asin_id IS NOT NULL OR mh.asin_code IS NOT NULL)';
+      "WHERE (mh.asin_id IS NOT NULL OR NULLIF(mh.asin_code, '') IS NOT NULL)";
     const conditions = [];
 
     // 先添加country条件（索引的第一列）
@@ -1868,6 +1882,8 @@ class MonitorHistory {
       whereClause += ` AND mh.brand_snapshot = ?`;
       conditions.push(brand);
     }
+
+    whereClause += ` AND ${MonitorHistory.getRealAsinFilter('mh.asin_id')}`;
 
     // 优化：将高峰时段判断移到数据库层面
     // 构建高峰时段判断的SQL CASE语句
@@ -1943,14 +1959,14 @@ class MonitorHistory {
         mh.country,
         ${site ? 'mh.site_snapshot as site' : "'' as site"},
         ${brand ? 'mh.brand_snapshot as brand' : "'' as brand"},
-        COALESCE(mh.asin_id, mh.asin_code) as asin_key,
+        COALESCE(NULLIF(mh.asin_code, ''), CONCAT('ID#', mh.asin_id)) as asin_key,
         COUNT(*) as check_count,
         SUM(CASE WHEN mh.is_broken = 1 THEN 1 ELSE 0 END) as broken_count,
         MAX(mh.is_broken) as has_broken,
         MAX(${isPeakCase}) as is_peak
       FROM monitor_history mh
       ${whereClause}
-      GROUP BY ${slotExpr}, mh.country, COALESCE(mh.asin_id, mh.asin_code)${
+      GROUP BY ${slotExpr}, mh.country, COALESCE(NULLIF(mh.asin_code, ''), CONCAT('ID#', mh.asin_id))${
       site ? ', mh.site_snapshot' : ''
     }${brand ? ', mh.brand_snapshot' : ''}
     `;
@@ -2078,6 +2094,7 @@ class MonitorHistory {
         SUM(CASE WHEN is_broken = 1 THEN 1 ELSE 0 END) as broken_count,
         SUM(CASE WHEN is_broken = 0 THEN 1 ELSE 0 END) as normal_count
       FROM asins
+      WHERE asin_type IS NULL OR asin_type NOT IN ('1', 'MAIN_LINK')
       GROUP BY country
       ORDER BY country ASC
     `;
@@ -2103,6 +2120,7 @@ class MonitorHistory {
       FROM variant_groups vg
       LEFT JOIN asins a ON a.variant_group_id = vg.id
       WHERE a.id IS NOT NULL
+        AND (a.asin_type IS NULL OR a.asin_type NOT IN ('1', 'MAIN_LINK'))
       GROUP BY vg.id, vg.name, vg.country
       HAVING broken_count > 0
       ORDER BY broken_count DESC, total_asins DESC

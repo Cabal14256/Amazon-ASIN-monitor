@@ -1,4 +1,5 @@
 import services from '@/services/auditLog';
+import { toBeijingDayjs } from '@/utils/beijingTime';
 import { useMessage } from '@/utils/message';
 import {
   ActionType,
@@ -199,10 +200,12 @@ const AuditLogPage: React.FC<unknown> = () => {
 
             // 处理日期范围
             if (dateRange && dateRange[0] && dateRange[1]) {
-              requestParams.startTime = dateRange[0]
+              requestParams.startTime = toBeijingDayjs(dateRange[0])
                 .startOf('day')
-                .toISOString();
-              requestParams.endTime = dateRange[1].endOf('day').toISOString();
+                .format('YYYY-MM-DD HH:mm:ss');
+              requestParams.endTime = toBeijingDayjs(dateRange[1])
+                .endOf('day')
+                .format('YYYY-MM-DD HH:mm:ss');
             }
 
             const { data, success } = await getAuditLogList(requestParams);

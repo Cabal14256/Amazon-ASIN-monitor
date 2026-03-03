@@ -1,6 +1,7 @@
 import LazyECharts from '@/components/LazyECharts';
 import services from '@/services/dashboard';
 import { wsClient } from '@/services/websocket';
+import { formatBeijing } from '@/utils/beijingTime';
 import { debugError, debugLog } from '@/utils/debug';
 import { useMessage } from '@/utils/message';
 import { DownOutlined, UpOutlined } from '@ant-design/icons';
@@ -18,7 +19,6 @@ import {
   Tag,
   Timeline,
 } from 'antd';
-import dayjs from 'dayjs';
 import React, { useEffect, useState } from 'react';
 import styles from './index.less';
 
@@ -702,9 +702,7 @@ const HomePage: React.FC = () => {
                           <div style={{ fontSize: 12, color: '#999' }}>
                             更新时间:{' '}
                             {item.update_time
-                              ? dayjs(item.update_time).format(
-                                  'YYYY-MM-DD HH:mm:ss',
-                                )
+                              ? formatBeijing(item.update_time)
                               : '-'}
                           </div>
                         </Space>
@@ -756,9 +754,7 @@ const HomePage: React.FC = () => {
                           <div style={{ fontSize: 12, color: '#999' }}>
                             更新时间:{' '}
                             {item.update_time
-                              ? dayjs(item.update_time).format(
-                                  'YYYY-MM-DD HH:mm:ss',
-                                )
+                              ? formatBeijing(item.update_time)
                               : '-'}
                           </div>
                         </Space>
@@ -868,9 +864,7 @@ const HomePage: React.FC = () => {
                     <div style={{ fontSize: 12, color: '#666' }}>
                       {countryMap[activity.country || ''] || activity.country} |{' '}
                       {activity.checkTime
-                        ? dayjs(activity.checkTime).format(
-                            'YYYY-MM-DD HH:mm:ss',
-                          )
+                        ? formatBeijing(activity.checkTime)
                         : '-'}
                     </div>
                   </Space>

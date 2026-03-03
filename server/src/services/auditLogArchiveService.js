@@ -8,6 +8,7 @@ const AuditLog = require('../models/AuditLog');
 const logger = require('../utils/logger');
 
 let archiveJob = null;
+const BEIJING_TIMEZONE = process.env.TZ || 'Asia/Shanghai';
 
 /**
  * 启动日志归档定时任务
@@ -20,17 +21,23 @@ function startArchiveJob() {
   }
 
   // 每月1号凌晨3点执行归档
-  archiveJob = cron.schedule('0 3 1 * *', async () => {
-    try {
-      logger.info('开始归档审计日志...');
-      const archivedCount = await AuditLog.archiveOldLogs(90); // 归档超过90天的日志
-      logger.info(`审计日志归档完成，归档了 ${archivedCount} 条记录`);
-    } catch (error) {
-      logger.error('审计日志归档失败:', error);
-    }
-  });
+  archiveJob = cron.schedule(
+    '0 3 1 * *',
+    async () => {
+      try {
+        logger.info('开始归档审计日志...');
+        const archivedCount = await AuditLog.archiveOldLogs(90); // 归档超过90天的日志
+        logger.info(`审计日志归档完成，归档了 ${archivedCount} 条记录`);
+      } catch (error) {
+        logger.error('审计日志归档失败:', error);
+      }
+    },
+    { timezone: BEIJING_TIMEZONE },
+  );
 
-  logger.info('✅ 审计日志归档定时任务已启动（每月1号凌晨3点执行）');
+  logger.info(
+    `✅ 审计日志归档定时任务已启动（每月1号凌晨3点执行，时区: ${BEIJING_TIMEZONE}）`,
+  );
 }
 
 /**

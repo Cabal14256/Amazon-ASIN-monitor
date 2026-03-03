@@ -5,6 +5,8 @@ const AGG_ENABLED = process.env.ANALYTICS_AGG_ENABLED !== '0';
 const BACKFILL_HOURS = Number(process.env.ANALYTICS_AGG_BACKFILL_HOURS) || 48;
 const BACKFILL_DAYS = Number(process.env.ANALYTICS_AGG_BACKFILL_DAYS) || 30;
 const REFRESH_DIM_AGG = process.env.ANALYTICS_AGG_REFRESH_DIM !== '0';
+const REAL_ASIN_FILTER =
+  "mh.asin_id IN (SELECT id FROM asins WHERE asin_type IS NULL OR asin_type NOT IN ('1', 'MAIN_LINK'))";
 
 let isRefreshing = false;
 
@@ -38,7 +40,8 @@ function buildPeakHourCase(countryField, timeField) {
 function buildWhereClause(granularity, options = {}) {
   const conditions = [];
   let whereClause =
-    'WHERE (mh.asin_id IS NOT NULL OR mh.asin_code IS NOT NULL)';
+    "WHERE (mh.asin_id IS NOT NULL OR NULLIF(mh.asin_code, '') IS NOT NULL)";
+  whereClause += ` AND ${REAL_ASIN_FILTER}`;
 
   if (options.startTime) {
     whereClause += ' AND mh.check_time >= ?';
@@ -85,7 +88,7 @@ async function refreshMonitorHistoryAgg(granularity, options = {}) {
       ? as granularity,
       ${slotExpr} as time_slot,
       mh.country,
-      COALESCE(mh.asin_id, mh.asin_code) as asin_key,
+      COALESCE(NULLIF(mh.asin_code, ''), CONCAT('ID#', mh.asin_id)) as asin_key,
       COUNT(*) as check_count,
       SUM(CASE WHEN mh.is_broken = 1 THEN 1 ELSE 0 END) as broken_count,
       MAX(mh.is_broken) as has_broken,
@@ -94,7 +97,7 @@ async function refreshMonitorHistoryAgg(granularity, options = {}) {
       MAX(mh.check_time) as last_check_time
     FROM monitor_history mh
     ${whereClause}
-    GROUP BY ${slotExpr}, mh.country, COALESCE(mh.asin_id, mh.asin_code)
+    GROUP BY ${slotExpr}, mh.country, COALESCE(NULLIF(mh.asin_code, ''), CONCAT('ID#', mh.asin_id))
     ON DUPLICATE KEY UPDATE
       check_count = VALUES(check_count),
       broken_count = VALUES(broken_count),
@@ -147,7 +150,7 @@ async function refreshMonitorHistoryAggDim(granularity, options = {}) {
       mh.country,
       COALESCE(mh.site_snapshot, '') as site,
       COALESCE(mh.brand_snapshot, '') as brand,
-      COALESCE(mh.asin_id, mh.asin_code) as asin_key,
+      COALESCE(NULLIF(mh.asin_code, ''), CONCAT('ID#', mh.asin_id)) as asin_key,
       COUNT(*) as check_count,
       SUM(CASE WHEN mh.is_broken = 1 THEN 1 ELSE 0 END) as broken_count,
       MAX(mh.is_broken) as has_broken,
@@ -156,7 +159,7 @@ async function refreshMonitorHistoryAggDim(granularity, options = {}) {
       MAX(mh.check_time) as last_check_time
     FROM monitor_history mh
     ${whereClause}
-    GROUP BY ${slotExpr}, mh.country, COALESCE(mh.site_snapshot, ''), COALESCE(mh.brand_snapshot, ''), COALESCE(mh.asin_id, mh.asin_code)
+    GROUP BY ${slotExpr}, mh.country, COALESCE(mh.site_snapshot, ''), COALESCE(mh.brand_snapshot, ''), COALESCE(NULLIF(mh.asin_code, ''), CONCAT('ID#', mh.asin_id))
     ON DUPLICATE KEY UPDATE
       check_count = VALUES(check_count),
       broken_count = VALUES(broken_count),

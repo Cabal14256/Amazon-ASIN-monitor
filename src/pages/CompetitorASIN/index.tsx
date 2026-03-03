@@ -3,6 +3,7 @@ import {
   default as variantCheckServices,
 } from '@/services/competitor';
 import { buildAmazonProductUrl } from '@/utils/amazon';
+import { formatBeijing } from '@/utils/beijingTime';
 import { debugLog } from '@/utils/debug';
 import { exportToExcel } from '@/utils/export';
 import { useMessage } from '@/utils/message';
@@ -18,7 +19,6 @@ import {
 import { Access, history, useAccess } from '@umijs/max';
 import type { MenuProps } from 'antd';
 import { Button, Dropdown, Switch, Tag } from 'antd';
-import dayjs from 'dayjs';
 import React, { useCallback, useMemo, useRef, useState } from 'react';
 import ASINForm from './components/ASINForm';
 import BatchDeleteConfirmModal from './components/BatchDeleteConfirmModal';
@@ -313,17 +313,13 @@ const CompetitorASINManagement: React.FC<unknown> = () => {
               <div>
                 <span style={{ color: '#666', fontSize: '12px' }}>更新：</span>
                 <span style={{ fontSize: '12px' }}>
-                  {updateTime
-                    ? dayjs(updateTime).format('YYYY-MM-DD HH:mm:ss')
-                    : '-'}
+                  {updateTime ? formatBeijing(updateTime) : '-'}
                 </span>
               </div>
               <div>
                 <span style={{ color: '#666', fontSize: '12px' }}>监控：</span>
                 <span style={{ fontSize: '12px' }}>
-                  {lastCheckTime
-                    ? dayjs(lastCheckTime).format('YYYY-MM-DD HH:mm:ss')
-                    : '-'}
+                  {lastCheckTime ? formatBeijing(lastCheckTime) : '-'}
                 </span>
               </div>
             </div>

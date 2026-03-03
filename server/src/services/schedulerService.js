@@ -15,7 +15,7 @@ const BackupConfig = require('../models/BackupConfig');
 const backupService = require('./backupService');
 const { refreshRecentMonitorHistoryAgg } = require('./analyticsAggService');
 const metricsService = require('./metricsService');
-const { getUTC8ISOString } = require('../utils/dateTime');
+const { getUTC8ISOString, getUTC8String } = require('../utils/dateTime');
 const {
   getMonitorScheduleConfig,
   reloadMonitorScheduleConfig,
@@ -28,6 +28,8 @@ const TOTAL_BATCHES = Number(process.env.MONITOR_BATCH_COUNT) || 1; // 默认不
 const EU_COUNTRIES_ORDER = ['UK', 'DE', 'FR', 'ES', 'IT'];
 const ANALYTICS_CRON_EXPRESSION =
   process.env.ANALYTICS_AGG_CRON_EXPRESSION || '*/10 * * * *';
+const BEIJING_TIMEZONE = process.env.TZ || 'Asia/Shanghai';
+const CRON_TIMEZONE_OPTIONS = { timezone: BEIJING_TIMEZONE };
 
 const schedulerStatus = {
   us: {
@@ -258,14 +260,23 @@ function scheduleMonitorTasks() {
   schedulerStatus.us.schedule = usCronExpression;
   schedulerStatus.eu.schedule = euCronExpression;
 
-  usMonitorTask = cron.schedule(usCronExpression, runUSMonitorSchedule);
-  euMonitorTask = cron.schedule(euCronExpression, runEUMonitorSchedule);
+  usMonitorTask = cron.schedule(
+    usCronExpression,
+    runUSMonitorSchedule,
+    CRON_TIMEZONE_OPTIONS,
+  );
+  euMonitorTask = cron.schedule(
+    euCronExpression,
+    runEUMonitorSchedule,
+    CRON_TIMEZONE_OPTIONS,
+  );
 
   logger.info('📅 执行时间:');
   logger.info(`   - 美国区域 (US): 每${usIntervalMinutes}分钟`);
   logger.info(
     `   - 欧洲区域 (EU): 每${euIntervalMinutes}分钟，按顺序依次检查: UK → DE → FR → ES → IT`,
   );
+  logger.info(`   - 调度时区: ${BEIJING_TIMEZONE}`);
 }
 
 function initScheduler() {
@@ -295,11 +306,15 @@ function initScheduler() {
     });
 
     // 每小时第5分钟刷新一次最近聚合数据
-    cron.schedule(ANALYTICS_CRON_EXPRESSION, () => {
-      runAnalyticsAgg('scheduled').catch((error) => {
-        logger.error('❌ 定时聚合刷新失败:', error.message);
-      });
-    });
+    cron.schedule(
+      ANALYTICS_CRON_EXPRESSION,
+      () => {
+        runAnalyticsAgg('scheduled').catch((error) => {
+          logger.error('❌ 定时聚合刷新失败:', error.message);
+        });
+      },
+      CRON_TIMEZONE_OPTIONS,
+    );
     logger.info('📊 数据分析聚合刷新已启用（每小时第5分钟）');
   } else {
     logger.info('📊 数据分析聚合刷新已禁用（ANALYTICS_AGG_ENABLED=0）');
@@ -392,24 +407,26 @@ async function initBackupScheduler() {
     }
 
     // 创建新的定时任务
-    backupTask = cron.schedule(cronExpression, async () => {
-      schedulerStatus.backup.lastRun = getUTC8ISOString();
-      try {
-        logger.info('🔄 开始执行自动备份...');
-        const now = new Date();
-        const description = `AutoBackup-${now
-          .toISOString()
-          .slice(0, 19)
-          .replace('T', ' ')}`;
-        await backupService.createBackup({ description });
-        schedulerStatus.backup.lastSuccess = getUTC8ISOString();
-        schedulerStatus.backup.lastError = null;
-        logger.info('✅ 自动备份完成');
-      } catch (error) {
-        schedulerStatus.backup.lastError = error.message;
-        logger.error('❌ 自动备份失败:', error.message);
-      }
-    });
+    backupTask = cron.schedule(
+      cronExpression,
+      async () => {
+        schedulerStatus.backup.lastRun = getUTC8ISOString();
+        try {
+          logger.info('🔄 开始执行自动备份...');
+          const description = `AutoBackup-${getUTC8String(
+            'YYYY-MM-DD HH:mm:ss',
+          )}`;
+          await backupService.createBackup({ description });
+          schedulerStatus.backup.lastSuccess = getUTC8ISOString();
+          schedulerStatus.backup.lastError = null;
+          logger.info('✅ 自动备份完成');
+        } catch (error) {
+          schedulerStatus.backup.lastError = error.message;
+          logger.error('❌ 自动备份失败:', error.message);
+        }
+      },
+      CRON_TIMEZONE_OPTIONS,
+    );
 
     schedulerStatus.backup.enabled = true;
     schedulerStatus.backup.schedule = cronExpression;

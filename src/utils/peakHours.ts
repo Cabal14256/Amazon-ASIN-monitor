@@ -1,3 +1,5 @@
+import { toBeijingDayjs } from './beijingTime';
+
 /**
  * 高峰期工具函数
  * 所有时间基于北京时间（UTC+8）
@@ -10,8 +12,7 @@
  * @returns 是否在高峰期
  */
 export function isPeakHour(date: Date | string, country: string): boolean {
-  const d = typeof date === 'string' ? new Date(date) : date;
-  const hour = d.getHours(); // 北京时间的小时数
+  const hour = toBeijingDayjs(date).hour();
 
   switch (country) {
     case 'US':
@@ -86,20 +87,20 @@ export function getTimeRangeStats(
   endTime: Date | string,
   country: string,
 ): { peakHours: number; offPeakHours: number; totalHours: number } {
-  const start = typeof startTime === 'string' ? new Date(startTime) : startTime;
-  const end = typeof endTime === 'string' ? new Date(endTime) : endTime;
+  const start = toBeijingDayjs(startTime).startOf('hour');
+  const end = toBeijingDayjs(endTime);
 
   let peakHours = 0;
   let offPeakHours = 0;
-  const current = new Date(start);
+  let current = start;
 
-  while (current <= end) {
-    if (isPeakHour(current, country)) {
+  while (current.isBefore(end) || current.isSame(end)) {
+    if (isPeakHour(current.toDate(), country)) {
       peakHours++;
     } else {
       offPeakHours++;
     }
-    current.setHours(current.getHours() + 1);
+    current = current.add(1, 'hour');
   }
 
   return {
