@@ -8,6 +8,7 @@ const Session = require('../models/Session');
 const logger = require('../utils/logger');
 
 let cleanupJob = null;
+const BEIJING_TIMEZONE = process.env.TZ || 'Asia/Shanghai';
 
 /**
  * 启动会话清理定时任务
@@ -20,17 +21,23 @@ function startSessionCleanup() {
   }
 
   // 每天凌晨2点执行清理
-  cleanupJob = cron.schedule('0 2 * * *', async () => {
-    try {
-      logger.info('开始清理过期会话...');
-      const deletedCount = await Session.cleanExpiredSessions();
-      logger.info(`会话清理完成，删除了 ${deletedCount} 个过期会话`);
-    } catch (error) {
-      logger.error('会话清理失败:', error);
-    }
-  });
+  cleanupJob = cron.schedule(
+    '0 2 * * *',
+    async () => {
+      try {
+        logger.info('开始清理过期会话...');
+        const deletedCount = await Session.cleanExpiredSessions();
+        logger.info(`会话清理完成，删除了 ${deletedCount} 个过期会话`);
+      } catch (error) {
+        logger.error('会话清理失败:', error);
+      }
+    },
+    { timezone: BEIJING_TIMEZONE },
+  );
 
-  logger.info('✅ 会话清理定时任务已启动（每天凌晨2点执行）');
+  logger.info(
+    `✅ 会话清理定时任务已启动（每天凌晨2点执行，时区: ${BEIJING_TIMEZONE}）`,
+  );
 }
 
 /**

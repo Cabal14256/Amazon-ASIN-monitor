@@ -1,5 +1,6 @@
 const WebSocket = require('ws');
 const logger = require('../utils/logger');
+const { getUTC8ISOString } = require('../utils/dateTime');
 
 class WebSocketService {
   constructor() {
@@ -134,7 +135,7 @@ class WebSocketService {
       taskId,
       progress,
       message,
-      timestamp: new Date().toISOString(),
+      timestamp: getUTC8ISOString(),
     };
 
     if (userId) {
@@ -159,7 +160,7 @@ class WebSocketService {
       taskId,
       downloadUrl,
       filename,
-      timestamp: new Date().toISOString(),
+      timestamp: getUTC8ISOString(),
     };
 
     if (userId) {
@@ -180,7 +181,7 @@ class WebSocketService {
       type: 'task_error',
       taskId,
       error,
-      timestamp: new Date().toISOString(),
+      timestamp: getUTC8ISOString(),
     };
 
     if (userId) {

@@ -1,6 +1,7 @@
 import { Modal, Progress, message } from 'antd';
 import React from 'react';
 import ReactDOM from 'react-dom/client';
+import { formatBeijingNow } from './beijingTime';
 
 function normalizeBaseURL(baseURL: string): string {
   return baseURL.endsWith('/') ? baseURL.slice(0, -1) : baseURL;
@@ -18,6 +19,10 @@ function mergeApiURL(baseURL: string, path: string): string {
   }
 
   return `${normalizedBaseURL}${normalizedPath}`;
+}
+
+function getExportDateSuffix(): string {
+  return formatBeijingNow('YYYY-MM-DD');
 }
 
 /**
@@ -242,8 +247,8 @@ export async function exportToExcelAsync(
         a.download =
           msg.filename ||
           (filename
-            ? `${filename}_${new Date().toISOString().split('T')[0]}.xlsx`
-            : `导出数据_${new Date().toISOString().split('T')[0]}.xlsx`);
+            ? `${filename}_${getExportDateSuffix()}.xlsx`
+            : `导出数据_${getExportDateSuffix()}.xlsx`);
         document.body.appendChild(a);
         a.click();
         document.body.removeChild(a);
@@ -293,8 +298,8 @@ export async function exportToExcelAsync(
               const a = document.createElement('a');
               a.href = downloadUrl;
               a.download = filename
-                ? `${filename}_${new Date().toISOString().split('T')[0]}.xlsx`
-                : `导出数据_${new Date().toISOString().split('T')[0]}.xlsx`;
+                ? `${filename}_${getExportDateSuffix()}.xlsx`
+                : `导出数据_${getExportDateSuffix()}.xlsx`;
               document.body.appendChild(a);
               a.click();
               document.body.removeChild(a);
@@ -512,12 +517,8 @@ export async function exportToExcel(
                           const a = document.createElement('a');
                           a.href = downloadUrl;
                           a.download = currentFilename
-                            ? `${currentFilename}_${
-                                new Date().toISOString().split('T')[0]
-                              }.xlsx`
-                            : `导出数据_${
-                                new Date().toISOString().split('T')[0]
-                              }.xlsx`;
+                            ? `${currentFilename}_${getExportDateSuffix()}.xlsx`
+                            : `导出数据_${getExportDateSuffix()}.xlsx`;
                           document.body.appendChild(a);
                           a.click();
                           document.body.removeChild(a);
@@ -586,12 +587,8 @@ export async function exportToExcel(
                       a.download =
                         data.filename ||
                         (filename
-                          ? `${filename}_${
-                              new Date().toISOString().split('T')[0]
-                            }.xlsx`
-                          : `导出数据_${
-                              new Date().toISOString().split('T')[0]
-                            }.xlsx`);
+                          ? `${filename}_${getExportDateSuffix()}.xlsx`
+                          : `导出数据_${getExportDateSuffix()}.xlsx`);
                       document.body.appendChild(a);
                       a.click();
                       document.body.removeChild(a);
@@ -650,8 +647,8 @@ export async function exportToExcel(
       const a = document.createElement('a');
       a.href = downloadUrl;
       a.download = filename
-        ? `${filename}_${new Date().toISOString().split('T')[0]}.xlsx`
-        : `导出数据_${new Date().toISOString().split('T')[0]}.xlsx`;
+        ? `${filename}_${getExportDateSuffix()}.xlsx`
+        : `导出数据_${getExportDateSuffix()}.xlsx`;
       document.body.appendChild(a);
       a.click();
       document.body.removeChild(a);

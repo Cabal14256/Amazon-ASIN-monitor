@@ -1,4 +1,5 @@
 import services from '@/services/asin';
+import { formatBeijingNow, toBeijingDayjs } from '@/utils/beijingTime';
 import { debugLog } from '@/utils/debug';
 import { exportToExcel } from '@/utils/export';
 import { DownloadOutlined, DownOutlined } from '@ant-design/icons';
@@ -13,7 +14,6 @@ import {
 import { useSearchParams } from '@umijs/max';
 import type { TableProps } from 'antd';
 import { Button, Card, Dropdown, message, Space, Table, Tag } from 'antd';
-import dayjs from 'dayjs';
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 
 const {
@@ -274,7 +274,7 @@ const MonitorHistoryPage: React.FC<unknown> = () => {
         abnormalDurationQueryRange?.startTime &&
         abnormalDurationQueryRange?.endTime
           ? `${abnormalDurationQueryRange.startTime}_${abnormalDurationQueryRange.endTime}`
-          : dayjs().format('YYYY-MM-DD_HH-mm-ss');
+          : formatBeijingNow('YYYY-MM-DD_HH-mm-ss');
 
       const safeRangeText = rangeText.replace(/[\\/:*?"<>|\s]+/g, '-');
       const filename = `异常时长统计_${safeRangeText}.csv`;
@@ -354,16 +354,8 @@ const MonitorHistoryPage: React.FC<unknown> = () => {
         transform: (value: any) => {
           debugLog('时间范围transform被调用，value:', value);
           if (value && Array.isArray(value) && value.length === 2) {
-            const start = value[0]
-              ? dayjs.isDayjs(value[0])
-                ? value[0]
-                : dayjs(value[0])
-              : null;
-            const end = value[1]
-              ? dayjs.isDayjs(value[1])
-                ? value[1]
-                : dayjs(value[1])
-              : null;
+            const start = value[0] ? toBeijingDayjs(value[0]) : null;
+            const end = value[1] ? toBeijingDayjs(value[1]) : null;
             const result = {
               startTime: start
                 ? start.format('YYYY-MM-DD HH:mm:ss')

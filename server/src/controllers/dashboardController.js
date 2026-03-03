@@ -47,9 +47,9 @@ exports.getDashboardData = async (req, res) => {
       query(
         `SELECT
           (SELECT COUNT(*) FROM variant_groups) as totalGroups,
-          (SELECT COUNT(*) FROM asins) as totalASINs,
+          (SELECT COUNT(*) FROM asins WHERE asin_type IS NULL OR asin_type NOT IN ('1', 'MAIN_LINK')) as totalASINs,
           (SELECT COUNT(*) FROM variant_groups WHERE is_broken = 1) as brokenGroups,
-          (SELECT COUNT(*) FROM asins WHERE is_broken = 1) as brokenASINs,
+          (SELECT COUNT(*) FROM asins WHERE is_broken = 1 AND (asin_type IS NULL OR asin_type NOT IN ('1', 'MAIN_LINK'))) as brokenASINs,
           (SELECT COUNT(*) FROM monitor_history WHERE check_time >= ?) as todayChecks,
           (SELECT COUNT(*) FROM monitor_history WHERE check_time >= ? AND is_broken = 1) as todayBroken`,
         [todayStartStr, todayStartStr],
@@ -66,7 +66,8 @@ exports.getDashboardData = async (req, res) => {
                 a.update_time, vg.name as variant_group_name 
          FROM asins a
          LEFT JOIN variant_groups vg ON vg.id = a.variant_group_id
-         WHERE a.is_broken = 1 
+         WHERE a.is_broken = 1
+           AND (a.asin_type IS NULL OR a.asin_type NOT IN ('1', 'MAIN_LINK'))
          ORDER BY a.update_time DESC 
          LIMIT 10`,
       ),
@@ -97,6 +98,7 @@ exports.getDashboardData = async (req, res) => {
           COUNT(*) as total,
           SUM(CASE WHEN is_broken = 1 THEN 1 ELSE 0 END) as broken
          FROM asins
+         WHERE asin_type IS NULL OR asin_type NOT IN ('1', 'MAIN_LINK')
          GROUP BY country`,
       ),
       query(
@@ -142,7 +144,12 @@ exports.getDashboardData = async (req, res) => {
     const euCountries = ['UK', 'DE', 'FR', 'IT', 'ES'];
 
     // 将查询结果转换为对象，方便查找
-    const getCountryValue = (data, country, key = 'total', defaultValue = 0) => {
+    const getCountryValue = (
+      data,
+      country,
+      key = 'total',
+      defaultValue = 0,
+    ) => {
       const item = data.find((d) => d.country === country);
       if (!item) {
         return defaultValue;

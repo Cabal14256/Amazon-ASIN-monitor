@@ -2,6 +2,20 @@
  * 高峰期工具函数
  * 所有时间基于北京时间（UTC+8）
  */
+const { toUTC8ISOString } = require('./dateTime');
+
+function getBeijingHour(date) {
+  if (typeof date === 'string') {
+    const normalized = date.trim();
+    const directMatch = normalized.match(/\b(\d{2}):\d{2}(?::\d{2})?/);
+    if (directMatch) {
+      return Number.parseInt(directMatch[1], 10);
+    }
+  }
+
+  const iso = toUTC8ISOString(date);
+  return Number.parseInt(iso.slice(11, 13), 10);
+}
 
 /**
  * 判断指定时间是否在高峰期
@@ -10,8 +24,7 @@
  * @returns {boolean} 是否在高峰期
  */
 function isPeakHour(date, country) {
-  const d = typeof date === 'string' ? new Date(date) : date;
-  const hour = d.getHours(); // 北京时间的小时数
+  const hour = getBeijingHour(date);
 
   switch (country) {
     case 'US':
@@ -85,15 +98,16 @@ function getTimeRangeStats(startTime, endTime, country) {
 
   let peakHours = 0;
   let offPeakHours = 0;
-  const current = new Date(start);
+  let currentTime = start.getTime();
+  const endTimeMs = end.getTime();
 
-  while (current <= end) {
-    if (isPeakHour(current, country)) {
+  while (currentTime <= endTimeMs) {
+    if (isPeakHour(new Date(currentTime), country)) {
       peakHours++;
     } else {
       offPeakHours++;
     }
-    current.setHours(current.getHours() + 1);
+    currentTime += 60 * 60 * 1000;
   }
 
   return {

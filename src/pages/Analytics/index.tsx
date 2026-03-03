@@ -1,5 +1,6 @@
 import LazyECharts from '@/components/LazyECharts';
 import services from '@/services/asin';
+import { formatBeijing, toBeijingDayjs } from '@/utils/beijingTime';
 import { exportToExcel } from '@/utils/export';
 import { useMessage } from '@/utils/message';
 import { getPeakHours } from '@/utils/peakHours';
@@ -19,7 +20,7 @@ import {
   Table,
   Tag,
 } from 'antd';
-import dayjs, { Dayjs } from 'dayjs';
+import type { Dayjs } from 'dayjs';
 import React, {
   useCallback,
   useEffect,
@@ -97,8 +98,8 @@ const parseTimeLabel = (value?: string) => {
   if (!value) {
     return null;
   }
-  const date = new Date(value);
-  return Number.isFinite(date.getTime()) ? date : null;
+  const parsed = toBeijingDayjs(value);
+  return parsed.isValid() ? parsed.format('YYYY-MM-DD HH:mm:ss') : null;
 };
 
 const formatDuration = (durationMs: number) => {
@@ -162,8 +163,8 @@ const writeProgressProfile = (profile: ProgressProfile) => {
 const AnalyticsPageContent: React.FC<unknown> = () => {
   const message = useMessage();
   const [dateRange, setDateRange] = useState<[Dayjs, Dayjs]>([
-    dayjs().startOf('day'),
-    dayjs().endOf('day'),
+    toBeijingDayjs().startOf('day'),
+    toBeijingDayjs().endOf('day'),
   ]);
   const [country, setCountry] = useState<string>('');
   const [groupBy, setGroupBy] = useState<string>('hour');
@@ -945,8 +946,8 @@ const AnalyticsPageContent: React.FC<unknown> = () => {
       return [];
     }
 
-    const startDate = dayjs(firstTime).startOf('day');
-    const endDate = dayjs(lastTime).endOf('day');
+    const startDate = toBeijingDayjs(firstTime).startOf('day');
+    const endDate = toBeijingDayjs(lastTime).endOf('day');
 
     // 为每个区域生成高峰期区域
     const markAreas: Array<{ areas: any[]; color: string; name: string }> = [];
@@ -1009,7 +1010,7 @@ const AnalyticsPageContent: React.FC<unknown> = () => {
       const data = timeChartData
         .filter((item) => item.type === type)
         .map((item) => [
-          dayjs(item.time).format('YYYY-MM-DD HH:mm'),
+          formatBeijing(item.time, 'YYYY-MM-DD HH:mm'),
           Number(item.value),
           Number(item.rawValue),
           item.labelValue,
