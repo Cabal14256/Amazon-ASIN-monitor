@@ -128,6 +128,14 @@ type ProgressProfile = Record<
   }
 >;
 
+type MonthlyBreakdownRow = {
+  date: string;
+  day: number;
+  brokenAsinsDedup: number;
+  totalAsinsDedup: number;
+  brokenRatio: number;
+};
+
 const PROGRESS_PROFILE_KEY = 'analyticsProgressProfile.v1';
 
 const readProgressProfile = (): ProgressProfile => {
@@ -241,6 +249,77 @@ const AnalyticsPageContent: React.FC<unknown> = () => {
     site?: string;
     brand?: string;
   }>({});
+  const [monthlyBreakdownMonth, setMonthlyBreakdownMonth] = useState<Dayjs>(
+    dayjs().startOf('month'),
+  );
+  const [monthlyBreakdownLoading, setMonthlyBreakdownLoading] = useState(false);
+  const [monthlyBreakdownExporting, setMonthlyBreakdownExporting] =
+    useState(false);
+  const [monthlyBreakdownRows, setMonthlyBreakdownRows] = useState<
+    MonthlyBreakdownRow[]
+  >([]);
+
+  const loadMonthlyBreakdown = useCallback(async () => {
+    setMonthlyBreakdownLoading(true);
+    try {
+      const monthStart = monthlyBreakdownMonth.startOf('month');
+      const monthEnd = monthlyBreakdownMonth.endOf('month');
+      const params: Record<string, any> = {
+        startTime: monthStart.format('YYYY-MM-DD 00:00:00'),
+        endTime: monthEnd.format('YYYY-MM-DD 23:59:59'),
+        groupBy: 'day',
+      };
+      if (country) {
+        params.country = country;
+      }
+
+      const result = await getStatisticsByTime(params);
+      const list =
+        result && typeof result === 'object' && !('success' in result)
+          ? result
+          : (result as any)?.data || [];
+
+      const rowMap = new Map<string, API.TimeStatistics>();
+      if (Array.isArray(list)) {
+        list.forEach((item: API.TimeStatistics) => {
+          const dateKey = String(item.time_period || '').slice(0, 10);
+          if (dateKey) {
+            rowMap.set(dateKey, item);
+          }
+        });
+      }
+
+      const daysInMonth = monthStart.daysInMonth();
+      const rows: MonthlyBreakdownRow[] = [];
+      for (let day = 1; day <= daysInMonth; day += 1) {
+        const date = monthStart.date(day).format('YYYY-MM-DD');
+        const stat = rowMap.get(date);
+        const brokenAsinsDedup = toNumber(stat?.broken_asins_dedup);
+        const totalAsinsDedup = toNumber(stat?.total_asins_dedup);
+        const fallbackRatio = toNumber(stat?.ratio_all_time);
+        const brokenRatio =
+          totalAsinsDedup > 0
+            ? (brokenAsinsDedup / totalAsinsDedup) * 100
+            : fallbackRatio;
+
+        rows.push({
+          date,
+          day,
+          brokenAsinsDedup,
+          totalAsinsDedup,
+          brokenRatio: Number.isFinite(brokenRatio) ? brokenRatio : 0,
+        });
+      }
+
+      setMonthlyBreakdownRows(rows);
+    } catch (error) {
+      console.error('加载月度被拆统计失败:', error);
+      message.error('加载月度被拆统计失败，请稍后重试');
+      setMonthlyBreakdownRows([]);
+    } finally {
+      setMonthlyBreakdownLoading(false);
+    }
+  }, [country, monthlyBreakdownMonth, message]);
 
   // 加载所有统计数据（使用useCallback优化，支持重试）
   const loadStatistics = useCallback(
@@ -794,6 +873,7 @@ const AnalyticsPageContent: React.FC<unknown> = () => {
   // 只在组件首次加载时执行一次查询
   useEffect(() => {
     loadStatistics();
+    loadMonthlyBreakdown();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
@@ -1138,11 +1218,14 @@ const AnalyticsPageContent: React.FC<unknown> = () => {
         selected: {
           // 设置高峰期区域的初始选中状态
           ...(groupBy === 'hour' && peakHoursMarkAreas.length > 0
-            ? peakHoursMarkAreas.reduce((acc, region) => {
-                const name = peakAreaNameMap[region.name] || region.name;
-                acc[name] = peakAreaVisible[region.name] !== false;
-                return acc;
-              }, {} as Record<string, boolean>)
+            ? peakHoursMarkAreas.reduce(
+                (acc, region) => {
+                  const name = peakAreaNameMap[region.name] || region.name;
+                  acc[name] = peakAreaVisible[region.name] !== false;
+                  return acc;
+                },
+                {} as Record<string, boolean>,
+              )
             : {}),
         },
       },
@@ -1572,6 +1655,54 @@ const AnalyticsPageContent: React.FC<unknown> = () => {
   }, [variantGroupDisplayData, variantGroupValueMode]);
 
   const { totalChecks, brokenCount, normalCount } = normalizedOverall;
+  const monthlyBreakdownSummary = useMemo(() => {
+    const brokenTotal = monthlyBreakdownRows.reduce(
+      (sum, item) => sum + item.brokenAsinsDedup,
+      0,
+    );
+    const linkTotal = monthlyBreakdownRows.reduce(
+      (sum, item) => sum + item.totalAsinsDedup,
+      0,
+    );
+    const averageRatio = linkTotal > 0 ? (brokenTotal / linkTotal) * 100 : 0;
+    return {
+      brokenTotal,
+      linkTotal,
+      averageRatio,
+    };
+  }, [monthlyBreakdownRows]);
+
+  const handleRefreshAll = useCallback(() => {
+    void loadStatistics();
+    void loadMonthlyBreakdown();
+  }, [loadMonthlyBreakdown, loadStatistics]);
+
+  const handleExportMonthlyBreakdown = useCallback(async () => {
+    setMonthlyBreakdownExporting(true);
+    try {
+      const monthStart = monthlyBreakdownMonth.startOf('month');
+      const monthEnd = monthlyBreakdownMonth.endOf('month');
+      const queryParams: Record<string, any> = {
+        month: monthStart.format('YYYY-MM'),
+        startTime: monthStart.format('YYYY-MM-DD 00:00:00'),
+        endTime: monthEnd.format('YYYY-MM-DD 23:59:59'),
+      };
+      if (country) {
+        queryParams.country = country;
+      }
+
+      await exportToExcel(
+        '/v1/export/analytics-monthly-breakdown',
+        queryParams,
+        `月度被拆统计_${monthStart.format('YYYY-MM')}${country ? `_${country}` : ''}`,
+      );
+    } catch (error) {
+      console.error('导出月度被拆统计失败:', error);
+      message.error('导出月度被拆统计失败，请重试');
+    } finally {
+      setMonthlyBreakdownExporting(false);
+    }
+  }, [country, message, monthlyBreakdownMonth]);
 
   // 导出数据
   const handleExport = async (format: 'excel' | 'csv' = 'excel') => {
@@ -1618,7 +1749,7 @@ const AnalyticsPageContent: React.FC<unknown> = () => {
         <Button
           key="refresh"
           type="primary"
-          onClick={() => void loadStatistics()}
+          onClick={handleRefreshAll}
           loading={loading}
         >
           刷新
@@ -1667,11 +1798,7 @@ const AnalyticsPageContent: React.FC<unknown> = () => {
               <Select.Option value="week">按周</Select.Option>
               <Select.Option value="month">按月</Select.Option>
             </Select>
-            <Button
-              type="primary"
-              onClick={() => void loadStatistics()}
-              loading={loading}
-            >
+            <Button type="primary" onClick={handleRefreshAll} loading={loading}>
               查询
             </Button>
           </Space>
@@ -1700,6 +1827,96 @@ const AnalyticsPageContent: React.FC<unknown> = () => {
             </div>
           )}
         </Space>
+      </Card>
+
+      <Card
+        title="月度被拆统计（按天）"
+        style={{ marginBottom: 16 }}
+        loading={monthlyBreakdownLoading}
+        extra={
+          <Space>
+            <span>月份：</span>
+            <DatePicker
+              picker="month"
+              allowClear={false}
+              value={monthlyBreakdownMonth}
+              onChange={(value) => {
+                if (value) {
+                  setMonthlyBreakdownMonth(value.startOf('month'));
+                }
+              }}
+              format="YYYY-MM"
+            />
+            <Button
+              type="primary"
+              onClick={() => void loadMonthlyBreakdown()}
+              loading={monthlyBreakdownLoading}
+            >
+              查询
+            </Button>
+            <Button
+              onClick={() => void handleExportMonthlyBreakdown()}
+              loading={monthlyBreakdownExporting}
+            >
+              导出Excel
+            </Button>
+          </Space>
+        }
+      >
+        {monthlyBreakdownRows.length > 0 ? (
+          <Table<MonthlyBreakdownRow>
+            dataSource={monthlyBreakdownRows}
+            pagination={false}
+            rowKey="date"
+            columns={[
+              {
+                title: `${monthlyBreakdownMonth.format('M')}月日期`,
+                dataIndex: 'day',
+                key: 'day',
+                align: 'right',
+              },
+              {
+                title: '被拆数量',
+                dataIndex: 'brokenAsinsDedup',
+                key: 'brokenAsinsDedup',
+                align: 'right',
+              },
+              {
+                title: '总链接数量',
+                dataIndex: 'totalAsinsDedup',
+                key: 'totalAsinsDedup',
+                align: 'right',
+              },
+              {
+                title: '被拆占比',
+                dataIndex: 'brokenRatio',
+                key: 'brokenRatio',
+                align: 'right',
+                render: (value: number) => `${toNumber(value).toFixed(2)}%`,
+              },
+            ]}
+            summary={() => (
+              <Table.Summary fixed>
+                <Table.Summary.Row>
+                  <Table.Summary.Cell index={0}>
+                    平均值被拆占比
+                  </Table.Summary.Cell>
+                  <Table.Summary.Cell index={1} align="right">
+                    {monthlyBreakdownSummary.brokenTotal}
+                  </Table.Summary.Cell>
+                  <Table.Summary.Cell index={2} align="right">
+                    {monthlyBreakdownSummary.linkTotal}
+                  </Table.Summary.Cell>
+                  <Table.Summary.Cell index={3} align="right">
+                    {monthlyBreakdownSummary.averageRatio.toFixed(2)}%
+                  </Table.Summary.Cell>
+                </Table.Summary.Row>
+              </Table.Summary>
+            )}
+          />
+        ) : (
+          <div style={{ textAlign: 'center', padding: 40 }}>暂无数据</div>
+        )}
       </Card>
 
       {/* 总体统计 */}

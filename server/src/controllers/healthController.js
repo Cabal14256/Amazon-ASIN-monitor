@@ -13,6 +13,48 @@ const cacheService = require('../services/cacheService');
 const errorStatsService = require('../services/errorStatsService');
 const riskControlService = require('../services/riskControlService');
 const { getUTC8ISOString } = require('../utils/dateTime');
+const v8 = require('v8');
+
+function parseThreshold(rawValue, fallback) {
+  if (rawValue === undefined || rawValue === null || rawValue === '') {
+    return fallback;
+  }
+  const parsed = Number(rawValue);
+  if (!Number.isFinite(parsed)) {
+    return fallback;
+  }
+  if (parsed > 0 && parsed < 1) {
+    return parsed;
+  }
+  if (parsed >= 1 && parsed <= 100) {
+    return parsed / 100;
+  }
+  return fallback;
+}
+
+function parsePositiveNumber(rawValue, fallback) {
+  if (rawValue === undefined || rawValue === null || rawValue === '') {
+    return fallback;
+  }
+  const parsed = Number(rawValue);
+  if (!Number.isFinite(parsed) || parsed <= 0) {
+    return fallback;
+  }
+  return parsed;
+}
+
+const DB_POOL_DEGRADED_THRESHOLD = parseThreshold(
+  process.env.HEALTH_DB_POOL_DEGRADED_THRESHOLD,
+  0.9,
+);
+const MEMORY_HEAP_LIMIT_DEGRADED_THRESHOLD = parseThreshold(
+  process.env.HEALTH_MEMORY_HEAP_LIMIT_DEGRADED_THRESHOLD,
+  0.9,
+);
+const MEMORY_RSS_DEGRADED_MB = parsePositiveNumber(
+  process.env.HEALTH_MEMORY_RSS_DEGRADED_MB,
+  0,
+);
 
 /**
  * 获取系统健康状态
@@ -76,15 +118,24 @@ exports.getHealth = async (req, res) => {
 
     // 检查内存使用情况
     const memoryUsage = process.memoryUsage();
+    const heapStats = v8.getHeapStatistics();
+    const heapLimitBytes = heapStats.heap_size_limit || 0;
+    const heapUsedToTotalPercent =
+      memoryUsage.heapTotal > 0
+        ? (memoryUsage.heapUsed / memoryUsage.heapTotal) * 100
+        : 0;
+    const heapUsedToLimitPercent =
+      heapLimitBytes > 0 ? (memoryUsage.heapUsed / heapLimitBytes) * 100 : 0;
+
     health.memory = {
       heapUsed: Math.round(memoryUsage.heapUsed / 1024 / 1024), // MB
       heapTotal: Math.round(memoryUsage.heapTotal / 1024 / 1024), // MB
+      heapLimit: Math.round(heapLimitBytes / 1024 / 1024), // MB
       external: Math.round(memoryUsage.external / 1024 / 1024), // MB
       rss: Math.round(memoryUsage.rss / 1024 / 1024), // MB
-      usagePercent: (
-        (memoryUsage.heapUsed / memoryUsage.heapTotal) *
-        100
-      ).toFixed(2),
+      usagePercent: heapUsedToTotalPercent.toFixed(2), // 保留旧字段，兼容现有调用
+      heapLimitUsagePercent: heapUsedToLimitPercent.toFixed(2),
+      thresholdPercent: (MEMORY_HEAP_LIMIT_DEGRADED_THRESHOLD * 100).toFixed(2),
     };
 
     // 检查限流器状态
@@ -144,10 +195,20 @@ exports.getHealth = async (req, res) => {
     }
 
     // 判断整体健康状态
+    const databaseUsagePercent = parseFloat(health.database.usagePercent);
+    const heapLimitUsagePercent = parseFloat(
+      health.memory.heapLimitUsagePercent,
+    );
+    const rssMb = Number(health.memory.rss || 0);
+    const memoryRssDegraded =
+      MEMORY_RSS_DEGRADED_MB > 0 && rssMb > MEMORY_RSS_DEGRADED_MB;
+
     if (
       !health.database.connected ||
-      (health.database.pool && parseFloat(health.database.usagePercent) > 90) ||
-      parseFloat(health.memory.usagePercent) > 90
+      (health.database.pool &&
+        databaseUsagePercent > DB_POOL_DEGRADED_THRESHOLD * 100) ||
+      heapLimitUsagePercent > MEMORY_HEAP_LIMIT_DEGRADED_THRESHOLD * 100 ||
+      memoryRssDegraded
     ) {
       health.status = 'degraded';
     }

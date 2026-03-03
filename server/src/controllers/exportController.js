@@ -1547,6 +1547,160 @@ async function exportCompetitorMonitorHistory(req, res) {
   }
 }
 
+/**
+ * 导出月度被拆统计（按天）
+ */
+async function exportAnalyticsMonthlyBreakdown(req, res) {
+  try {
+    const {
+      country = '',
+      month = '',
+      startTime: startTimeParam = '',
+      endTime: endTimeParam = '',
+    } = req.query;
+    const isProgressMode = req.query.useProgress === 'true';
+
+    if (isProgressMode) {
+      res.setHeader('Content-Type', 'text/event-stream');
+      res.setHeader('Cache-Control', 'no-cache');
+      res.setHeader('Connection', 'keep-alive');
+      res.setHeader('X-Accel-Buffering', 'no');
+    }
+
+    const now = new Date();
+    const fallbackMonth = `${now.getFullYear()}-${String(
+      now.getMonth() + 1,
+    ).padStart(2, '0')}`;
+    const monthTokenCandidate = month || String(startTimeParam).slice(0, 7);
+    const monthToken = /^\d{4}-\d{2}$/.test(monthTokenCandidate)
+      ? monthTokenCandidate
+      : fallbackMonth;
+
+    const [yearText, monthText] = monthToken.split('-');
+    const year = Number(yearText) || now.getFullYear();
+    const monthNumber = Number(monthText) || now.getMonth() + 1;
+    const safeMonthNumber = Math.min(12, Math.max(1, monthNumber));
+    const daysInMonth = new Date(year, safeMonthNumber, 0).getDate();
+
+    const normalizedMonthToken = `${year}-${String(safeMonthNumber).padStart(
+      2,
+      '0',
+    )}`;
+    const effectiveStartTime =
+      startTimeParam || `${normalizedMonthToken}-01 00:00:00`;
+    const effectiveEndTime =
+      endTimeParam ||
+      `${normalizedMonthToken}-${String(daysInMonth).padStart(
+        2,
+        '0',
+      )} 23:59:59`;
+
+    if (isProgressMode) {
+      sendProgress(res, 10, '正在查询月度数据...', 'querying');
+    }
+
+    const statistics = await MonitorHistory.getStatisticsByTime({
+      country: country || '',
+      startTime: effectiveStartTime,
+      endTime: effectiveEndTime,
+      groupBy: 'day',
+    });
+
+    if (isProgressMode) {
+      sendProgress(res, 55, '正在处理月度数据...', 'processing');
+    }
+
+    const statMap = new Map();
+    if (Array.isArray(statistics)) {
+      statistics.forEach((item) => {
+        const dateKey = String(item?.time_period || '').slice(0, 10);
+        if (dateKey) {
+          statMap.set(dateKey, item);
+        }
+      });
+    }
+
+    const excelData = [];
+    excelData.push([
+      `${safeMonthNumber}月日期`,
+      '被拆数量',
+      '总链接数量',
+      '被拆占比',
+    ]);
+
+    let brokenTotal = 0;
+    let linkTotal = 0;
+
+    for (let day = 1; day <= daysInMonth; day += 1) {
+      const dayText = String(day).padStart(2, '0');
+      const dateKey = `${normalizedMonthToken}-${dayText}`;
+      const stat = statMap.get(dateKey);
+      const brokenAsinsDedup = Number(stat?.broken_asins_dedup) || 0;
+      const totalAsinsDedup = Number(stat?.total_asins_dedup) || 0;
+      const fallbackRatio = Number(stat?.ratio_all_time) || 0;
+      const brokenRatio =
+        totalAsinsDedup > 0
+          ? (brokenAsinsDedup / totalAsinsDedup) * 100
+          : fallbackRatio;
+
+      brokenTotal += brokenAsinsDedup;
+      linkTotal += totalAsinsDedup;
+
+      excelData.push([
+        day,
+        brokenAsinsDedup,
+        totalAsinsDedup,
+        `${brokenRatio.toFixed(2)}%`,
+      ]);
+    }
+
+    const averageRatio = linkTotal > 0 ? (brokenTotal / linkTotal) * 100 : 0;
+    excelData.push([
+      '平均值被拆占比',
+      brokenTotal,
+      linkTotal,
+      `${averageRatio.toFixed(2)}%`,
+    ]);
+
+    if (isProgressMode) {
+      sendProgress(res, 90, '正在生成Excel文件...', 'generating');
+    }
+
+    const workbook = buildWorkbookFromAoa(
+      excelData,
+      '月度被拆统计',
+      [12, 12, 14, 12],
+    );
+    const excelBuffer = await workbook.xlsx.writeBuffer();
+    const filename = `月度被拆统计_${normalizedMonthToken}.xlsx`;
+
+    if (isProgressMode) {
+      sendProgress(res, 95, '准备下载文件...', 'generating');
+      sendComplete(res, excelBuffer, filename);
+    } else {
+      res.setHeader(
+        'Content-Type',
+        'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+      );
+      res.setHeader(
+        'Content-Disposition',
+        `attachment; filename="${encodeURIComponent(filename)}"`,
+      );
+      res.send(excelBuffer);
+    }
+  } catch (error) {
+    logger.error('导出月度被拆统计失败:', error);
+    if (req.query.useProgress === 'true') {
+      sendError(res, '导出月度被拆统计失败');
+    } else {
+      res.status(500).json({
+        success: false,
+        errorMessage: '导出月度被拆统计失败',
+      });
+    }
+  }
+}
+
 const { v4: uuidv4 } = require('uuid');
 const exportTaskQueue = require('../services/exportTaskQueue');
 
@@ -1797,6 +1951,7 @@ async function exportParentAsinQuery(req, res) {
 module.exports = {
   exportASINData,
   exportMonitorHistory,
+  exportAnalyticsMonthlyBreakdown,
   exportVariantGroupData,
   exportCompetitorASINData,
   exportCompetitorVariantGroupData,
