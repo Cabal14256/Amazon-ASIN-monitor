@@ -5,8 +5,12 @@ const AGG_ENABLED = process.env.ANALYTICS_AGG_ENABLED !== '0';
 const BACKFILL_HOURS = Number(process.env.ANALYTICS_AGG_BACKFILL_HOURS) || 48;
 const BACKFILL_DAYS = Number(process.env.ANALYTICS_AGG_BACKFILL_DAYS) || 30;
 const REFRESH_DIM_AGG = process.env.ANALYTICS_AGG_REFRESH_DIM !== '0';
-const REAL_ASIN_FILTER =
-  "mh.asin_id IN (SELECT id FROM asins WHERE asin_type IS NULL OR asin_type NOT IN ('1', 'MAIN_LINK'))";
+const REAL_ASIN_FILTER = `(NOT EXISTS (
+      SELECT 1
+      FROM asins __asin_filter
+      WHERE __asin_filter.id = mh.asin_id
+        AND __asin_filter.asin_type IN ('1', 'MAIN_LINK')
+    ))`;
 
 let isRefreshing = false;
 
