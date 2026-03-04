@@ -20,7 +20,7 @@ import {
   Table,
   Tag,
 } from 'antd';
-import type { Dayjs } from 'dayjs';
+import dayjs, { type Dayjs } from 'dayjs';
 import React, {
   useCallback,
   useEffect,
