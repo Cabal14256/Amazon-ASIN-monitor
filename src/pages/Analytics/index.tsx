@@ -21,6 +21,7 @@ import {
   Tag,
 } from 'antd';
 import type { Dayjs } from 'dayjs';
+import dayjs from 'dayjs';
 import React, {
   useCallback,
   useEffect,
@@ -1218,14 +1219,11 @@ const AnalyticsPageContent: React.FC<unknown> = () => {
         selected: {
           // 设置高峰期区域的初始选中状态
           ...(groupBy === 'hour' && peakHoursMarkAreas.length > 0
-            ? peakHoursMarkAreas.reduce(
-                (acc, region) => {
-                  const name = peakAreaNameMap[region.name] || region.name;
-                  acc[name] = peakAreaVisible[region.name] !== false;
-                  return acc;
-                },
-                {} as Record<string, boolean>,
-              )
+            ? peakHoursMarkAreas.reduce((acc, region) => {
+                const name = peakAreaNameMap[region.name] || region.name;
+                acc[name] = peakAreaVisible[region.name] !== false;
+                return acc;
+              }, {} as Record<string, boolean>)
             : {}),
         },
       },
@@ -1694,7 +1692,9 @@ const AnalyticsPageContent: React.FC<unknown> = () => {
       await exportToExcel(
         '/v1/export/analytics-monthly-breakdown',
         queryParams,
-        `月度被拆统计_${monthStart.format('YYYY-MM')}${country ? `_${country}` : ''}`,
+        `月度被拆统计_${monthStart.format('YYYY-MM')}${
+          country ? `_${country}` : ''
+        }`,
       );
     } catch (error) {
       console.error('导出月度被拆统计失败:', error);
