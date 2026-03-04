@@ -1552,13 +1552,14 @@ async function exportCompetitorMonitorHistory(req, res) {
  */
 async function exportAnalyticsMonthlyBreakdown(req, res) {
   try {
+    const requestParams = req.method === 'POST' ? req.body || {} : req.query;
     const {
       country = '',
       month = '',
       startTime: startTimeParam = '',
       endTime: endTimeParam = '',
-    } = req.query;
-    const isProgressMode = req.query.useProgress === 'true';
+    } = requestParams;
+    const isProgressMode = String(requestParams.useProgress) === 'true';
 
     if (isProgressMode) {
       res.setHeader('Content-Type', 'text/event-stream');
@@ -1726,6 +1727,7 @@ async function createExportTask(req, res) {
       'monitor-history',
       'variant-group',
       'competitor-monitor-history',
+      'analytics-monthly-breakdown',
     ];
     if (!validTypes.includes(exportType)) {
       return res.status(400).json({
@@ -1742,6 +1744,7 @@ async function createExportTask(req, res) {
       'variant-group': 'asin:read',
       'monitor-history': 'monitor:read',
       'competitor-monitor-history': 'monitor:read',
+      'analytics-monthly-breakdown': 'analytics:read',
     };
     const requiredPermission = permissionMap[exportType];
     if (requiredPermission) {

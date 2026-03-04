@@ -315,6 +315,14 @@ async function processExportTask(job) {
           userId,
         );
         break;
+      case 'analytics-monthly-breakdown':
+        result = await processAnalyticsMonthlyBreakdownExport(
+          job,
+          taskId,
+          params,
+          userId,
+        );
+        break;
       default:
         throw new Error(`不支持的导出类型: ${exportType}`);
     }
@@ -843,6 +851,117 @@ async function processCompetitorMonitorHistoryExport(
     excelData,
     sheetName: '竞品监控历史',
     columnWidths: [20, 10, 30, 15, 50, 10, 10, 100],
+    filepath,
+  });
+
+  return { filename, filepath };
+}
+
+/**
+ * 处理月度被拆统计导出
+ */
+async function processAnalyticsMonthlyBreakdownExport(
+  job,
+  taskId,
+  params,
+  userId,
+) {
+  const {
+    country = '',
+    month = '',
+    startTime = '',
+    endTime = '',
+  } = params || {};
+
+  const now = new Date();
+  const fallbackMonth = `${now.getFullYear()}-${String(
+    now.getMonth() + 1,
+  ).padStart(2, '0')}`;
+  const monthTokenCandidate = month || String(startTime).slice(0, 7);
+  const monthToken = /^\d{4}-\d{2}$/.test(monthTokenCandidate)
+    ? monthTokenCandidate
+    : fallbackMonth;
+
+  const [yearText, monthText] = monthToken.split('-');
+  const year = Number(yearText) || now.getFullYear();
+  const monthNumber = Number(monthText) || now.getMonth() + 1;
+  const safeMonthNumber = Math.min(12, Math.max(1, monthNumber));
+  const daysInMonth = new Date(year, safeMonthNumber, 0).getDate();
+  const normalizedMonthToken = `${year}-${String(safeMonthNumber).padStart(
+    2,
+    '0',
+  )}`;
+
+  const effectiveStartTime = startTime || `${normalizedMonthToken}-01 00:00:00`;
+  const effectiveEndTime =
+    endTime ||
+    `${normalizedMonthToken}-${String(daysInMonth).padStart(2, '0')} 23:59:59`;
+
+  updateProgress(job, taskId, 10, '正在查询月度数据...', userId);
+
+  const statistics = await MonitorHistory.getStatisticsByTime({
+    country,
+    startTime: effectiveStartTime,
+    endTime: effectiveEndTime,
+    groupBy: 'day',
+  });
+
+  updateProgress(job, taskId, 55, '正在处理月度数据...', userId);
+
+  const statMap = new Map();
+  if (Array.isArray(statistics)) {
+    statistics.forEach((item) => {
+      const dateKey = String(item?.time_period || '').slice(0, 10);
+      if (dateKey) {
+        statMap.set(dateKey, item);
+      }
+    });
+  }
+
+  const excelData = [['日期', '被拆数量', '总链接数量', '被拆占比']];
+  let brokenTotal = 0;
+  let linkTotal = 0;
+
+  for (let day = 1; day <= daysInMonth; day += 1) {
+    const dayText = String(day).padStart(2, '0');
+    const dateKey = `${normalizedMonthToken}-${dayText}`;
+    const stat = statMap.get(dateKey);
+    const brokenAsinsDedup = Number(stat?.broken_asins_dedup) || 0;
+    const totalAsinsDedup = Number(stat?.total_asins_dedup) || 0;
+    const fallbackRatio = Number(stat?.ratio_all_time) || 0;
+    const brokenRatio =
+      totalAsinsDedup > 0
+        ? (brokenAsinsDedup / totalAsinsDedup) * 100
+        : fallbackRatio;
+
+    brokenTotal += brokenAsinsDedup;
+    linkTotal += totalAsinsDedup;
+
+    excelData.push([
+      day,
+      brokenAsinsDedup,
+      totalAsinsDedup,
+      `${brokenRatio.toFixed(2)}%`,
+    ]);
+  }
+
+  const averageRatio = linkTotal > 0 ? (brokenTotal / linkTotal) * 100 : 0;
+  excelData.push([
+    '平均值被拆占比',
+    brokenTotal,
+    linkTotal,
+    `${averageRatio.toFixed(2)}%`,
+  ]);
+
+  updateProgress(job, taskId, 90, '正在生成Excel文件...', userId);
+
+  const filename = `月度被拆统计_${normalizedMonthToken}.xlsx`;
+  const filepath = path.join(EXPORT_DIR, `${taskId}.xlsx`);
+
+  await writeAoaWorkbookToFile({
+    excelData,
+    sheetName: '月度被拆统计',
+    columnWidths: [12, 12, 14, 12],
     filepath,
   });
 
