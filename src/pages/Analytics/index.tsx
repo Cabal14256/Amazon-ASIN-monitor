@@ -203,7 +203,9 @@ const buildMonthlyBreakdownRowsSync = (
     const totalAsinsDedup = toNumber(stat?.total_asins_dedup);
     const fallbackRatio = toNumber(stat?.ratio_all_time);
     const brokenRatio =
-      totalAsinsDedup > 0 ? (brokenAsinsDedup / totalAsinsDedup) * 100 : fallbackRatio;
+      totalAsinsDedup > 0
+        ? (brokenAsinsDedup / totalAsinsDedup) * 100
+        : fallbackRatio;
 
     rows.push({
       date,
@@ -563,7 +565,10 @@ const AnalyticsPageContent: React.FC<unknown> = () => {
           );
         }
       } else {
-        rows = buildMonthlyBreakdownRowsSync(list as API.TimeStatistics[], monthStart);
+        rows = buildMonthlyBreakdownRowsSync(
+          list as API.TimeStatistics[],
+          monthStart,
+        );
       }
 
       setMonthlyBreakdownRows(rows);
@@ -1252,7 +1257,11 @@ const AnalyticsPageContent: React.FC<unknown> = () => {
     let cancelled = false;
 
     const fallback = () => {
-      const syncAreas = buildPeakHoursMarkAreasSync(groupBy, country, timeChartData);
+      const syncAreas = buildPeakHoursMarkAreasSync(
+        groupBy,
+        country,
+        timeChartData,
+      );
       setPeakHoursMarkAreas(syncAreas);
     };
 
@@ -1446,14 +1455,11 @@ const AnalyticsPageContent: React.FC<unknown> = () => {
         selected: {
           // 设置高峰期区域的初始选中状态
           ...(groupBy === 'hour' && peakHoursMarkAreas.length > 0
-            ? peakHoursMarkAreas.reduce(
-                (acc, region) => {
-                  const name = peakAreaNameMap[region.name] || region.name;
-                  acc[name] = peakAreaVisible[region.name] !== false;
-                  return acc;
-                },
-                {} as Record<string, boolean>,
-              )
+            ? peakHoursMarkAreas.reduce((acc, region) => {
+                const name = peakAreaNameMap[region.name] || region.name;
+                acc[name] = peakAreaVisible[region.name] !== false;
+                return acc;
+              }, {} as Record<string, boolean>)
             : {}),
         },
       },
@@ -1922,7 +1928,9 @@ const AnalyticsPageContent: React.FC<unknown> = () => {
       await exportToExcel(
         '/v1/export/analytics-monthly-breakdown',
         queryParams,
-        `月度被拆统计_${monthStart.format('YYYY-MM')}${country ? `_${country}` : ''}`,
+        `月度被拆统计_${monthStart.format('YYYY-MM')}${
+          country ? `_${country}` : ''
+        }`,
       );
     } catch (error) {
       console.error('导出月度被拆统计失败:', error);
@@ -2026,11 +2034,7 @@ const AnalyticsPageContent: React.FC<unknown> = () => {
               <Select.Option value="week">按周</Select.Option>
               <Select.Option value="month">按月</Select.Option>
             </Select>
-            <Button
-              type="primary"
-              onClick={handleRefreshAll}
-              loading={loading}
-            >
+            <Button type="primary" onClick={handleRefreshAll} loading={loading}>
               查询
             </Button>
           </Space>

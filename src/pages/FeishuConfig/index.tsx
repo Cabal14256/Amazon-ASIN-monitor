@@ -90,13 +90,10 @@ const FeishuConfigPage: React.FC<unknown> = () => {
       dataIndex: 'country',
       width: 200,
       valueType: 'select',
-      valueEnum: Object.keys(regionMap).reduce(
-        (acc, key) => {
-          acc[key] = { text: regionMap[key] };
-          return acc;
-        },
-        {} as Record<string, { text: string }>,
-      ),
+      valueEnum: Object.keys(regionMap).reduce((acc, key) => {
+        acc[key] = { text: regionMap[key] };
+        return acc;
+      }, {} as Record<string, { text: string }>),
       render: (_: any, record: API.FeishuConfig) => {
         return regionMap[record.country || ''] || record.country;
       },

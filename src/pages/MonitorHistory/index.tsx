@@ -55,7 +55,6 @@ interface AbnormalDurationSummaryAccumulator {
   queryTimeRange: string;
   abnormalCount: number;
   totalAbnormalDuration: number;
-  durationBucketCount: number;
   minAbnormalDuration: number;
   maxAbnormalDuration: number;
   maxAbnormalTime: string;
@@ -95,7 +94,43 @@ const MonitorHistoryPage: React.FC<unknown> = () => {
   const abnormalDurationSummaryData = useMemo<
     AbnormalDurationSummaryRow[]
   >(() => {
-    if (!abnormalDurationData?.data || abnormalDurationData.data.length === 0) {
+    if (!abnormalDurationData) {
+      return [];
+    }
+
+    const backendSummary = Array.isArray(abnormalDurationData.summary)
+      ? abnormalDurationData.summary
+      : [];
+    if (backendSummary.length > 0) {
+      const fallbackQueryTimeRange =
+        abnormalDurationQueryRange?.startTime &&
+        abnormalDurationQueryRange.endTime
+          ? `${abnormalDurationQueryRange.startTime} ~ ${abnormalDurationQueryRange.endTime}`
+          : '-';
+
+      return backendSummary
+        .map((item, index) => ({
+          key:
+            item.key ||
+            `${item.asin || 'unknown'}-${item.country || ''}-${index}`,
+          asin: item.asin || '-',
+          country: item.country || '',
+          queryTimeRange: item.queryTimeRange || fallbackQueryTimeRange,
+          abnormalCount: Number(item.abnormalCount || 0),
+          averageAbnormalDuration: Number(item.averageAbnormalDuration || 0),
+          minAbnormalDuration: Number(item.minAbnormalDuration || 0),
+          maxAbnormalDuration: Number(item.maxAbnormalDuration || 0),
+          maxAbnormalTime: item.maxAbnormalTime || '-',
+        }))
+        .sort((a, b) => {
+          if (b.abnormalCount !== a.abnormalCount) {
+            return b.abnormalCount - a.abnormalCount;
+          }
+          return b.maxAbnormalDuration - a.maxAbnormalDuration;
+        });
+    }
+
+    if (!abnormalDurationData.data || abnormalDurationData.data.length === 0) {
       return [];
     }
 
@@ -124,7 +159,6 @@ const MonitorHistoryPage: React.FC<unknown> = () => {
           queryTimeRange,
           abnormalCount: 0,
           totalAbnormalDuration: 0,
-          durationBucketCount: 0,
           minAbnormalDuration: Number.POSITIVE_INFINITY,
           maxAbnormalDuration: 0,
           maxAbnormalTime: '-',
@@ -136,17 +170,17 @@ const MonitorHistoryPage: React.FC<unknown> = () => {
       const abnormalDuration = Number(item.abnormalDuration || 0);
 
       summary.abnormalCount += brokenCount;
+      summary.totalAbnormalDuration += abnormalDuration;
 
-      if (abnormalDuration > 0) {
-        summary.totalAbnormalDuration += abnormalDuration;
-        summary.durationBucketCount += 1;
+      if (brokenCount > 0 && abnormalDuration > 0) {
+        const perAbnormalDuration = abnormalDuration / brokenCount;
         summary.minAbnormalDuration = Math.min(
           summary.minAbnormalDuration,
-          abnormalDuration,
+          perAbnormalDuration,
         );
 
-        if (abnormalDuration > summary.maxAbnormalDuration) {
-          summary.maxAbnormalDuration = abnormalDuration;
+        if (perAbnormalDuration > summary.maxAbnormalDuration) {
+          summary.maxAbnormalDuration = perAbnormalDuration;
           summary.maxAbnormalTime = item.timePeriod || '-';
         }
       }
@@ -155,11 +189,12 @@ const MonitorHistoryPage: React.FC<unknown> = () => {
     return Array.from(summaryMap.values())
       .map((item) => {
         const avgDuration =
-          item.durationBucketCount > 0
-            ? item.totalAbnormalDuration / item.durationBucketCount
+          item.abnormalCount > 0
+            ? item.totalAbnormalDuration / item.abnormalCount
             : 0;
-        const minDuration =
-          item.durationBucketCount > 0 ? item.minAbnormalDuration : 0;
+        const minDuration = Number.isFinite(item.minAbnormalDuration)
+          ? item.minAbnormalDuration
+          : 0;
 
         return {
           key: item.key,
@@ -478,8 +513,8 @@ const MonitorHistoryPage: React.FC<unknown> = () => {
           record.asinType === 'MAIN_LINK'
             ? '1'
             : record.asinType === 'SUB_REVIEW'
-              ? '2'
-              : record.asinType;
+            ? '2'
+            : record.asinType;
         const typeMap: Record<string, { text: string; color: string }> = {
           '1': { text: '主链', color: 'green' },
           '2': { text: '副评', color: 'blue' },
@@ -497,13 +532,10 @@ const MonitorHistoryPage: React.FC<unknown> = () => {
       dataIndex: 'country',
       width: 120,
       valueType: 'select' as const,
-      valueEnum: Object.keys(countryMap).reduce(
-        (acc, key) => {
-          acc[key] = { text: countryMap[key].text };
-          return acc;
-        },
-        {} as Record<string, { text: string }>,
-      ),
+      valueEnum: Object.keys(countryMap).reduce((acc, key) => {
+        acc[key] = { text: countryMap[key].text };
+        return acc;
+      }, {} as Record<string, { text: string }>),
       render: (_: any, record: API.MonitorHistory) => {
         const country = record.country || '';
         const countryInfo = countryMap[country];
@@ -738,8 +770,11 @@ const MonitorHistoryPage: React.FC<unknown> = () => {
           }
 
           // 检查是否需要加载异常时长统计
-          const hasAsinFilter = params.asin || (type === 'asin' && id);
-          const hasGroupFilter = type === 'group' && id;
+          const hasAsinFilter = Boolean(params.asin || (type === 'asin' && id));
+          const hasGroupFilter = Boolean(
+            (type === 'group' && id) ||
+              String(params.variantGroupName || '').trim(),
+          );
 
           // 获取时间范围
           // transform函数会将checkTime转换为startTime和endTime
@@ -769,6 +804,7 @@ const MonitorHistoryPage: React.FC<unknown> = () => {
               const statsParams: any = {
                 startTime: statsStartTime,
                 endTime: statsEndTime,
+                includeSeries: '0',
               };
 
               if (params.country || requestParams.country) {
@@ -776,8 +812,12 @@ const MonitorHistoryPage: React.FC<unknown> = () => {
               }
 
               if (hasGroupFilter) {
-                statsParams.variantGroupId = id;
-              } else if (hasAsinFilter) {
+                if (type === 'group' && id) {
+                  statsParams.variantGroupId = id;
+                }
+              }
+
+              if (hasAsinFilter) {
                 // 从筛选条件中提取ASIN ID或编码
                 if (type === 'asin' && id) {
                   // 从URL参数来的，是ASIN ID
@@ -810,44 +850,56 @@ const MonitorHistoryPage: React.FC<unknown> = () => {
                 }
               }
 
+              if (params.variantGroupName || requestParams.variantGroupName) {
+                statsParams.variantGroupName =
+                  params.variantGroupName || requestParams.variantGroupName;
+              }
+              if (params.asinName || requestParams.asinName) {
+                statsParams.asinName =
+                  params.asinName || requestParams.asinName;
+              }
+              if (params.asinType || requestParams.asinType) {
+                statsParams.asinType =
+                  params.asinType || requestParams.asinType;
+              }
+
               if (
                 statsParams.variantGroupId ||
+                statsParams.variantGroupName ||
                 statsParams.asinIds ||
                 statsParams.asinCodes
               ) {
                 debugLog('加载异常时长统计，参数:', statsParams);
-                const statsResult =
-                  await getAbnormalDurationStatistics(statsParams);
+                const statsResult = await getAbnormalDurationStatistics(
+                  statsParams,
+                );
                 debugLog('异常时长统计结果:', statsResult);
 
                 // 检查返回的数据结构
                 if (statsResult?.data) {
                   const statsData = statsResult.data;
-                  // 检查是否有数据
-                  if (
-                    statsData.data &&
-                    Array.isArray(statsData.data) &&
-                    statsData.data.length > 0
-                  ) {
-                    const hasValidAsin = statsData.data.some(
-                      (item) => item?.asin || item?.asinId,
-                    );
-                    if (hasValidAsin) {
-                      setAbnormalDurationData(statsData);
-                      setShowAbnormalDurationTable(true);
-                      setAbnormalDurationQueryRange({
-                        startTime: statsStartTime,
-                        endTime: statsEndTime,
-                      });
-                      debugLog('异常时长统计表数据已设置，显示表格');
-                    } else {
-                      debugLog(
-                        '统计结果不包含有效ASIN数据，隐藏异常时长统计表',
-                      );
-                      setShowAbnormalDurationTable(false);
-                      setAbnormalDurationData(null);
-                      setAbnormalDurationQueryRange(null);
-                    }
+                  const summaryList = Array.isArray(statsData.summary)
+                    ? statsData.summary
+                    : [];
+                  const seriesList = Array.isArray(statsData.data)
+                    ? statsData.data
+                    : [];
+
+                  const hasValidSummary = summaryList.some(
+                    (item) => item?.asin || item?.abnormalCount,
+                  );
+                  const hasValidSeries = seriesList.some(
+                    (item) => item?.asin || item?.asinId,
+                  );
+
+                  if (hasValidSummary || hasValidSeries) {
+                    setAbnormalDurationData(statsData);
+                    setShowAbnormalDurationTable(true);
+                    setAbnormalDurationQueryRange({
+                      startTime: statsStartTime,
+                      endTime: statsEndTime,
+                    });
+                    debugLog('异常时长统计表数据已设置，显示表格');
                   } else {
                     debugLog('统计数据为空，隐藏异常时长统计表');
                     setShowAbnormalDurationTable(false);
@@ -980,8 +1032,8 @@ const MonitorHistoryPage: React.FC<unknown> = () => {
                 {abnormalDurationData.timeGranularity === 'hour'
                   ? '按小时'
                   : abnormalDurationData.timeGranularity === 'day'
-                    ? '按天'
-                    : '按周'}
+                  ? '按天'
+                  : '按周'}
               </Tag>
               <Tag>ASIN数: {abnormalDurationSummaryData.length}</Tag>
             </Space>
