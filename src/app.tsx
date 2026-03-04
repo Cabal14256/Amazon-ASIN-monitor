@@ -135,19 +135,6 @@ export async function getInitialState(): Promise<{
         return {};
       }
 
-      // 其他错误（非401），如果是401才清除token
-      // 其他错误可能是临时问题，不应该清除token
-      if (response.errorCode === 401 && token) {
-        debugWarn('[getInitialState] API返回401，清除token并重定向到登录页');
-        clearToken();
-        if (!isLoginPage) {
-          window.location.href = `/login?redirect=${encodeURIComponent(
-            currentPath,
-          )}`;
-        }
-        return {};
-      }
-
       // 非401错误，如果是临时问题，允许继续访问
       if (token) {
         debugWarn(
