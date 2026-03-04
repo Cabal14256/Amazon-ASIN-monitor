@@ -1551,15 +1551,16 @@ async function exportCompetitorMonitorHistory(req, res) {
  * 导出月度被拆统计（按天）
  */
 async function exportAnalyticsMonthlyBreakdown(req, res) {
+  const requestParams = req.method === 'POST' ? req.body || {} : req.query;
+  const isProgressMode = String(requestParams.useProgress) === 'true';
+
   try {
-    const requestParams = req.method === 'POST' ? req.body || {} : req.query;
     const {
       country = '',
       month = '',
       startTime: startTimeParam = '',
       endTime: endTimeParam = '',
     } = requestParams;
-    const isProgressMode = String(requestParams.useProgress) === 'true';
 
     if (isProgressMode) {
       res.setHeader('Content-Type', 'text/event-stream');
@@ -1691,7 +1692,7 @@ async function exportAnalyticsMonthlyBreakdown(req, res) {
     }
   } catch (error) {
     logger.error('导出月度被拆统计失败:', error);
-    if (req.query.useProgress === 'true') {
+    if (isProgressMode) {
       sendError(res, '导出月度被拆统计失败');
     } else {
       res.status(500).json({
