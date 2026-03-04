@@ -1333,3 +1333,30 @@ sudo ./deploy.sh
 - 定期备份数据库
 
 个人私货：Cabal，你的代码是手搓还是 AI 呢？😨😨😨😨 我的天哪 😫😫😫😫 是 AI 啊 😩😩😩😩 全都是 AI 啊 😭😭😭😭 没有一点手工 😵😵😵😵
+
+## 🧭 GitHub 页面出现“Compare & pull request”怎么处理
+
+当你在 GitHub 上看到黄色提示（`<branch> had recent pushes` + `Compare & pull request`）时，表示该分支有新提交还没有合并。可以按下面方式处理：
+
+1. **需要合并到主分支**：点击 `Compare & pull request` 创建 PR。
+2. **只是临时分支，不再需要**：确认代码已合并后删除分支（本地和远端）。
+3. **暂时不想处理**：可先忽略提示，不影响已存在 PR。
+
+推荐做法：
+
+```bash
+# 查看本地分支与远端状态
+git fetch origin --prune
+git branch -vv
+
+# 若需要创建 PR，先推送最新代码
+git push origin <your-branch>
+
+# 若分支已合并且无需保留，删除本地分支
+git branch -d <your-branch>
+
+# 删除远端分支
+git push origin --delete <your-branch>
+```
+
+如果你是想把截图里这些分支都合并，通常需要**分别创建 PR**（或先把多个功能分支整理为一个集成分支，再创建一个 PR）。
