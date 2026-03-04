@@ -555,21 +555,30 @@ export function rootContainer(container: React.ReactElement) {
 }
 
 function normalizeBaseURL(baseURL: string): string {
-  return baseURL.endsWith('/') ? baseURL.slice(0, -1) : baseURL;
+  return baseURL.trim().replace(/\/+$/, '');
 }
 
 function resolveRequestBaseURL(): string {
-  const baseURL =
-    process.env.NODE_ENV === 'production'
-      ? process.env.API_BASE_URL || '/api'
-      : '/api';
-  return normalizeBaseURL(baseURL);
+  const configuredBaseURL = process.env.API_BASE_URL;
+  if (!configuredBaseURL) {
+    return '/api';
+  }
+
+  const normalizedBaseURL = normalizeBaseURL(configuredBaseURL);
+  if (normalizedBaseURL.endsWith('/api/v1')) {
+    return normalizedBaseURL.slice(0, -7);
+  }
+  if (normalizedBaseURL.endsWith('/api')) {
+    return normalizedBaseURL.slice(0, -4);
+  }
+  return normalizedBaseURL;
 }
 
 function dedupeApiPrefix(baseURL: string | undefined, url: string | undefined) {
   if (!baseURL || !url) {
     return baseURL;
   }
+
   const normalizedBaseURL = normalizeBaseURL(baseURL);
   if (/\/api$/i.test(normalizedBaseURL) && /^\/api(\/|$)/i.test(url)) {
     return normalizedBaseURL.slice(0, -4);

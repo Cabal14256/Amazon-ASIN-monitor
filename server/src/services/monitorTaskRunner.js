@@ -145,7 +145,7 @@ async function prewarmCache(country) {
 async function processCountry(
   countryResults,
   country,
-  checkTime,
+  taskCheckTime,
   batchConfig = null,
 ) {
   const countryResult = (countryResults[country] = countryResults[country] || {
@@ -155,11 +155,13 @@ async function processCountry(
     brokenGroupNames: [],
     brokenASINs: [],
     brokenByType: { SP_API_ERROR: 0, NO_VARIANTS: 0 }, // 按类型统计异常
-    checkTime,
+    checkTime: taskCheckTime,
   });
 
   let checked = 0;
   let broken = 0;
+  let countryCheckStartTime = null;
+  let countryCheckEndTime = null;
 
   try {
     // 在开始处理前进行缓存预热
@@ -319,6 +321,15 @@ async function processCountry(
         const updatedGroup = result?.groupSnapshot || groupSnapshot;
         const variantGroupName = updatedGroup?.name || group.name || null;
 
+        const recordCheckTime = new Date();
+        if (!countryCheckStartTime || recordCheckTime < countryCheckStartTime) {
+          countryCheckStartTime = recordCheckTime;
+        }
+        if (!countryCheckEndTime || recordCheckTime > countryCheckEndTime) {
+          countryCheckEndTime = recordCheckTime;
+        }
+        countryResult.checkTime = recordCheckTime;
+
         const historyEntries = [
           {
             variantGroupId: group.id,
@@ -327,7 +338,7 @@ async function processCountry(
             country: group.country,
             isBroken: result?.isBroken ? 1 : 0,
             checkResult: result,
-            checkTime,
+            checkTime: recordCheckTime,
           },
         ];
 
@@ -388,7 +399,7 @@ async function processCountry(
                 asin: asinInfo.asin,
                 isBroken: asinInfo.isBroken === 1,
               },
-              checkTime,
+              checkTime: recordCheckTime,
             });
           }
         }
@@ -407,14 +418,28 @@ async function processCountry(
   } catch (error) {
     logger.error(`❌ 处理国家 ${country} 失败:`, error.message);
     // 即使出错也返回统计信息
-    return { checked, broken };
+    return {
+      checked,
+      broken,
+      checkTimeRange: {
+        startTime: countryCheckStartTime,
+        endTime: countryCheckEndTime,
+      },
+    };
   }
 
   // 标记该国家已完成处理
   const region = REGION_MAP[country] || 'US';
   markCountryCompleted(region, country);
 
-  return { checked, broken };
+  return {
+    checked,
+    broken,
+    checkTimeRange: {
+      startTime: countryCheckStartTime,
+      endTime: countryCheckEndTime,
+    },
+  };
 }
 
 /**
@@ -616,7 +641,7 @@ async function runMonitorTask(countries, batchConfig = null) {
     // 串行处理每个国家
     for (const country of countries) {
       // 处理当前国家
-      const { checked, broken } = await processCountry(
+      const { checked, broken, checkTimeRange } = await processCountry(
         countryResults,
         country,
         checkTime,
@@ -656,11 +681,19 @@ async function runMonitorTask(countries, batchConfig = null) {
         countryResults[country].brokenGroups > 0
       ) {
         try {
-          const updatedCount = await MonitorHistory.updateNotificationStatus(
-            country,
-            checkTime,
-            1, // 标记为已通知
-          );
+          const updatedCount =
+            checkTimeRange?.startTime && checkTimeRange?.endTime
+              ? await MonitorHistory.updateNotificationStatusByRange(
+                  country,
+                  checkTimeRange.startTime,
+                  checkTimeRange.endTime,
+                  1, // 标记为已通知
+                )
+              : await MonitorHistory.updateNotificationStatus(
+                  country,
+                  checkTime,
+                  1, // 兼容回退
+                );
           if (updatedCount > 0) {
             logger.info(
               `✅ 已更新 ${country} 的 ${updatedCount} 条监控历史记录为已通知状态`,

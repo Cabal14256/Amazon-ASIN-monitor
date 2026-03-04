@@ -34,6 +34,214 @@ function formatDateToSqlText(date) {
   return `${yyyy}-${mm}-${dd} ${hh}:${mi}:${ss}`;
 }
 
+function clampValue(value, min, max) {
+  if (!Number.isFinite(value)) {
+    return min;
+  }
+  return Math.min(Math.max(value, min), max);
+}
+
+function parseDateTimeInput(value) {
+  if (!value) {
+    return null;
+  }
+  if (value instanceof Date) {
+    return Number.isNaN(value.getTime()) ? null : value;
+  }
+  const normalized = String(value).trim().replace('T', ' ');
+  if (!normalized) {
+    return null;
+  }
+  const match = normalized.match(
+    /^(\d{4})-(\d{2})-(\d{2})(?:\s+(\d{2}):(\d{2})(?::(\d{2}))?)?$/,
+  );
+  if (match) {
+    const [, year, month, day, hour = '00', minute = '00', second = '00'] =
+      match;
+    const parsed = new Date(
+      Number(year),
+      Number(month) - 1,
+      Number(day),
+      Number(hour),
+      Number(minute),
+      Number(second),
+      0,
+    );
+    return Number.isNaN(parsed.getTime()) ? null : parsed;
+  }
+  const parsed = new Date(normalized);
+  return Number.isNaN(parsed.getTime()) ? null : parsed;
+}
+
+function formatDateToDayText(date) {
+  const yyyy = date.getFullYear();
+  const mm = String(date.getMonth() + 1).padStart(2, '0');
+  const dd = String(date.getDate()).padStart(2, '0');
+  return `${yyyy}-${mm}-${dd}`;
+}
+
+function formatDateToHourText(date) {
+  return `${formatDateToSqlText(date).slice(0, 13)}:00:00`;
+}
+
+function getISOWeekInfo(date) {
+  const target = new Date(date);
+  target.setHours(0, 0, 0, 0);
+  const dayNumber = (target.getDay() + 6) % 7;
+  target.setDate(target.getDate() - dayNumber + 3); // 调整到周四
+
+  const isoYear = target.getFullYear();
+  const firstThursday = new Date(isoYear, 0, 4);
+  firstThursday.setHours(0, 0, 0, 0);
+  const firstDayNumber = (firstThursday.getDay() + 6) % 7;
+  firstThursday.setDate(firstThursday.getDate() - firstDayNumber + 3);
+
+  const week =
+    1 + Math.round((target - firstThursday) / (7 * 24 * 3600 * 1000));
+  return { year: isoYear, week };
+}
+
+function formatISOWeekTextFromDate(date) {
+  const { year, week } = getISOWeekInfo(date);
+  return `${year}-${String(week).padStart(2, '0')}`;
+}
+
+function getISOWeekStartDate(year, week) {
+  const jan4 = new Date(year, 0, 4, 0, 0, 0, 0);
+  const jan4Day = jan4.getDay() || 7;
+  const week1Monday = new Date(jan4);
+  week1Monday.setDate(jan4.getDate() - jan4Day + 1);
+  week1Monday.setHours(0, 0, 0, 0);
+
+  const weekStart = new Date(week1Monday);
+  weekStart.setDate(week1Monday.getDate() + (week - 1) * 7);
+  return weekStart;
+}
+
+function getBucketRangeByPeriod(timePeriod, granularity) {
+  const period = String(timePeriod || '').trim();
+  if (!period) {
+    return { bucketStart: null, bucketEnd: null };
+  }
+
+  let bucketStart = null;
+  let bucketEnd = null;
+
+  if (granularity === 'hour') {
+    bucketStart = parseDateTimeInput(period);
+    if (bucketStart) {
+      bucketEnd = new Date(bucketStart);
+      bucketEnd.setHours(bucketEnd.getHours() + 1);
+    }
+  } else if (granularity === 'day') {
+    bucketStart = parseDateTimeInput(`${period} 00:00:00`);
+    if (bucketStart) {
+      bucketEnd = new Date(bucketStart);
+      bucketEnd.setDate(bucketEnd.getDate() + 1);
+    }
+  } else if (granularity === 'week') {
+    const match = period.match(/^(\d{4})-(\d{2})$/);
+    if (match) {
+      const year = Number(match[1]);
+      const week = Number(match[2]);
+      bucketStart = getISOWeekStartDate(year, week);
+      bucketEnd = new Date(bucketStart);
+      bucketEnd.setDate(bucketEnd.getDate() + 7);
+    }
+  }
+
+  return { bucketStart, bucketEnd };
+}
+
+function calculateOverlapHours(bucketStart, bucketEnd, queryStart, queryEnd) {
+  if (!bucketStart || !bucketEnd || !queryStart || !queryEnd) {
+    return 0;
+  }
+  const overlapStart = Math.max(bucketStart.getTime(), queryStart.getTime());
+  const overlapEnd = Math.min(bucketEnd.getTime(), queryEnd.getTime());
+  if (overlapEnd <= overlapStart) {
+    return 0;
+  }
+  return (overlapEnd - overlapStart) / (1000 * 60 * 60);
+}
+
+function buildAbnormalDurationSummary(data, startTime, endTime) {
+  const queryTimeRange =
+    startTime && endTime ? `${startTime} ~ ${endTime}` : '-';
+  const summaryMap = new Map();
+
+  for (const item of data) {
+    if (!item?.asin && !item?.asinId) {
+      continue;
+    }
+    const asin = item.asin || `ASIN-${item.asinId}`;
+    const country = item.country || '';
+    const key = `${item.asinId || asin}-${country}`;
+
+    if (!summaryMap.has(key)) {
+      summaryMap.set(key, {
+        key,
+        asin,
+        country,
+        queryTimeRange,
+        abnormalCount: 0,
+        totalAbnormalDuration: 0,
+        minAbnormalDuration: Number.POSITIVE_INFINITY,
+        maxAbnormalDuration: 0,
+        maxAbnormalTime: '-',
+      });
+    }
+
+    const summary = summaryMap.get(key);
+    const brokenCount = Number(item.brokenCount || 0);
+    const abnormalDuration = Number(item.abnormalDuration || 0);
+
+    summary.abnormalCount += brokenCount;
+    summary.totalAbnormalDuration += abnormalDuration;
+
+    if (brokenCount > 0 && abnormalDuration > 0) {
+      const perAbnormalDuration = abnormalDuration / brokenCount;
+      summary.minAbnormalDuration = Math.min(
+        summary.minAbnormalDuration,
+        perAbnormalDuration,
+      );
+      if (perAbnormalDuration > summary.maxAbnormalDuration) {
+        summary.maxAbnormalDuration = perAbnormalDuration;
+        summary.maxAbnormalTime = item.timePeriod || '-';
+      }
+    }
+  }
+
+  return Array.from(summaryMap.values())
+    .map((item) => {
+      const averageAbnormalDuration =
+        item.abnormalCount > 0
+          ? item.totalAbnormalDuration / item.abnormalCount
+          : 0;
+      const minAbnormalDuration =
+        item.minAbnormalDuration === Number.POSITIVE_INFINITY
+          ? 0
+          : item.minAbnormalDuration;
+      return {
+        key: item.key,
+        asin: item.asin,
+        country: item.country,
+        queryTimeRange: item.queryTimeRange,
+        abnormalCount: item.abnormalCount,
+        averageAbnormalDuration: Number(averageAbnormalDuration.toFixed(2)),
+        minAbnormalDuration: Number(minAbnormalDuration.toFixed(2)),
+        maxAbnormalDuration: Number(item.maxAbnormalDuration.toFixed(2)),
+        maxAbnormalTime: item.maxAbnormalTime,
+      };
+    })
+    .sort((a, b) => {
+      if (b.abnormalCount !== a.abnormalCount) {
+        return b.abnormalCount - a.abnormalCount;
+      }
+      return b.maxAbnormalDuration - a.maxAbnormalDuration;
+    });
+}
+
 class MonitorHistory {
   // 查询监控历史列表
   static async findAll(params = {}) {
@@ -57,7 +265,7 @@ class MonitorHistory {
     const normalizedCheckType = checkType ? String(checkType).trim() : '';
 
     let sql = `
-      SELECT 
+      SELECT
         mh.id,
         mh.variant_group_id,
         mh.asin_id,
@@ -295,7 +503,7 @@ class MonitorHistory {
   // 根据ID查询监控历史
   static async findById(id) {
     const [history] = await query(
-      `SELECT 
+      `SELECT
         mh.id,
         mh.variant_group_id,
         mh.asin_id,
@@ -352,8 +560,8 @@ class MonitorHistory {
     } = data;
 
     const result = await query(
-      `INSERT INTO monitor_history 
-       (variant_group_id, variant_group_name, asin_id, asin_code, asin_name, site_snapshot, brand_snapshot, check_type, country, is_broken, check_time, check_result) 
+      `INSERT INTO monitor_history
+       (variant_group_id, variant_group_name, asin_id, asin_code, asin_name, site_snapshot, brand_snapshot, check_type, country, is_broken, check_time, check_result)
        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [
         variantGroupId || null,
@@ -402,8 +610,8 @@ class MonitorHistory {
       );
     }
 
-    const sql = `INSERT INTO monitor_history 
-      (variant_group_id, variant_group_name, asin_id, asin_code, asin_name, site_snapshot, brand_snapshot, check_type, country, is_broken, check_time, check_result) 
+    const sql = `INSERT INTO monitor_history
+      (variant_group_id, variant_group_name, asin_id, asin_code, asin_name, site_snapshot, brand_snapshot, check_type, country, is_broken, check_time, check_result)
       VALUES ${placeholders.join(', ')}`;
 
     await query(sql, values);
@@ -427,7 +635,7 @@ class MonitorHistory {
     } = params;
 
     let sql = `
-      SELECT 
+      SELECT
         COUNT(*) as total_checks,
         SUM(CASE WHEN is_broken = 1 THEN 1 ELSE 0 END) as broken_count,
         SUM(CASE WHEN is_broken = 0 THEN 1 ELSE 0 END) as normal_count,
@@ -561,32 +769,32 @@ class MonitorHistory {
     // ratio_all_asin: 异常快照数 / 总快照数 × 100%（快照口径）
     // ratio_all_time: 按 (国家 + ASIN + 时间槽) 去重后，异常ASIN数 / 总ASIN数 × 100%（去重口径）
     const sql = `
-      SELECT 
+      SELECT
         t.time_period,
         t.total_checks,
         t.broken_count,
         t.normal_count,
-        CASE 
-          WHEN t.total_checks > 0 
+        CASE
+          WHEN t.total_checks > 0
           THEN (t.broken_count / t.total_checks) * 100
-          ELSE 0 
+          ELSE 0
         END as ratio_all_asin,
         COALESCE(dedup_stats.total_asins, 0) as total_asins_dedup,
         COALESCE(dedup_stats.broken_asins, 0) as broken_asins_dedup,
-        CASE 
-          WHEN COALESCE(dedup_stats.total_asins, 0) > 0 
+        CASE
+          WHEN COALESCE(dedup_stats.total_asins, 0) > 0
           THEN (COALESCE(dedup_stats.broken_asins, 0) / COALESCE(dedup_stats.total_asins, 1)) * 100
-          ELSE 0 
+          ELSE 0
         END as ratio_all_time,
         COALESCE(asin_stats.total_asins, 0) as total_asins,
         COALESCE(asin_stats.broken_asins, 0) as broken_asins,
-        CASE 
-          WHEN COALESCE(asin_stats.total_asins, 0) > 0 
+        CASE
+          WHEN COALESCE(asin_stats.total_asins, 0) > 0
           THEN (COALESCE(asin_stats.broken_asins, 0) / COALESCE(asin_stats.total_asins, 1)) * 100
-          ELSE 0 
+          ELSE 0
         END as asin_broken_rate
       FROM (
-        SELECT 
+        SELECT
           ${config.rawPeriodExpr} as time_period,
           COUNT(*) as total_checks,
           SUM(CASE WHEN is_broken = 1 THEN 1 ELSE 0 END) as broken_count,
@@ -596,12 +804,12 @@ class MonitorHistory {
         GROUP BY ${config.rawPeriodExpr}
       ) t
       LEFT JOIN (
-        SELECT 
+        SELECT
           time_period,
           COUNT(*) as total_asins,
           SUM(CASE WHEN has_broken > 0 THEN 1 ELSE 0 END) as broken_asins
         FROM (
-          SELECT 
+          SELECT
             ${config.rawPeriodExpr} as time_period,
             country,
             COALESCE(NULLIF(asin_code, ''), CONCAT('ID#', asin_id)) as asin_key,
@@ -614,12 +822,12 @@ class MonitorHistory {
         GROUP BY time_period
       ) dedup_stats ON t.time_period = dedup_stats.time_period
       LEFT JOIN (
-        SELECT 
+        SELECT
           ${config.rawPeriodExpr} as time_period,
           COUNT(DISTINCT COALESCE(NULLIF(asin_code, ''), CONCAT('ID#', asin_id))) as total_asins,
           COUNT(
-            DISTINCT CASE 
-              WHEN is_broken = 1 THEN COALESCE(NULLIF(asin_code, ''), CONCAT('ID#', asin_id)) 
+            DISTINCT CASE
+              WHEN is_broken = 1 THEN COALESCE(NULLIF(asin_code, ''), CONCAT('ID#', asin_id))
             END
           ) as broken_asins
         FROM monitor_history
@@ -710,10 +918,10 @@ class MonitorHistory {
         t.total_checks,
         t.broken_count,
         (t.total_checks - t.broken_count) as normal_count,
-        CASE 
-          WHEN t.total_checks > 0 
+        CASE
+          WHEN t.total_checks > 0
           THEN (t.broken_count / t.total_checks) * 100
-          ELSE 0 
+          ELSE 0
         END as ratio_all_asin,
         COALESCE(dedup_stats.total_asins_dedup, 0) as total_asins_dedup,
         COALESCE(dedup_stats.broken_asins_dedup, 0) as broken_asins_dedup,
@@ -855,7 +1063,7 @@ class MonitorHistory {
     const { startTime = '', endTime = '' } = params;
 
     let sql = `
-      SELECT 
+      SELECT
         country,
         COUNT(*) as total_checks,
         SUM(CASE WHEN is_broken = 1 THEN 1 ELSE 0 END) as broken_count,
@@ -892,7 +1100,7 @@ class MonitorHistory {
     const { isPeakHour } = require('../utils/peakHours');
 
     let sql = `
-      SELECT 
+      SELECT
         check_time,
         is_broken
       FROM monitor_history
@@ -955,7 +1163,7 @@ class MonitorHistory {
     const { country = '', startTime = '', endTime = '', limit = 10 } = params;
 
     let sql = `
-      SELECT 
+      SELECT
         mh.variant_group_id,
         vg.name as variant_group_name,
         COUNT(*) as total_checks,
@@ -1080,7 +1288,7 @@ class MonitorHistory {
     }
 
     const sql = `
-      SELECT 
+      SELECT
         DATE_FORMAT(time_slot, '${slotSelectFormat}') as time_slot,
         country,
         asin_key,
@@ -1226,8 +1434,8 @@ class MonitorHistory {
 
   static getPeakHourCase(countryField, timeField = 'mh.check_time') {
     const hourExpr = `HOUR(DATE_ADD(${timeField}, INTERVAL 8 HOUR))`;
-    return `CASE 
-      WHEN ${countryField} = 'US' THEN 
+    return `CASE
+      WHEN ${countryField} = 'US' THEN
         (${hourExpr} >= 2 AND ${hourExpr} < 6)
         OR (${hourExpr} >= 9 AND ${hourExpr} < 12)
       WHEN ${countryField} = 'UK' THEN
@@ -1690,7 +1898,7 @@ class MonitorHistory {
       site ? ', agg.site' : ''
     }${brand ? ', agg.brand' : ''}`;
     const groupedSql = `
-      SELECT 
+      SELECT
         ${selectFields.join(', ')}
       ${fromClause}
       ${groupByClause}
@@ -1894,8 +2102,8 @@ class MonitorHistory {
       // 使用DATE_ADD确保时区转换，如果MySQL没有时区表，使用DATE_ADD作为备选
       // 假设check_time存储为UTC，需要转换为UTC+8（北京时间）
       const hourExpr = `HOUR(DATE_ADD(mh.check_time, INTERVAL 8 HOUR))`;
-      return `CASE 
-        WHEN ${countryField} = 'US' THEN 
+      return `CASE
+        WHEN ${countryField} = 'US' THEN
           (${hourExpr} >= 2 AND ${hourExpr} < 6)
           OR (${hourExpr} >= 9 AND ${hourExpr} < 12)
         WHEN ${countryField} = 'UK' THEN
@@ -1954,7 +2162,7 @@ class MonitorHistory {
 
     // 使用子查询先按ASIN分组，计算高峰时段和异常状态
     const subquerySql = `
-      SELECT 
+      SELECT
         ${slotExpr} as slot_raw,
         mh.country,
         ${site ? 'mh.site_snapshot as site' : "'' as site"},
@@ -1985,7 +2193,7 @@ class MonitorHistory {
       brand ? ', brand' : ''
     }`;
     const groupedSql = `
-      SELECT 
+      SELECT
         ${slotSelectExpr} as time_slot,
         ${selectFields.filter((field) => field !== 'time_slot').join(', ')}
       ${fromClause}
@@ -2088,7 +2296,7 @@ class MonitorHistory {
   // 按国家统计ASIN当前状态（基于asins表）
   static async getASINStatisticsByCountry() {
     const sql = `
-      SELECT 
+      SELECT
         country,
         COUNT(*) as total_asins,
         SUM(CASE WHEN is_broken = 1 THEN 1 ELSE 0 END) as broken_count,
@@ -2110,7 +2318,7 @@ class MonitorHistory {
     const safeLimit = Math.max(1, Math.min(Number(limit) || 10, 100));
 
     const sql = `
-      SELECT 
+      SELECT
         vg.id as variant_group_id,
         vg.name as variant_group_name,
         vg.country as country,
@@ -2140,35 +2348,50 @@ class MonitorHistory {
       country = '',
       startTime = '',
       endTime = '',
+      includeSeries = '1',
+      asinType = '',
+      asinName = '',
+      variantGroupName = '',
     } = params;
+    const normalizedAsinIds = Array.isArray(asinIds)
+      ? asinIds
+      : String(asinIds || '')
+          .split(',')
+          .map((item) => item.trim())
+          .filter((item) => item.length > 0);
+    const normalizedAsinCodes = Array.isArray(asinCodes)
+      ? asinCodes
+      : String(asinCodes || '')
+          .split(',')
+          .map((item) => item.trim())
+          .filter((item) => item.length > 0);
+    const normalizedAsinType = asinType ? String(asinType).trim() : '';
+    const shouldIncludeSeries = String(includeSeries || '1') !== '0';
+
+    const queryStartDate = parseDateTimeInput(startTime);
+    const queryEndDate = parseDateTimeInput(endTime);
 
     // 根据时间范围自动选择时间粒度
     let groupBy = 'day';
-    let dateFormat = 'DATE_FORMAT(check_time, "%Y-%m-%d")';
-    let intervalHours = 24; // 默认按天，间隔24小时
+    let groupByExpr = 'DATE_FORMAT(mh.check_time, "%Y-%m-%d")';
+    let defaultBucketDurationHours = 24;
 
-    if (startTime && endTime) {
-      const start = new Date(startTime);
-      const end = new Date(endTime);
-      const diffHours = (end - start) / (1000 * 60 * 60);
-
+    if (queryStartDate && queryEndDate && queryEndDate >= queryStartDate) {
+      const diffHours =
+        (queryEndDate.getTime() - queryStartDate.getTime()) / (1000 * 60 * 60);
       if (diffHours <= 7 * 24) {
-        // 7天以内按小时
         groupBy = 'hour';
-        dateFormat = 'DATE_FORMAT(check_time, "%Y-%m-%d %H:00:00")';
-        intervalHours = 1;
+        groupByExpr = 'DATE_FORMAT(mh.check_time, "%Y-%m-%d %H:00:00")';
+        defaultBucketDurationHours = 1;
       } else if (diffHours <= 30 * 24) {
-        // 30天以内按天
         groupBy = 'day';
-        dateFormat = 'DATE_FORMAT(check_time, "%Y-%m-%d")';
-        intervalHours = 24;
+        groupByExpr = 'DATE_FORMAT(mh.check_time, "%Y-%m-%d")';
+        defaultBucketDurationHours = 24;
       } else {
-        // 超过30天按周
         groupBy = 'week';
-        // MySQL的WEEK函数，模式3表示ISO周（1-53），格式为：YYYY-WW
-        dateFormat =
-          'CONCAT(YEAR(check_time), "-", LPAD(WEEK(check_time, 3), 2, "0"))';
-        intervalHours = 24 * 7;
+        groupByExpr =
+          'CONCAT(SUBSTRING(YEARWEEK(mh.check_time, 3), 1, 4), "-", LPAD(SUBSTRING(YEARWEEK(mh.check_time, 3), 5), 2, "0"))';
+        defaultBucketDurationHours = 24 * 7;
       }
     }
 
@@ -2181,21 +2404,49 @@ class MonitorHistory {
       conditions.push(variantGroupId);
     }
 
-    if (asinIds && Array.isArray(asinIds) && asinIds.length > 0) {
-      const placeholders = asinIds.map(() => '?').join(',');
+    if (normalizedAsinIds.length > 0) {
+      const placeholders = normalizedAsinIds.map(() => '?').join(',');
       whereClause += ` AND mh.asin_id IN (${placeholders})`;
-      conditions.push(...asinIds);
+      conditions.push(...normalizedAsinIds);
     }
 
-    if (asinCodes && Array.isArray(asinCodes) && asinCodes.length > 0) {
-      const placeholders = asinCodes.map(() => '?').join(',');
+    if (normalizedAsinCodes.length > 0) {
+      const placeholders = normalizedAsinCodes.map(() => '?').join(',');
       whereClause += ` AND COALESCE(mh.asin_code, a.asin) IN (${placeholders})`;
-      conditions.push(...asinCodes);
+      conditions.push(...normalizedAsinCodes);
+    }
+
+    if (variantGroupName) {
+      whereClause += ` AND (COALESCE(mh.variant_group_name, vg.name) LIKE ?)`;
+      conditions.push(`%${variantGroupName}%`);
+    }
+
+    if (asinName) {
+      whereClause += ` AND (COALESCE(mh.asin_name, a.name) LIKE ?)`;
+      conditions.push(`%${asinName}%`);
+    }
+
+    if (normalizedAsinType) {
+      if (normalizedAsinType === '1' || normalizedAsinType === 'MAIN_LINK') {
+        whereClause += ` AND a.asin_type IN ('1', 'MAIN_LINK')`;
+      } else if (
+        normalizedAsinType === '2' ||
+        normalizedAsinType === 'SUB_REVIEW'
+      ) {
+        whereClause += ` AND a.asin_type IN ('2', 'SUB_REVIEW')`;
+      } else {
+        whereClause += ` AND a.asin_type = ?`;
+        conditions.push(normalizedAsinType);
+      }
     }
 
     if (country) {
-      whereClause += ` AND COALESCE(mh.country, a.country) = ?`;
-      conditions.push(country);
+      if (country === 'EU') {
+        whereClause += ` AND COALESCE(mh.country, a.country) IN ('UK', 'DE', 'FR', 'IT', 'ES')`;
+      } else {
+        whereClause += ` AND COALESCE(mh.country, a.country) = ?`;
+        conditions.push(country);
+      }
     }
 
     if (startTime) {
@@ -2208,67 +2459,92 @@ class MonitorHistory {
       conditions.push(endTime);
     }
 
-    // 查询每个时间粒度内每个ASIN的异常记录数
-    // 假设检查间隔为1小时（根据定时任务配置）
-    const checkIntervalHours = 1;
-
     const sql = `
-      SELECT 
-        ${dateFormat} as time_period,
+      SELECT
+        ${groupByExpr} as time_period,
         mh.asin_id,
         COALESCE(mh.asin_code, a.asin) as asin,
         COALESCE(mh.country, a.country) as country,
         COUNT(*) as total_checks,
-        SUM(CASE WHEN mh.is_broken = 1 THEN 1 ELSE 0 END) as broken_count,
-        SUM(CASE WHEN mh.is_broken = 0 THEN 1 ELSE 0 END) as normal_count
+        SUM(CASE WHEN mh.is_broken = 1 THEN 1 ELSE 0 END) as broken_count
       FROM monitor_history mh
       LEFT JOIN asins a ON a.id = mh.asin_id
+      LEFT JOIN variant_groups vg ON vg.id = mh.variant_group_id
       ${whereClause}
       AND mh.asin_id IS NOT NULL
-      GROUP BY ${dateFormat}, mh.asin_id, COALESCE(mh.asin_code, a.asin), COALESCE(mh.country, a.country)
+      GROUP BY ${groupByExpr}, mh.asin_id, COALESCE(mh.asin_code, a.asin), COALESCE(mh.country, a.country)
       ORDER BY time_period ASC, country ASC, mh.asin_id ASC
     `;
 
     const results = await query(sql, conditions);
 
-    // 处理数据：计算异常时长和占比
+    // 处理数据：桶占比法（异常时长 = 桶时长 × 异常次数/总检查次数）
     const processedData = results.map((row) => {
-      const brokenCount = row.broken_count || 0;
-      const totalChecks = row.total_checks || 0;
+      const brokenCount = Number(row.broken_count || 0);
+      const totalChecks = Number(row.total_checks || 0);
+      const { bucketStart, bucketEnd } = getBucketRangeByPeriod(
+        row.time_period,
+        groupBy,
+      );
 
-      // 异常时长 = 异常记录数 × 检查间隔（小时）
-      // 每个异常记录代表该ASIN在检查间隔时间内处于异常状态
-      // 注意：US区域检查间隔是30分钟（0.5小时），EU区域是1小时
-      // 这里使用1小时作为默认值，实际应该根据国家区分，但为了简化，统一使用1小时
-      const abnormalDuration = brokenCount * checkIntervalHours;
+      let bucketDurationHours = defaultBucketDurationHours;
+      if (bucketStart && bucketEnd) {
+        if (queryStartDate && queryEndDate) {
+          bucketDurationHours = calculateOverlapHours(
+            bucketStart,
+            bucketEnd,
+            queryStartDate,
+            queryEndDate,
+          );
+        } else {
+          bucketDurationHours =
+            (bucketEnd.getTime() - bucketStart.getTime()) / (1000 * 60 * 60);
+        }
+      }
+      bucketDurationHours = clampValue(
+        bucketDurationHours,
+        0,
+        Number.MAX_VALUE,
+      );
 
-      // 总时长 = 时间粒度长度（小时）
-      const totalDuration = intervalHours;
-
-      // 异常占比 = 异常记录数 / 总记录数 × 100%
-      // 这表示在该时间粒度内，异常检查次数占总检查次数的百分比
-      const abnormalRatio =
-        totalChecks > 0 ? (brokenCount / totalChecks) * 100 : 0;
+      const abnormalRatioRaw =
+        totalChecks > 0 ? clampValue(brokenCount / totalChecks, 0, 1) : 0;
+      const abnormalDuration = clampValue(
+        bucketDurationHours * abnormalRatioRaw,
+        0,
+        bucketDurationHours,
+      );
 
       return {
         timePeriod: row.time_period,
         asinId: row.asin_id,
         asin: row.asin,
         country: row.country,
-        abnormalDuration: Number(abnormalDuration.toFixed(2)),
-        totalDuration: totalDuration,
-        abnormalRatio: Number(abnormalRatio.toFixed(2)),
-        brokenCount: brokenCount,
-        totalChecks: totalChecks,
+        abnormalDuration: Number(abnormalDuration.toFixed(4)),
+        totalDuration: Number(bucketDurationHours.toFixed(4)),
+        abnormalRatio: Number((abnormalRatioRaw * 100).toFixed(2)),
+        brokenCount,
+        totalChecks,
       };
     });
 
-    // 填充完整的时间序列（包括没有数据的时间点）
-    if (startTime && endTime) {
-      const start = new Date(startTime);
-      const end = new Date(endTime);
+    const summary = buildAbnormalDurationSummary(
+      processedData,
+      startTime,
+      endTime,
+    );
 
-      // 获取所有唯一的ASIN
+    // 仅返回汇总，不返回序列明细（提升性能）
+    if (!shouldIncludeSeries) {
+      return {
+        timeGranularity: groupBy,
+        data: [],
+        summary,
+      };
+    }
+
+    // 需要序列时才做补零
+    if (queryStartDate && queryEndDate) {
       const asinSet = new Set();
       processedData.forEach((item) => {
         if (item.asinId) {
@@ -2276,98 +2552,107 @@ class MonitorHistory {
             JSON.stringify({
               asinId: item.asinId,
               asin: item.asin,
-              country: item.country,
+              country: item.country || '',
             }),
           );
         }
       });
 
-      // 生成完整的时间序列
       const timeSeries = [];
-      const current = new Date(start);
-      // 将时间设置为当天的开始（对于按天和周）
-      if (groupBy === 'day' || groupBy === 'week') {
-        current.setHours(0, 0, 0, 0);
-      } else if (groupBy === 'hour') {
+      const current = new Date(queryStartDate);
+      if (groupBy === 'hour') {
         current.setMinutes(0, 0, 0);
+      } else if (groupBy === 'day') {
+        current.setHours(0, 0, 0, 0);
+      } else if (groupBy === 'week') {
+        const { year, week } = getISOWeekInfo(current);
+        const weekStart = getISOWeekStartDate(year, week);
+        current.setTime(weekStart.getTime());
       }
 
-      while (current <= end) {
-        let timePeriod;
+      while (current <= queryEndDate) {
         if (groupBy === 'hour') {
-          // 格式：YYYY-MM-DD HH:00:00
-          const year = current.getFullYear();
-          const month = String(current.getMonth() + 1).padStart(2, '0');
-          const day = String(current.getDate()).padStart(2, '0');
-          const hour = String(current.getHours()).padStart(2, '0');
-          timePeriod = `${year}-${month}-${day} ${hour}:00:00`;
+          timeSeries.push(formatDateToHourText(current));
           current.setHours(current.getHours() + 1);
         } else if (groupBy === 'day') {
-          // 格式：YYYY-MM-DD
-          const year = current.getFullYear();
-          const month = String(current.getMonth() + 1).padStart(2, '0');
-          const day = String(current.getDate()).padStart(2, '0');
-          timePeriod = `${year}-${month}-${day}`;
+          timeSeries.push(formatDateToDayText(current));
           current.setDate(current.getDate() + 1);
         } else if (groupBy === 'week') {
-          // 格式：YYYY-WW（与MySQL的DATE_FORMAT(check_time, "%Y-%u")匹配）
-          const year = current.getFullYear();
-          // MySQL的WEEK函数默认模式是0，返回0-53，但我们需要ISO周（1-53）
-          // 使用WEEK(date, 3)返回ISO周数
-          // 这里我们使用JavaScript计算ISO周数
-          const week = MonitorHistory.getWeekNumber(current);
-          timePeriod = `${year}-${week.toString().padStart(2, '0')}`;
+          timeSeries.push(formatISOWeekTextFromDate(current));
           current.setDate(current.getDate() + 7);
-        }
-
-        if (timePeriod) {
-          timeSeries.push(timePeriod);
         }
       }
 
-      // 为每个ASIN填充完整的时间序列
+      const existingDataMap = new Map();
+      processedData.forEach((item) => {
+        existingDataMap.set(
+          `${item.timePeriod}|${item.asinId}|${item.country || ''}`,
+          item,
+        );
+      });
+
       const filledData = [];
       asinSet.forEach((asinKey) => {
         const { asinId, asin, country: asinCountry } = JSON.parse(asinKey);
         timeSeries.forEach((timePeriod) => {
-          // 查找是否有该时间点的数据
-          const existingData = processedData.find(
-            (item) =>
-              item.timePeriod === timePeriod &&
-              item.asinId === asinId &&
-              (item.country || '') === (asinCountry || ''),
-          );
-
+          const dataKey = `${timePeriod}|${asinId}|${asinCountry || ''}`;
+          const existingData = existingDataMap.get(dataKey);
           if (existingData) {
-            // 使用已有数据
             filledData.push(existingData);
-          } else {
-            // 填充空数据（0值）
-            filledData.push({
-              timePeriod: timePeriod,
-              asinId: asinId,
-              asin: asin,
-              country: asinCountry,
-              abnormalDuration: 0,
-              totalDuration: intervalHours,
-              abnormalRatio: 0,
-              brokenCount: 0,
-              totalChecks: 0,
-            });
+            return;
           }
+
+          const { bucketStart, bucketEnd } = getBucketRangeByPeriod(
+            timePeriod,
+            groupBy,
+          );
+          const bucketDurationHours =
+            bucketStart && bucketEnd
+              ? calculateOverlapHours(
+                  bucketStart,
+                  bucketEnd,
+                  queryStartDate,
+                  queryEndDate,
+                )
+              : defaultBucketDurationHours;
+
+          filledData.push({
+            timePeriod,
+            asinId,
+            asin,
+            country: asinCountry,
+            abnormalDuration: 0,
+            totalDuration: Number(bucketDurationHours.toFixed(4)),
+            abnormalRatio: 0,
+            brokenCount: 0,
+            totalChecks: 0,
+          });
         });
       });
 
-      // 如果没有任何ASIN数据，至少返回时间序列（用于显示空图表）
+      // 没有ASIN时返回空序列占位（兼容旧逻辑）
       if (filledData.length === 0 && timeSeries.length > 0) {
         timeSeries.forEach((timePeriod) => {
+          const { bucketStart, bucketEnd } = getBucketRangeByPeriod(
+            timePeriod,
+            groupBy,
+          );
+          const bucketDurationHours =
+            bucketStart && bucketEnd
+              ? calculateOverlapHours(
+                  bucketStart,
+                  bucketEnd,
+                  queryStartDate,
+                  queryEndDate,
+                )
+              : defaultBucketDurationHours;
           filledData.push({
-            timePeriod: timePeriod,
+            timePeriod,
             asinId: null,
             asin: null,
             country: null,
             abnormalDuration: 0,
-            totalDuration: intervalHours,
+            totalDuration: Number(bucketDurationHours.toFixed(4)),
             abnormalRatio: 0,
             brokenCount: 0,
             totalChecks: 0,
@@ -2378,29 +2663,58 @@ class MonitorHistory {
       return {
         timeGranularity: groupBy,
         data: filledData,
+        summary,
       };
     }
 
-    // 如果没有时间范围，直接返回处理后的数据
     return {
       timeGranularity: groupBy,
       data: processedData,
+      summary,
     };
-  }
-
-  // 辅助函数：获取周数（ISO周）
-  static getWeekNumber(date) {
-    const d = new Date(
-      Date.UTC(date.getFullYear(), date.getMonth(), date.getDate()),
-    );
-    const dayNum = d.getUTCDay() || 7;
-    d.setUTCDate(d.getUTCDate() + 4 - dayNum);
-    const yearStart = new Date(Date.UTC(d.getUTCFullYear(), 0, 1));
-    return Math.ceil(((d - yearStart) / 86400000 + 1) / 7);
   }
 
   // 更新监控历史记录的通知状态
   // 更新指定国家、检查时间段内，异常（is_broken = 1）的监控历史记录的通知状态
+  static async updateNotificationStatusByRange(
+    country,
+    startTime,
+    endTime,
+    notificationSent = 1,
+  ) {
+    if (!country || !startTime || !endTime) {
+      return 0;
+    }
+
+    const startDate =
+      startTime instanceof Date ? startTime : new Date(startTime);
+    const endDate = endTime instanceof Date ? endTime : new Date(endTime);
+
+    if (Number.isNaN(startDate.getTime()) || Number.isNaN(endDate.getTime())) {
+      return 0;
+    }
+
+    const rangeStart = startDate <= endDate ? startDate : endDate;
+    const rangeEnd = startDate <= endDate ? endDate : startDate;
+
+    const result = await query(
+      `UPDATE monitor_history
+       SET notification_sent = ?
+       WHERE country = ?
+         AND check_time >= ?
+         AND check_time <= ?
+         AND is_broken = 1
+         AND notification_sent = 0`,
+      [notificationSent ? 1 : 0, country, rangeStart, rangeEnd],
+    );
+
+    cacheService.deleteByPrefix('monitorHistoryCount:');
+    void cacheService.deleteByPrefixAsync('monitorHistoryCount:');
+
+    return result.affectedRows || 0;
+  }
+
+  // 兼容旧调用：按单个检查时间点更新通知状态
   static async updateNotificationStatus(
     country,
     checkTime,
@@ -2414,23 +2728,12 @@ class MonitorHistory {
     const timeStart = new Date(checkTimeDate.getTime() - 60 * 1000); // 前1分钟
     const timeEnd = new Date(checkTimeDate.getTime() + 2 * 60 * 1000); // 后2分钟
 
-    // 更新指定国家、时间范围内，异常状态的监控历史记录
-    const result = await query(
-      `UPDATE monitor_history 
-       SET notification_sent = ? 
-       WHERE country = ? 
-         AND check_time >= ? 
-         AND check_time <= ?
-         AND is_broken = 1
-         AND notification_sent = 0`,
-      [notificationSent ? 1 : 0, country, timeStart, timeEnd],
+    return await MonitorHistory.updateNotificationStatusByRange(
+      country,
+      timeStart,
+      timeEnd,
+      notificationSent,
     );
-
-    // 清除相关缓存
-    cacheService.deleteByPrefix('monitorHistoryCount:');
-    void cacheService.deleteByPrefixAsync('monitorHistoryCount:');
-
-    return result.affectedRows || 0;
   }
 
   // 查询ASIN状态变动记录
@@ -2459,7 +2762,7 @@ class MonitorHistory {
     // 构建基础查询，使用窗口函数识别状态变化
     let sql = `
       WITH status_history AS (
-        SELECT 
+        SELECT
           mh.id,
           mh.variant_group_id,
           mh.asin_id,
@@ -2475,7 +2778,7 @@ class MonitorHistory {
           COALESCE(mh.asin_name, a.name) as asin_name,
           a.asin_type as asin_type,
           LAG(mh.is_broken) OVER (
-            PARTITION BY mh.asin_id, mh.country 
+            PARTITION BY mh.asin_id, mh.country
             ORDER BY mh.check_time, mh.id
           ) as prev_is_broken
         FROM monitor_history mh
@@ -2577,13 +2880,13 @@ class MonitorHistory {
       if (total === null) {
         let countSql = `
           WITH status_history AS (
-            SELECT 
+            SELECT
               mh.id,
               mh.asin_id,
               mh.country,
               mh.is_broken,
               LAG(mh.is_broken) OVER (
-                PARTITION BY mh.asin_id, mh.country 
+                PARTITION BY mh.asin_id, mh.country
                 ORDER BY mh.check_time, mh.id
               ) as prev_is_broken
             FROM monitor_history mh
@@ -2746,13 +3049,13 @@ class MonitorHistory {
       // 使用与 findStatusChanges 相同的计数逻辑
       let countSql = `
         WITH status_history AS (
-          SELECT 
+          SELECT
             mh.id,
             mh.asin_id,
             mh.country,
             mh.is_broken,
             LAG(mh.is_broken) OVER (
-              PARTITION BY mh.asin_id, mh.country 
+              PARTITION BY mh.asin_id, mh.country
               ORDER BY mh.check_time, mh.id
             ) as prev_is_broken
           FROM monitor_history mh
@@ -2855,7 +3158,7 @@ class MonitorHistory {
 
       let sql = `
         WITH status_history AS (
-          SELECT 
+          SELECT
             mh.id,
             mh.variant_group_id,
             mh.asin_id,
@@ -2871,7 +3174,7 @@ class MonitorHistory {
             COALESCE(mh.asin_name, a.name) as asin_name,
             a.asin_type as asin_type,
             LAG(mh.is_broken) OVER (
-              PARTITION BY mh.asin_id, mh.country 
+              PARTITION BY mh.asin_id, mh.country
               ORDER BY mh.check_time, mh.id
             ) as prev_is_broken
           FROM monitor_history mh

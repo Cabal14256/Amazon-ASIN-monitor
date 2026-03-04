@@ -126,13 +126,10 @@ const ASINManagement: React.FC<unknown> = () => {
   // 国家选项枚举（使用useMemo优化）
   const countryValueEnum = useMemo(
     () =>
-      Object.keys(countryMap).reduce(
-        (acc, key) => {
-          acc[key] = { text: countryMap[key].text };
-          return acc;
-        },
-        {} as Record<string, { text: string }>,
-      ),
+      Object.keys(countryMap).reduce((acc, key) => {
+        acc[key] = { text: countryMap[key].text };
+        return acc;
+      }, {} as Record<string, { text: string }>),
     [],
   );
 

@@ -333,6 +333,14 @@ export async function getAbnormalDurationStatistics(
     startTime?: string;
     /** 结束时间 */
     endTime?: string;
+    /** 是否返回时间序列明细（0-仅汇总，1-汇总+序列） */
+    includeSeries?: '0' | '1';
+    /** ASIN类型 */
+    asinType?: string;
+    /** ASIN名称（模糊匹配） */
+    asinName?: string;
+    /** 变体组名称（模糊匹配） */
+    variantGroupName?: string;
   },
   options?: { [key: string]: any },
 ) {

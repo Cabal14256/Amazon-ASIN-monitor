@@ -569,9 +569,22 @@ declare namespace API {
     totalChecks?: number;
   }
 
+  interface AbnormalDurationSummaryItem {
+    key?: string;
+    asin?: string;
+    country?: string;
+    queryTimeRange?: string;
+    abnormalCount?: number;
+    averageAbnormalDuration?: number;
+    minAbnormalDuration?: number;
+    maxAbnormalDuration?: number;
+    maxAbnormalTime?: string;
+  }
+
   interface AbnormalDurationStatistics {
     timeGranularity?: 'hour' | 'day' | 'week';
     data?: AbnormalDurationStatisticsItem[];
+    summary?: AbnormalDurationSummaryItem[];
   }
 
   interface Result_AbnormalDurationStatistics_ {

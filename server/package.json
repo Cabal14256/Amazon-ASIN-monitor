@@ -19,13 +19,13 @@
     "start:all": "PROCESS_ROLE=all node src/index.js",
     "start:api": "PROCESS_ROLE=api node src/index.js",
     "start:worker": "PROCESS_ROLE=worker node src/worker-index.js",
+    "test-db": "node test-db-connection.js",
     "test:all": "node scripts/test-all.js",
     "test:api": "node scripts/test-api.js",
     "test:auth": "node scripts/test-auth.js",
     "test:feishu": "node scripts/test-feishu.js",
     "test:queue": "node scripts/test-queue.js",
-    "test:sp-api": "node scripts/test-sp-api.js",
-    "test-db": "node test-db-connection.js"
+    "test:sp-api": "node scripts/test-sp-api.js"
   },
   "dependencies": {
     "axios": "^1.6.0",
