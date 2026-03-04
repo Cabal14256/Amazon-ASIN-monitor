@@ -117,6 +117,7 @@ const EXPORT_TYPE_MAP: Record<string, string> = {
   '/v1/export/monitor-history': 'monitor-history',
   '/v1/export/variant-group': 'variant-group',
   '/v1/export/competitor-monitor-history': 'competitor-monitor-history',
+  '/v1/export/analytics-monthly-breakdown': 'analytics-monthly-breakdown',
 };
 
 /**
