@@ -21,7 +21,6 @@ import {
   Tag,
 } from 'antd';
 import type { Dayjs } from 'dayjs';
-import dayjs from 'dayjs';
 import React, {
   useCallback,
   useEffect,
@@ -251,7 +250,7 @@ const AnalyticsPageContent: React.FC<unknown> = () => {
     brand?: string;
   }>({});
   const [monthlyBreakdownMonth, setMonthlyBreakdownMonth] = useState<Dayjs>(
-    dayjs().startOf('month'),
+    toBeijingDayjs().startOf('month'),
   );
   const [monthlyBreakdownLoading, setMonthlyBreakdownLoading] = useState(false);
   const [monthlyBreakdownExporting, setMonthlyBreakdownExporting] =
