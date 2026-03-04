@@ -45,18 +45,42 @@ const importTaskQueue = new Queue('import-task-queue', redisUrl, {
   },
 });
 
-importTaskQueue.process(async (job) => {
-  const { taskId, fileBuffer, originalFilename, userId } = job.data || {};
+let processorRegistered = false;
+let processorConcurrency = 0;
 
-  if (!taskId || !fileBuffer) {
-    throw new Error('任务ID和文件数据不能为空');
+function registerProcessor() {
+  if (processorRegistered) {
+    return false;
   }
 
-  logger.info(`[导入任务] 开始处理任务 ${taskId}, 文件: ${originalFilename}`);
+  processorConcurrency = 1;
 
-  const importTaskProcessor = require('./importTaskProcessor');
-  await importTaskProcessor.processImportTask(job);
-});
+  importTaskQueue.process(processorConcurrency, async (job) => {
+    const { taskId, fileBuffer, originalFilename } = job.data || {};
+
+    if (!taskId || !fileBuffer) {
+      throw new Error('任务ID和文件数据不能为空');
+    }
+
+    logger.info(`[导入任务] 开始处理任务 ${taskId}, 文件: ${originalFilename}`);
+
+    const importTaskProcessor = require('./importTaskProcessor');
+    await importTaskProcessor.processImportTask(job);
+  });
+
+  processorRegistered = true;
+  logger.info(
+    `[导入任务队列] 已注册处理器，worker并发=${processorConcurrency}`,
+  );
+  return true;
+}
+
+function getProcessorStatus() {
+  return {
+    registered: processorRegistered,
+    concurrency: processorConcurrency,
+  };
+}
 
 importTaskQueue.on('failed', (job, err) => {
   logger.error(
@@ -114,5 +138,7 @@ module.exports = {
   enqueue,
   getJob,
   getJobState,
+  registerProcessor,
+  getProcessorStatus,
   queue: importTaskQueue,
 };

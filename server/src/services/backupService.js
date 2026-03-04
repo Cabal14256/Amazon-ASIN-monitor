@@ -1,6 +1,7 @@
 const { pool } = require('../config/database');
 const fs = require('fs').promises;
 const path = require('path');
+const { Worker } = require('worker_threads');
 const {
   getUTC8ISOString,
   getUTC8String,
@@ -10,6 +11,17 @@ const logger = require('../utils/logger');
 
 // 备份文件存储目录
 const BACKUP_DIR = path.join(__dirname, '../../backups');
+const BACKUP_WORKER_SCRIPT = path.join(
+  __dirname,
+  '../workers/backup/sqlWorker.js',
+);
+const BACKUP_WORKER_TIMEOUT_MS =
+  Number(process.env.BACKUP_WORKER_TIMEOUT_MS) || 5 * 60 * 1000;
+const BACKUP_WORKER_ENABLED = !['false', '0', 'no', 'off'].includes(
+  String(process.env.BACKUP_WORKER_ENABLED || 'false')
+    .trim()
+    .toLowerCase(),
+);
 
 // 确保备份目录存在
 async function ensureBackupDir() {
@@ -35,38 +47,71 @@ function escapeSQL(str) {
   return "'" + strValue.replace(/'/g, "''").replace(/\\/g, '\\\\') + "'";
 }
 
-/**
- * 生成表的 CREATE TABLE 语句
- */
-async function getTableCreateStatement(connection, tableName) {
-  const [rows] = await connection.execute(`SHOW CREATE TABLE \`${tableName}\``);
-  // MySQL 返回的字段名可能是 'Create Table' 或 'CREATE TABLE'，需要兼容处理
-  const createTable =
-    rows[0]['Create Table'] || rows[0]['CREATE TABLE'] || rows[0].createTable;
-  if (!createTable) {
-    throw new Error(`无法获取表 ${tableName} 的创建语句`);
-  }
-  return createTable + ';';
+function runBackupSqlWorkerTask(
+  task,
+  payload,
+  timeoutMs = BACKUP_WORKER_TIMEOUT_MS,
+) {
+  return new Promise((resolve, reject) => {
+    const requestId = `${Date.now()}-${Math.random().toString(16).slice(2)}`;
+    const worker = new Worker(BACKUP_WORKER_SCRIPT);
+    let settled = false;
+
+    const timer = setTimeout(() => {
+      if (settled) {
+        return;
+      }
+      settled = true;
+      worker.terminate().catch(() => {});
+      reject(new Error(`备份Worker超时（${timeoutMs}ms）`));
+    }, timeoutMs);
+
+    worker.once('message', (message) => {
+      const { requestId: responseId, success, result, error } = message || {};
+      if (responseId !== requestId || settled) {
+        return;
+      }
+
+      settled = true;
+      clearTimeout(timer);
+      worker.terminate().catch(() => {});
+
+      if (!success) {
+        reject(new Error(error || '备份Worker执行失败'));
+        return;
+      }
+
+      resolve(result);
+    });
+
+    worker.once('error', (error) => {
+      if (settled) {
+        return;
+      }
+      settled = true;
+      clearTimeout(timer);
+      worker.terminate().catch(() => {});
+      reject(error);
+    });
+
+    worker.once('exit', (code) => {
+      if (settled || code === 0) {
+        return;
+      }
+      settled = true;
+      clearTimeout(timer);
+      reject(new Error(`备份Worker异常退出，code=${code}`));
+    });
+
+    worker.postMessage({
+      requestId,
+      task,
+      payload,
+    });
+  });
 }
 
-/**
- * 生成表的 INSERT 语句
- */
-async function getTableData(connection, tableName) {
-  const [rows] = await connection.execute(`SELECT * FROM \`${tableName}\``);
-  if (rows.length === 0) {
-    return '';
-  }
-
-  // 获取列名
-  const [columns] = await connection.execute(
-    `SHOW COLUMNS FROM \`${tableName}\``,
-  );
-  // MySQL 返回的字段名可能是 'Field' 或 'FIELD'，需要兼容处理
-  const columnNames = columns
-    .map((col) => col.Field || col.FIELD || col.field)
-    .filter(Boolean);
-
+function buildTableDataSync(tableName, rows, columnNames) {
   // 生成 INSERT 语句
   let sql = `\n-- Dumping data for table \`${tableName}\`\n\n`;
   sql += `LOCK TABLES \`${tableName}\` WRITE;\n`;
@@ -109,6 +154,94 @@ async function getTableData(connection, tableName) {
   sql += `UNLOCK TABLES;\n`;
 
   return sql;
+}
+
+function splitSqlStatementsSync(sqlContent) {
+  const statements = [];
+  let currentStatement = '';
+  let inString = false;
+  let stringChar = null;
+
+  for (let i = 0; i < sqlContent.length; i++) {
+    const char = sqlContent[i];
+
+    // 处理字符串
+    if (
+      (char === "'" || char === '"') &&
+      (i === 0 || sqlContent[i - 1] !== '\\')
+    ) {
+      if (!inString) {
+        inString = true;
+        stringChar = char;
+      } else if (char === stringChar) {
+        inString = false;
+        stringChar = null;
+      }
+    }
+
+    currentStatement += char;
+
+    // 如果不在字符串中且遇到分号，则是一个完整的语句
+    if (!inString && char === ';') {
+      const trimmed = currentStatement.trim();
+      if (trimmed && !trimmed.startsWith('--') && trimmed.length > 1) {
+        statements.push(trimmed);
+      }
+      currentStatement = '';
+    }
+  }
+
+  return statements;
+}
+
+/**
+ * 生成表的 CREATE TABLE 语句
+ */
+async function getTableCreateStatement(connection, tableName) {
+  const [rows] = await connection.execute(`SHOW CREATE TABLE \`${tableName}\``);
+  // MySQL 返回的字段名可能是 'Create Table' 或 'CREATE TABLE'，需要兼容处理
+  const createTable =
+    rows[0]['Create Table'] || rows[0]['CREATE TABLE'] || rows[0].createTable;
+  if (!createTable) {
+    throw new Error(`无法获取表 ${tableName} 的创建语句`);
+  }
+  return createTable + ';';
+}
+
+/**
+ * 生成表的 INSERT 语句
+ */
+async function getTableData(connection, tableName) {
+  const [rows] = await connection.execute(`SELECT * FROM \`${tableName}\``);
+  if (rows.length === 0) {
+    return '';
+  }
+
+  // 获取列名
+  const [columns] = await connection.execute(
+    `SHOW COLUMNS FROM \`${tableName}\``,
+  );
+  // MySQL 返回的字段名可能是 'Field' 或 'FIELD'，需要兼容处理
+  const columnNames = columns
+    .map((col) => col.Field || col.FIELD || col.field)
+    .filter(Boolean);
+
+  if (BACKUP_WORKER_ENABLED) {
+    try {
+      const workerResult = await runBackupSqlWorkerTask('buildTableData', {
+        tableName,
+        rows,
+        columnNames,
+      });
+      return workerResult?.sql || '';
+    } catch (error) {
+      logger.warn(
+        `[备份] 表 ${tableName} SQL构建Worker失败，回退主线程: ${error.message}`,
+      );
+    }
+  }
+
+  return buildTableDataSync(tableName, rows, columnNames);
 }
 
 /**
@@ -251,41 +384,26 @@ async function restoreBackup(filepath) {
     // 读取 SQL 文件
     const sqlContent = await fs.readFile(filepath, 'utf8');
 
-    // 移除注释和空行，分割 SQL 语句
-    // 简单的 SQL 分割：按分号分割，但要注意字符串中的分号
-    const statements = [];
-    let currentStatement = '';
-    let inString = false;
-    let stringChar = null;
-
-    for (let i = 0; i < sqlContent.length; i++) {
-      const char = sqlContent[i];
-      const nextChar = sqlContent[i + 1];
-
-      // 处理字符串
-      if (
-        (char === "'" || char === '"') &&
-        (i === 0 || sqlContent[i - 1] !== '\\')
-      ) {
-        if (!inString) {
-          inString = true;
-          stringChar = char;
-        } else if (char === stringChar) {
-          inString = false;
-          stringChar = null;
-        }
+    let statements = [];
+    if (BACKUP_WORKER_ENABLED) {
+      try {
+        const workerResult = await runBackupSqlWorkerTask(
+          'splitSqlStatements',
+          {
+            sqlContent,
+          },
+        );
+        statements = Array.isArray(workerResult?.statements)
+          ? workerResult.statements
+          : [];
+      } catch (error) {
+        logger.warn(
+          `[恢复] SQL拆分Worker失败，回退主线程解析: ${error.message}`,
+        );
+        statements = splitSqlStatementsSync(sqlContent);
       }
-
-      currentStatement += char;
-
-      // 如果不在字符串中且遇到分号，则是一个完整的语句
-      if (!inString && char === ';') {
-        const trimmed = currentStatement.trim();
-        if (trimmed && !trimmed.startsWith('--') && trimmed.length > 1) {
-          statements.push(trimmed);
-        }
-        currentStatement = '';
-      }
+    } else {
+      statements = splitSqlStatementsSync(sqlContent);
     }
 
     // 执行所有 SQL 语句

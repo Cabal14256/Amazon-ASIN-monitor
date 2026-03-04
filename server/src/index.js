@@ -5,11 +5,20 @@ const cors = require('cors');
 require('dotenv').config();
 const logger = require('./utils/logger');
 const { validateEnv } = require('./config/envValidator');
+const {
+  getProcessRole,
+  isApiRole,
+  isWorkerRole,
+} = require('./config/processRole');
 const { testConnection } = require('./config/database');
 const {
   testConnection: testCompetitorConnection,
 } = require('./config/competitor-database');
 const { initScheduler } = require('./services/schedulerService');
+const {
+  registerWorkerProcessors,
+  getWorkerRegistrationStatus,
+} = require('./services/workerProcessorRegistry');
 const authRoutes = require('./routes/authRoutes');
 const asinRoutes = require('./routes/asinRoutes');
 const monitorRoutes = require('./routes/monitorRoutes');
@@ -35,6 +44,7 @@ const metricsService = require('./services/metricsService');
 
 const app = express();
 const PORT = process.env.PORT || 3001;
+const PROCESS_ROLE = getProcessRole();
 
 const apiRateLimitEnabled = !['false', '0', 'no', 'off'].includes(
   String(process.env.API_RATE_LIMIT_ENABLED || 'true')
@@ -189,6 +199,15 @@ app.use(errorHandler);
 
 // 启动服务器
 async function startServer() {
+  logger.info(`[Bootstrap] 进程角色: ${PROCESS_ROLE}`);
+
+  if (!isApiRole(PROCESS_ROLE)) {
+    logger.info('[Bootstrap] 当前进程不启动HTTP API，切换到队列消费者模式');
+    const { startWorkerProcess } = require('./worker-index');
+    await startWorkerProcess();
+    return;
+  }
+
   // 首先验证环境变量
   validateEnv();
 
@@ -205,8 +224,23 @@ async function startServer() {
     logger.info('💡 提示: 请确保已创建竞品数据库并配置 .env 文件');
   }
 
+  if (isWorkerRole(PROCESS_ROLE)) {
+    registerWorkerProcessors();
+    const workerStatus = getWorkerRegistrationStatus();
+    logger.info(
+      `[Bootstrap] 当前进程同时启用队列消费者: ${
+        workerStatus.registeredQueues.length > 0
+          ? workerStatus.registeredQueues.join(', ')
+          : '无'
+      }`,
+    );
+  } else {
+    logger.info('[Bootstrap] 当前进程未启用队列消费者（请使用独立worker进程）');
+  }
+
   // 初始化定时任务
   initScheduler();
+  logger.info('[Bootstrap] 定时任务已启用（角色包含 API）');
 
   const server = app.listen(PORT, () => {
     logger.info(`🚀 服务器运行在 http://localhost:${PORT}`);

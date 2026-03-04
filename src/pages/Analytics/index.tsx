@@ -168,6 +168,155 @@ const writeProgressProfile = (profile: ProgressProfile) => {
   }
 };
 
+type PeakMarkArea = {
+  areas: any[];
+  color: string;
+  name: string;
+};
+
+const ANALYTICS_WEB_WORKER_ENABLED = ['1', 'true', 'yes', 'on'].includes(
+  String(process.env.ANALYTICS_WEB_WORKER_ENABLED || 'false')
+    .trim()
+    .toLowerCase(),
+);
+
+const buildMonthlyBreakdownRowsSync = (
+  list: API.TimeStatistics[],
+  monthStart: Dayjs,
+): MonthlyBreakdownRow[] => {
+  const rowMap = new Map<string, API.TimeStatistics>();
+  if (Array.isArray(list)) {
+    list.forEach((item: API.TimeStatistics) => {
+      const dateKey = String(item.time_period || '').slice(0, 10);
+      if (dateKey) {
+        rowMap.set(dateKey, item);
+      }
+    });
+  }
+
+  const daysInMonth = monthStart.daysInMonth();
+  const rows: MonthlyBreakdownRow[] = [];
+  for (let day = 1; day <= daysInMonth; day += 1) {
+    const date = monthStart.date(day).format('YYYY-MM-DD');
+    const stat = rowMap.get(date);
+    const brokenAsinsDedup = toNumber(stat?.broken_asins_dedup);
+    const totalAsinsDedup = toNumber(stat?.total_asins_dedup);
+    const fallbackRatio = toNumber(stat?.ratio_all_time);
+    const brokenRatio =
+      totalAsinsDedup > 0 ? (brokenAsinsDedup / totalAsinsDedup) * 100 : fallbackRatio;
+
+    rows.push({
+      date,
+      day,
+      brokenAsinsDedup,
+      totalAsinsDedup,
+      brokenRatio: Number.isFinite(brokenRatio) ? brokenRatio : 0,
+    });
+  }
+
+  return rows;
+};
+
+const resolveRegionsToShow = (country: string) => {
+  if (country) {
+    if (country === 'US') {
+      return [{ code: 'US', countries: ['US'] }];
+    }
+    if (country === 'UK') {
+      return [{ code: 'UK', countries: ['UK'] }];
+    }
+    if (['DE', 'FR', 'ES', 'IT'].includes(country)) {
+      return [{ code: 'EU_OTHER', countries: ['DE', 'FR', 'ES', 'IT'] }];
+    }
+    return [];
+  }
+
+  return [
+    { code: 'US', countries: ['US'] },
+    { code: 'UK', countries: ['UK'] },
+    { code: 'EU_OTHER', countries: ['DE', 'FR', 'ES', 'IT'] },
+  ];
+};
+
+const getPeakColor = (regionCode: string) => {
+  if (regionCode === 'US') {
+    return 'rgba(255, 152, 0, 0.15)';
+  }
+  if (regionCode === 'UK') {
+    return 'rgba(156, 39, 176, 0.15)';
+  }
+  if (regionCode === 'EU_OTHER') {
+    return 'rgba(33, 150, 243, 0.15)';
+  }
+  return 'rgba(255, 193, 7, 0.1)';
+};
+
+const buildPeakHoursMarkAreasSync = (
+  groupBy: string,
+  country: string,
+  timeChartData: any[],
+): PeakMarkArea[] => {
+  if (groupBy !== 'hour') {
+    return [];
+  }
+
+  const regionsToShow = resolveRegionsToShow(country);
+  if (timeChartData.length === 0) {
+    return [];
+  }
+
+  const firstTime = timeChartData[0]?.time;
+  const lastTime = timeChartData[timeChartData.length - 1]?.time;
+  if (!firstTime || !lastTime) {
+    return [];
+  }
+
+  const startDate = dayjs(firstTime).startOf('day');
+  const endDate = dayjs(lastTime).endOf('day');
+  const markAreas: PeakMarkArea[] = [];
+
+  regionsToShow.forEach((region) => {
+    const representativeCountry = region.countries[0];
+    const peakHours = getPeakHours(representativeCountry);
+    const areas: any[] = [];
+
+    let currentDate = startDate;
+    while (currentDate <= endDate) {
+      const dateForLoop = currentDate;
+      peakHours.forEach((peak) => {
+        const startHour = peak.start;
+        const endHour = peak.end === 24 ? 0 : peak.end;
+        const startTime = dateForLoop.hour(startHour).minute(0).second(0);
+        const endTime =
+          endHour === 0
+            ? dateForLoop.add(1, 'day').hour(0).minute(0).second(0)
+            : dateForLoop.hour(endHour).minute(0).second(0);
+
+        areas.push([
+          {
+            name: `${region.code}高峰期`,
+            xAxis: startTime.format('YYYY-MM-DD HH:mm'),
+          },
+          {
+            xAxis: endTime.format('YYYY-MM-DD HH:mm'),
+          },
+        ]);
+      });
+      currentDate = currentDate.add(1, 'day');
+    }
+
+    if (areas.length > 0) {
+      markAreas.push({
+        areas,
+        color: getPeakColor(region.code),
+        name: region.code,
+      });
+    }
+  });
+
+  return markAreas;
+};
+
 const AnalyticsPageContent: React.FC<unknown> = () => {
   const message = useMessage();
   const [dateRange, setDateRange] = useState<[Dayjs, Dayjs]>([
@@ -258,6 +407,125 @@ const AnalyticsPageContent: React.FC<unknown> = () => {
   const [monthlyBreakdownRows, setMonthlyBreakdownRows] = useState<
     MonthlyBreakdownRow[]
   >([]);
+  const analyticsWorkerRef = useRef<Worker | null>(null);
+  const analyticsWorkerRequestIdRef = useRef(0);
+  const analyticsWorkerPendingRef = useRef<
+    Map<
+      number,
+      {
+        resolve: (value: any) => void;
+        reject: (reason?: any) => void;
+        timer?: number;
+      }
+    >
+  >(new Map());
+  const [analyticsWorkerReady, setAnalyticsWorkerReady] = useState(false);
+  const [peakHoursMarkAreas, setPeakHoursMarkAreas] = useState<PeakMarkArea[]>(
+    [],
+  );
+
+  useEffect(() => {
+    if (
+      !ANALYTICS_WEB_WORKER_ENABLED ||
+      typeof window === 'undefined' ||
+      typeof Worker === 'undefined'
+    ) {
+      setAnalyticsWorkerReady(false);
+      return undefined;
+    }
+
+    let worker: Worker | null = null;
+
+    try {
+      worker = new Worker(
+        new URL('./workers/analytics.worker.ts', import.meta.url),
+      );
+      analyticsWorkerRef.current = worker;
+
+      worker.onmessage = (event: MessageEvent<any>) => {
+        const { requestId, success, data, error } = event.data || {};
+        const pending = analyticsWorkerPendingRef.current.get(requestId);
+        if (!pending) {
+          return;
+        }
+        analyticsWorkerPendingRef.current.delete(requestId);
+        if (pending.timer) {
+          window.clearTimeout(pending.timer);
+        }
+        if (success) {
+          pending.resolve(data);
+        } else {
+          pending.reject(new Error(error || 'analytics worker 执行失败'));
+        }
+      };
+
+      worker.onerror = (error: ErrorEvent) => {
+        analyticsWorkerPendingRef.current.forEach((pending) => {
+          if (pending.timer) {
+            window.clearTimeout(pending.timer);
+          }
+          pending.reject(error);
+        });
+        analyticsWorkerPendingRef.current.clear();
+      };
+
+      setAnalyticsWorkerReady(true);
+    } catch {
+      setAnalyticsWorkerReady(false);
+      analyticsWorkerRef.current = null;
+    }
+
+    return () => {
+      setAnalyticsWorkerReady(false);
+      analyticsWorkerPendingRef.current.forEach((pending) => {
+        if (pending.timer) {
+          window.clearTimeout(pending.timer);
+        }
+        pending.reject(new Error('analytics worker 已关闭'));
+      });
+      analyticsWorkerPendingRef.current.clear();
+
+      if (worker) {
+        worker.terminate();
+      }
+      analyticsWorkerRef.current = null;
+    };
+  }, []);
+
+  const callAnalyticsWorker = useCallback(
+    <T,>(
+      task: 'buildMonthlyBreakdown' | 'buildPeakMarkAreas',
+      payload: Record<string, any>,
+      timeoutMs = 20000,
+    ) => {
+      return new Promise<T>((resolve, reject) => {
+        const worker = analyticsWorkerRef.current;
+        if (!worker) {
+          reject(new Error('analytics worker 不可用'));
+          return;
+        }
+
+        const requestId = (analyticsWorkerRequestIdRef.current += 1);
+        const timer = window.setTimeout(() => {
+          analyticsWorkerPendingRef.current.delete(requestId);
+          reject(new Error(`analytics worker 超时 (${timeoutMs}ms)`));
+        }, timeoutMs);
+
+        analyticsWorkerPendingRef.current.set(requestId, {
+          resolve,
+          reject,
+          timer,
+        });
+
+        worker.postMessage({
+          requestId,
+          task,
+          payload,
+        });
+      });
+    },
+    [],
+  );
 
   const loadMonthlyBreakdown = useCallback(async () => {
     setMonthlyBreakdownLoading(true);
@@ -278,37 +546,24 @@ const AnalyticsPageContent: React.FC<unknown> = () => {
         result && typeof result === 'object' && !('success' in result)
           ? result
           : (result as any)?.data || [];
-
-      const rowMap = new Map<string, API.TimeStatistics>();
-      if (Array.isArray(list)) {
-        list.forEach((item: API.TimeStatistics) => {
-          const dateKey = String(item.time_period || '').slice(0, 10);
-          if (dateKey) {
-            rowMap.set(dateKey, item);
-          }
-        });
-      }
-
-      const daysInMonth = monthStart.daysInMonth();
-      const rows: MonthlyBreakdownRow[] = [];
-      for (let day = 1; day <= daysInMonth; day += 1) {
-        const date = monthStart.date(day).format('YYYY-MM-DD');
-        const stat = rowMap.get(date);
-        const brokenAsinsDedup = toNumber(stat?.broken_asins_dedup);
-        const totalAsinsDedup = toNumber(stat?.total_asins_dedup);
-        const fallbackRatio = toNumber(stat?.ratio_all_time);
-        const brokenRatio =
-          totalAsinsDedup > 0
-            ? (brokenAsinsDedup / totalAsinsDedup) * 100
-            : fallbackRatio;
-
-        rows.push({
-          date,
-          day,
-          brokenAsinsDedup,
-          totalAsinsDedup,
-          brokenRatio: Number.isFinite(brokenRatio) ? brokenRatio : 0,
-        });
+      let rows: MonthlyBreakdownRow[] = [];
+      if (ANALYTICS_WEB_WORKER_ENABLED && analyticsWorkerReady) {
+        try {
+          rows = await callAnalyticsWorker<MonthlyBreakdownRow[]>(
+            'buildMonthlyBreakdown',
+            {
+              list,
+              monthStart: monthStart.format('YYYY-MM-DD'),
+            },
+          );
+        } catch {
+          rows = buildMonthlyBreakdownRowsSync(
+            list as API.TimeStatistics[],
+            monthStart,
+          );
+        }
+      } else {
+        rows = buildMonthlyBreakdownRowsSync(list as API.TimeStatistics[], monthStart);
       }
 
       setMonthlyBreakdownRows(rows);
@@ -319,7 +574,13 @@ const AnalyticsPageContent: React.FC<unknown> = () => {
     } finally {
       setMonthlyBreakdownLoading(false);
     }
-  }, [country, monthlyBreakdownMonth, message]);
+  }, [
+    analyticsWorkerReady,
+    callAnalyticsWorker,
+    country,
+    monthlyBreakdownMonth,
+    message,
+  ]);
 
   // 加载所有统计数据（使用useCallback优化，支持重试）
   const loadStatistics = useCallback(
@@ -987,103 +1248,70 @@ const AnalyticsPageContent: React.FC<unknown> = () => {
   ];
 
   // 高峰期背景区域（仅在按小时分组时显示）
-  const peakHoursMarkAreas = useMemo(() => {
-    if (groupBy !== 'hour') {
-      return [];
+  useEffect(() => {
+    let cancelled = false;
+
+    const fallback = () => {
+      const syncAreas = buildPeakHoursMarkAreasSync(groupBy, country, timeChartData);
+      setPeakHoursMarkAreas(syncAreas);
+    };
+
+    if (!ANALYTICS_WEB_WORKER_ENABLED || !analyticsWorkerReady) {
+      fallback();
+      return () => {
+        cancelled = true;
+      };
     }
 
-    // 确定要显示的区域列表
-    // 如果选择了国家，根据国家判断显示哪个区域
-    let regionsToShow: Array<{ code: string; countries: string[] }> = [];
-    if (country) {
-      // 选择了国家，只显示该国家对应的区域
-      if (country === 'US') {
-        regionsToShow = [{ code: 'US', countries: ['US'] }];
-      } else if (country === 'UK') {
-        regionsToShow = [{ code: 'UK', countries: ['UK'] }];
-      } else if (['DE', 'FR', 'ES', 'IT'].includes(country)) {
-        regionsToShow = [
-          { code: 'EU_OTHER', countries: ['DE', 'FR', 'ES', 'IT'] },
-        ];
-      }
-    } else {
-      // 未选择国家，显示所有三个区域
-      regionsToShow = [
-        { code: 'US', countries: ['US'] },
-        { code: 'UK', countries: ['UK'] },
-        { code: 'EU_OTHER', countries: ['DE', 'FR', 'ES', 'IT'] },
-      ];
-    }
-
-    // 获取时间范围
-    if (timeChartData.length === 0) {
-      return [];
+    if (groupBy !== 'hour' || timeChartData.length === 0) {
+      setPeakHoursMarkAreas([]);
+      return () => {
+        cancelled = true;
+      };
     }
 
     const firstTime = timeChartData[0]?.time;
     const lastTime = timeChartData[timeChartData.length - 1]?.time;
     if (!firstTime || !lastTime) {
-      return [];
+      setPeakHoursMarkAreas([]);
+      return () => {
+        cancelled = true;
+      };
     }
 
-    const startDate = toBeijingDayjs(firstTime).startOf('day');
-    const endDate = toBeijingDayjs(lastTime).endOf('day');
+    callAnalyticsWorker<PeakMarkArea[]>(
+      'buildPeakMarkAreas',
+      {
+        groupBy,
+        country,
+        startTimestamp: toBeijingDayjs(firstTime).startOf('day').valueOf(),
+        endTimestamp: toBeijingDayjs(lastTime).endOf('day').valueOf(),
+      },
+      20000,
+    )
+      .then((areas) => {
+        if (cancelled) {
+          return;
+        }
+        setPeakHoursMarkAreas(Array.isArray(areas) ? areas : []);
+      })
+      .catch(() => {
+        if (cancelled) {
+          return;
+        }
+        fallback();
+      });
 
-    // 为每个区域生成高峰期区域
-    const markAreas: Array<{ areas: any[]; color: string; name: string }> = [];
-
-    regionsToShow.forEach((region) => {
-      // 获取该区域中第一个国家的高峰期配置（DE/FR/ES/IT的高峰期相同）
-      const representativeCountry = region.countries[0];
-      const peakHours = getPeakHours(representativeCountry);
-      const areas: any[] = [];
-
-      // 根据区域代码设置颜色
-      let peakColor = 'rgba(255, 193, 7, 0.1)';
-      if (region.code === 'US') {
-        peakColor = 'rgba(255, 152, 0, 0.15)'; // 橙色
-      } else if (region.code === 'UK') {
-        peakColor = 'rgba(156, 39, 176, 0.15)'; // 紫色
-      } else if (region.code === 'EU_OTHER') {
-        peakColor = 'rgba(33, 150, 243, 0.15)'; // 蓝色
-      }
-
-      let currentDate = startDate;
-      while (currentDate <= endDate) {
-        const dateForLoop = currentDate; // 创建局部变量避免闭包问题
-        peakHours.forEach((peak) => {
-          const startHour = peak.start;
-          const endHour = peak.end === 24 ? 0 : peak.end;
-          const startTime = dateForLoop.hour(startHour).minute(0).second(0);
-          const endTime =
-            endHour === 0
-              ? dateForLoop.add(1, 'day').hour(0).minute(0).second(0)
-              : dateForLoop.hour(endHour).minute(0).second(0);
-
-          areas.push([
-            {
-              name: `${region.code}高峰期`,
-              xAxis: startTime.format('YYYY-MM-DD HH:mm'),
-            },
-            {
-              xAxis: endTime.format('YYYY-MM-DD HH:mm'),
-            },
-          ]);
-        });
-        currentDate = currentDate.add(1, 'day');
-      }
-
-      if (areas.length > 0) {
-        markAreas.push({
-          areas,
-          color: peakColor,
-          name: region.code,
-        });
-      }
-    });
-
-    return markAreas;
-  }, [groupBy, country, timeChartData]);
+    return () => {
+      cancelled = true;
+    };
+  }, [
+    analyticsWorkerReady,
+    callAnalyticsWorker,
+    country,
+    groupBy,
+    timeChartData,
+  ]);
 
   const lineChartOptions = useMemo(() => {
     const series: any[] = lineTypes.map((type, index) => {
@@ -1798,7 +2026,11 @@ const AnalyticsPageContent: React.FC<unknown> = () => {
               <Select.Option value="week">按周</Select.Option>
               <Select.Option value="month">按月</Select.Option>
             </Select>
-            <Button type="primary" onClick={handleRefreshAll} loading={loading}>
+            <Button
+              type="primary"
+              onClick={handleRefreshAll}
+              loading={loading}
+            >
               查询
             </Button>
           </Space>
@@ -2397,7 +2629,7 @@ const AnalyticsPageContent: React.FC<unknown> = () => {
                 </Select>
                 <Button
                   type="primary"
-                  onClick={() => void loadStatistics()}
+                  onClick={handleRefreshAll}
                   loading={loading}
                 >
                   查询
@@ -2534,6 +2766,96 @@ const AnalyticsPageContent: React.FC<unknown> = () => {
           </Card>
         </Col>
       </Row>
+
+      <Card
+        title="月度被拆统计（按天）"
+        style={{ marginTop: 16 }}
+        loading={monthlyBreakdownLoading}
+        extra={
+          <Space>
+            <span>月份：</span>
+            <DatePicker
+              picker="month"
+              allowClear={false}
+              value={monthlyBreakdownMonth}
+              onChange={(value) => {
+                if (value) {
+                  setMonthlyBreakdownMonth(value.startOf('month'));
+                }
+              }}
+              format="YYYY-MM"
+            />
+            <Button
+              type="primary"
+              onClick={() => void loadMonthlyBreakdown()}
+              loading={monthlyBreakdownLoading}
+            >
+              查询
+            </Button>
+            <Button
+              onClick={() => void handleExportMonthlyBreakdown()}
+              loading={monthlyBreakdownExporting}
+            >
+              导出Excel
+            </Button>
+          </Space>
+        }
+      >
+        {monthlyBreakdownRows.length > 0 ? (
+          <Table<MonthlyBreakdownRow>
+            dataSource={monthlyBreakdownRows}
+            pagination={false}
+            rowKey="date"
+            columns={[
+              {
+                title: `${monthlyBreakdownMonth.format('M')}月日期`,
+                dataIndex: 'day',
+                key: 'day',
+                align: 'right',
+              },
+              {
+                title: '被拆数量',
+                dataIndex: 'brokenAsinsDedup',
+                key: 'brokenAsinsDedup',
+                align: 'right',
+              },
+              {
+                title: '总链接数量',
+                dataIndex: 'totalAsinsDedup',
+                key: 'totalAsinsDedup',
+                align: 'right',
+              },
+              {
+                title: '被拆占比',
+                dataIndex: 'brokenRatio',
+                key: 'brokenRatio',
+                align: 'right',
+                render: (value: number) => `${toNumber(value).toFixed(2)}%`,
+              },
+            ]}
+            summary={() => (
+              <Table.Summary fixed>
+                <Table.Summary.Row>
+                  <Table.Summary.Cell index={0}>
+                    平均值被拆占比
+                  </Table.Summary.Cell>
+                  <Table.Summary.Cell index={1} align="right">
+                    {monthlyBreakdownSummary.brokenTotal}
+                  </Table.Summary.Cell>
+                  <Table.Summary.Cell index={2} align="right">
+                    {monthlyBreakdownSummary.linkTotal}
+                  </Table.Summary.Cell>
+                  <Table.Summary.Cell index={3} align="right">
+                    {monthlyBreakdownSummary.averageRatio.toFixed(2)}%
+                  </Table.Summary.Cell>
+                </Table.Summary.Row>
+              </Table.Summary>
+            )}
+          />
+        ) : (
+          <div style={{ textAlign: 'center', padding: 40 }}>暂无数据</div>
+        )}
+      </Card>
     </PageContainer>
   );
 };

@@ -4,6 +4,10 @@ const schedulerService = require('../services/schedulerService');
 const monitorTaskQueue = require('../services/monitorTaskQueue');
 const competitorMonitorTaskQueue = require('../services/competitorMonitorTaskQueue');
 const analyticsAggService = require('../services/analyticsAggService');
+const { getProcessRole, isApiRole } = require('../config/processRole');
+const {
+  getWorkerRegistrationStatus,
+} = require('../services/workerProcessorRegistry');
 const logger = require('../utils/logger');
 
 async function getQueueStats(queue, limiterConfig) {
@@ -18,6 +22,11 @@ async function getQueueStats(queue, limiterConfig) {
 
 exports.getOpsOverview = async (req, res) => {
   try {
+    const processRole = getProcessRole();
+    const workerStatus = getWorkerRegistrationStatus();
+    const schedulerEnabled =
+      isApiRole(processRole) && schedulerService.isSchedulerEnabled();
+
     const [monitorQueueStats, competitorQueueStats] = await Promise.all([
       getQueueStats(monitorTaskQueue.queue, monitorTaskQueue.limiterConfig),
       getQueueStats(
@@ -29,6 +38,10 @@ exports.getOpsOverview = async (req, res) => {
     res.json({
       success: true,
       data: {
+        processRole,
+        schedulerEnabled,
+        workerRegisteredQueues: workerStatus.registeredQueues,
+        workerProcessorDetails: workerStatus.details,
         cache: cacheService.getMemoryStats(),
         riskControl: riskControlService.getMetrics(),
         scheduler: schedulerService.getSchedulerStatus(),

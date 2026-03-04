@@ -169,7 +169,11 @@ function buildCompetitorFeishuCard(data) {
 
   // 如果有countryDisplay（包含多个国家），使用它；否则使用区域名称
   const countryName = data.countryDisplay || countryMap[country] || country;
-  const timeStr = checkTime || getUTC8LocaleString();
+  const timeStr = checkTime
+    ? checkTime instanceof Date
+      ? getUTC8LocaleString(checkTime)
+      : checkTime
+    : getUTC8LocaleString();
 
   // 统计异常类型
   const spApiErrorCount = brokenByType?.SP_API_ERROR || 0;

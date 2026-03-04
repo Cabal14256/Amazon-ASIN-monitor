@@ -18,7 +18,7 @@ const { getUserList, deleteUser } = services.UserController;
 
 const UserManagement: React.FC<unknown> = () => {
   const message = useMessage();
-  const actionRef = useRef<ActionType>();
+  const actionRef = useRef<ActionType | null>(null);
   const [selectedRowsState, setSelectedRows] = useState<API.UserInfo[]>([]);
   const [userModalVisible, setUserModalVisible] = useState(false);
   const [passwordModalVisible, setPasswordModalVisible] = useState(false);

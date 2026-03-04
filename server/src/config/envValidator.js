@@ -10,7 +10,7 @@ const REQUIRED_ENV_VARS = [
 ];
 
 // 可选但推荐的环境变量
-const RECOMMENDED_ENV_VARS = ['NODE_ENV', 'LOG_LEVEL', 'PORT'];
+const RECOMMENDED_ENV_VARS = ['NODE_ENV', 'LOG_LEVEL', 'PORT', 'PROCESS_ROLE'];
 
 /**
  * 验证环境变量

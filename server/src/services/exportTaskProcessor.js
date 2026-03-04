@@ -1,6 +1,7 @@
 const ExcelJS = require('exceljs');
 const fs = require('fs').promises;
 const path = require('path');
+const { Worker } = require('worker_threads');
 const VariantGroup = require('../models/VariantGroup');
 const ASIN = require('../models/ASIN');
 const MonitorHistory = require('../models/MonitorHistory');
@@ -8,6 +9,18 @@ const CompetitorMonitorHistory = require('../models/CompetitorMonitorHistory');
 const { getUTC8String } = require('../utils/dateTime');
 const logger = require('../utils/logger');
 const websocketService = require('./websocketService');
+
+const EXPORT_WORKER_SCRIPT = path.join(
+  __dirname,
+  '../workers/export/excelBuilderWorker.js',
+);
+const EXPORT_WORKER_TIMEOUT_MS =
+  Number(process.env.EXPORT_WORKER_TIMEOUT_MS) || 5 * 60 * 1000;
+const EXPORT_WORKER_ENABLED = !['false', '0', 'no', 'off'].includes(
+  String(process.env.EXPORT_WORKER_ENABLED || 'false')
+    .trim()
+    .toLowerCase(),
+);
 
 // 确保导出文件目录存在
 const EXPORT_DIR = path.join(__dirname, '../../tasks/export');
@@ -29,6 +42,98 @@ function buildWorkbookFromAoa(excelData, sheetName, columnWidths = []) {
     worksheet.addRows(excelData);
   }
   return workbook;
+}
+
+function runExportExcelWorker(payload, timeoutMs = EXPORT_WORKER_TIMEOUT_MS) {
+  return new Promise((resolve, reject) => {
+    const requestId = `${Date.now()}-${Math.random().toString(16).slice(2)}`;
+    const worker = new Worker(EXPORT_WORKER_SCRIPT);
+    let settled = false;
+
+    const timer = setTimeout(() => {
+      if (settled) {
+        return;
+      }
+      settled = true;
+      worker.terminate().catch(() => {});
+      reject(new Error(`导出Excel Worker超时（${timeoutMs}ms）`));
+    }, timeoutMs);
+
+    worker.once('message', (message) => {
+      const {
+        success,
+        result,
+        error,
+        requestId: responseRequestId,
+      } = message || {};
+      if (responseRequestId !== requestId || settled) {
+        return;
+      }
+
+      settled = true;
+      clearTimeout(timer);
+      worker.terminate().catch(() => {});
+
+      if (!success) {
+        reject(new Error(error || '导出Excel Worker执行失败'));
+        return;
+      }
+
+      resolve(result);
+    });
+
+    worker.once('error', (error) => {
+      if (settled) {
+        return;
+      }
+      settled = true;
+      clearTimeout(timer);
+      worker.terminate().catch(() => {});
+      reject(error);
+    });
+
+    worker.once('exit', (code) => {
+      if (settled || code === 0) {
+        return;
+      }
+      settled = true;
+      clearTimeout(timer);
+      reject(new Error(`导出Excel Worker异常退出，code=${code}`));
+    });
+
+    worker.postMessage({
+      requestId,
+      payload,
+    });
+  });
+}
+
+async function writeAoaWorkbookToFile({
+  excelData,
+  sheetName,
+  columnWidths = [],
+  filepath,
+}) {
+  if (EXPORT_WORKER_ENABLED) {
+    try {
+      await runExportExcelWorker({
+        rows: excelData,
+        sheetName,
+        columnWidths,
+        outputPath: filepath,
+      });
+      return { usedWorker: true };
+    } catch (error) {
+      logger.warn(
+        `[导出任务] Excel Worker执行失败，回退主线程: ${error.message}`,
+      );
+    }
+  }
+
+  const workbook = buildWorkbookFromAoa(excelData, sheetName, columnWidths);
+  const excelBuffer = await workbook.xlsx.writeBuffer();
+  await fs.writeFile(filepath, excelBuffer);
+  return { usedWorker: false };
 }
 
 /**
@@ -322,19 +427,17 @@ async function processASINExport(job, taskId, params, userId) {
   }
 
   updateProgress(job, taskId, 75, '正在生成Excel文件...', userId);
-
-  const workbook = buildWorkbookFromAoa(
-    excelData,
-    'ASIN数据',
-    [20, 40, 10, 10, 15, 10, 15, 50, 15, 10, 20, 20],
-  );
+  const filename = `ASIN数据_${getUTC8String('YYYY-MM-DD')}.xlsx`;
+  const filepath = path.join(EXPORT_DIR, `${taskId}.xlsx`);
 
   updateProgress(job, taskId, 90, '正在生成Excel文件...', userId);
 
-  const excelBuffer = await workbook.xlsx.writeBuffer();
-  const filename = `ASIN数据_${getUTC8String('YYYY-MM-DD')}.xlsx`;
-  const filepath = path.join(EXPORT_DIR, `${taskId}.xlsx`);
-  await fs.writeFile(filepath, excelBuffer);
+  await writeAoaWorkbookToFile({
+    excelData,
+    sheetName: 'ASIN数据',
+    columnWidths: [20, 40, 10, 10, 15, 10, 15, 50, 15, 10, 20, 20],
+    filepath,
+  });
 
   return { filename, filepath };
 }
@@ -620,19 +723,17 @@ async function processVariantGroupExport(job, taskId, params, userId) {
   }
 
   updateProgress(job, taskId, 75, '正在生成Excel文件...', userId);
-
-  const workbook = buildWorkbookFromAoa(
-    excelData,
-    '变体组数据',
-    [30, 40, 10, 10, 15, 10, 10, 12, 20, 20, 20],
-  );
+  const filename = `变体组数据_${getUTC8String('YYYY-MM-DD')}.xlsx`;
+  const filepath = path.join(EXPORT_DIR, `${taskId}.xlsx`);
 
   updateProgress(job, taskId, 90, '正在生成Excel文件...', userId);
 
-  const excelBuffer = await workbook.xlsx.writeBuffer();
-  const filename = `变体组数据_${getUTC8String('YYYY-MM-DD')}.xlsx`;
-  const filepath = path.join(EXPORT_DIR, `${taskId}.xlsx`);
-  await fs.writeFile(filepath, excelBuffer);
+  await writeAoaWorkbookToFile({
+    excelData,
+    sheetName: '变体组数据',
+    columnWidths: [30, 40, 10, 10, 15, 10, 10, 12, 20, 20, 20],
+    filepath,
+  });
 
   return { filename, filepath };
 }
@@ -733,19 +834,17 @@ async function processCompetitorMonitorHistoryExport(
   }
 
   updateProgress(job, taskId, 75, '正在生成Excel文件...', userId);
-
-  const workbook = buildWorkbookFromAoa(
-    excelData,
-    '竞品监控历史',
-    [20, 10, 30, 15, 50, 10, 10, 100],
-  );
+  const filename = `竞品监控历史_${getUTC8String('YYYY-MM-DD')}.xlsx`;
+  const filepath = path.join(EXPORT_DIR, `${taskId}.xlsx`);
 
   updateProgress(job, taskId, 90, '正在生成Excel文件...', userId);
 
-  const excelBuffer = await workbook.xlsx.writeBuffer();
-  const filename = `竞品监控历史_${getUTC8String('YYYY-MM-DD')}.xlsx`;
-  const filepath = path.join(EXPORT_DIR, `${taskId}.xlsx`);
-  await fs.writeFile(filepath, excelBuffer);
+  await writeAoaWorkbookToFile({
+    excelData,
+    sheetName: '竞品监控历史',
+    columnWidths: [20, 10, 30, 15, 50, 10, 10, 100],
+    filepath,
+  });
 
   return { filename, filepath };
 }

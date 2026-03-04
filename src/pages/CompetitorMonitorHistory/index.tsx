@@ -28,8 +28,8 @@ const countryMap: Record<
 };
 
 const CompetitorMonitorHistoryPage: React.FC<unknown> = () => {
-  const actionRef = useRef<ActionType>();
-  const formRef = useRef<ProFormInstance>();
+  const actionRef = useRef<ActionType | null>(null);
+  const formRef = useRef<ProFormInstance | undefined>(undefined);
   const [searchParams] = useSearchParams();
 
   // 从URL参数获取筛选条件
@@ -119,10 +119,13 @@ const CompetitorMonitorHistoryPage: React.FC<unknown> = () => {
       dataIndex: 'country',
       width: 120,
       valueType: 'select' as const,
-      valueEnum: Object.keys(countryMap).reduce((acc, key) => {
-        acc[key] = { text: countryMap[key].text };
-        return acc;
-      }, {} as Record<string, { text: string }>),
+      valueEnum: Object.keys(countryMap).reduce(
+        (acc, key) => {
+          acc[key] = { text: countryMap[key].text };
+          return acc;
+        },
+        {} as Record<string, { text: string }>,
+      ),
       render: (_: any, record: API.MonitorHistory) => {
         const country = record.country || '';
         const countryInfo = countryMap[country];

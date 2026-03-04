@@ -19,7 +19,7 @@ const { getRoleList, getPermissionList, updateRolePermissions } =
 
 const RoleTab: React.FC = () => {
   const message = useMessage();
-  const actionRef = useRef<any>();
+  const actionRef = useRef<any>(null);
   const { initialState } = useModel('@@initialState');
   const isCurrentUserAdmin = (initialState?.roles || []).includes('ADMIN');
 
