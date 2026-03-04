@@ -513,8 +513,14 @@ class MonitorHistory {
   }
 
   // 仅统计真实ASIN（排除父变体 asin_type=1/MAIN_LINK）
-  static getRealAsinFilter(fieldExpr = 'asin_id') {
-    return `(${fieldExpr} IS NULL OR ${fieldExpr} IN (
+  static getRealAsinFilter(
+    fieldExpr = 'asin_id',
+    checkTypeExpr = 'check_type',
+  ) {
+    return `((
+      ${fieldExpr} IS NULL
+      AND (${checkTypeExpr} IS NULL OR ${checkTypeExpr} <> 'GROUP')
+    ) OR ${fieldExpr} IN (
       SELECT id FROM asins
       WHERE asin_type IS NULL OR asin_type NOT IN ('1', 'MAIN_LINK')
     ))`;
@@ -553,7 +559,10 @@ class MonitorHistory {
       conditions.push(endTime);
     }
 
-    whereClause += ` AND ${MonitorHistory.getRealAsinFilter('asin_id')}`;
+    whereClause += ` AND ${MonitorHistory.getRealAsinFilter(
+      'asin_id',
+      'check_type',
+    )}`;
 
     // 由于多个子查询都需要相同的参数，需要将参数数组重复多次
     const allConditions = [...conditions, ...conditions, ...conditions];
@@ -1311,7 +1320,10 @@ class MonitorHistory {
       conditions.push(endTime);
     }
 
-    whereClause += ` AND ${MonitorHistory.getRealAsinFilter('mh.asin_id')}`;
+    whereClause += ` AND ${MonitorHistory.getRealAsinFilter(
+      'mh.asin_id',
+      'mh.check_type',
+    )}`;
 
     const sql = `
       SELECT
@@ -1507,7 +1519,10 @@ class MonitorHistory {
         conditions.push(endTime);
       }
 
-      whereClause += ` AND ${MonitorHistory.getRealAsinFilter('mh.asin_id')}`;
+      whereClause += ` AND ${MonitorHistory.getRealAsinFilter(
+        'mh.asin_id',
+        'mh.check_type',
+      )}`;
 
       const sql = `
         SELECT
@@ -1883,7 +1898,10 @@ class MonitorHistory {
       conditions.push(brand);
     }
 
-    whereClause += ` AND ${MonitorHistory.getRealAsinFilter('mh.asin_id')}`;
+    whereClause += ` AND ${MonitorHistory.getRealAsinFilter(
+      'mh.asin_id',
+      'mh.check_type',
+    )}`;
 
     // 优化：将高峰时段判断移到数据库层面
     // 构建高峰时段判断的SQL CASE语句
