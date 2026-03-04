@@ -34,6 +34,15 @@ function formatDateToSqlText(date) {
   return `${yyyy}-${mm}-${dd} ${hh}:${mi}:${ss}`;
 }
 
+function truncateDateToSecond(date) {
+  if (!(date instanceof Date) || Number.isNaN(date.getTime())) {
+    return null;
+  }
+  const normalized = new Date(date);
+  normalized.setMilliseconds(0);
+  return normalized;
+}
+
 function clampValue(value, min, max) {
   if (!Number.isFinite(value)) {
     return min;
@@ -2686,21 +2695,21 @@ class MonitorHistory {
       return 0;
     }
 
-    const startDate =
-      startTime instanceof Date ? startTime : new Date(startTime);
-    const endDate = endTime instanceof Date ? endTime : new Date(endTime);
+    const startDate = parseDateTimeInput(startTime);
+    const endDate = parseDateTimeInput(endTime);
 
-    if (Number.isNaN(startDate.getTime()) || Number.isNaN(endDate.getTime())) {
+    if (!startDate || !endDate) {
       return 0;
     }
 
     const rangeStart = startDate <= endDate ? startDate : endDate;
     const rangeEnd = startDate <= endDate ? endDate : startDate;
-    const normalizedRangeStart = new Date(rangeStart);
-    const normalizedRangeEnd = new Date(rangeEnd);
+    const normalizedRangeStart = truncateDateToSecond(rangeStart);
+    const normalizedRangeEnd = truncateDateToSecond(rangeEnd);
 
-    normalizedRangeStart.setMilliseconds(0);
-    normalizedRangeEnd.setMilliseconds(0);
+    if (!normalizedRangeStart || !normalizedRangeEnd) {
+      return 0;
+    }
 
     const result = await query(
       `UPDATE monitor_history
