@@ -2696,6 +2696,11 @@ class MonitorHistory {
 
     const rangeStart = startDate <= endDate ? startDate : endDate;
     const rangeEnd = startDate <= endDate ? endDate : startDate;
+    const normalizedRangeStart = new Date(rangeStart);
+    const normalizedRangeEnd = new Date(rangeEnd);
+
+    normalizedRangeStart.setMilliseconds(0);
+    normalizedRangeEnd.setMilliseconds(0);
 
     const result = await query(
       `UPDATE monitor_history
@@ -2705,7 +2710,12 @@ class MonitorHistory {
          AND check_time <= ?
          AND is_broken = 1
          AND notification_sent = 0`,
-      [notificationSent ? 1 : 0, country, rangeStart, rangeEnd],
+      [
+        notificationSent ? 1 : 0,
+        country,
+        formatDateToSqlText(normalizedRangeStart),
+        formatDateToSqlText(normalizedRangeEnd),
+      ],
     );
 
     cacheService.deleteByPrefix('monitorHistoryCount:');
