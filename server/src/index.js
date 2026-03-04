@@ -1,8 +1,8 @@
+require('dotenv').config();
 process.env.TZ = process.env.TZ || 'Asia/Shanghai';
 
 const express = require('express');
 const cors = require('cors');
-require('dotenv').config();
 const logger = require('./utils/logger');
 const { validateEnv } = require('./config/envValidator');
 const { testConnection } = require('./config/database');

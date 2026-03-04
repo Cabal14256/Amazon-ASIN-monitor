@@ -514,10 +514,10 @@ class MonitorHistory {
 
   // 仅统计真实ASIN（排除父变体 asin_type=1/MAIN_LINK）
   static getRealAsinFilter(fieldExpr = 'asin_id') {
-    return `${fieldExpr} IN (
+    return `(${fieldExpr} IS NULL OR ${fieldExpr} IN (
       SELECT id FROM asins
       WHERE asin_type IS NULL OR asin_type NOT IN ('1', 'MAIN_LINK')
-    )`;
+    ))`;
   }
 
   static async getStatisticsByTimeFromRaw(params = {}) {
