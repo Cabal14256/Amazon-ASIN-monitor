@@ -57,6 +57,7 @@ const schedulerStatus = {
     lastError: null,
   },
 };
+let schedulerEnabled = false;
 
 function recordSchedulerRun(type, durationSec) {
   metricsService.recordSchedulerRun({ type, durationSec });
@@ -280,6 +281,7 @@ function scheduleMonitorTasks() {
 }
 
 function initScheduler() {
+  schedulerEnabled = true;
   logger.info('🕐 初始化定时任务...');
   logger.info(
     `📦 分批处理配置: ${TOTAL_BATCHES} 批（${
@@ -478,5 +480,6 @@ module.exports = {
   initBackupScheduler,
   reloadBackupSchedule,
   reloadMonitorSchedule,
+  isSchedulerEnabled: () => schedulerEnabled,
   getSchedulerStatus: () => ({ ...schedulerStatus }),
 };

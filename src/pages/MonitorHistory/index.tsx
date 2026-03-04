@@ -69,8 +69,8 @@ const toCsvCell = (value: unknown): string => {
 };
 
 const MonitorHistoryPage: React.FC<unknown> = () => {
-  const actionRef = useRef<ActionType>();
-  const formRef = useRef<ProFormInstance>();
+  const actionRef = useRef<ActionType | null>(null);
+  const formRef = useRef<ProFormInstance | undefined>(undefined);
   const [searchParams] = useSearchParams();
   const [statistics, setStatistics] = useState<API.MonitorStatistics>({});
   const [peakHoursStatistics, setPeakHoursStatistics] =
@@ -478,8 +478,8 @@ const MonitorHistoryPage: React.FC<unknown> = () => {
           record.asinType === 'MAIN_LINK'
             ? '1'
             : record.asinType === 'SUB_REVIEW'
-            ? '2'
-            : record.asinType;
+              ? '2'
+              : record.asinType;
         const typeMap: Record<string, { text: string; color: string }> = {
           '1': { text: '主链', color: 'green' },
           '2': { text: '副评', color: 'blue' },
@@ -497,10 +497,13 @@ const MonitorHistoryPage: React.FC<unknown> = () => {
       dataIndex: 'country',
       width: 120,
       valueType: 'select' as const,
-      valueEnum: Object.keys(countryMap).reduce((acc, key) => {
-        acc[key] = { text: countryMap[key].text };
-        return acc;
-      }, {} as Record<string, { text: string }>),
+      valueEnum: Object.keys(countryMap).reduce(
+        (acc, key) => {
+          acc[key] = { text: countryMap[key].text };
+          return acc;
+        },
+        {} as Record<string, { text: string }>,
+      ),
       render: (_: any, record: API.MonitorHistory) => {
         const country = record.country || '';
         const countryInfo = countryMap[country];
@@ -813,9 +816,8 @@ const MonitorHistoryPage: React.FC<unknown> = () => {
                 statsParams.asinCodes
               ) {
                 debugLog('加载异常时长统计，参数:', statsParams);
-                const statsResult = await getAbnormalDurationStatistics(
-                  statsParams,
-                );
+                const statsResult =
+                  await getAbnormalDurationStatistics(statsParams);
                 debugLog('异常时长统计结果:', statsResult);
 
                 // 检查返回的数据结构
@@ -978,8 +980,8 @@ const MonitorHistoryPage: React.FC<unknown> = () => {
                 {abnormalDurationData.timeGranularity === 'hour'
                   ? '按小时'
                   : abnormalDurationData.timeGranularity === 'day'
-                  ? '按天'
-                  : '按周'}
+                    ? '按天'
+                    : '按周'}
               </Tag>
               <Tag>ASIN数: {abnormalDurationSummaryData.length}</Tag>
             </Space>

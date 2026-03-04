@@ -50,8 +50,8 @@ const countryMap: Record<
 
 const ASINManagement: React.FC<unknown> = () => {
   const message = useMessage();
-  const actionRef = useRef<ActionType>();
-  const formRef = useRef<ProFormInstance>();
+  const actionRef = useRef<ActionType | null>(null);
+  const formRef = useRef<ProFormInstance | undefined>(undefined);
   const requestCacheRef = useRef<
     Map<
       string,
@@ -126,10 +126,13 @@ const ASINManagement: React.FC<unknown> = () => {
   // 国家选项枚举（使用useMemo优化）
   const countryValueEnum = useMemo(
     () =>
-      Object.keys(countryMap).reduce((acc, key) => {
-        acc[key] = { text: countryMap[key].text };
-        return acc;
-      }, {} as Record<string, { text: string }>),
+      Object.keys(countryMap).reduce(
+        (acc, key) => {
+          acc[key] = { text: countryMap[key].text };
+          return acc;
+        },
+        {} as Record<string, { text: string }>,
+      ),
     [],
   );
 

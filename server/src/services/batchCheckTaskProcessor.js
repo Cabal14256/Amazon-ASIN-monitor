@@ -2,6 +2,91 @@ const variantCheckService = require('./variantCheckService');
 const logger = require('../utils/logger');
 const websocketService = require('./websocketService');
 
+const DEFAULT_BATCH_CHECK_GROUP_CONCURRENCY = 2;
+
+function getBatchCheckGroupConcurrency(total) {
+  const configured = Number(process.env.BATCH_CHECK_GROUP_CONCURRENCY);
+  const normalized =
+    Number.isFinite(configured) && configured > 0
+      ? Math.floor(configured)
+      : DEFAULT_BATCH_CHECK_GROUP_CONCURRENCY;
+  return Math.max(1, Math.min(normalized, total));
+}
+
+function buildVariantViewFromResult(serviceResult) {
+  const d = serviceResult.details || {};
+  const relationships = d.relationships || [];
+  const isBroken =
+    serviceResult.isBroken === true || serviceResult.isBroken === 1;
+
+  let brotherAsins = [];
+  let parentAsin = null;
+
+  for (const rel of relationships) {
+    if (Array.isArray(rel.parentAsins) && rel.parentAsins.length > 0) {
+      parentAsin = (rel.parentAsins[0] || '').toString().trim().toUpperCase();
+      if (parentAsin) break;
+    }
+    if (
+      (rel.type === 'PARENT' || rel.relationshipType === 'PARENT') &&
+      (rel.asin || rel.parentAsin)
+    ) {
+      parentAsin = (rel.asin || rel.parentAsin || '')
+        .toString()
+        .trim()
+        .toUpperCase();
+      if (parentAsin) break;
+    }
+  }
+
+  let hasVariation = brotherAsins.length > 0;
+  if (parentAsin && !hasVariation) {
+    hasVariation = true;
+  }
+
+  const brand = d.brand || null;
+
+  return {
+    asin: d.asin || '',
+    title: d.title || '',
+    hasVariation,
+    isBroken: typeof isBroken === 'boolean' ? isBroken : !hasVariation,
+    parentAsin,
+    brotherAsins,
+    brand,
+    raw: serviceResult,
+  };
+}
+
+function mapResultWithVariantView(result) {
+  let mappedResults = result?.details?.results;
+  if (!Array.isArray(mappedResults)) {
+    return result;
+  }
+
+  mappedResults = mappedResults.map((item) => {
+    if (!item || typeof item !== 'object') return item;
+
+    const variantView = buildVariantViewFromResult({
+      isBroken: item.isBroken,
+      details: item.details,
+    });
+
+    return {
+      ...item,
+      variantView,
+    };
+  });
+
+  return {
+    ...result,
+    details: {
+      ...(result?.details || {}),
+      results: mappedResults || result?.details?.results || [],
+    },
+  };
+}
+
 /**
  * 更新任务进度
  */
@@ -20,116 +105,65 @@ async function processBatchCheckTask(job) {
     updateProgress(job, taskId, 5, '正在初始化...', userId);
 
     const shouldForceRefresh = forceRefresh !== false;
-    const results = [];
     const total = groupIds.length;
+    const results = new Array(total);
+    const concurrency = getBatchCheckGroupConcurrency(total);
+    let nextIndex = 0;
+    let completedCount = 0;
 
-    for (let i = 0; i < groupIds.length; i++) {
-      const groupId = groupIds[i];
+    logger.info(
+      `[批量检查任务] 执行并发数: ${concurrency}, 总任务数: ${total}`,
+    );
 
+    const runSingleCheck = async (index) => {
+      const groupId = groupIds[index];
       try {
-        updateProgress(
-          job,
-          taskId,
-          Math.floor((i / total) * 90) + 5,
-          `正在检查变体组 ${i + 1}/${total}...`,
-          userId,
-        );
-
         const result = await variantCheckService.checkVariantGroup(
           groupId,
           shouldForceRefresh,
           { skipGroupStatus: true },
         );
 
-        // 构建变体视图
-        let mappedResults = result?.details?.results;
-        if (Array.isArray(mappedResults)) {
-          mappedResults = mappedResults.map((item) => {
-            if (!item || typeof item !== 'object') return item;
-
-            const buildVariantViewFromResult = (serviceResult) => {
-              const d = serviceResult.details || {};
-              const relationships = d.relationships || [];
-              const isBroken =
-                serviceResult.isBroken === true || serviceResult.isBroken === 1;
-
-              let brotherAsins = [];
-              let parentAsin = null;
-
-              for (const rel of relationships) {
-                if (
-                  Array.isArray(rel.parentAsins) &&
-                  rel.parentAsins.length > 0
-                ) {
-                  parentAsin = (rel.parentAsins[0] || '')
-                    .toString()
-                    .trim()
-                    .toUpperCase();
-                  if (parentAsin) break;
-                }
-                if (
-                  (rel.type === 'PARENT' ||
-                    rel.relationshipType === 'PARENT') &&
-                  (rel.asin || rel.parentAsin)
-                ) {
-                  parentAsin = (rel.asin || rel.parentAsin || '')
-                    .toString()
-                    .trim()
-                    .toUpperCase();
-                  if (parentAsin) break;
-                }
-              }
-
-              let hasVariation = brotherAsins.length > 0;
-              if (parentAsin && !hasVariation) {
-                hasVariation = true;
-              }
-
-              const brand = d.brand || null;
-
-              return {
-                asin: d.asin || '',
-                title: d.title || '',
-                hasVariation,
-                isBroken:
-                  typeof isBroken === 'boolean' ? isBroken : !hasVariation,
-                parentAsin,
-                brotherAsins,
-                brand,
-                raw: serviceResult,
-              };
-            };
-
-            const variantView = buildVariantViewFromResult({
-              isBroken: item.isBroken,
-              details: item.details,
-            });
-
-            return {
-              ...item,
-              variantView,
-            };
-          });
-        }
-
-        results.push({
+        results[index] = {
           groupId,
           success: true,
-          ...result,
-          details: {
-            ...(result?.details || {}),
-            results: mappedResults || result?.details?.results || [],
-          },
-        });
+          ...mapResultWithVariantView(result),
+        };
       } catch (error) {
         logger.error(`[批量检查] 检查变体组 ${groupId} 失败:`, error);
-        results.push({
+        results[index] = {
           groupId,
           success: false,
           error: error.message || '检查失败',
-        });
+        };
+      } finally {
+        completedCount += 1;
+        const progress = Math.min(
+          Math.floor((completedCount / total) * 90) + 5,
+          95,
+        );
+        updateProgress(
+          job,
+          taskId,
+          progress,
+          `正在检查变体组 ${completedCount}/${total}...`,
+          userId,
+        );
       }
-    }
+    };
+
+    const workers = Array.from({ length: concurrency }, async () => {
+      while (true) {
+        const currentIndex = nextIndex;
+        nextIndex += 1;
+        if (currentIndex >= total) {
+          break;
+        }
+        await runSingleCheck(currentIndex);
+      }
+    });
+
+    await Promise.all(workers);
 
     updateProgress(job, taskId, 95, '正在汇总结果...', userId);
 

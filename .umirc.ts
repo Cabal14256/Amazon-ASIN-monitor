@@ -5,6 +5,8 @@ export default defineConfig({
   model: {},
   request: {},
   initialState: {},
+  request: {},
+  esbuildMinifyIIFE: true,
   access: {
     // 权限控制配置
     // 当权限检查失败时，显示自定义的 403 页面

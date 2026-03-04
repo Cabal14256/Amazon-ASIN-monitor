@@ -45,18 +45,42 @@ const backupTaskQueue = new Queue('backup-task-queue', redisUrl, {
   },
 });
 
-backupTaskQueue.process(async (job) => {
-  const { taskId, taskType, params, userId } = job.data || {};
+let processorRegistered = false;
+let processorConcurrency = 0;
 
-  if (!taskId || !taskType) {
-    throw new Error('任务ID和任务类型不能为空');
+function registerProcessor() {
+  if (processorRegistered) {
+    return false;
   }
 
-  logger.info(`[备份任务] 开始处理任务 ${taskId}, 类型: ${taskType}`);
+  processorConcurrency = 1;
 
-  const backupTaskProcessor = require('./backupTaskProcessor');
-  await backupTaskProcessor.processBackupTask(job);
-});
+  backupTaskQueue.process(processorConcurrency, async (job) => {
+    const { taskId, taskType } = job.data || {};
+
+    if (!taskId || !taskType) {
+      throw new Error('任务ID和任务类型不能为空');
+    }
+
+    logger.info(`[备份任务] 开始处理任务 ${taskId}, 类型: ${taskType}`);
+
+    const backupTaskProcessor = require('./backupTaskProcessor');
+    await backupTaskProcessor.processBackupTask(job);
+  });
+
+  processorRegistered = true;
+  logger.info(
+    `[备份任务队列] 已注册处理器，worker并发=${processorConcurrency}`,
+  );
+  return true;
+}
+
+function getProcessorStatus() {
+  return {
+    registered: processorRegistered,
+    concurrency: processorConcurrency,
+  };
+}
 
 backupTaskQueue.on('failed', (job, err) => {
   logger.error(
@@ -114,5 +138,7 @@ module.exports = {
   enqueue,
   getJob,
   getJobState,
+  registerProcessor,
+  getProcessorStatus,
   queue: backupTaskQueue,
 };

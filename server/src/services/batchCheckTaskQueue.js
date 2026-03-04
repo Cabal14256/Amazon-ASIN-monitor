@@ -46,26 +46,50 @@ const batchCheckTaskQueue = new Queue('batch-check-task-queue', redisUrl, {
   },
 });
 
-// 处理批量检查任务
-batchCheckTaskQueue.process(async (job) => {
-  const { taskId, groupIds, country, forceRefresh, userId } = job.data || {};
+let processorRegistered = false;
+let processorConcurrency = 0;
 
-  if (
-    !taskId ||
-    !groupIds ||
-    !Array.isArray(groupIds) ||
-    groupIds.length === 0
-  ) {
-    throw new Error('任务ID和变体组ID列表不能为空');
+function registerProcessor() {
+  if (processorRegistered) {
+    return false;
   }
 
-  logger.info(
-    `[批量检查任务] 开始处理任务 ${taskId}, 变体组数量: ${groupIds.length}`,
-  );
+  processorConcurrency = 1;
 
-  const batchCheckTaskProcessor = require('./batchCheckTaskProcessor');
-  await batchCheckTaskProcessor.processBatchCheckTask(job);
-});
+  // 处理批量检查任务
+  batchCheckTaskQueue.process(processorConcurrency, async (job) => {
+    const { taskId, groupIds } = job.data || {};
+
+    if (
+      !taskId ||
+      !groupIds ||
+      !Array.isArray(groupIds) ||
+      groupIds.length === 0
+    ) {
+      throw new Error('任务ID和变体组ID列表不能为空');
+    }
+
+    logger.info(
+      `[批量检查任务] 开始处理任务 ${taskId}, 变体组数量: ${groupIds.length}`,
+    );
+
+    const batchCheckTaskProcessor = require('./batchCheckTaskProcessor');
+    await batchCheckTaskProcessor.processBatchCheckTask(job);
+  });
+
+  processorRegistered = true;
+  logger.info(
+    `[批量检查任务队列] 已注册处理器，worker并发=${processorConcurrency}`,
+  );
+  return true;
+}
+
+function getProcessorStatus() {
+  return {
+    registered: processorRegistered,
+    concurrency: processorConcurrency,
+  };
+}
 
 batchCheckTaskQueue.on('failed', (job, err) => {
   logger.error(
@@ -126,5 +150,7 @@ module.exports = {
   enqueue,
   getJob,
   getJobState,
+  registerProcessor,
+  getProcessorStatus,
   queue: batchCheckTaskQueue,
 };

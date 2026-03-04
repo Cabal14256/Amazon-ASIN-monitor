@@ -40,6 +40,7 @@ const redisUrl = buildRedisUrl();
 const LIMITER_MAX = Number(process.env.COMPETITOR_QUEUE_LIMITER_MAX) || 1;
 const LIMITER_DURATION_MS =
   Number(process.env.COMPETITOR_QUEUE_LIMITER_DURATION_MS) || 200;
+const DEFAULT_WORKER_CONCURRENCY = 1;
 
 const competitorMonitorTaskQueue = new Queue(
   'competitor-monitor-task-queue',
@@ -62,16 +63,48 @@ const competitorMonitorTaskQueue = new Queue(
   },
 );
 
-competitorMonitorTaskQueue.process(async (job) => {
-  const { countries, batchConfig } = job.data || {};
-  if (!countries || !countries.length) {
-    return;
+let processorRegistered = false;
+let processorConcurrency = 0;
+
+function getWorkerConcurrency() {
+  const configured = Number(process.env.COMPETITOR_QUEUE_WORKER_CONCURRENCY);
+  if (Number.isFinite(configured) && configured > 0) {
+    return Math.max(Math.floor(configured), 1);
   }
-  await competitorMonitorTaskRunner.runCompetitorMonitorTask(
-    countries,
-    batchConfig,
+  return DEFAULT_WORKER_CONCURRENCY;
+}
+
+function registerProcessor() {
+  if (processorRegistered) {
+    return false;
+  }
+
+  const concurrency = getWorkerConcurrency();
+  competitorMonitorTaskQueue.process(concurrency, async (job) => {
+    const { countries, batchConfig } = job.data || {};
+    if (!countries || !countries.length) {
+      return;
+    }
+    await competitorMonitorTaskRunner.runCompetitorMonitorTask(
+      countries,
+      batchConfig,
+    );
+  });
+
+  processorRegistered = true;
+  processorConcurrency = concurrency;
+  logger.info(
+    `[竞品监控任务队列] 已注册处理器，worker并发=${processorConcurrency}`,
   );
-});
+  return true;
+}
+
+function getProcessorStatus() {
+  return {
+    registered: processorRegistered,
+    concurrency: processorConcurrency,
+  };
+}
 
 competitorMonitorTaskQueue.on('failed', (job, err) => {
   logger.error(
@@ -90,6 +123,8 @@ function enqueue(countries, batchConfig = null) {
 module.exports = {
   enqueue,
   queue: competitorMonitorTaskQueue,
+  registerProcessor,
+  getProcessorStatus,
   limiterConfig: {
     max: LIMITER_MAX,
     duration: LIMITER_DURATION_MS,

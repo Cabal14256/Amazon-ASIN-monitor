@@ -43,7 +43,7 @@ const resourceMap: Record<string, string> = {
 
 const AuditLogPage: React.FC<unknown> = () => {
   const message = useMessage();
-  const actionRef = useRef<ActionType>();
+  const actionRef = useRef<ActionType | null>(null);
   const [dateRange, setDateRange] = useState<[Dayjs, Dayjs] | null>(null);
 
   const columns: ProColumns<API.AuditLog>[] = [
@@ -74,10 +74,13 @@ const AuditLogPage: React.FC<unknown> = () => {
       dataIndex: 'action',
       width: 120,
       valueType: 'select' as const,
-      valueEnum: Object.keys(actionMap).reduce((acc, key) => {
-        acc[key] = { text: actionMap[key].text };
-        return acc;
-      }, {} as Record<string, { text: string }>),
+      valueEnum: Object.keys(actionMap).reduce(
+        (acc, key) => {
+          acc[key] = { text: actionMap[key].text };
+          return acc;
+        },
+        {} as Record<string, { text: string }>,
+      ),
       render: (_: any, record: API.AuditLog) => {
         const action = record.action || 'UNKNOWN';
         const actionInfo = actionMap[action] || actionMap.UNKNOWN;
@@ -89,10 +92,13 @@ const AuditLogPage: React.FC<unknown> = () => {
       dataIndex: 'resource',
       width: 120,
       valueType: 'select' as const,
-      valueEnum: Object.keys(resourceMap).reduce((acc, key) => {
-        acc[key] = { text: resourceMap[key] };
-        return acc;
-      }, {} as Record<string, { text: string }>),
+      valueEnum: Object.keys(resourceMap).reduce(
+        (acc, key) => {
+          acc[key] = { text: resourceMap[key] };
+          return acc;
+        },
+        {} as Record<string, { text: string }>,
+      ),
       render: (_: React.ReactNode, record: API.AuditLog) => {
         const text = record.resource;
         return text ? resourceMap[text] || text : '-';
@@ -125,12 +131,12 @@ const AuditLogPage: React.FC<unknown> = () => {
               text === 'GET'
                 ? 'blue'
                 : text === 'POST'
-                ? 'green'
-                : text === 'PUT'
-                ? 'orange'
-                : text === 'DELETE'
-                ? 'red'
-                : 'default'
+                  ? 'green'
+                  : text === 'PUT'
+                    ? 'orange'
+                    : text === 'DELETE'
+                      ? 'red'
+                      : 'default'
             }
           >
             {text}
@@ -150,8 +156,8 @@ const AuditLogPage: React.FC<unknown> = () => {
           status >= 200 && status < 300
             ? 'success'
             : status >= 400 && status < 500
-            ? 'error'
-            : 'warning';
+              ? 'error'
+              : 'warning';
         return <Tag color={color}>{status}</Tag>;
       },
     },

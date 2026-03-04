@@ -40,6 +40,7 @@ const redisUrl = buildRedisUrl();
 const LIMITER_MAX = Number(process.env.MONITOR_QUEUE_LIMITER_MAX) || 1;
 const LIMITER_DURATION_MS =
   Number(process.env.MONITOR_QUEUE_LIMITER_DURATION_MS) || 200;
+const DEFAULT_WORKER_CONCURRENCY = 1;
 
 const monitorTaskQueue = new Queue('monitor-task-queue', redisUrl, {
   defaultJobOptions: {
@@ -58,13 +59,45 @@ const monitorTaskQueue = new Queue('monitor-task-queue', redisUrl, {
   },
 });
 
-monitorTaskQueue.process(async (job) => {
-  const { countries, batchConfig } = job.data || {};
-  if (!countries || !countries.length) {
-    return;
+let processorRegistered = false;
+let processorConcurrency = 0;
+
+function getWorkerConcurrency() {
+  const configured = Number(process.env.MONITOR_QUEUE_WORKER_CONCURRENCY);
+  if (Number.isFinite(configured) && configured > 0) {
+    return Math.max(Math.floor(configured), 1);
   }
-  await monitorTaskRunner.runMonitorTask(countries, batchConfig);
-});
+  return DEFAULT_WORKER_CONCURRENCY;
+}
+
+function registerProcessor() {
+  if (processorRegistered) {
+    return false;
+  }
+
+  const concurrency = getWorkerConcurrency();
+  monitorTaskQueue.process(concurrency, async (job) => {
+    const { countries, batchConfig } = job.data || {};
+    if (!countries || !countries.length) {
+      return;
+    }
+    await monitorTaskRunner.runMonitorTask(countries, batchConfig);
+  });
+
+  processorRegistered = true;
+  processorConcurrency = concurrency;
+  logger.info(
+    `[监控任务队列] 已注册处理器，worker并发=${processorConcurrency}`,
+  );
+  return true;
+}
+
+function getProcessorStatus() {
+  return {
+    registered: processorRegistered,
+    concurrency: processorConcurrency,
+  };
+}
 
 monitorTaskQueue.on('failed', (job, err) => {
   logger.error(
@@ -83,6 +116,8 @@ function enqueue(countries, batchConfig = null) {
 module.exports = {
   enqueue,
   queue: monitorTaskQueue,
+  registerProcessor,
+  getProcessorStatus,
   limiterConfig: {
     max: LIMITER_MAX,
     duration: LIMITER_DURATION_MS,

@@ -46,19 +46,43 @@ const exportTaskQueue = new Queue('export-task-queue', redisUrl, {
   },
 });
 
-// 处理导出任务
-exportTaskQueue.process(async (job) => {
-  const { taskId, exportType, params, userId } = job.data || {};
+let processorRegistered = false;
+let processorConcurrency = 0;
 
-  if (!taskId || !exportType) {
-    throw new Error('任务ID和导出类型不能为空');
+function registerProcessor() {
+  if (processorRegistered) {
+    return false;
   }
 
-  logger.info(`[导出任务] 开始处理任务 ${taskId}, 类型: ${exportType}`);
+  processorConcurrency = 1;
 
-  const exportTaskProcessor = require('./exportTaskProcessor');
-  await exportTaskProcessor.processExportTask(job);
-});
+  // 处理导出任务
+  exportTaskQueue.process(processorConcurrency, async (job) => {
+    const { taskId, exportType } = job.data || {};
+
+    if (!taskId || !exportType) {
+      throw new Error('任务ID和导出类型不能为空');
+    }
+
+    logger.info(`[导出任务] 开始处理任务 ${taskId}, 类型: ${exportType}`);
+
+    const exportTaskProcessor = require('./exportTaskProcessor');
+    await exportTaskProcessor.processExportTask(job);
+  });
+
+  processorRegistered = true;
+  logger.info(
+    `[导出任务队列] 已注册处理器，worker并发=${processorConcurrency}`,
+  );
+  return true;
+}
+
+function getProcessorStatus() {
+  return {
+    registered: processorRegistered,
+    concurrency: processorConcurrency,
+  };
+}
 
 exportTaskQueue.on('failed', (job, err) => {
   logger.error(
@@ -121,5 +145,7 @@ module.exports = {
   enqueue,
   getJob,
   getJobState,
+  registerProcessor,
+  getProcessorStatus,
   queue: exportTaskQueue,
 };
