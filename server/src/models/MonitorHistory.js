@@ -2434,9 +2434,7 @@ class MonitorHistory {
       skipCount = false,
     } = params;
     const normalizedAsinType = asinType ? String(asinType).trim() : '';
-    const includeAsinRowsForGroupFilter =
-      checkType === 'GROUP' && (variantGroupId || variantGroupName);
-    const effectiveCheckType = includeAsinRowsForGroupFilter ? '' : checkType;
+    const normalizedCheckType = checkType ? String(checkType).trim() : '';
 
     // 构建基础查询，使用窗口函数识别状态变化
     let sql = `
@@ -2521,9 +2519,9 @@ class MonitorHistory {
       }
     }
 
-    if (effectiveCheckType) {
+    if (normalizedCheckType) {
       sql += ` AND mh.check_type = ?`;
-      conditions.push(effectiveCheckType);
+      conditions.push(normalizedCheckType);
     }
 
     if (startTime) {
@@ -2552,7 +2550,7 @@ class MonitorHistory {
         asinId || 'ALL'
       }:${asin || 'ALL'}:${variantGroupName || 'ALL'}:${asinName || 'ALL'}:${
         normalizedAsinType || 'ALL'
-      }:${country || 'ALL'}:${effectiveCheckType || 'ALL'}:${
+      }:${country || 'ALL'}:${normalizedCheckType || 'ALL'}:${
         startTime || 'ALL'
       }:${endTime || 'ALL'}`;
       total = await cacheService.getAsync(countKey);
@@ -2636,9 +2634,9 @@ class MonitorHistory {
           }
         }
 
-        if (effectiveCheckType) {
+        if (normalizedCheckType) {
           countSql += ` AND mh.check_type = ?`;
-          countConditions.push(effectiveCheckType);
+          countConditions.push(normalizedCheckType);
         }
 
         if (startTime) {
@@ -2710,16 +2708,14 @@ class MonitorHistory {
       endTime = '',
     } = params;
     const normalizedAsinType = asinType ? String(asinType).trim() : '';
-    const includeAsinRowsForGroupFilter =
-      checkType === 'GROUP' && (variantGroupId || variantGroupName);
-    const effectiveCheckType = includeAsinRowsForGroupFilter ? '' : checkType;
+    const normalizedCheckType = checkType ? String(checkType).trim() : '';
 
     // 先获取总数
     const countKey = `statusChangesCount:${variantGroupId || 'ALL'}:${
       asinId || 'ALL'
     }:${asin || 'ALL'}:${variantGroupName || 'ALL'}:${asinName || 'ALL'}:${
       normalizedAsinType || 'ALL'
-    }:${country || 'ALL'}:${effectiveCheckType || 'ALL'}:${
+    }:${country || 'ALL'}:${normalizedCheckType || 'ALL'}:${
       startTime || 'ALL'
     }:${endTime || 'ALL'}`;
     let total = await cacheService.getAsync(countKey);
@@ -2802,9 +2798,9 @@ class MonitorHistory {
         }
       }
 
-      if (effectiveCheckType) {
+      if (normalizedCheckType) {
         countSql += ` AND mh.check_type = ?`;
-        countConditions.push(effectiveCheckType);
+        countConditions.push(normalizedCheckType);
       }
 
       if (startTime) {
@@ -2917,9 +2913,9 @@ class MonitorHistory {
         }
       }
 
-      if (effectiveCheckType) {
+      if (normalizedCheckType) {
         sql += ` AND mh.check_type = ?`;
-        conditions.push(effectiveCheckType);
+        conditions.push(normalizedCheckType);
       }
 
       if (startTime) {
