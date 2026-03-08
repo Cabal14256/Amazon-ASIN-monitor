@@ -335,50 +335,69 @@ exports.getPeakHoursStatistics = async (req, res) => {
 // 手动触发监控检查
 exports.triggerManualCheck = async (req, res) => {
   try {
-    const { countries } = req.body; // 可选：指定要检查的国家数组
+    const { countries } = req.body || {};
+    const monitorTaskQueue = require('../services/monitorTaskQueue');
+    const { REGION_MAP } = require('../services/monitorTaskRunner');
+    const allCountries = Object.keys(REGION_MAP);
+    let normalizedCountries = allCountries;
 
-    const { triggerManualCheck } = require('../services/monitorTaskRunner');
+    if (countries !== undefined) {
+      if (!Array.isArray(countries)) {
+        return res.status(400).json({
+          success: false,
+          errorMessage: 'countries 必须是数组',
+          errorCode: 400,
+        });
+      }
+
+      normalizedCountries = [
+        ...new Set(
+          countries
+            .map((country) =>
+              String(country || '')
+                .trim()
+                .toUpperCase(),
+            )
+            .filter((country) => allCountries.includes(country)),
+        ),
+      ];
+
+      if (normalizedCountries.length === 0) {
+        return res.status(400).json({
+          success: false,
+          errorMessage: '没有可执行的有效国家代码',
+          errorCode: 400,
+        });
+      }
+    }
 
     logger.info(
-      `[手动检查] 收到手动检查请求，国家: ${
-        countries ? countries.join(', ') : '全部'
-      }`,
+      `[手动检查] 收到手动检查请求，国家: ${normalizedCountries.join(', ')}`,
     );
 
-    const result = await triggerManualCheck(countries);
+    const job = await monitorTaskQueue.enqueue(normalizedCountries, null, {
+      source: 'manual',
+      requestedBy: req.user?.id || null,
+      jobOptions: {
+        priority: 1,
+      },
+    });
 
-    if (result && result.success) {
-      res.json({
-        success: true,
-        data: {
-          message: '检查完成',
-          totalChecked: result.totalChecked,
-          totalBroken: result.totalBroken,
-          totalNormal: result.totalNormal,
-          duration: result.duration,
-          checkTime: result.checkTime,
-          countryResults: result.countryResults,
-          notifyResults: result.notifyResults,
-        },
-        errorCode: 0,
-      });
-    } else {
-      res.status(500).json({
-        success: false,
-        errorMessage: (result && result.error) || '检查失败',
-        errorCode: 500,
-        data: {
-          totalChecked: (result && result.totalChecked) || 0,
-          totalBroken: (result && result.totalBroken) || 0,
-          totalNormal: (result && result.totalNormal) || 0,
-        },
-      });
-    }
+    res.json({
+      success: true,
+      data: {
+        message: '监控任务已入队',
+        queued: true,
+        jobId: job?.id || null,
+        countries: normalizedCountries,
+      },
+      errorCode: 0,
+    });
   } catch (error) {
     logger.error('手动触发监控检查错误:', error);
     res.status(500).json({
       success: false,
-      errorMessage: error.message || '检查失败',
+      errorMessage: error.message || '任务入队失败',
       errorCode: 500,
     });
   }

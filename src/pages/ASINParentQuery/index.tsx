@@ -1,6 +1,7 @@
 import variantCheckServices from '@/services/variantCheck';
 import { exportToExcel } from '@/utils/export';
 import { useMessage } from '@/utils/message';
+import { waitForTaskResult } from '@/utils/task';
 import {
   PageContainer,
   ProColumns,
@@ -69,26 +70,65 @@ const ASINParentQuery: React.FC<unknown> = () => {
     }
 
     setLoading(true);
+    const messageKey = 'parent-asin-query-task';
     try {
+      message.open({
+        key: messageKey,
+        type: 'loading',
+        content: '正在创建查询任务...',
+        duration: 0,
+      });
+
       const response = await batchQueryParentAsin({
         asins: asinList,
         country,
       });
 
-      if (response.success && Array.isArray(response.data)) {
+      const taskId = response?.data?.taskId;
+      if (response.success && taskId) {
+        const task = await waitForTaskResult(taskId, {
+          timeoutMs: 10 * 60 * 1000,
+          onProgress: (status) => {
+            const progress =
+              typeof status.progress === 'number' ? status.progress : 0;
+            message.open({
+              key: messageKey,
+              type: 'loading',
+              content:
+                status.status === 'pending'
+                  ? '任务已入队，等待 worker 处理...'
+                  : `正在查询父体... (${progress}%)`,
+              duration: 0,
+            });
+          },
+        });
+
+        const results = Array.isArray(task.result) ? task.result : [];
+        setQueryResults(results);
+        const successCount = results.filter((r) => !r.error).length;
+        const failCount = results.filter((r) => r.error).length;
+        message.destroy(messageKey);
+        message.success(
+          `查询完成：成功 ${successCount} 个，失败 ${failCount} 个`,
+        );
+      } else if (response.success && Array.isArray(response.data)) {
         setQueryResults(response.data);
         const successCount = response.data.filter((r) => !r.error).length;
         const failCount = response.data.filter((r) => r.error).length;
+        message.destroy(messageKey);
         message.success(
           `查询完成：成功 ${successCount} 个，失败 ${failCount} 个`,
         );
       } else {
+        message.destroy(messageKey);
         message.error('查询失败，请重试');
         setQueryResults([]);
       }
     } catch (error: any) {
-      console.error('查询失败:', error);
-      message.error(error?.message || '查询失败，请重试');
+      message.destroy(messageKey);
+      message.error(
+        error?.message || error?.errorMessage || '查询失败，请重试',
+      );
       setQueryResults([]);
     } finally {
       setLoading(false);
@@ -113,7 +153,6 @@ const ASINParentQuery: React.FC<unknown> = () => {
         'ASIN父变体查询结果',
       );
     } catch (error: any) {
-      console.error('导出失败:', error);
       message.error(error?.message || '导出失败，请重试');
     }
   };

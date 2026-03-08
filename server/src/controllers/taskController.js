@@ -4,6 +4,7 @@ const exportTaskQueue = require('../services/exportTaskQueue');
 const batchCheckTaskQueue = require('../services/batchCheckTaskQueue');
 const importTaskQueue = require('../services/importTaskQueue');
 const backupTaskQueue = require('../services/backupTaskQueue');
+const variantCheckTaskQueue = require('../services/variantCheckTaskQueue');
 const logger = require('../utils/logger');
 
 const EXPORT_DIR = path.join(__dirname, '../../tasks/export');
@@ -44,6 +45,11 @@ async function getTaskStatus(req, res) {
     }
 
     if (!jobState) {
+      jobState = await variantCheckTaskQueue.getJobState(taskId);
+      taskType = 'variant-check';
+    }
+
+    if (!jobState) {
       return res.status(404).json({
         success: false,
         errorMessage: '任务不存在',
@@ -78,6 +84,7 @@ async function getTaskStatus(req, res) {
         status,
         progress: jobState.progress || 0,
         exportType: jobState.data?.exportType,
+        taskSubType: jobState.data?.taskType || null,
         error: jobState.failedReason || null,
         result: jobState.returnvalue || null,
       },

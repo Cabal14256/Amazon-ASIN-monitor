@@ -20,7 +20,7 @@ import {
   Table,
   Tag,
 } from 'antd';
-import type { Dayjs } from 'dayjs';
+import dayjs, { type Dayjs } from 'dayjs';
 import React, {
   useCallback,
   useEffect,
@@ -2063,96 +2063,6 @@ const AnalyticsPageContent: React.FC<unknown> = () => {
             </div>
           )}
         </Space>
-      </Card>
-
-      <Card
-        title="月度被拆统计（按天）"
-        style={{ marginBottom: 16 }}
-        loading={monthlyBreakdownLoading}
-        extra={
-          <Space>
-            <span>月份：</span>
-            <DatePicker
-              picker="month"
-              allowClear={false}
-              value={monthlyBreakdownMonth}
-              onChange={(value) => {
-                if (value) {
-                  setMonthlyBreakdownMonth(value.startOf('month'));
-                }
-              }}
-              format="YYYY-MM"
-            />
-            <Button
-              type="primary"
-              onClick={() => void loadMonthlyBreakdown()}
-              loading={monthlyBreakdownLoading}
-            >
-              查询
-            </Button>
-            <Button
-              onClick={() => void handleExportMonthlyBreakdown()}
-              loading={monthlyBreakdownExporting}
-            >
-              导出Excel
-            </Button>
-          </Space>
-        }
-      >
-        {monthlyBreakdownRows.length > 0 ? (
-          <Table<MonthlyBreakdownRow>
-            dataSource={monthlyBreakdownRows}
-            pagination={false}
-            rowKey="date"
-            columns={[
-              {
-                title: `${monthlyBreakdownMonth.format('M')}月日期`,
-                dataIndex: 'day',
-                key: 'day',
-                align: 'right',
-              },
-              {
-                title: '被拆数量',
-                dataIndex: 'brokenAsinsDedup',
-                key: 'brokenAsinsDedup',
-                align: 'right',
-              },
-              {
-                title: '总链接数量',
-                dataIndex: 'totalAsinsDedup',
-                key: 'totalAsinsDedup',
-                align: 'right',
-              },
-              {
-                title: '被拆占比',
-                dataIndex: 'brokenRatio',
-                key: 'brokenRatio',
-                align: 'right',
-                render: (value: number) => `${toNumber(value).toFixed(2)}%`,
-              },
-            ]}
-            summary={() => (
-              <Table.Summary fixed>
-                <Table.Summary.Row>
-                  <Table.Summary.Cell index={0}>
-                    平均值被拆占比
-                  </Table.Summary.Cell>
-                  <Table.Summary.Cell index={1} align="right">
-                    {monthlyBreakdownSummary.brokenTotal}
-                  </Table.Summary.Cell>
-                  <Table.Summary.Cell index={2} align="right">
-                    {monthlyBreakdownSummary.linkTotal}
-                  </Table.Summary.Cell>
-                  <Table.Summary.Cell index={3} align="right">
-                    {monthlyBreakdownSummary.averageRatio.toFixed(2)}%
-                  </Table.Summary.Cell>
-                </Table.Summary.Row>
-              </Table.Summary>
-            )}
-          />
-        ) : (
-          <div style={{ textAlign: 'center', padding: 40 }}>暂无数据</div>
-        )}
       </Card>
 
       {/* 总体统计 */}
