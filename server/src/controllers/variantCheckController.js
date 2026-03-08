@@ -39,7 +39,10 @@ function shouldUseAsync(req) {
     return queryFlag;
   }
 
-  return true;
+  // 未显式指定 useAsync 时：
+  // - 匿名请求默认同步返回，避免落入受保护的任务查询接口造成调用方无法取回结果
+  // - 已认证请求默认异步，保持前端任务队列体验
+  return Boolean(req.user?.userId || req.user?.id);
 }
 
 async function createVariantCheckTask(taskType, params, userId) {
