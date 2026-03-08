@@ -4,9 +4,7 @@ export default defineConfig({
   antd: {},
   request: {},
   model: {},
-  request: {},
   initialState: {},
-  request: {},
   esbuildMinifyIIFE: true,
   access: {
     // 权限控制配置
@@ -25,7 +23,6 @@ export default defineConfig({
   layout: {
     title: '@umijs/max',
   },
-  esbuildMinifyIIFE: true,
   routes: [
     {
       path: '/',

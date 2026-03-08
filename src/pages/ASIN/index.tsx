@@ -5,6 +5,7 @@ import { formatBeijing } from '@/utils/beijingTime';
 import { debugLog } from '@/utils/debug';
 import { exportToExcel } from '@/utils/export';
 import { useMessage } from '@/utils/message';
+import { waitForTaskResult } from '@/utils/task';
 import { MoreOutlined } from '@ant-design/icons';
 import {
   ActionType,
@@ -411,29 +412,55 @@ const ASINManagement: React.FC<unknown> = () => {
             key: 'check',
             label: '立即检查',
             onClick: async () => {
-              const hide = message.loading('正在检查...', 0);
+              const messageKey = `variant-check-${record.id}`;
+              message.open({
+                key: messageKey,
+                type: 'loading',
+                content: '正在提交检查任务...',
+                duration: 0,
+              });
               try {
+                let response;
                 if (isGroup) {
-                  await checkVariantGroup({
+                  response = await checkVariantGroup({
                     groupId: record.id || '',
                     forceRefresh: true,
                   });
-                  message.success('检查完成');
                 } else {
-                  await checkASIN({
+                  response = await checkASIN({
                     asinId: record.id || '',
                     forceRefresh: true,
                   });
-                  message.success('检查完成');
                 }
+
+                const taskId = response?.data?.taskId;
+                if (taskId) {
+                  await waitForTaskResult(taskId, {
+                    onProgress: (task) => {
+                      const progress =
+                        typeof task.progress === 'number' ? task.progress : 0;
+                      message.open({
+                        key: messageKey,
+                        type: 'loading',
+                        content:
+                          task.status === 'pending'
+                            ? '任务已入队，等待 worker 处理...'
+                            : `正在检查... (${progress}%)`,
+                        duration: 0,
+                      });
+                    },
+                  });
+                }
+
+                message.destroy(messageKey);
+                message.success('检查完成');
                 // 清除前端缓存，确保获取最新数据
                 requestCacheRef.current.clear();
                 // 刷新表格
                 actionRef.current?.reload();
               } catch (error: any) {
-                message.error(error?.errorMessage || '检查失败');
-              } finally {
-                hide();
+                message.destroy(messageKey);
+                message.error(error?.message || error?.errorMessage || '检查失败');
               }
             },
           });
