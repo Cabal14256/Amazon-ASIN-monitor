@@ -2,6 +2,7 @@ const variantCheckService = require('../services/variantCheckService');
 const logger = require('../utils/logger');
 const { v4: uuidv4 } = require('uuid');
 const variantCheckTaskQueue = require('../services/variantCheckTaskQueue');
+const taskRegistryService = require('../services/taskRegistryService');
 const {
   buildVariantViewFromResult,
   mapVariantGroupResultWithVariantView,
@@ -47,6 +48,28 @@ function shouldUseAsync(req) {
 
 async function createVariantCheckTask(taskType, params, userId) {
   const taskId = uuidv4();
+
+  const taskSubTypeMap = {
+    'variant-group-check': 'variant-group',
+    'asin-check': 'asin',
+    'parent-asin-query': 'parent-asin-query',
+  };
+
+  const taskTitleMap = {
+    'variant-group-check': '变体组检查',
+    'asin-check': 'ASIN检查',
+    'parent-asin-query': '父体批量查询',
+  };
+
+  await taskRegistryService.createTask({
+    taskId,
+    taskType: 'variant-check',
+    taskSubType: taskSubTypeMap[taskType] || taskType,
+    title: taskTitleMap[taskType] || '变体检查',
+    userId: userId || null,
+    message: '变体检查任务已创建，等待处理',
+  });
+
   await variantCheckTaskQueue.enqueue({
     taskId,
     taskType,
