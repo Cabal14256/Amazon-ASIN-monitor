@@ -1,7 +1,6 @@
 const Queue = require('bull');
 const logger = require('../utils/logger');
 
-// 构建 Redis 连接 URL（复用监控任务的逻辑）
 function buildRedisUrl() {
   if (process.env.REDIS_URL || process.env.REDIS_URI) {
     return process.env.REDIS_URL || process.env.REDIS_URI;
@@ -30,20 +29,19 @@ function buildRedisUrl() {
 const redisUrl = buildRedisUrl();
 const DEFAULT_WORKER_CONCURRENCY = 1;
 
-const batchCheckTaskQueue = new Queue('batch-check-task-queue', redisUrl, {
+const variantCheckTaskQueue = new Queue('variant-check-task-queue', redisUrl, {
   defaultJobOptions: {
     attempts: 2,
     backoff: {
       type: 'exponential',
       delay: 5000,
     },
-    removeOnComplete: { age: 3600 }, // 保留1小时
-    removeOnFail: { age: 86400 }, // 失败任务保留1天
+    removeOnComplete: { age: 3600 },
+    removeOnFail: { age: 86400 },
   },
-  // 限流器：每 1000ms 最多处理 1 个任务
   limiter: {
     max: 1,
-    duration: 1000,
+    duration: 500,
   },
 });
 
@@ -51,7 +49,7 @@ let processorRegistered = false;
 let processorConcurrency = 0;
 
 function getWorkerConcurrency() {
-  const configured = Number(process.env.BATCH_CHECK_QUEUE_WORKER_CONCURRENCY);
+  const configured = Number(process.env.VARIANT_CHECK_QUEUE_WORKER_CONCURRENCY);
   if (Number.isFinite(configured) && configured > 0) {
     return Math.max(Math.floor(configured), 1);
   }
@@ -65,30 +63,22 @@ function registerProcessor() {
 
   processorConcurrency = getWorkerConcurrency();
 
-  // 处理批量检查任务
-  batchCheckTaskQueue.process(processorConcurrency, async (job) => {
-    const { taskId, groupIds } = job.data || {};
+  variantCheckTaskQueue.process(processorConcurrency, async (job) => {
+    const { taskId, taskType } = job.data || {};
 
-    if (
-      !taskId ||
-      !groupIds ||
-      !Array.isArray(groupIds) ||
-      groupIds.length === 0
-    ) {
-      throw new Error('任务ID和变体组ID列表不能为空');
+    if (!taskId || !taskType) {
+      throw new Error('任务ID和任务类型不能为空');
     }
 
-    logger.info(
-      `[批量检查任务] 开始处理任务 ${taskId}, 变体组数量: ${groupIds.length}`,
-    );
+    logger.info(`[变体检查任务] 开始处理任务 ${taskId}, 类型: ${taskType}`);
 
-    const batchCheckTaskProcessor = require('./batchCheckTaskProcessor');
-    await batchCheckTaskProcessor.processBatchCheckTask(job);
+    const variantCheckTaskProcessor = require('./variantCheckTaskProcessor');
+    return variantCheckTaskProcessor.processVariantCheckTask(job);
   });
 
   processorRegistered = true;
   logger.info(
-    `[批量检查任务队列] 已注册处理器，worker并发=${processorConcurrency}`,
+    `[变体检查任务队列] 已注册处理器，worker并发=${processorConcurrency}`,
   );
   return true;
 }
@@ -100,39 +90,40 @@ function getProcessorStatus() {
   };
 }
 
-batchCheckTaskQueue.on('failed', (job, err) => {
+variantCheckTaskQueue.on('failed', (job, err) => {
   logger.error(
-    `[批量检查任务] 任务失败 (Job ${job?.id}, Task ${job?.data?.taskId}):`,
+    `[变体检查任务] 任务失败 (Job ${job?.id}, Task ${job?.data?.taskId}):`,
     err?.message || 'unknown error',
   );
 
-  // 通过WebSocket通知任务失败
   const websocketService = require('./websocketService');
   if (job?.data?.taskId) {
     websocketService.sendTaskError(
       job.data.taskId,
       err?.message || '任务处理失败',
+      job.data.userId || null,
     );
   }
 });
 
-batchCheckTaskQueue.on('completed', (job) => {
+variantCheckTaskQueue.on('completed', (job) => {
   logger.info(
-    `[批量检查任务] 任务完成 (Job ${job.id}, Task ${job.data?.taskId})`,
+    `[变体检查任务] 任务完成 (Job ${job.id}, Task ${job.data?.taskId})`,
   );
 });
 
 function enqueue(taskData) {
-  if (!taskData || !taskData.taskId || !taskData.groupIds) {
+  if (!taskData || !taskData.taskId || !taskData.taskType || !taskData.params) {
     throw new Error('任务数据不完整');
   }
-  return batchCheckTaskQueue.add(taskData, {
-    jobId: taskData.taskId, // 使用taskId作为jobId，避免重复
+
+  return variantCheckTaskQueue.add(taskData, {
+    jobId: taskData.taskId,
   });
 }
 
 function getJob(taskId) {
-  return batchCheckTaskQueue.getJob(taskId);
+  return variantCheckTaskQueue.getJob(taskId);
 }
 
 async function getJobState(taskId) {
@@ -161,5 +152,5 @@ module.exports = {
   getJobState,
   registerProcessor,
   getProcessorStatus,
-  queue: batchCheckTaskQueue,
+  queue: variantCheckTaskQueue,
 };

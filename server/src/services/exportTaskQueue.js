@@ -28,6 +28,7 @@ function buildRedisUrl() {
 }
 
 const redisUrl = buildRedisUrl();
+const DEFAULT_WORKER_CONCURRENCY = 1;
 
 const exportTaskQueue = new Queue('export-task-queue', redisUrl, {
   defaultJobOptions: {
@@ -49,12 +50,20 @@ const exportTaskQueue = new Queue('export-task-queue', redisUrl, {
 let processorRegistered = false;
 let processorConcurrency = 0;
 
+function getWorkerConcurrency() {
+  const configured = Number(process.env.EXPORT_QUEUE_WORKER_CONCURRENCY);
+  if (Number.isFinite(configured) && configured > 0) {
+    return Math.max(Math.floor(configured), 1);
+  }
+  return DEFAULT_WORKER_CONCURRENCY;
+}
+
 function registerProcessor() {
   if (processorRegistered) {
     return false;
   }
 
-  processorConcurrency = 1;
+  processorConcurrency = getWorkerConcurrency();
 
   // 处理导出任务
   exportTaskQueue.process(processorConcurrency, async (job) => {

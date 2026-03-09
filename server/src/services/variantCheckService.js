@@ -1175,7 +1175,7 @@ async function checkSingleASIN(asinId, forceRefresh = false) {
  * @param {string} country - 国家代码
  * @returns {Promise<Array>} 查询结果数组
  */
-async function batchQueryParentAsin(asinList, country) {
+async function batchQueryParentAsin(asinList, country, options = {}) {
   if (!Array.isArray(asinList) || asinList.length === 0) {
     throw new Error('ASIN列表不能为空');
   }
@@ -1195,6 +1195,10 @@ async function batchQueryParentAsin(asinList, country) {
   logger.info(
     `[batchQueryParentAsin] 开始批量查询 ${cleanAsinList.length} 个ASIN的父变体 (${country})`,
   );
+
+  const onProgress =
+    typeof options.onProgress === 'function' ? options.onProgress : null;
+  let completedCount = 0;
 
   const queryResults = await Promise.all(
     cleanAsinList.map(async (asin) => {
@@ -1239,6 +1243,15 @@ async function batchQueryParentAsin(asinList, country) {
           variantCount: 0,
           error: error.message || '查询失败',
         };
+      } finally {
+        completedCount += 1;
+        if (onProgress) {
+          onProgress({
+            asin,
+            completed: completedCount,
+            total: cleanAsinList.length,
+          });
+        }
       }
     }),
   );

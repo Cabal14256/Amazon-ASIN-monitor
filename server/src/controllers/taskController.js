@@ -5,6 +5,7 @@ const exportTaskQueue = require('../services/exportTaskQueue');
 const batchCheckTaskQueue = require('../services/batchCheckTaskQueue');
 const importTaskQueue = require('../services/importTaskQueue');
 const backupTaskQueue = require('../services/backupTaskQueue');
+const variantCheckTaskQueue = require('../services/variantCheckTaskQueue');
 const websocketService = require('../services/websocketService');
 const logger = require('../utils/logger');
 
@@ -17,6 +18,10 @@ async function findTaskFromQueues(taskId) {
     },
     { taskType: 'import', resolver: () => importTaskQueue.getJobState(taskId) },
     { taskType: 'backup', resolver: () => backupTaskQueue.getJobState(taskId) },
+    {
+      taskType: 'variant-check',
+      resolver: () => variantCheckTaskQueue.getJobState(taskId),
+    },
   ];
 
   for (const item of queueResolvers) {
@@ -209,9 +214,12 @@ async function cancelTask(req, res) {
 
     const job = await queueModule.getJob(taskId);
     if (!job) {
-      const cancelledTask = await taskRegistryService.markTaskCancelled(taskId, {
-        message: '任务已取消',
-      });
+      const cancelledTask = await taskRegistryService.markTaskCancelled(
+        taskId,
+        {
+          message: '任务已取消',
+        },
+      );
       websocketService.sendTaskCancelled(taskId, '任务已取消', userId);
       return res.json({
         success: true,
@@ -223,9 +231,12 @@ async function cancelTask(req, res) {
     const state = await job.getState();
     if (['waiting', 'paused', 'delayed'].includes(state)) {
       await job.remove();
-      const cancelledTask = await taskRegistryService.markTaskCancelled(taskId, {
-        message: '任务已取消（尚未开始执行）',
-      });
+      const cancelledTask = await taskRegistryService.markTaskCancelled(
+        taskId,
+        {
+          message: '任务已取消（尚未开始执行）',
+        },
+      );
       websocketService.sendTaskCancelled(
         taskId,
         '任务已取消（尚未开始执行）',
@@ -248,7 +259,9 @@ async function cancelTask(req, res) {
         logger.warn('[任务中心] 更新运行中任务取消标记失败:', error.message);
       }
 
-      const nextTask = await taskRegistryService.requestTaskCancellation(taskId);
+      const nextTask = await taskRegistryService.requestTaskCancellation(
+        taskId,
+      );
       return res.json({
         success: true,
         data: sanitizeTaskForResponse(nextTask),

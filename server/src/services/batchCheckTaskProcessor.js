@@ -7,6 +7,9 @@ const {
   throwIfTaskCancelled,
   isTaskCancelledError,
 } = require('./taskCancellationService');
+const {
+  mapVariantGroupResultWithVariantView,
+} = require('./variantCheckResultMapper');
 
 const DEFAULT_BATCH_CHECK_GROUP_CONCURRENCY = 2;
 
@@ -17,80 +20,6 @@ function getBatchCheckGroupConcurrency(total) {
       ? Math.floor(configured)
       : DEFAULT_BATCH_CHECK_GROUP_CONCURRENCY;
   return Math.max(1, Math.min(normalized, total));
-}
-
-function buildVariantViewFromResult(serviceResult) {
-  const d = serviceResult.details || {};
-  const relationships = d.relationships || [];
-  const isBroken =
-    serviceResult.isBroken === true || serviceResult.isBroken === 1;
-
-  let brotherAsins = [];
-  let parentAsin = null;
-
-  for (const rel of relationships) {
-    if (Array.isArray(rel.parentAsins) && rel.parentAsins.length > 0) {
-      parentAsin = (rel.parentAsins[0] || '').toString().trim().toUpperCase();
-      if (parentAsin) break;
-    }
-    if (
-      (rel.type === 'PARENT' || rel.relationshipType === 'PARENT') &&
-      (rel.asin || rel.parentAsin)
-    ) {
-      parentAsin = (rel.asin || rel.parentAsin || '')
-        .toString()
-        .trim()
-        .toUpperCase();
-      if (parentAsin) break;
-    }
-  }
-
-  let hasVariation = brotherAsins.length > 0;
-  if (parentAsin && !hasVariation) {
-    hasVariation = true;
-  }
-
-  const brand = d.brand || null;
-
-  return {
-    asin: d.asin || '',
-    title: d.title || '',
-    hasVariation,
-    isBroken: typeof isBroken === 'boolean' ? isBroken : !hasVariation,
-    parentAsin,
-    brotherAsins,
-    brand,
-    raw: serviceResult,
-  };
-}
-
-function mapResultWithVariantView(result) {
-  let mappedResults = result?.details?.results;
-  if (!Array.isArray(mappedResults)) {
-    return result;
-  }
-
-  mappedResults = mappedResults.map((item) => {
-    if (!item || typeof item !== 'object') return item;
-
-    const variantView = buildVariantViewFromResult({
-      isBroken: item.isBroken,
-      details: item.details,
-    });
-
-    return {
-      ...item,
-      variantView,
-    };
-  });
-
-  return {
-    ...result,
-    details: {
-      ...(result?.details || {}),
-      results: mappedResults || result?.details?.results || [],
-    },
-  };
 }
 
 /**
@@ -161,7 +90,7 @@ async function processBatchCheckTask(job) {
           success: true,
           ...(taskSubType === 'competitor-variant-group'
             ? result
-            : mapResultWithVariantView(result)),
+            : mapVariantGroupResultWithVariantView(result)),
         };
       } catch (error) {
         if (isTaskCancelledError(error)) {

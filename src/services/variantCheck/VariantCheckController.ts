@@ -6,15 +6,23 @@ export async function checkVariantGroup(
   params: {
     groupId: string;
     forceRefresh?: boolean;
+    useAsync?: boolean;
   },
   options?: { [key: string]: any },
 ) {
-  const { groupId: param0, forceRefresh } = params;
+  const { groupId: param0, forceRefresh, useAsync } = params;
+  const payload =
+    useAsync === undefined
+      ? undefined
+      : {
+          useAsync,
+        };
   return request<API.Result_any_>(`/api/v1/variant-groups/${param0}/check`, {
     method: 'POST',
     params: {
       forceRefresh: forceRefresh !== false, // 默认为 true，立即检查时强制刷新
     },
+    data: payload,
     ...(options || {}),
   });
 }
@@ -24,15 +32,23 @@ export async function checkASIN(
   params: {
     asinId: string;
     forceRefresh?: boolean;
+    useAsync?: boolean;
   },
   options?: { [key: string]: any },
 ) {
-  const { asinId: param0, forceRefresh } = params;
+  const { asinId: param0, forceRefresh, useAsync } = params;
+  const payload =
+    useAsync === undefined
+      ? undefined
+      : {
+          useAsync,
+        };
   return request<API.Result_any_>(`/api/v1/asins/${param0}/check`, {
     method: 'POST',
     params: {
       forceRefresh: forceRefresh !== false, // 默认为 true，立即检查时强制刷新
     },
+    data: payload,
     ...(options || {}),
   });
 }
@@ -42,6 +58,7 @@ export async function batchCheckVariantGroups(
   body: {
     groupIds: string[];
     country?: string;
+    useAsync?: boolean;
   },
   options?: { [key: string]: any },
 ) {
@@ -60,6 +77,7 @@ export async function batchQueryParentAsin(
   body: {
     asins: string[];
     country: string;
+    useAsync?: boolean;
   },
   options?: { [key: string]: any },
 ) {

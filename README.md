@@ -173,6 +173,16 @@ PORT=3001
 CORS_ORIGIN=http://localhost:8000
 # 进程角色：api / worker / all
 PROCESS_ROLE=all
+# 是否启用定时调度器（生产多实例时，仅保留一个 API 实例为 true）
+SCHEDULER_ENABLED=true
+# 导出/备份/批量检查队列消费者并发
+EXPORT_QUEUE_WORKER_CONCURRENCY=1
+BACKUP_QUEUE_WORKER_CONCURRENCY=1
+BATCH_CHECK_QUEUE_WORKER_CONCURRENCY=1
+# 即时变体检查任务队列并发（单个变体组 / 单个ASIN / 父体查询）
+VARIANT_CHECK_QUEUE_WORKER_CONCURRENCY=1
+# worker 仅注册指定队列；留空或 all 表示注册全部队列
+WORKER_ENABLED_QUEUES=all
 # 导出/备份是否启用Worker线程（默认关闭，建议先灰度）
 EXPORT_WORKER_ENABLED=false
 BACKUP_WORKER_ENABLED=false
@@ -1140,10 +1150,60 @@ sudo ./deploy.sh
 
 #### 1Panel 双站点部署（API + Worker）
 
-1. 在 1Panel 创建对外站点 `asin-api`，启动命令使用 `npm run start:api`，并设置 `PROCESS_ROLE=api`。
-2. 在 1Panel 创建内部站点 `asin-worker`，启动命令使用 `npm run start:worker`，并设置 `PROCESS_ROLE=worker`。
-3. 两个站点共用同一套数据库和 Redis 配置；`asin-worker` 不需要绑定业务域名或公网入口。
-4. 部署顺序建议先启动 `asin-worker`，再重启 `asin-api`。
+1. 在 1Panel 创建对外站点 `asin-api`，启动命令使用 `npm run start:api`，并设置 `PROCESS_ROLE=api`、`SCHEDULER_ENABLED=true`。
+2. 在 1Panel 创建一个或多个内部 worker 进程，启动命令使用 `npm run start:worker`，并设置 `PROCESS_ROLE=worker`。
+3. 所有实例共用同一套数据库和 Redis 配置；多 worker 场景下，Redis 会承担分布式限流与队列协调。
+4. 只有一个 API 实例应启用 `SCHEDULER_ENABLED=true`；其余 API 实例如需横向扩容，应设置 `SCHEDULER_ENABLED=false`，避免重复跑 cron。
+5. 部署顺序建议先启动 worker，再重启 API。
+
+#### 1Panel 多进程参数清单
+
+建议先按下面的保守参数启动，确认稳定后再逐步加大：
+
+```env
+# asin-api
+PROCESS_ROLE=api
+SCHEDULER_ENABLED=true
+LOG_LEVEL=INFO
+
+# asin-worker-1
+PROCESS_ROLE=worker
+SCHEDULER_ENABLED=false
+WORKER_ENABLED_QUEUES=all
+MONITOR_QUEUE_WORKER_CONCURRENCY=1
+COMPETITOR_QUEUE_WORKER_CONCURRENCY=1
+EXPORT_QUEUE_WORKER_CONCURRENCY=1
+BACKUP_QUEUE_WORKER_CONCURRENCY=1
+BATCH_CHECK_QUEUE_WORKER_CONCURRENCY=1
+VARIANT_CHECK_QUEUE_WORKER_CONCURRENCY=1
+MONITOR_MAX_CONCURRENT_GROUP_CHECKS=2
+MONITOR_BATCH_COUNT=2
+EXPORT_WORKER_ENABLED=true
+BACKUP_WORKER_ENABLED=true
+LOG_LEVEL=INFO
+```
+
+推荐扩容顺序：
+
+1. 先增加 `asin-worker` 实例数，再考虑提高单实例队列并发。
+2. `MONITOR_QUEUE_WORKER_CONCURRENCY` 和 `COMPETITOR_QUEUE_WORKER_CONCURRENCY` 建议先保持 `1`，观察 429 和 Redis/MySQL 负载后再调。
+3. `EXPORT_QUEUE_WORKER_CONCURRENCY` 可按 CPU 和内存情况提升到 `2`。
+4. `BACKUP_QUEUE_WORKER_CONCURRENCY` 建议常驻 `1`，避免大文件 IO 互相争用。
+5. `BATCH_CHECK_QUEUE_WORKER_CONCURRENCY` 一般 `1-2` 即可，过高容易和常规监控抢 SP-API 配额。
+6. `VARIANT_CHECK_QUEUE_WORKER_CONCURRENCY` 建议先保持 `1`，避免页面手动检查和常规监控互相争抢 SP-API 配额。
+
+专用 worker 示例：
+
+```env
+# 监控专用 worker
+WORKER_ENABLED_QUEUES=monitor,competitor
+
+# 导出/导入/备份专用 worker
+WORKER_ENABLED_QUEUES=export,import,backup
+
+# 手动检查专用 worker
+WORKER_ENABLED_QUEUES=variant-check,batch-check
+```
 
 #### Nginx 配置要点
 

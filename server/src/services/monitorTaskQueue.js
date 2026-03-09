@@ -106,11 +106,20 @@ monitorTaskQueue.on('failed', (job, err) => {
   );
 });
 
-function enqueue(countries, batchConfig = null) {
+function enqueue(countries, batchConfig = null, options = {}) {
   if (!countries || !countries.length) {
-    return;
+    return null;
   }
-  monitorTaskQueue.add({ countries, batchConfig });
+
+  const taskData = {
+    countries,
+    batchConfig,
+    source: options.source || 'scheduled',
+    requestedBy: options.requestedBy || null,
+    requestedAt: options.requestedAt || new Date().toISOString(),
+  };
+
+  return monitorTaskQueue.add(taskData, options.jobOptions || {});
 }
 
 module.exports = {

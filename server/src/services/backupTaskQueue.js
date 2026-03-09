@@ -28,6 +28,7 @@ function buildRedisUrl() {
 }
 
 const redisUrl = buildRedisUrl();
+const DEFAULT_WORKER_CONCURRENCY = 1;
 
 const backupTaskQueue = new Queue('backup-task-queue', redisUrl, {
   defaultJobOptions: {
@@ -48,12 +49,20 @@ const backupTaskQueue = new Queue('backup-task-queue', redisUrl, {
 let processorRegistered = false;
 let processorConcurrency = 0;
 
+function getWorkerConcurrency() {
+  const configured = Number(process.env.BACKUP_QUEUE_WORKER_CONCURRENCY);
+  if (Number.isFinite(configured) && configured > 0) {
+    return Math.max(Math.floor(configured), 1);
+  }
+  return DEFAULT_WORKER_CONCURRENCY;
+}
+
 function registerProcessor() {
   if (processorRegistered) {
     return false;
   }
 
-  processorConcurrency = 1;
+  processorConcurrency = getWorkerConcurrency();
 
   backupTaskQueue.process(processorConcurrency, async (job) => {
     const { taskId, taskType } = job.data || {};

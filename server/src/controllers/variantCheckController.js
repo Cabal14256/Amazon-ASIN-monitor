@@ -1,91 +1,69 @@
 const variantCheckService = require('../services/variantCheckService');
 const logger = require('../utils/logger');
+const { v4: uuidv4 } = require('uuid');
+const variantCheckTaskQueue = require('../services/variantCheckTaskQueue');
+const {
+  buildVariantViewFromResult,
+  mapVariantGroupResultWithVariantView,
+} = require('../services/variantCheckResultMapper');
 
 // ===============================
-// 辅助方法：把 service 返回的数据
-// 转成和 variantMonitor.js 中 getVariantData 同一套语义
+// 辅助方法：判断是否显式使用后台任务模式
 // ===============================
-function buildVariantViewFromResult(serviceResult) {
-  if (!serviceResult || typeof serviceResult !== 'object') {
-    return {
-      asin: null,
-      title: '',
-      hasVariation: false,
-      isBroken: true,
-      parentAsin: null,
-      brotherAsins: [],
-      brand: null,
-      raw: serviceResult || null,
-    };
-  }
-
-  const { isBroken, details } = serviceResult;
-  const d = details || {};
-
-  const asin = (d.asin || '').toString().trim().toUpperCase();
-  const title = d.title || '';
-
-  // variations: [{ asin, title }]
-  const variations = Array.isArray(d.variations)
-    ? d.variations.map((v) => ({
-        asin: (v.asin || '').toString().trim().toUpperCase(),
-        title: v.title || '',
-      }))
-    : [];
-
-  // 兄弟 ASIN = 变体 ASIN 列表里除去自己
-  const brotherAsins = variations
-    .map((v) => v.asin)
-    .filter((a) => a && a !== asin);
-
-  // 从 relationships 中尽量找出 parentAsin
-  // （参考 variantMonitor.js 中的父体兜底逻辑的精简版）
-  const relationships = Array.isArray(d.relationships) ? d.relationships : [];
-  let parentAsin = null;
-
-  for (const rel of relationships) {
-    // Catalog Items 2022-04-01: VARIATION 关系中的 parentAsins 数组
-    if (Array.isArray(rel.parentAsins) && rel.parentAsins.length > 0) {
-      parentAsin = (rel.parentAsins[0] || '').toString().trim().toUpperCase();
-      if (parentAsin) break;
+function shouldUseAsync(req) {
+  const normalizeBoolean = (value) => {
+    if (value === undefined || value === null) {
+      return null;
     }
-    // 某些旧结构可能是 PARENT 类型关系
-    if (
-      (rel.type === 'PARENT' || rel.relationshipType === 'PARENT') &&
-      (rel.asin || rel.parentAsin)
-    ) {
-      parentAsin = (rel.asin || rel.parentAsin || '')
-        .toString()
-        .trim()
-        .toUpperCase();
-      if (parentAsin) break;
+    if (typeof value === 'boolean') {
+      return value;
     }
+
+    const normalized = String(value).trim().toLowerCase();
+    if (['true', '1', 'yes', 'on'].includes(normalized)) {
+      return true;
+    }
+    if (['false', '0', 'no', 'off'].includes(normalized)) {
+      return false;
+    }
+    return null;
+  };
+
+  const bodyFlag = normalizeBoolean(req.body?.useAsync);
+  if (bodyFlag !== null) {
+    return bodyFlag;
   }
 
-  // hasVariation：对齐 variantMonitor.js 的逻辑：
-  // 1）只要有兄弟 asin 就认为有变体
-  // 2）如果兄弟 asin 没有，但拿到了父体，也认为存在变体
-  let hasVariation = brotherAsins.length > 0;
-
-  if (parentAsin && !hasVariation) {
-    hasVariation = true;
+  const queryFlag = normalizeBoolean(req.query?.useAsync);
+  if (queryFlag !== null) {
+    return queryFlag;
   }
 
-  // brand：variantCheckService 目前没有带 brand，这里先留一个字段，
-  // 后续如果在 service 的 details 里加上 brand，这里会自动透传
-  const brand = d.brand || null;
+  // 未显式指定 useAsync 时：
+  // - 匿名请求默认同步返回，避免落入受保护的任务查询接口造成调用方无法取回结果
+  // - 已认证请求默认异步，保持前端任务队列体验
+  return Boolean(req.user?.userId || req.user?.id);
+}
+
+async function createVariantCheckTask(taskType, params, userId) {
+  const taskId = uuidv4();
+  await variantCheckTaskQueue.enqueue({
+    taskId,
+    taskType,
+    params,
+    userId: userId || null,
+  });
+
+  logger.info(
+    `[变体检查任务] 创建任务成功: ${taskId}, 类型: ${taskType}, 用户: ${
+      userId || 'anonymous'
+    }`,
+  );
 
   return {
-    asin,
-    title,
-    hasVariation,
-    // isBroken 仍然保留给前端（有/无变体的标志）
-    isBroken: typeof isBroken === 'boolean' ? isBroken : !hasVariation,
-    parentAsin,
-    brotherAsins,
-    brand,
-    // raw：保留原始 service 返回值，方便排查
-    raw: serviceResult,
+    taskId,
+    status: 'pending',
+    taskType,
   };
 }
 
@@ -95,43 +73,33 @@ function buildVariantViewFromResult(serviceResult) {
 exports.checkVariantGroup = async (req, res) => {
   try {
     const { groupId } = req.params;
+    const userId = req.user?.userId || req.user?.id;
     // 从查询参数或请求体中获取 forceRefresh 标志（默认为 true，表示立即检查时强制刷新）
     const forceRefresh =
       req.query.forceRefresh !== 'false' && req.body.forceRefresh !== false;
+
+    if (shouldUseAsync(req)) {
+      const task = await createVariantCheckTask(
+        'variant-group-check',
+        { groupId, forceRefresh },
+        userId,
+      );
+
+      return res.json({
+        success: true,
+        data: task,
+        errorCode: 0,
+      });
+    }
 
     const result = await variantCheckService.checkVariantGroup(
       groupId,
       forceRefresh,
     );
 
-    // 变体组整体结构沿用原来的，
-    // 只是给 details.results 里的每个 ASIN 补充一个 variantView 字段
-    let mappedResults = result?.details?.results;
-
-    if (Array.isArray(mappedResults)) {
-      mappedResults = mappedResults.map((item) => {
-        // item 一般会包含 { asin, asinId, country, isBroken, details }
-        if (!item || typeof item !== 'object') return item;
-        const variantView = buildVariantViewFromResult({
-          isBroken: item.isBroken,
-          details: item.details,
-        });
-        return {
-          ...item,
-          variantView,
-        };
-      });
-    }
-
     res.json({
       success: true,
-      data: {
-        ...result,
-        details: {
-          ...(result?.details || {}),
-          results: mappedResults || result?.details?.results || [],
-        },
-      },
+      data: mapVariantGroupResultWithVariantView(result),
       errorCode: 0,
     });
   } catch (error) {
@@ -150,9 +118,24 @@ exports.checkVariantGroup = async (req, res) => {
 exports.checkASIN = async (req, res) => {
   try {
     const { asinId } = req.params;
+    const userId = req.user?.userId || req.user?.id;
     // 从查询参数或请求体中获取 forceRefresh 标志（默认为 true，表示立即检查时强制刷新）
     const forceRefresh =
       req.query.forceRefresh !== 'false' && req.body.forceRefresh !== false;
+
+    if (shouldUseAsync(req)) {
+      const task = await createVariantCheckTask(
+        'asin-check',
+        { asinId, forceRefresh },
+        userId,
+      );
+
+      return res.json({
+        success: true,
+        data: task,
+        errorCode: 0,
+      });
+    }
 
     const result = await variantCheckService.checkSingleASIN(
       asinId,
@@ -182,8 +165,6 @@ exports.checkASIN = async (req, res) => {
 exports.batchCheckVariantGroups = async (req, res) => {
   try {
     const { groupIds, country, forceRefresh } = req.body;
-    const shouldUseAsync =
-      req.body.useAsync !== 'false' && req.body.useAsync !== false;
     const userId = req.user?.userId || req.user?.id;
 
     if (!groupIds || !Array.isArray(groupIds) || groupIds.length === 0) {
@@ -194,8 +175,7 @@ exports.batchCheckVariantGroups = async (req, res) => {
       });
     }
 
-    if (shouldUseAsync) {
-      const { v4: uuidv4 } = require('uuid');
+    if (shouldUseAsync(req)) {
       const batchCheckTaskQueue = require('../services/batchCheckTaskQueue');
       const taskRegistryService = require('../services/taskRegistryService');
 
@@ -244,30 +224,10 @@ exports.batchCheckVariantGroups = async (req, res) => {
           shouldForceRefresh,
         );
 
-        // 同样给每个结果里的 ASIN 明细加上 variantView
-        let mappedResults = result?.details?.results;
-        if (Array.isArray(mappedResults)) {
-          mappedResults = mappedResults.map((item) => {
-            if (!item || typeof item !== 'object') return item;
-            const variantView = buildVariantViewFromResult({
-              isBroken: item.isBroken,
-              details: item.details,
-            });
-            return {
-              ...item,
-              variantView,
-            };
-          });
-        }
-
         results.push({
           groupId,
           success: true,
-          ...result,
-          details: {
-            ...(result?.details || {}),
-            results: mappedResults || result?.details?.results || [],
-          },
+          ...mapVariantGroupResultWithVariantView(result),
         });
       } catch (error) {
         results.push({
@@ -302,6 +262,7 @@ exports.batchCheckVariantGroups = async (req, res) => {
 exports.batchQueryParentAsin = async (req, res) => {
   try {
     const { asins, country } = req.body;
+    const userId = req.user?.userId || req.user?.id;
 
     if (!asins || !Array.isArray(asins) || asins.length === 0) {
       return res.status(400).json({
@@ -316,6 +277,20 @@ exports.batchQueryParentAsin = async (req, res) => {
         success: false,
         errorMessage: '请提供国家代码',
         errorCode: 400,
+      });
+    }
+
+    if (shouldUseAsync(req)) {
+      const task = await createVariantCheckTask(
+        'parent-asin-query',
+        { asins, country },
+        userId,
+      );
+
+      return res.json({
+        success: true,
+        data: task,
+        errorCode: 0,
       });
     }
 

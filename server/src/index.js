@@ -45,6 +45,11 @@ const metricsService = require('./services/metricsService');
 const app = express();
 const PORT = process.env.PORT || 3001;
 const PROCESS_ROLE = getProcessRole();
+const schedulerEnabled = !['false', '0', 'no', 'off'].includes(
+  String(process.env.SCHEDULER_ENABLED || 'true')
+    .trim()
+    .toLowerCase(),
+);
 
 const apiRateLimitEnabled = !['false', '0', 'no', 'off'].includes(
   String(process.env.API_RATE_LIMIT_ENABLED || 'true')
@@ -238,9 +243,12 @@ async function startServer() {
     logger.info('[Bootstrap] 当前进程未启用队列消费者（请使用独立worker进程）');
   }
 
-  // 初始化定时任务
-  initScheduler();
-  logger.info('[Bootstrap] 定时任务已启用（角色包含 API）');
+  if (schedulerEnabled) {
+    initScheduler();
+    logger.info('[Bootstrap] 定时任务已启用（SCHEDULER_ENABLED=true）');
+  } else {
+    logger.info('[Bootstrap] 定时任务已禁用（SCHEDULER_ENABLED=false）');
+  }
 
   const server = app.listen(PORT, () => {
     logger.info(`🚀 服务器运行在 http://localhost:${PORT}`);
