@@ -7,11 +7,19 @@ import { cancelTask } from '@/services/task';
 import { getToken } from './token';
 
 function normalizeBaseURL(baseURL: string): string {
-  return baseURL.endsWith('/') ? baseURL.slice(0, -1) : baseURL;
+  return baseURL.trim().replace(/\/+$/, '');
+}
+
+function resolveApiBaseURL(baseURL: string): string {
+  const normalizedBaseURL = normalizeBaseURL(baseURL);
+  if (normalizedBaseURL.endsWith('/api/v1')) {
+    return normalizedBaseURL.slice(0, -3);
+  }
+  return normalizedBaseURL;
 }
 
 function mergeApiURL(baseURL: string, path: string): string {
-  const normalizedBaseURL = normalizeBaseURL(baseURL);
+  const normalizedBaseURL = resolveApiBaseURL(baseURL);
   const normalizedPath = path.startsWith('/') ? path : `/${path}`;
 
   if (
@@ -34,10 +42,10 @@ function getExportDateSuffix(): string {
 export function getBaseURL(): string {
   // 生产环境：使用环境变量或默认值
   if (process.env.NODE_ENV === 'production') {
-    return normalizeBaseURL(process.env.API_BASE_URL || '/api');
+    return resolveApiBaseURL(process.env.API_BASE_URL || '/api');
   }
   // 开发环境：使用代理路径
-  return normalizeBaseURL('/api');
+  return resolveApiBaseURL('/api');
 }
 
 /**
