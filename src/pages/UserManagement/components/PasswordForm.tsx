@@ -1,7 +1,12 @@
 import services from '@/services/user';
 import { useMessage } from '@/utils/message';
-import { ModalForm, ProFormText } from '@ant-design/pro-components';
+import {
+  ModalForm,
+  ProFormSwitch,
+  ProFormText,
+} from '@ant-design/pro-components';
 import React from 'react';
+import { PASSWORD_POLICY_HINT, validateStrongPassword } from '@/utils/password';
 
 const { updateUserPassword } = services.UserController;
 
@@ -16,7 +21,11 @@ const PasswordForm: React.FC<PasswordFormProps> = (props) => {
   const { modalVisible, onCancel, onSubmit, userId } = props;
   const message = useMessage();
 
-  const handleSubmit = async (formValues: { newPassword: string }) => {
+  const handleSubmit = async (formValues: {
+    newPassword: string;
+    forceChangeOnNextLogin?: boolean;
+    revokeAllSessions?: boolean;
+  }) => {
     if (!userId) {
       message.error('用户ID不存在');
       return false;
@@ -25,12 +34,13 @@ const PasswordForm: React.FC<PasswordFormProps> = (props) => {
     try {
       await updateUserPassword(userId, {
         newPassword: formValues.newPassword,
+        forceChangeOnNextLogin: formValues.forceChangeOnNextLogin,
+        revokeAllSessions: formValues.revokeAllSessions,
       });
       message.success('密码修改成功');
       onSubmit();
       return true;
     } catch (error: any) {
-      console.error('修改密码错误:', error);
       let errorMessage = '修改密码失败';
       if (error?.response?.data?.errorMessage) {
         errorMessage = error.response.data.errorMessage;
@@ -55,6 +65,10 @@ const PasswordForm: React.FC<PasswordFormProps> = (props) => {
         if (!visible) onCancel();
       }}
       onFinish={handleSubmit}
+      initialValues={{
+        forceChangeOnNextLogin: true,
+        revokeAllSessions: true,
+      }}
       modalProps={{
         destroyOnHidden: true,
       }}
@@ -62,10 +76,18 @@ const PasswordForm: React.FC<PasswordFormProps> = (props) => {
       <ProFormText.Password
         name="newPassword"
         label="新密码"
-        placeholder="请输入新密码（至少6位）"
+        placeholder={`请输入新密码（${PASSWORD_POLICY_HINT}）`}
         rules={[
           { required: true, message: '请输入新密码' },
-          { min: 6, message: '密码长度至少为6位' },
+          {
+            validator: async (_, value) => {
+              const error = validateStrongPassword(value);
+              if (error) {
+                return Promise.reject(new Error(error));
+              }
+              return Promise.resolve();
+            },
+          },
         ]}
       />
       <ProFormText.Password
@@ -83,7 +105,21 @@ const PasswordForm: React.FC<PasswordFormProps> = (props) => {
               return Promise.reject(new Error('两次输入的密码不一致'));
             },
           }),
-        ]}
+          ]}
+        />
+      <ProFormSwitch
+        name="forceChangeOnNextLogin"
+        label="下次登录强制改密"
+        initialValue
+        checkedChildren="是"
+        unCheckedChildren="否"
+      />
+      <ProFormSwitch
+        name="revokeAllSessions"
+        label="立即踢出所有会话"
+        initialValue
+        checkedChildren="是"
+        unCheckedChildren="否"
       />
     </ModalForm>
   );

@@ -1,6 +1,6 @@
 import services from '@/services/auth';
 import { useMessage } from '@/utils/message';
-import { getToken, isRemembered, setToken } from '@/utils/token';
+import { hasAuthSession, isRemembered, setToken } from '@/utils/token';
 import { LockOutlined, SafetyOutlined, UserOutlined } from '@ant-design/icons';
 import {
   LoginForm,
@@ -22,7 +22,7 @@ const LoginPage: React.FC = () => {
 
   // 如果已登录，重定向到主页
   React.useEffect(() => {
-    const token = getToken();
+    const token = hasAuthSession();
     const currentUser = initialState?.currentUser;
 
     if (token && currentUser?.id) {
@@ -46,17 +46,28 @@ const LoginPage: React.FC = () => {
 
         // 更新全局状态
         await setInitialState({
-          currentUser: response.data.user,
+          currentUser: response.data.user
+            ? {
+                ...response.data.user,
+                force_password_change:
+                  response.data.mustChangePassword ||
+                  response.data.user.force_password_change,
+              }
+            : response.data.user,
           permissions: response.data.permissions || [],
           roles: response.data.roles || [],
           sessionId: response.data.sessionId,
         });
 
-        message.success('登录成功');
+        message.success(
+          response.data.mustChangePassword ? '登录成功，请立即修改密码' : '登录成功',
+        );
 
         // 获取重定向地址
         const urlParams = new URL(window.location.href).searchParams;
-        const redirect = urlParams.get('redirect') || '/home';
+        const redirect = response.data.mustChangePassword
+          ? '/profile?tab=password&force=1'
+          : urlParams.get('redirect') || '/home';
 
         // 使用 window.location.href 强制刷新页面，确保 getInitialState 重新执行
         // 这样可以避免权限检查时状态未更新的问题

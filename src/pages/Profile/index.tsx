@@ -3,11 +3,13 @@ import { useMessage } from '@/utils/message';
 import {
   PageContainer,
   ProForm,
+  ProFormSwitch,
   ProFormText,
 } from '@ant-design/pro-components';
 import { useModel } from '@umijs/max';
-import { Button, Card, List, Space, Tabs, Tag } from 'antd';
+import { Alert, Button, Card, List, Space, Tabs, Tag } from 'antd';
 import React, { useEffect, useState } from 'react';
+import { PASSWORD_POLICY_HINT, validateStrongPassword } from '@/utils/password';
 
 const {
   changePassword,
@@ -22,7 +24,11 @@ const ProfilePage: React.FC<unknown> = () => {
   const { initialState, setInitialState } = useModel('@@initialState');
   const [profileForm] = ProForm.useForm();
   const [passwordForm] = ProForm.useForm();
-  const [activeTab, setActiveTab] = useState<string>('profile');
+  const defaultTab =
+    typeof window !== 'undefined'
+      ? new URLSearchParams(window.location.search).get('tab') || 'profile'
+      : 'profile';
+  const [activeTab, setActiveTab] = useState<string>(defaultTab);
   const [loading, setLoading] = useState(false);
   const [sessions, setSessions] = useState<API.SessionInfo[]>([]);
   const [sessionsLoading, setSessionsLoading] = useState(false);
@@ -42,8 +48,8 @@ const ProfilePage: React.FC<unknown> = () => {
           real_name: user.real_name,
         });
       }
-    } catch (error) {
-      console.error('加载用户信息失败:', error);
+    } catch (_error) {
+      message.error('加载用户信息失败');
     } finally {
       setLoading(false);
     }
@@ -56,8 +62,7 @@ const ProfilePage: React.FC<unknown> = () => {
       if (response?.success && response?.data) {
         setSessions(response.data);
       }
-    } catch (error) {
-      console.error('加载会话列表失败:', error);
+    } catch (_error) {
       message.error('加载会话列表失败');
     } finally {
       setSessionsLoading(false);
@@ -76,6 +81,12 @@ const ProfilePage: React.FC<unknown> = () => {
     loadSessions();
   }, [currentUser]);
 
+  useEffect(() => {
+    if (initialState?.currentUser?.force_password_change) {
+      setActiveTab('password');
+    }
+  }, [initialState?.currentUser?.force_password_change]);
+
   const handleRevokeSession = async (sessionId?: string) => {
     if (!sessionId) {
       return;
@@ -84,8 +95,7 @@ const ProfilePage: React.FC<unknown> = () => {
       await revokeSession({ sessionId });
       message.success('会话已踢出');
       loadSessions();
-    } catch (error) {
-      console.error('踢出会话失败:', error);
+    } catch (_error) {
       message.error('踢出会话失败');
     }
   };
@@ -126,11 +136,25 @@ const ProfilePage: React.FC<unknown> = () => {
   const handleChangePassword = async (values: {
     oldPassword: string;
     newPassword: string;
+    revokeOtherSessions?: boolean;
   }) => {
     try {
-      await changePassword(values);
+      await changePassword({
+        oldPassword: values.oldPassword,
+        newPassword: values.newPassword,
+        revokeOtherSessions: values.revokeOtherSessions,
+      });
       message.success('密码修改成功');
       passwordForm.resetFields();
+      await setInitialState({
+        ...initialState,
+        currentUser: initialState?.currentUser
+          ? {
+              ...initialState.currentUser,
+              force_password_change: false,
+            }
+          : initialState?.currentUser,
+      });
       return true;
     } catch (error: any) {
       let errorMessage = '修改密码失败';
@@ -188,9 +212,21 @@ const ProfilePage: React.FC<unknown> = () => {
       label: '修改密码',
       children: (
         <Card>
+          {initialState?.currentUser?.force_password_change && (
+            <Alert
+              type="warning"
+              showIcon
+              style={{ marginBottom: 16 }}
+              message="当前账户被要求立即修改密码"
+              description="密码修改完成前，请不要继续在其他设备上保留旧会话。"
+            />
+          )}
           <ProForm
             form={passwordForm}
             onFinish={handleChangePassword}
+            initialValues={{
+              revokeOtherSessions: true,
+            }}
             submitter={{
               searchConfig: {
                 submitText: '修改密码',
@@ -206,10 +242,18 @@ const ProfilePage: React.FC<unknown> = () => {
             <ProFormText.Password
               name="newPassword"
               label="新密码"
-              placeholder="请输入新密码（至少6位）"
+              placeholder={`请输入新密码（${PASSWORD_POLICY_HINT}）`}
               rules={[
                 { required: true, message: '请输入新密码' },
-                { min: 6, message: '密码长度至少为6位' },
+                {
+                  validator: async (_, value) => {
+                    const error = validateStrongPassword(value);
+                    if (error) {
+                      return Promise.reject(new Error(error));
+                    }
+                    return Promise.resolve();
+                  },
+                },
               ]}
             />
             <ProFormText.Password
@@ -228,6 +272,13 @@ const ProfilePage: React.FC<unknown> = () => {
                   },
                 }),
               ]}
+            />
+            <ProFormSwitch
+              name="revokeOtherSessions"
+              label="踢出其他设备"
+              initialValue
+              checkedChildren="是"
+              unCheckedChildren="否"
             />
           </ProForm>
         </Card>

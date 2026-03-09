@@ -1,4 +1,5 @@
 import { debugLog } from '@/utils/debug';
+import { hasAuthSession } from '@/utils/token';
 import { history, useModel } from '@umijs/max';
 import { Button, Result, Spin } from 'antd';
 import React, { useEffect } from 'react';
@@ -6,8 +7,7 @@ import React, { useEffect } from 'react';
 const NoAccessPage: React.FC = () => {
   const { initialState } = useModel('@@initialState');
   const currentUser = initialState?.currentUser;
-  const hasToken =
-    typeof window !== 'undefined' && !!localStorage.getItem('token');
+  const hasToken = typeof window !== 'undefined' && hasAuthSession();
   const isLogin = !!currentUser?.id;
 
   useEffect(() => {

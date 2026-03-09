@@ -33,7 +33,11 @@ export async function logout(options?: { [key: string]: any }) {
 
 /** 修改当前用户密码 POST /api/v1/auth/change-password */
 export async function changePassword(
-  body: { oldPassword: string; newPassword: string },
+  body: {
+    oldPassword: string;
+    newPassword: string;
+    revokeOtherSessions?: boolean;
+  },
   options?: { [key: string]: any },
 ) {
   return request<API.Result_void_>('/api/v1/auth/change-password', {

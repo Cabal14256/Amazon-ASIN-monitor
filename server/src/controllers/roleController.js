@@ -1,5 +1,6 @@
 const Role = require('../models/Role');
 const Permission = require('../models/Permission');
+const { withTransaction } = require('../config/database');
 const logger = require('../utils/logger');
 const permissionCacheService = require('../services/permissionCacheService');
 
@@ -176,43 +177,49 @@ exports.updateRolePermissions = async (req, res) => {
       });
     }
 
-    // 防止当前管理员误操作，导致自己失去用户管理权限
-    if (role.code === 'ADMIN' && req.userId) {
-      const operatorRoles = await Role.getUserIdsByRoleId(role.id);
-      const isOperatorInAdminRole = operatorRoles.includes(req.userId);
+    const permissionCodeMap = new Map(allPermissions.map((p) => [p.id, p.code]));
+    const selectedCodes = uniquePermissionIds.map((id) =>
+      permissionCodeMap.get(id),
+    );
 
-      if (isOperatorInAdminRole) {
-        const requiredCodes = ['user:read', 'user:write'];
-        const permissionCodeMap = new Map(
-          allPermissions.map((p) => [p.id, p.code]),
-        );
-        const selectedCodes = uniquePermissionIds.map((id) =>
-          permissionCodeMap.get(id),
-        );
-        const missingRequired = requiredCodes.filter(
-          (code) => !selectedCodes.includes(code),
-        );
+    const operatorRoleUserIds = await Role.getUserIdsByRoleId(role.id);
+    if (req.userId && operatorRoleUserIds.includes(req.userId)) {
+      const requiredCodes = [
+        'user:read',
+        'user:write',
+        'user:delete',
+        'role:read',
+        'role:write',
+        'audit:read',
+      ];
+      const missingRequired = requiredCodes.filter(
+        (code) => !selectedCodes.includes(code),
+      );
 
-        if (missingRequired.length > 0) {
-          logger.warn('[updateRolePermissions] 阻止管理员误移除关键权限', {
-            operatorUserId: req.userId,
-            roleId,
-            missingRequired,
-          });
-          return res.status(400).json({
-            success: false,
-            errorMessage: `ADMIN 角色必须保留权限: ${missingRequired.join(
-              ', ',
-            )}`,
-            errorCode: 400,
-          });
-        }
+      if (missingRequired.length > 0) {
+        logger.warn('[updateRolePermissions] 阻止当前操作人移除关键权限', {
+          operatorUserId: req.userId,
+          roleId,
+          missingRequired,
+        });
+        return res.status(400).json({
+          success: false,
+          errorMessage: `当前角色必须保留权限: ${missingRequired.join(', ')}`,
+          errorCode: 400,
+        });
       }
     }
 
-    await Role.updateRolePermissions(roleId, uniquePermissionIds);
+    const affectedUserIds = await withTransaction(async ({ query: transactionQuery }) => {
+      await Role.updateRolePermissions(roleId, uniquePermissionIds, {
+        queryExecutor: transactionQuery,
+      });
 
-    const affectedUserIds = await Role.getUserIdsByRoleId(roleId);
+      return Role.getUserIdsByRoleId(roleId, {
+        queryExecutor: transactionQuery,
+      });
+    });
+
     await Promise.all(
       affectedUserIds.map((userId) =>
         permissionCacheService.clearUserCache(userId),

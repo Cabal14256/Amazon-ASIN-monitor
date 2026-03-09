@@ -3,7 +3,6 @@ import services from '@/services/asin';
 import { formatBeijing, toBeijingDayjs } from '@/utils/beijingTime';
 import { exportToExcel } from '@/utils/export';
 import { useMessage } from '@/utils/message';
-import { getPeakHours } from '@/utils/peakHours';
 import { PageContainer, StatisticCard } from '@ant-design/pro-components';
 import { history } from '@umijs/max';
 import {
@@ -20,6 +19,7 @@ import {
   Table,
   Tag,
 } from 'antd';
+import dayjs from 'dayjs';
 import type { Dayjs } from 'dayjs';
 import React, {
   useCallback,
@@ -32,6 +32,8 @@ import React, {
 const { RangePicker } = DatePicker;
 const {
   getStatisticsByTime,
+  getAnalyticsMonthlyBreakdown,
+  getAnalyticsPeakMarkAreas,
   getMonitorStatistics,
   getPeakHoursStatistics,
   getAllCountriesSummary,
@@ -174,151 +176,6 @@ type PeakMarkArea = {
   name: string;
 };
 
-const ANALYTICS_WEB_WORKER_ENABLED = ['1', 'true', 'yes', 'on'].includes(
-  String(process.env.ANALYTICS_WEB_WORKER_ENABLED || 'false')
-    .trim()
-    .toLowerCase(),
-);
-
-const buildMonthlyBreakdownRowsSync = (
-  list: API.TimeStatistics[],
-  monthStart: Dayjs,
-): MonthlyBreakdownRow[] => {
-  const rowMap = new Map<string, API.TimeStatistics>();
-  if (Array.isArray(list)) {
-    list.forEach((item: API.TimeStatistics) => {
-      const dateKey = String(item.time_period || '').slice(0, 10);
-      if (dateKey) {
-        rowMap.set(dateKey, item);
-      }
-    });
-  }
-
-  const daysInMonth = monthStart.daysInMonth();
-  const rows: MonthlyBreakdownRow[] = [];
-  for (let day = 1; day <= daysInMonth; day += 1) {
-    const date = monthStart.date(day).format('YYYY-MM-DD');
-    const stat = rowMap.get(date);
-    const brokenAsinsDedup = toNumber(stat?.broken_asins_dedup);
-    const totalAsinsDedup = toNumber(stat?.total_asins_dedup);
-    const fallbackRatio = toNumber(stat?.ratio_all_time);
-    const brokenRatio =
-      totalAsinsDedup > 0
-        ? (brokenAsinsDedup / totalAsinsDedup) * 100
-        : fallbackRatio;
-
-    rows.push({
-      date,
-      day,
-      brokenAsinsDedup,
-      totalAsinsDedup,
-      brokenRatio: Number.isFinite(brokenRatio) ? brokenRatio : 0,
-    });
-  }
-
-  return rows;
-};
-
-const resolveRegionsToShow = (country: string) => {
-  if (country) {
-    if (country === 'US') {
-      return [{ code: 'US', countries: ['US'] }];
-    }
-    if (country === 'UK') {
-      return [{ code: 'UK', countries: ['UK'] }];
-    }
-    if (['DE', 'FR', 'ES', 'IT'].includes(country)) {
-      return [{ code: 'EU_OTHER', countries: ['DE', 'FR', 'ES', 'IT'] }];
-    }
-    return [];
-  }
-
-  return [
-    { code: 'US', countries: ['US'] },
-    { code: 'UK', countries: ['UK'] },
-    { code: 'EU_OTHER', countries: ['DE', 'FR', 'ES', 'IT'] },
-  ];
-};
-
-const getPeakColor = (regionCode: string) => {
-  if (regionCode === 'US') {
-    return 'rgba(255, 152, 0, 0.15)';
-  }
-  if (regionCode === 'UK') {
-    return 'rgba(156, 39, 176, 0.15)';
-  }
-  if (regionCode === 'EU_OTHER') {
-    return 'rgba(33, 150, 243, 0.15)';
-  }
-  return 'rgba(255, 193, 7, 0.1)';
-};
-
-const buildPeakHoursMarkAreasSync = (
-  groupBy: string,
-  country: string,
-  timeChartData: any[],
-): PeakMarkArea[] => {
-  if (groupBy !== 'hour') {
-    return [];
-  }
-
-  const regionsToShow = resolveRegionsToShow(country);
-  if (timeChartData.length === 0) {
-    return [];
-  }
-
-  const firstTime = timeChartData[0]?.time;
-  const lastTime = timeChartData[timeChartData.length - 1]?.time;
-  if (!firstTime || !lastTime) {
-    return [];
-  }
-
-  const startDate = dayjs(firstTime).startOf('day');
-  const endDate = dayjs(lastTime).endOf('day');
-  const markAreas: PeakMarkArea[] = [];
-
-  regionsToShow.forEach((region) => {
-    const representativeCountry = region.countries[0];
-    const peakHours = getPeakHours(representativeCountry);
-    const areas: any[] = [];
-
-    let currentDate = startDate;
-    while (currentDate <= endDate) {
-      const dateForLoop = currentDate;
-      peakHours.forEach((peak) => {
-        const startHour = peak.start;
-        const endHour = peak.end === 24 ? 0 : peak.end;
-        const startTime = dateForLoop.hour(startHour).minute(0).second(0);
-        const endTime =
-          endHour === 0
-            ? dateForLoop.add(1, 'day').hour(0).minute(0).second(0)
-            : dateForLoop.hour(endHour).minute(0).second(0);
-
-        areas.push([
-          {
-            name: `${region.code}高峰期`,
-            xAxis: startTime.format('YYYY-MM-DD HH:mm'),
-          },
-          {
-            xAxis: endTime.format('YYYY-MM-DD HH:mm'),
-          },
-        ]);
-      });
-      currentDate = currentDate.add(1, 'day');
-    }
-
-    if (areas.length > 0) {
-      markAreas.push({
-        areas,
-        color: getPeakColor(region.code),
-        name: region.code,
-      });
-    }
-  });
-
-  return markAreas;
-};
-
 const AnalyticsPageContent: React.FC<unknown> = () => {
   const message = useMessage();
   const [dateRange, setDateRange] = useState<[Dayjs, Dayjs]>([
@@ -409,123 +266,7 @@ const AnalyticsPageContent: React.FC<unknown> = () => {
   const [monthlyBreakdownRows, setMonthlyBreakdownRows] = useState<
     MonthlyBreakdownRow[]
   >([]);
-  const analyticsWorkerRef = useRef<Worker | null>(null);
-  const analyticsWorkerRequestIdRef = useRef(0);
-  const analyticsWorkerPendingRef = useRef<
-    Map<
-      number,
-      {
-        resolve: (value: any) => void;
-        reject: (reason?: any) => void;
-        timer?: number;
-      }
-    >
-  >(new Map());
-  const [analyticsWorkerReady, setAnalyticsWorkerReady] = useState(false);
   const [peakHoursMarkAreas, setPeakHoursMarkAreas] = useState<PeakMarkArea[]>(
-    [],
-  );
-
-  useEffect(() => {
-    if (
-      !ANALYTICS_WEB_WORKER_ENABLED ||
-      typeof window === 'undefined' ||
-      typeof Worker === 'undefined'
-    ) {
-      setAnalyticsWorkerReady(false);
-      return undefined;
-    }
-
-    let worker: Worker | null = null;
-
-    try {
-      worker = new Worker(
-        new URL('./workers/analytics.worker.ts', import.meta.url),
-      );
-      analyticsWorkerRef.current = worker;
-
-      worker.onmessage = (event: MessageEvent<any>) => {
-        const { requestId, success, data, error } = event.data || {};
-        const pending = analyticsWorkerPendingRef.current.get(requestId);
-        if (!pending) {
-          return;
-        }
-        analyticsWorkerPendingRef.current.delete(requestId);
-        if (pending.timer) {
-          window.clearTimeout(pending.timer);
-        }
-        if (success) {
-          pending.resolve(data);
-        } else {
-          pending.reject(new Error(error || 'analytics worker 执行失败'));
-        }
-      };
-
-      worker.onerror = (error: ErrorEvent) => {
-        analyticsWorkerPendingRef.current.forEach((pending) => {
-          if (pending.timer) {
-            window.clearTimeout(pending.timer);
-          }
-          pending.reject(error);
-        });
-        analyticsWorkerPendingRef.current.clear();
-      };
-
-      setAnalyticsWorkerReady(true);
-    } catch {
-      setAnalyticsWorkerReady(false);
-      analyticsWorkerRef.current = null;
-    }
-
-    return () => {
-      setAnalyticsWorkerReady(false);
-      analyticsWorkerPendingRef.current.forEach((pending) => {
-        if (pending.timer) {
-          window.clearTimeout(pending.timer);
-        }
-        pending.reject(new Error('analytics worker 已关闭'));
-      });
-      analyticsWorkerPendingRef.current.clear();
-
-      if (worker) {
-        worker.terminate();
-      }
-      analyticsWorkerRef.current = null;
-    };
-  }, []);
-
-  const callAnalyticsWorker = useCallback(
-    <T,>(
-      task: 'buildMonthlyBreakdown' | 'buildPeakMarkAreas',
-      payload: Record<string, any>,
-      timeoutMs = 20000,
-    ) => {
-      return new Promise<T>((resolve, reject) => {
-        const worker = analyticsWorkerRef.current;
-        if (!worker) {
-          reject(new Error('analytics worker 不可用'));
-          return;
-        }
-
-        const requestId = (analyticsWorkerRequestIdRef.current += 1);
-        const timer = window.setTimeout(() => {
-          analyticsWorkerPendingRef.current.delete(requestId);
-          reject(new Error(`analytics worker 超时 (${timeoutMs}ms)`));
-        }, timeoutMs);
-
-        analyticsWorkerPendingRef.current.set(requestId, {
-          resolve,
-          reject,
-          timer,
-        });
-
-        worker.postMessage({
-          requestId,
-          task,
-          payload,
-        });
-      });
-    },
     [],
   );
 
@@ -543,35 +284,18 @@ const AnalyticsPageContent: React.FC<unknown> = () => {
         params.country = country;
       }
 
-      const result = await getStatisticsByTime(params);
-      const list =
+      const result = await getAnalyticsMonthlyBreakdown({
+        ...params,
+        month: monthStart.format('YYYY-MM'),
+      });
+      const breakdownData =
         result && typeof result === 'object' && !('success' in result)
           ? result
-          : (result as any)?.data || [];
-      let rows: MonthlyBreakdownRow[] = [];
-      if (ANALYTICS_WEB_WORKER_ENABLED && analyticsWorkerReady) {
-        try {
-          rows = await callAnalyticsWorker<MonthlyBreakdownRow[]>(
-            'buildMonthlyBreakdown',
-            {
-              list,
-              monthStart: monthStart.format('YYYY-MM-DD'),
-            },
-          );
-        } catch {
-          rows = buildMonthlyBreakdownRowsSync(
-            list as API.TimeStatistics[],
-            monthStart,
-          );
-        }
-      } else {
-        rows = buildMonthlyBreakdownRowsSync(
-          list as API.TimeStatistics[],
-          monthStart,
-        );
-      }
+          : (result as any)?.data || {};
 
-      setMonthlyBreakdownRows(rows);
+      setMonthlyBreakdownRows(
+        Array.isArray(breakdownData.rows) ? breakdownData.rows : [],
+      );
     } catch (error) {
       console.error('加载月度被拆统计失败:', error);
       message.error('加载月度被拆统计失败，请稍后重试');
@@ -579,13 +303,7 @@ const AnalyticsPageContent: React.FC<unknown> = () => {
     } finally {
       setMonthlyBreakdownLoading(false);
     }
-  }, [
-    analyticsWorkerReady,
-    callAnalyticsWorker,
-    country,
-    monthlyBreakdownMonth,
-    message,
-  ]);
+  }, [country, monthlyBreakdownMonth, message]);
 
   // 加载所有统计数据（使用useCallback优化，支持重试）
   const loadStatistics = useCallback(
@@ -731,7 +449,10 @@ const AnalyticsPageContent: React.FC<unknown> = () => {
             label: '变体组Top 10',
             run: () => getASINStatisticsByVariantGroup({ limit: 10 }),
           },
-          { label: '总体统计', run: () => getMonitorStatistics(params) },
+          {
+            label: '总体统计',
+            run: () => getMonitorStatistics({ ...params, checkType: 'ASIN' }),
+          },
           {
             label: '全国家汇总',
             run: () =>
@@ -765,7 +486,12 @@ const AnalyticsPageContent: React.FC<unknown> = () => {
         if (country) {
           tasks.push({
             label: '高峰期统计',
-            run: () => getPeakHoursStatistics({ ...params, country }),
+            run: () =>
+              getPeakHoursStatistics({
+                ...params,
+                country,
+                checkType: 'ASIN',
+              }),
           });
         }
 
@@ -1256,22 +982,6 @@ const AnalyticsPageContent: React.FC<unknown> = () => {
   useEffect(() => {
     let cancelled = false;
 
-    const fallback = () => {
-      const syncAreas = buildPeakHoursMarkAreasSync(
-        groupBy,
-        country,
-        timeChartData,
-      );
-      setPeakHoursMarkAreas(syncAreas);
-    };
-
-    if (!ANALYTICS_WEB_WORKER_ENABLED || !analyticsWorkerReady) {
-      fallback();
-      return () => {
-        cancelled = true;
-      };
-    }
-
     if (groupBy !== 'hour' || timeChartData.length === 0) {
       setPeakHoursMarkAreas([]);
       return () => {
@@ -1288,39 +998,39 @@ const AnalyticsPageContent: React.FC<unknown> = () => {
       };
     }
 
-    callAnalyticsWorker<PeakMarkArea[]>(
-      'buildPeakMarkAreas',
-      {
+    void getAnalyticsPeakMarkAreas({
         groupBy,
         country,
-        startTimestamp: toBeijingDayjs(firstTime).startOf('day').valueOf(),
-        endTimestamp: toBeijingDayjs(lastTime).endOf('day').valueOf(),
-      },
-      20000,
-    )
+        startTime: toBeijingDayjs(firstTime).startOf('day').format(
+          'YYYY-MM-DD HH:mm:ss',
+        ),
+        endTime: toBeijingDayjs(lastTime).endOf('day').format(
+          'YYYY-MM-DD HH:mm:ss',
+        ),
+      })
       .then((areas) => {
         if (cancelled) {
           return;
         }
-        setPeakHoursMarkAreas(Array.isArray(areas) ? areas : []);
+        const responseData =
+          areas && typeof areas === 'object' && !('success' in areas)
+            ? areas
+            : (areas as any)?.data || [];
+        setPeakHoursMarkAreas(
+          Array.isArray(responseData) ? responseData : [],
+        );
       })
       .catch(() => {
         if (cancelled) {
           return;
         }
-        fallback();
+        setPeakHoursMarkAreas([]);
       });
 
     return () => {
       cancelled = true;
     };
-  }, [
-    analyticsWorkerReady,
-    callAnalyticsWorker,
-    country,
-    groupBy,
-    timeChartData,
-  ]);
+  }, [country, groupBy, timeChartData]);
 
   const lineChartOptions = useMemo(() => {
     const series: any[] = lineTypes.map((type, index) => {

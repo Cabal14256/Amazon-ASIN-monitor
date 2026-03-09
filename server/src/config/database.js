@@ -22,6 +22,26 @@ const pool = mysql.createPool(dbConfig);
 const QUERY_TIMEOUT_MS = Number(process.env.DB_QUERY_TIMEOUT) || 600000;
 const SLOW_QUERY_MS = Number(process.env.DB_SLOW_QUERY_MS) || 1500;
 
+function compactSql(sql) {
+  return String(sql).replace(/\s+/g, ' ').trim().slice(0, 240);
+}
+
+async function executeWithRunner(runner, sql, params = []) {
+  const start = Date.now();
+  const [results] = await runner.query({
+    sql,
+    values: params,
+    timeout: QUERY_TIMEOUT_MS,
+  });
+  const duration = Date.now() - start;
+  if (duration >= SLOW_QUERY_MS) {
+    logger.warn(
+      `[慢查询] 耗时${duration}ms, 参数数量=${params.length}, SQL=${compactSql(sql)}`,
+    );
+  }
+  return results;
+}
+
 // 测试数据库连接
 async function testConnection() {
   if (!process.env.DB_PASSWORD) {
@@ -42,23 +62,57 @@ async function testConnection() {
 // 执行查询的辅助函数
 async function query(sql, params = []) {
   try {
-    const start = Date.now();
-    const [results] = await pool.query({
-      sql,
-      values: params,
-      timeout: QUERY_TIMEOUT_MS,
-    });
-    const duration = Date.now() - start;
-    if (duration >= SLOW_QUERY_MS) {
-      const compactSql = String(sql).replace(/\s+/g, ' ').trim().slice(0, 240);
-      logger.warn(
-        `[慢查询] 耗时${duration}ms, 参数数量=${params.length}, SQL=${compactSql}`,
-      );
-    }
-    return results;
+    return await executeWithRunner(pool, sql, params);
   } catch (error) {
     logger.error('数据库查询错误:', error);
     throw error;
+  }
+}
+
+async function getConnection() {
+  return pool.getConnection();
+}
+
+function createQueryExecutor(connection) {
+  return async (sql, params = []) => {
+    try {
+      return await executeWithRunner(connection, sql, params);
+    } catch (error) {
+      logger.error('数据库事务查询错误:', {
+        message: error.message,
+        sql: compactSql(sql),
+      });
+      throw error;
+    }
+  };
+}
+
+async function withTransaction(handler) {
+  const connection = await getConnection();
+  const execute = createQueryExecutor(connection);
+
+  try {
+    await connection.beginTransaction();
+    const result = await handler({
+      connection,
+      query: execute,
+    });
+    await connection.commit();
+    return result;
+  } catch (error) {
+    try {
+      await connection.rollback();
+    } catch (rollbackError) {
+      logger.error('数据库事务回滚失败:', {
+        message: rollbackError.message,
+      });
+    }
+    logger.error('数据库事务执行失败:', {
+      message: error.message,
+    });
+    throw error;
+  } finally {
+    connection.release();
   }
 }
 
@@ -100,6 +154,9 @@ function getPoolStatus() {
 module.exports = {
   pool,
   query,
+  getConnection,
+  createQueryExecutor,
+  withTransaction,
   testConnection,
   getPoolStatus,
 };

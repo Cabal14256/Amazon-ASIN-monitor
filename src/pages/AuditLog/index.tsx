@@ -22,8 +22,12 @@ const actionMap: Record<string, { text: string; color: string }> = {
   READ: { text: '查看', color: 'default' },
   LOGIN: { text: '登录', color: 'success' },
   LOGOUT: { text: '登出', color: 'default' },
+  CHANGE_PASSWORD: { text: '修改密码', color: 'orange' },
+  RESET_PASSWORD: { text: '重置密码', color: 'red' },
+  REVOKE_SESSION: { text: '踢出会话', color: 'volcano' },
   EXPORT: { text: '导出', color: 'purple' },
   TRIGGER_MONITOR: { text: '触发监控', color: 'orange' },
+  UPDATE_ROLE_PERMISSIONS: { text: '更新角色权限', color: 'cyan' },
   UNKNOWN: { text: '未知', color: 'default' },
 };
 
@@ -37,6 +41,7 @@ const resourceMap: Record<string, string> = {
   feishu_config: '飞书配置',
   sp_api_config: 'SP-API配置',
   auth: '认证',
+  audit: '审计',
   monitor: '监控',
   monitor_history: '监控历史',
 };
@@ -214,8 +219,7 @@ const AuditLogPage: React.FC<unknown> = () => {
               success,
               total: data?.total || 0,
             };
-          } catch (error) {
-            console.error('获取审计日志列表失败:', error);
+          } catch (_error) {
             message.error('获取审计日志列表失败');
             return {
               data: [],

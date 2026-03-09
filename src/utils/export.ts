@@ -1,7 +1,10 @@
-import { Modal, Progress, message } from 'antd';
+import { history } from '@umijs/max';
+import { Button, Modal, Progress, message } from 'antd';
 import React from 'react';
 import ReactDOM from 'react-dom/client';
 import { formatBeijingNow } from './beijingTime';
+import { cancelTask } from '@/services/task';
+import { getToken } from './token';
 
 function normalizeBaseURL(baseURL: string): string {
   return baseURL.endsWith('/') ? baseURL.slice(0, -1) : baseURL;
@@ -72,21 +75,78 @@ interface ProgressModalProps {
   visible: boolean;
   progress: number;
   progressMessage: string;
+  closable?: boolean;
+  onClose?: () => void;
+  onOpenTaskCenter?: () => void;
+  onCancelTask?: () => void;
+  cancelLoading?: boolean;
+  extraTip?: string;
 }
 
 const ProgressModal: React.FC<ProgressModalProps> = ({
   visible,
   progress,
   progressMessage,
+  closable = false,
+  onClose,
+  onOpenTaskCenter,
+  onCancelTask,
+  cancelLoading = false,
+  extraTip,
 }) => {
+  const footer: React.ReactNode[] = [];
+
+  if (onOpenTaskCenter) {
+    footer.push(
+      React.createElement(
+        Button,
+        {
+          key: 'task-center',
+          onClick: onOpenTaskCenter,
+        },
+        '任务中心',
+      ),
+    );
+  }
+
+  if (closable && onClose) {
+    footer.push(
+      React.createElement(
+        Button,
+        {
+          key: 'background',
+          type: 'primary',
+          onClick: onClose,
+        },
+        '转入后台',
+      ),
+    );
+  }
+
+  if (onCancelTask) {
+    footer.push(
+      React.createElement(
+        Button,
+        {
+          key: 'cancel-task',
+          danger: true,
+          loading: cancelLoading,
+          onClick: onCancelTask,
+        },
+        '取消任务',
+      ),
+    );
+  }
+
   return React.createElement(
     Modal,
     {
       open: visible,
       title: '导出进度',
-      footer: null,
-      closable: false,
-      maskClosable: false,
+      footer: footer.length > 0 ? footer : null,
+      closable,
+      maskClosable: closable,
+      onCancel: closable ? onClose : undefined,
       width: 400,
     },
     React.createElement(
@@ -105,6 +165,20 @@ const ProgressModal: React.FC<ProgressModalProps> = ({
         { style: { marginTop: 16, textAlign: 'center', color: '#666' } },
         progressMessage,
       ),
+      extraTip
+        ? React.createElement(
+            'div',
+            {
+              style: {
+                marginTop: 8,
+                textAlign: 'center',
+                color: '#999',
+                fontSize: 12,
+              },
+            },
+            extraTip,
+          )
+        : null,
     ),
   );
 };
@@ -114,11 +188,109 @@ const ProgressModal: React.FC<ProgressModalProps> = ({
  */
 const EXPORT_TYPE_MAP: Record<string, string> = {
   '/v1/export/asin': 'asin',
+  '/api/v1/export/asin': 'asin',
   '/v1/export/monitor-history': 'monitor-history',
+  '/api/v1/export/monitor-history': 'monitor-history',
   '/v1/export/variant-group': 'variant-group',
+  '/api/v1/export/variant-group': 'variant-group',
+  '/v1/export/competitor-asin': 'competitor-asin',
+  '/api/v1/export/competitor-asin': 'competitor-asin',
+  '/v1/export/competitor-variant-group': 'competitor-variant-group',
+  '/api/v1/export/competitor-variant-group': 'competitor-variant-group',
   '/v1/export/competitor-monitor-history': 'competitor-monitor-history',
+  '/api/v1/export/competitor-monitor-history': 'competitor-monitor-history',
   '/v1/export/analytics-monthly-breakdown': 'analytics-monthly-breakdown',
+  '/api/v1/export/analytics-monthly-breakdown': 'analytics-monthly-breakdown',
+  '/v1/export/parent-asin-query': 'parent-asin-query',
+  '/api/v1/export/parent-asin-query': 'parent-asin-query',
 };
+
+function normalizeExportPath(url: string): string {
+  if (!url) {
+    return url;
+  }
+
+  return url.startsWith('/api/') ? url.replace(/^\/api/i, '') : url;
+}
+
+function buildAuthHeaders(
+  token: string | null,
+  includeJsonContentType = false,
+): HeadersInit {
+  const headers: HeadersInit = {};
+
+  if (includeJsonContentType) {
+    headers['Content-Type'] = 'application/json';
+  }
+
+  if (token) {
+    headers.Authorization = `Bearer ${token}`;
+  }
+
+  return headers;
+}
+
+function getFilenameFromDisposition(
+  contentDisposition: string | null,
+  fallbackFilename: string,
+) {
+  if (!contentDisposition) {
+    return fallbackFilename;
+  }
+
+  const utf8Match = contentDisposition.match(/filename\*=UTF-8''([^;]+)/i);
+  if (utf8Match?.[1]) {
+    try {
+      return decodeURIComponent(utf8Match[1]);
+    } catch (error) {
+      return utf8Match[1];
+    }
+  }
+
+  const asciiMatch = contentDisposition.match(/filename="?([^"]+)"?/i);
+  if (asciiMatch?.[1]) {
+    return asciiMatch[1];
+  }
+
+  return fallbackFilename;
+}
+
+function ensureFileExtension(filename: string, extension: string) {
+  return filename.toLowerCase().endsWith(extension.toLowerCase())
+    ? filename
+    : `${filename}${extension}`;
+}
+
+async function downloadBlobWithAuth(
+  url: string,
+  token: string | null,
+  fallbackFilename: string,
+) {
+  const response = await fetch(url, {
+    method: 'GET',
+    headers: buildAuthHeaders(token),
+    credentials: 'include',
+  });
+
+  if (!response.ok) {
+    const errorData = await response.json().catch(() => ({}));
+    throw new Error(errorData.errorMessage || '下载失败');
+  }
+
+  const blob = await response.blob();
+  const resolvedFilename = getFilenameFromDisposition(
+    response.headers.get('content-disposition'),
+    fallbackFilename,
+  );
+  const downloadUrl = window.URL.createObjectURL(blob);
+  const link = document.createElement('a');
+  link.href = downloadUrl;
+  link.download = resolvedFilename;
+  document.body.appendChild(link);
+  link.click();
+  document.body.removeChild(link);
+  window.URL.revokeObjectURL(downloadUrl);
+}
 
 /**
  * 后台任务导出（使用任务队列）
@@ -132,7 +304,8 @@ export async function exportToExcelAsync(
   filename?: string,
 ): Promise<void> {
   // 确定导出类型
-  const exportType = EXPORT_TYPE_MAP[url];
+  const normalizedUrl = normalizeExportPath(url);
+  const exportType = EXPORT_TYPE_MAP[normalizedUrl];
   if (!exportType) {
     throw new Error(`不支持的导出类型: ${url}`);
   }
@@ -149,20 +322,74 @@ export async function exportToExcelAsync(
   let unsubscribe: (() => void) | null = null;
   let pollInterval: number | null = null;
   let timeoutHandle: number | null = null;
+  let modalClosable = false;
+  let cancelLoading = false;
+  let disposed = false;
 
-  const updateProgress = (newProgress: number, msg: string) => {
-    progress = newProgress;
-    progressMessage = msg;
+  const renderModal = () => {
+    if (disposed) {
+      return;
+    }
+
     root.render(
       React.createElement(ProgressModal, {
         visible: modalState.visible,
-        progress: progress,
-        progressMessage: progressMessage,
+        progress,
+        progressMessage,
+        closable: modalClosable,
+        onClose: modalClosable
+          ? () => {
+              modalState.visible = false;
+              cleanup();
+              message.info('导出任务已转入后台，可在任务中心查看或取消');
+            }
+          : undefined,
+        onOpenTaskCenter: taskId
+          ? () => {
+              modalState.visible = false;
+              cleanup();
+              history.push('/tasks');
+            }
+          : undefined,
+        onCancelTask: taskId
+          ? async () => {
+              if (cancelLoading || !taskId) {
+                return;
+              }
+
+              cancelLoading = true;
+              renderModal();
+
+              try {
+                await cancelTask({ taskId });
+                message.success('已发送取消请求');
+              } catch (error: any) {
+                message.error(error?.message || '取消任务失败');
+              } finally {
+                cancelLoading = false;
+                renderModal();
+              }
+            }
+          : undefined,
+        cancelLoading,
+        extraTip: taskId
+          ? '可关闭窗口，稍后在任务中心查看进度或取消任务。'
+          : undefined,
       }),
     );
   };
 
+  const updateProgress = (newProgress: number, msg: string) => {
+    progress = newProgress;
+    progressMessage = msg;
+    renderModal();
+  };
+
   const cleanup = () => {
+    if (disposed) {
+      return;
+    }
+    disposed = true;
     if (unsubscribe) {
       unsubscribe();
       unsubscribe = null;
@@ -177,23 +404,23 @@ export async function exportToExcelAsync(
     }
     setTimeout(() => {
       root.unmount();
-      document.body.removeChild(progressContainer);
+      if (document.body.contains(progressContainer)) {
+        document.body.removeChild(progressContainer);
+      }
     }, 500);
   };
 
   try {
     const baseURL = getBaseURL();
-    const token = localStorage.getItem('token');
+    const token = getToken();
 
     // 创建导出任务
     const createTaskResponse = await fetch(
       mergeApiURL(baseURL, '/v1/tasks/export'),
       {
         method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          Authorization: `Bearer ${token}`,
-        },
+        headers: buildAuthHeaders(token, true),
+        credentials: 'include',
         body: JSON.stringify({
           exportType,
           params,
@@ -212,6 +439,7 @@ export async function exportToExcelAsync(
     }
 
     taskId = taskData.data.taskId;
+    modalClosable = true;
     updateProgress(5, '任务已创建，等待处理...');
 
     // 监听WebSocket消息
@@ -236,53 +464,80 @@ export async function exportToExcelAsync(
     }
 
     unsubscribe = wsClient.onMessage((msg) => {
+      if (disposed) {
+        return;
+      }
+
       if (msg.type === 'task_progress' && msg.taskId === taskId) {
         updateProgress(msg.progress, msg.message);
       } else if (msg.type === 'task_complete' && msg.taskId === taskId) {
+        if (pollInterval !== null) {
+          clearInterval(pollInterval);
+          pollInterval = null;
+        }
         updateProgress(100, '导出完成，正在下载...');
 
-        // 下载文件
-        const downloadUrl = mergeApiURL(baseURL, msg.downloadUrl);
-        const a = document.createElement('a');
-        a.href = downloadUrl;
-        a.download =
+        const fallbackFilename =
           msg.filename ||
           (filename
             ? `${filename}_${getExportDateSuffix()}.xlsx`
             : `导出数据_${getExportDateSuffix()}.xlsx`);
-        document.body.appendChild(a);
-        a.click();
-        document.body.removeChild(a);
-
-        modalState.visible = false;
-        updateProgress(100, '导出完成');
-        message.success('导出成功');
-        cleanup();
+        const downloadUrl = mergeApiURL(
+          baseURL,
+          msg.downloadUrl || `/v1/tasks/${taskId}/download`,
+        );
+        void downloadBlobWithAuth(downloadUrl, token, fallbackFilename)
+          .then(() => {
+            modalState.visible = false;
+            updateProgress(100, '导出完成');
+            message.success('导出成功');
+            cleanup();
+          })
+          .catch((downloadError: any) => {
+            modalState.visible = false;
+            updateProgress(0, '导出失败');
+            message.error(downloadError?.message || '下载导出文件失败');
+            cleanup();
+          });
       } else if (msg.type === 'task_error' && msg.taskId === taskId) {
+        if (pollInterval !== null) {
+          clearInterval(pollInterval);
+          pollInterval = null;
+        }
         modalState.visible = false;
         updateProgress(0, '导出失败');
         message.error(`导出失败: ${msg.error}`);
         cleanup();
-        throw new Error(msg.error);
+      } else if (msg.type === 'task_cancelled' && msg.taskId === taskId) {
+        if (pollInterval !== null) {
+          clearInterval(pollInterval);
+          pollInterval = null;
+        }
+        modalState.visible = false;
+        updateProgress(0, msg.message || '导出任务已取消');
+        message.warning(msg.message || '导出任务已取消');
+        cleanup();
       }
     });
 
     // 轮询任务状态（作为WebSocket的备用方案）
     pollInterval = window.setInterval(async () => {
-      if (!taskId) return;
+      if (!taskId || disposed) return;
 
       try {
         const statusResponse = await fetch(
           mergeApiURL(baseURL, `/v1/tasks/${taskId}`),
           {
-            headers: {
-              Authorization: `Bearer ${token}`,
-            },
+            headers: buildAuthHeaders(token),
+            credentials: 'include',
           },
         );
 
         if (statusResponse.ok) {
           const statusData = await statusResponse.json();
+          if (disposed) {
+            return;
+          }
           if (statusData.success && statusData.data) {
             const { status, progress: taskProgress, error } = statusData.data;
 
@@ -291,24 +546,30 @@ export async function exportToExcelAsync(
                 clearInterval(pollInterval);
                 pollInterval = null;
               }
-              // 下载文件
-              const downloadUrl = mergeApiURL(
-                baseURL,
-                `/v1/tasks/${taskId}/download`,
-              );
-              const a = document.createElement('a');
-              a.href = downloadUrl;
-              a.download = filename
-                ? `${filename}_${getExportDateSuffix()}.xlsx`
-                : `导出数据_${getExportDateSuffix()}.xlsx`;
-              document.body.appendChild(a);
-              a.click();
-              document.body.removeChild(a);
-
-              modalState.visible = false;
-              updateProgress(100, '导出完成');
-              message.success('导出成功');
-              cleanup();
+              const fallbackFilename =
+                statusData.data.filename ||
+                statusData.data.result?.filename ||
+                filename ||
+                `导出数据_${getExportDateSuffix()}`;
+              void downloadBlobWithAuth(
+                mergeApiURL(baseURL, `/v1/tasks/${taskId}/download`),
+                token,
+                ensureFileExtension(fallbackFilename, '.xlsx'),
+              )
+                .then(() => {
+                  modalState.visible = false;
+                  updateProgress(100, '导出完成');
+                  message.success('导出成功');
+                  cleanup();
+                })
+                .catch((downloadError: any) => {
+                  modalState.visible = false;
+                  updateProgress(0, '导出失败');
+                  message.error(
+                    downloadError?.message || '下载导出文件失败',
+                  );
+                  cleanup();
+                });
             } else if (status === 'failed') {
               if (pollInterval !== null) {
                 clearInterval(pollInterval);
@@ -318,9 +579,17 @@ export async function exportToExcelAsync(
               updateProgress(0, '导出失败');
               message.error(`导出失败: ${error || '未知错误'}`);
               cleanup();
-              throw new Error(error || '导出失败');
             } else if (status === 'processing' && taskProgress !== undefined) {
               updateProgress(taskProgress, `正在处理... (${taskProgress}%)`);
+            } else if (status === 'cancelled' || status === 'cancelling') {
+              if (pollInterval !== null) {
+                clearInterval(pollInterval);
+                pollInterval = null;
+              }
+              modalState.visible = false;
+              updateProgress(taskProgress || 0, error || '导出任务已取消');
+              message.warning(error || '导出任务已取消');
+              cleanup();
             }
           }
         }
@@ -357,13 +626,13 @@ export async function exportToExcelAsync(
  * @param url 导出API地址（相对路径，如 '/v1/export/asin'）
  * @param params 查询参数
  * @param filename 文件名（不含扩展名）
- * @param useAsync 是否使用后台任务模式（默认false，使用同步模式）
+ * @param useAsync 是否使用后台任务模式（默认true）
  */
 export async function exportToExcel(
   url: string,
   params: Record<string, any> = {},
   filename?: string,
-  useAsync: boolean = false,
+  useAsync: boolean = true,
 ) {
   // 如果使用异步模式，调用后台任务导出
   if (useAsync) {
@@ -405,7 +674,7 @@ export async function exportToExcel(
     });
     queryParams.append('useProgress', 'true');
 
-    const token = localStorage.getItem('token');
+    const token = getToken();
 
     // 获取baseURL并构建完整URL
     const baseURL = getBaseURL();
@@ -414,9 +683,8 @@ export async function exportToExcel(
     // 使用 fetch + ReadableStream 接收 SSE 进度更新（因为需要自定义 headers）
     const response = await fetch(fullUrl, {
       method: 'GET',
-      headers: {
-        Authorization: `Bearer ${token}`,
-      },
+      headers: buildAuthHeaders(token),
+      credentials: 'include',
     });
 
     if (!response.ok) {
@@ -502,9 +770,8 @@ export async function exportToExcel(
                             );
                           const redirectResponse = await fetch(redirectUrl, {
                             method: 'GET',
-                            headers: {
-                              Authorization: `Bearer ${currentToken}`,
-                            },
+                            headers: buildAuthHeaders(currentToken),
+                            credentials: 'include',
                           });
 
                           if (!redirectResponse.ok) {

@@ -13,6 +13,10 @@ const operationIdentifier = require('./spApiOperationIdentifier');
 const { batchCheckASINsHybrid } = require('./batchVariantCheckService');
 const logger = require('../utils/logger');
 const { parseVariantRelationships } = require('../utils/variantParser');
+const {
+  buildEffectiveStatus,
+  decorateVariantGroupStatus,
+} = require('../utils/variantStatus');
 
 /**
  * 每次最多同时检查的 ASIN 数（降低并发以减少限流风险）
@@ -852,6 +856,27 @@ async function checkVariantGroup(
       }
     }
 
+    const applyEffectiveStatusToChild = (childRef, autoBrokenValue) => {
+      if (!childRef) {
+        return;
+      }
+
+      const effective = buildEffectiveStatus({
+        autoBroken: autoBrokenValue ? 1 : 0,
+        manualBroken: childRef.manualBroken || childRef.manual_broken || 0,
+      });
+
+      childRef.is_broken = autoBrokenValue ? 1 : 0;
+      childRef.variant_status = autoBrokenValue ? 'BROKEN' : 'NORMAL';
+      childRef.autoIsBroken = effective.autoIsBroken;
+      childRef.autoVariantStatus = effective.autoVariantStatus;
+      childRef.isBroken = effective.isBroken;
+      childRef.variantStatus = effective.variantStatus;
+      childRef.statusSource = effective.statusSource;
+      childRef.lastCheckTime = new Date();
+      childRef.last_check_time = childRef.lastCheckTime;
+    };
+
     const processEntry = async (asinEntry, index) => {
       const asin = asinEntry.asin || asinEntry;
       const asinId = asinEntry.id;
@@ -871,9 +896,7 @@ async function checkVariantGroup(
         }
 
         if (childRef) {
-          childRef.isBroken = isBroken ? 1 : 0;
-          childRef.variantStatus = isBroken ? 'BROKEN' : 'NORMAL';
-          childRef.lastCheckTime = new Date();
+          applyEffectiveStatusToChild(childRef, isBroken);
         }
 
         if (isBroken) {
@@ -906,6 +929,7 @@ async function checkVariantGroup(
           }
           if (childRef) {
             childRef.lastCheckTime = new Date();
+            childRef.last_check_time = childRef.lastCheckTime;
           }
           results[index] = {
             asin,
@@ -925,9 +949,7 @@ async function checkVariantGroup(
             await ASIN.updateVariantStatusAndCheckTime(asinId, true);
           }
           if (childRef) {
-            childRef.isBroken = 1;
-            childRef.variantStatus = 'BROKEN';
-            childRef.lastCheckTime = new Date();
+            applyEffectiveStatusToChild(childRef, true);
           }
 
           const errorType = 'SP_API_ERROR';
@@ -950,19 +972,34 @@ async function checkVariantGroup(
 
     await Promise.all(asins.map(processEntry));
 
-    const isBroken = brokenASINs.length > 0;
+    const autoIsBroken = brokenASINs.length > 0;
 
     await VariantGroup.updateVariantStatusAndCheckTime(
       variantGroupId,
-      isBroken,
+      autoIsBroken,
     );
 
-    groupSnapshot.is_broken = isBroken ? 1 : 0;
-    groupSnapshot.isBroken = isBroken ? 1 : 0;
-    groupSnapshot.variant_status = isBroken ? 'BROKEN' : 'NORMAL';
-    groupSnapshot.variantStatus = isBroken ? 'BROKEN' : 'NORMAL';
+    groupSnapshot.is_broken = autoIsBroken ? 1 : 0;
+    groupSnapshot.variant_status = autoIsBroken ? 'BROKEN' : 'NORMAL';
     groupSnapshot.last_check_time = new Date();
     groupSnapshot.lastCheckTime = groupSnapshot.last_check_time;
+
+    const decoratedGroupSnapshot = decorateVariantGroupStatus(
+      groupSnapshot,
+      groupSnapshot.children || [],
+    );
+    groupSnapshot.autoIsBroken = decoratedGroupSnapshot.autoIsBroken;
+    groupSnapshot.autoVariantStatus = decoratedGroupSnapshot.autoVariantStatus;
+    groupSnapshot.isBroken = decoratedGroupSnapshot.isBroken;
+    groupSnapshot.variantStatus = decoratedGroupSnapshot.variantStatus;
+    groupSnapshot.statusSource = decoratedGroupSnapshot.statusSource;
+    groupSnapshot.manualBroken = decoratedGroupSnapshot.manualBroken;
+    groupSnapshot.manualBrokenReason =
+      decoratedGroupSnapshot.manualBrokenReason;
+    groupSnapshot.manualBrokenUpdatedAt =
+      decoratedGroupSnapshot.manualBrokenUpdatedAt;
+    groupSnapshot.manualBrokenUpdatedBy =
+      decoratedGroupSnapshot.manualBrokenUpdatedBy;
 
     // 清除所有相关ASIN的变体检查结果缓存，确保前端获取最新数据
     for (const asinEntry of asins) {
@@ -977,6 +1014,29 @@ async function checkVariantGroup(
     VariantGroup.clearCache();
 
     let groupStatus = null;
+    const effectiveBrokenASINs = (groupSnapshot.children || [])
+      .filter((item) => item?.isBroken === 1)
+      .map((item) => {
+        const autoBrokenInfo = brokenASINs.find(
+          (entry) =>
+            entry &&
+            typeof entry !== 'string' &&
+            String(entry.asin || '').toUpperCase() ===
+              String(item.asin || '').toUpperCase(),
+        );
+
+        return {
+          asin: item.asin,
+          errorType:
+            autoBrokenInfo?.errorType ||
+            (item.statusSource === 'MANUAL' ? 'MANUAL_MARKED' : 'NO_VARIANTS'),
+          statusSource: item.statusSource || 'NORMAL',
+          manualBroken: item.manualBroken === 1 ? 1 : 0,
+          manualBrokenReason: item.manualBrokenReason || '',
+          manualBrokenUpdatedAt: item.manualBrokenUpdatedAt || null,
+          manualBrokenUpdatedBy: item.manualBrokenUpdatedBy || null,
+        };
+      });
 
     if (!skipGroupStatus) {
       const updatedGroup = await VariantGroup.findById(variantGroupId);
@@ -984,7 +1044,10 @@ async function checkVariantGroup(
         groupStatus = {
           id: updatedGroup._id || updatedGroup.id,
           name: updatedGroup.name,
-          is_broken: updatedGroup.is_broken,
+          is_broken: updatedGroup.isBroken,
+          statusSource: updatedGroup.statusSource || 'NORMAL',
+          manualBroken: updatedGroup.manualBroken || 0,
+          manualBrokenReason: updatedGroup.manualBrokenReason || '',
           last_check_time: updatedGroup.last_check_time,
         };
       }
@@ -992,14 +1055,17 @@ async function checkVariantGroup(
       groupStatus = {
         id: groupSnapshot._id || groupSnapshot.id,
         name: groupSnapshot.name,
-        is_broken: groupSnapshot.is_broken,
+        is_broken: groupSnapshot.isBroken,
+        statusSource: groupSnapshot.statusSource || 'NORMAL',
+        manualBroken: groupSnapshot.manualBroken || 0,
+        manualBrokenReason: groupSnapshot.manualBrokenReason || '',
         last_check_time: groupSnapshot.last_check_time,
       };
     }
 
     return {
-      isBroken,
-      brokenASINs,
+      isBroken: groupSnapshot.isBroken === 1,
+      brokenASINs: effectiveBrokenASINs,
       brokenByType,
       groupStatus,
       groupSnapshot,
@@ -1031,10 +1097,14 @@ async function checkSingleASIN(asinId, forceRefresh = false) {
 
     const result = await checkASINVariants(asin, country, forceRefresh);
 
-    const isBroken = !result.hasVariants;
+    const autoBroken = !result.hasVariants;
+    const effectiveStatus = buildEffectiveStatus({
+      autoBroken,
+      manualBroken: asinRecord.manualBroken || 0,
+    });
 
     // 更新数据库中ASIN的is_broken状态和检查时间
-    await ASIN.updateVariantStatusAndCheckTime(asinId, isBroken);
+    await ASIN.updateVariantStatusAndCheckTime(asinId, autoBroken);
 
     // 清除该ASIN的变体检查结果缓存，确保前端获取最新数据
     const cacheKey = getVariantCacheKey(asin, country);
@@ -1063,14 +1133,31 @@ async function checkSingleASIN(asinId, forceRefresh = false) {
       variantGroupName: variantGroupName,
       checkType: 'ASIN',
       country,
-      isBroken: isBroken ? 1 : 0,
+      isBroken: effectiveStatus.isBroken ? 1 : 0,
       checkTime: new Date(),
-      checkResult: result,
+      checkResult: {
+        ...result,
+        statusSource: effectiveStatus.statusSource,
+        manualBrokenReason: asinRecord.manualBrokenReason || '',
+      },
     });
 
     return {
-      isBroken,
-      brokenASINs: isBroken ? [asin] : [],
+      isBroken: effectiveStatus.isBroken === 1,
+      brokenASINs:
+        effectiveStatus.isBroken === 1
+          ? [
+              {
+                asin,
+                errorType:
+                  autoBroken || effectiveStatus.statusSource === 'AUTO+MANUAL'
+                    ? 'NO_VARIANTS'
+                    : 'MANUAL_MARKED',
+                statusSource: effectiveStatus.statusSource,
+                manualBrokenReason: asinRecord.manualBrokenReason || '',
+              },
+            ]
+          : [],
       details: result,
     };
   } catch (error) {

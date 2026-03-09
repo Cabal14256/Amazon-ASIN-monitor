@@ -3,9 +3,19 @@ const User = require('../models/User');
 const Session = require('../models/Session');
 const AuditLog = require('../models/AuditLog');
 const { expiresIn, rememberExpiresIn } = require('../config/jwt');
+const { withTransaction } = require('../config/database');
 const logger = require('../utils/logger');
 const loginAttemptService = require('../services/loginAttemptService');
 const passwordHistoryService = require('../services/passwordHistoryService');
+const { setAuthCookies, clearAuthCookies } = require('../utils/authCookie');
+const { validatePassword } = require('../utils/passwordValidator');
+const {
+  getUserStatusErrorMessage,
+  isUserActive,
+} = require('../utils/userStatus');
+
+const DEFAULT_PASSWORD_EXPIRE_DAYS =
+  Number(process.env.PASSWORD_EXPIRE_DAYS) || 90;
 
 /**
  * 用户登录
@@ -30,6 +40,70 @@ const durationToMs = (duration) => {
   return value * (multipliers[unit] || 1000);
 };
 
+function buildPasswordExpiresAt(days = DEFAULT_PASSWORD_EXPIRE_DAYS) {
+  const expiresAt = new Date();
+  expiresAt.setDate(expiresAt.getDate() + days);
+  return expiresAt;
+}
+
+function isPasswordExpired(user) {
+  if (!user?.password_expires_at) {
+    return false;
+  }
+  const expiresAt = new Date(user.password_expires_at);
+  if (Number.isNaN(expiresAt.getTime())) {
+    return false;
+  }
+  return expiresAt <= new Date();
+}
+
+function getAuthResponseData(user, permissions, roles, sessionId, extra = {}) {
+  const { password: _, ...userInfo } = user;
+  return {
+    token: extra.token,
+    sessionId,
+    user: userInfo,
+    permissions,
+    roles: roles.map((role) => role.code),
+    mustChangePassword: Boolean(extra.mustChangePassword),
+    passwordExpired: Boolean(extra.passwordExpired),
+  };
+}
+
+function createClientIp(req) {
+  return req.ip || req.headers['x-forwarded-for'] || req.connection.remoteAddress;
+}
+
+async function recordLoginAudit({
+  userId = null,
+  username,
+  clientIp,
+  userAgent,
+  responseStatus,
+  errorMessage = null,
+}) {
+  setImmediate(async () => {
+    try {
+      await AuditLog.create({
+        userId,
+        username,
+        action: 'LOGIN',
+        resource: 'auth',
+        method: 'POST',
+        path: '/api/v1/auth/login',
+        ipAddress: clientIp,
+        userAgent,
+        responseStatus,
+        errorMessage,
+      });
+    } catch (error) {
+      logger.error('记录登录审计日志失败:', {
+        message: error.message,
+      });
+    }
+  });
+}
+
 exports.login = async (req, res) => {
   try {
     const { rememberMe = false } = req.body;
@@ -43,30 +117,18 @@ exports.login = async (req, res) => {
       });
     }
 
-    // 查找用户
     const user = await User.findByUsername(username);
-    const clientIp =
-      req.ip || req.headers['x-forwarded-for'] || req.connection.remoteAddress;
+    const clientIp = createClientIp(req);
+    const userAgent = req.headers['user-agent'] || 'unknown';
 
     if (!user) {
       await loginAttemptService.recordAttempt(username, clientIp, false);
-      // 记录登录失败审计日志
-      setImmediate(async () => {
-        try {
-          await AuditLog.create({
-            username: username,
-            action: 'LOGIN',
-            resource: 'auth',
-            method: 'POST',
-            path: '/api/v1/auth/login',
-            ipAddress: clientIp,
-            userAgent: req.headers['user-agent'] || 'unknown',
-            responseStatus: 401,
-            errorMessage: '用户名或密码错误',
-          });
-        } catch (error) {
-          logger.error('记录登录失败审计日志失败:', error.message);
-        }
+      await recordLoginAudit({
+        username,
+        clientIp,
+        userAgent,
+        responseStatus: 401,
+        errorMessage: '用户名或密码错误',
       });
 
       return res.status(401).json({
@@ -87,62 +149,42 @@ exports.login = async (req, res) => {
       });
     }
 
-    // 检查用户状态
-    if (user.status !== 1) {
-      // 记录登录失败审计日志
-      setImmediate(async () => {
-        try {
-          await AuditLog.create({
-            userId: user.id,
-            username: user.username,
-            action: 'LOGIN',
-            resource: 'auth',
-            method: 'POST',
-            path: '/api/v1/auth/login',
-            ipAddress: clientIp,
-            userAgent: req.headers['user-agent'] || 'unknown',
-            responseStatus: 403,
-            errorMessage: '用户已被禁用',
-          });
-        } catch (error) {
-          logger.error('记录登录失败审计日志失败:', error.message);
-        }
+    if (!isUserActive(user.status, user.locked_until)) {
+      const errorMessage = getUserStatusErrorMessage(
+        user.status,
+        user.locked_until,
+      );
+      await recordLoginAudit({
+        userId: user.id,
+        username: user.username,
+        clientIp,
+        userAgent,
+        responseStatus: 403,
+        errorMessage,
       });
 
       return res.status(403).json({
         success: false,
-        errorMessage: '用户已被禁用',
+        errorMessage,
         errorCode: 403,
       });
     }
 
-    // 验证密码
     const isValidPassword = await User.verifyPassword(user, password);
     if (!isValidPassword) {
       await loginAttemptService.recordAttempt(username, clientIp, false);
       const shouldLock = await loginAttemptService.incrementFailedAttempts(
         user.id,
       );
-      // 记录登录失败审计日志
-      setImmediate(async () => {
-        try {
-          await AuditLog.create({
-            userId: user.id,
-            username: user.username,
-            action: 'LOGIN',
-            resource: 'auth',
-            method: 'POST',
-            path: '/api/v1/auth/login',
-            ipAddress: clientIp,
-            userAgent: req.headers['user-agent'] || 'unknown',
-            responseStatus: 401,
-            errorMessage: shouldLock
-              ? '账户因登录失败次数过多被锁定'
-              : '用户名或密码错误',
-          });
-        } catch (error) {
-          logger.error('记录登录失败审计日志失败:', error.message);
-        }
+      await recordLoginAudit({
+        userId: user.id,
+        username: user.username,
+        clientIp,
+        userAgent,
+        responseStatus: 401,
+        errorMessage: shouldLock
+          ? '账户因登录失败次数过多被锁定'
+          : '用户名或密码错误',
       });
 
       return res.status(401).json({
@@ -157,12 +199,18 @@ exports.login = async (req, res) => {
     const token = User.generateToken(user.id, sessionId, tokenExpiresIn);
     const expiresAtMs = durationToMs(tokenExpiresIn);
     const expiresAt = expiresAtMs ? new Date(Date.now() + expiresAtMs) : null;
+    const passwordExpired = isPasswordExpired(user);
 
-    // 获取用户权限和角色
+    if (passwordExpired && !user.force_password_change) {
+      await User.updatePasswordPolicy(user.id, {
+        forcePasswordChange: true,
+      });
+      user.force_password_change = true;
+    }
+
     const permissions = await User.getUserPermissions(user.id);
     const roles = await User.getUserRoles(user.id);
 
-    // 更新登录信息（clientIp已在上面定义）
     await User.updateLoginInfo(user.id, clientIp);
     await loginAttemptService.recordAttempt(username, clientIp, true);
     await loginAttemptService.resetFailedAttempts(user.id);
@@ -170,47 +218,35 @@ exports.login = async (req, res) => {
     await Session.create({
       id: sessionId,
       userId: user.id,
-      userAgent: req.headers['user-agent'] || '',
+      userAgent,
       ipAddress: clientIp,
       expiresAt,
       rememberMe: !!rememberMe,
     });
 
-    // 记录登录审计日志
-    setImmediate(async () => {
-      try {
-        await AuditLog.create({
-          userId: user.id,
-          username: user.username,
-          action: 'LOGIN',
-          resource: 'auth',
-          method: 'POST',
-          path: '/api/v1/auth/login',
-          ipAddress: clientIp,
-          userAgent: req.headers['user-agent'] || 'unknown',
-          responseStatus: 200,
-        });
-      } catch (error) {
-        logger.error('记录登录审计日志失败:', error.message);
-      }
+    await recordLoginAudit({
+      userId: user.id,
+      username: user.username,
+      clientIp,
+      userAgent,
+      responseStatus: 200,
     });
 
-    // 返回用户信息（不包含密码）
-    const { password: _, ...userInfo } = user;
+    setAuthCookies(res, req, token, expiresAtMs);
 
     res.json({
       success: true,
-      data: {
+      data: getAuthResponseData(user, permissions, roles, sessionId, {
         token,
-        sessionId,
-        user: userInfo,
-        permissions,
-        roles: roles.map((r) => r.code),
-      },
+        mustChangePassword: user.force_password_change || passwordExpired,
+        passwordExpired,
+      }),
       errorCode: 0,
     });
   } catch (error) {
-    logger.error('登录错误:', error);
+    logger.error('登录错误:', {
+      message: error.message,
+    });
     res.status(500).json({
       success: false,
       errorMessage: error.message || '登录失败',
@@ -233,6 +269,14 @@ exports.getCurrentUser = async (req, res) => {
       });
     }
 
+    const passwordExpired = isPasswordExpired(user);
+    if (passwordExpired && !user.force_password_change) {
+      await User.updatePasswordPolicy(req.userId, {
+        forcePasswordChange: true,
+      });
+      user.force_password_change = true;
+    }
+
     const permissions = await User.getUserPermissions(req.userId);
     const roles = await User.getUserRoles(req.userId);
 
@@ -243,11 +287,15 @@ exports.getCurrentUser = async (req, res) => {
         permissions,
         roles: roles.map((r) => r.code),
         sessionId: req.sessionId,
+        mustChangePassword: Boolean(user.force_password_change || passwordExpired),
+        passwordExpired,
       },
       errorCode: 0,
     });
   } catch (error) {
-    logger.error('获取用户信息错误:', error);
+    logger.error('获取用户信息错误:', {
+      message: error.message,
+    });
     res.status(500).json({
       success: false,
       errorMessage: error.message || '获取用户信息失败',
@@ -264,13 +312,16 @@ exports.logout = async (req, res) => {
     if (req.sessionId) {
       await Session.revoke(req.sessionId, req.userId);
     }
+    clearAuthCookies(res, req);
     res.json({
       success: true,
       message: '登出成功',
       errorCode: 0,
     });
   } catch (error) {
-    logger.error('登出失败:', error);
+    logger.error('登出失败:', {
+      message: error.message,
+    });
     res.status(500).json({
       success: false,
       errorMessage: '登出失败',
@@ -288,7 +339,9 @@ exports.listSessions = async (req, res) => {
       errorCode: 0,
     });
   } catch (error) {
-    logger.error('获取会话列表失败:', error);
+    logger.error('获取会话列表失败:', {
+      message: error.message,
+    });
     res.status(500).json({
       success: false,
       errorMessage: '获取会话列表失败',
@@ -321,7 +374,9 @@ exports.revokeSession = async (req, res) => {
       errorCode: 0,
     });
   } catch (error) {
-    logger.error('踢出会话失败:', error);
+    logger.error('踢出会话失败:', {
+      message: error.message,
+    });
     res.status(500).json({
       success: false,
       errorMessage: '踢出会话失败',
@@ -332,7 +387,11 @@ exports.revokeSession = async (req, res) => {
 
 exports.changePassword = async (req, res) => {
   try {
-    const { oldPassword, newPassword } = req.body;
+    const {
+      oldPassword,
+      newPassword,
+      revokeOtherSessions = true,
+    } = req.body;
     const userId = req.userId;
 
     if (!oldPassword || !newPassword) {
@@ -343,55 +402,90 @@ exports.changePassword = async (req, res) => {
       });
     }
 
-    if (newPassword.length < 6) {
-      return res.status(400).json({
-        success: false,
-        errorMessage: '新密码长度至少为6位',
-        errorCode: 400,
+    await withTransaction(async ({ query: transactionQuery }) => {
+      const user = await User.findByIdWithPassword(userId, {
+        queryExecutor: transactionQuery,
       });
-    }
 
-    // 获取用户（包含密码）
-    const user = await User.findByIdWithPassword(userId);
+      if (!user) {
+        const error = new Error('用户不存在');
+        error.statusCode = 404;
+        throw error;
+      }
 
-    // 验证原密码
-    const isValidPassword = await User.verifyPassword(user, oldPassword);
-    if (!isValidPassword) {
-      return res.status(400).json({
-        success: false,
-        errorMessage: '原密码错误',
-        errorCode: 400,
+      const validationResult = validatePassword(newPassword, user.username);
+      if (!validationResult.valid) {
+        const error = new Error(validationResult.errors.join('；'));
+        error.statusCode = 400;
+        throw error;
+      }
+
+      const isValidPassword = await User.verifyPassword(user, oldPassword);
+      if (!isValidPassword) {
+        const error = new Error('原密码错误');
+        error.statusCode = 400;
+        throw error;
+      }
+
+      const isSameAsCurrent = await User.verifyPassword(user, newPassword);
+      if (isSameAsCurrent) {
+        const error = new Error('新密码不能与当前密码相同');
+        error.statusCode = 400;
+        throw error;
+      }
+
+      const isPasswordReused =
+        await passwordHistoryService.checkPasswordHistoryWithOptions(
+          userId,
+          newPassword,
+          {
+            queryExecutor: transactionQuery,
+          },
+        );
+      if (isPasswordReused) {
+        const error = new Error(
+          `新密码不能与最近 ${passwordHistoryService.MAX_PASSWORD_HISTORY} 次使用过的密码相同`,
+        );
+        error.statusCode = 400;
+        throw error;
+      }
+
+      await passwordHistoryService.savePasswordHistoryWithOptions(
+        userId,
+        user.password,
+        {
+          queryExecutor: transactionQuery,
+        },
+      );
+
+      await User.updatePassword(userId, newPassword, {
+        queryExecutor: transactionQuery,
+        forcePasswordChange: false,
+        passwordExpiresAt: buildPasswordExpiresAt(),
       });
-    }
 
-    const isPasswordReused = await passwordHistoryService.checkPasswordHistory(
-      userId,
-      newPassword,
-    );
-    if (isPasswordReused) {
-      return res.status(400).json({
-        success: false,
-        errorMessage: `新密码不能与最近 ${passwordHistoryService.MAX_PASSWORD_HISTORY} 次使用过的密码相同`,
-        errorCode: 400,
-      });
-    }
-
-    await passwordHistoryService.savePasswordHistory(userId, user.password);
-
-    // 更新密码
-    await User.updatePassword(userId, newPassword);
+      if (revokeOtherSessions) {
+        await Session.revokeAll(userId, {
+          queryExecutor: transactionQuery,
+          excludeSessionId: req.sessionId,
+        });
+      }
+    });
 
     res.json({
       success: true,
-      message: '密码修改成功',
+      message: revokeOtherSessions ? '密码修改成功，其他会话已下线' : '密码修改成功',
       errorCode: 0,
     });
   } catch (error) {
-    logger.error('修改密码错误:', error);
-    res.status(500).json({
+    logger.error('修改密码错误:', {
+      message: error.message,
+      userId: req.userId,
+    });
+    res.status(error.statusCode || 500).json({
       success: false,
       errorMessage: error.message || '修改密码失败',
-      errorCode: 500,
+      errorCode: error.statusCode || 500,
     });
   }
 };
@@ -417,7 +511,6 @@ exports.updateProfile = async (req, res) => {
 
     await User.update(userId, updateData);
 
-    // 获取更新后的用户信息
     const updatedUser = await User.findById(userId);
     const permissions = await User.getUserPermissions(userId);
     const roles = await User.getUserRoles(userId);
@@ -432,7 +525,10 @@ exports.updateProfile = async (req, res) => {
       errorCode: 0,
     });
   } catch (error) {
-    logger.error('更新用户信息错误:', error);
+    logger.error('更新用户信息错误:', {
+      message: error.message,
+      userId: req.userId,
+    });
     res.status(500).json({
       success: false,
       errorMessage: error.message || '更新用户信息失败',

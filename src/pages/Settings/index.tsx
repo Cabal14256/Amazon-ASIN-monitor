@@ -2,6 +2,7 @@ import backupServices from '@/services/backup';
 import services from '@/services/settings';
 import { formatBeijing } from '@/utils/beijingTime';
 import { useMessage } from '@/utils/message';
+import { extractAsyncTask, openTaskCenter } from '@/utils/task';
 import {
   PageContainer,
   ProForm,
@@ -235,10 +236,18 @@ const SettingsPage: React.FC<unknown> = () => {
   // 创建备份
   const handleCreateBackup = async (values: any) => {
     try {
-      await backupServices.createBackup({
+      const response = await backupServices.createBackup({
         tables: values.tables,
         description: values.description,
       });
+
+      const task = extractAsyncTask(response);
+      if (task) {
+        message.success('备份任务已创建，请到任务中心查看进度');
+        backupForm.resetFields();
+        return;
+      }
+
       message.success('备份创建成功');
       backupForm.resetFields();
       await loadBackups();
@@ -262,8 +271,15 @@ const SettingsPage: React.FC<unknown> = () => {
       cancelText: '取消',
       onOk: async () => {
         try {
-          await backupServices.restoreBackup({ filename: restoreFilename });
-          message.success('备份恢复成功');
+          const response = await backupServices.restoreBackup({
+            filename: restoreFilename,
+          });
+          const task = extractAsyncTask(response);
+          if (task) {
+            message.success('恢复任务已创建，请到任务中心查看进度');
+          } else {
+            message.success('备份恢复成功');
+          }
           setRestoreModalVisible(false);
           setRestoreFilename('');
         } catch (error: any) {
@@ -786,6 +802,12 @@ const SettingsPage: React.FC<unknown> = () => {
       label: '数据备份',
       children: (
         <Space direction="vertical" size="large" style={{ width: '100%' }}>
+          <Alert
+            message="后台任务说明"
+            description="创建备份和恢复备份已切换为后台任务。任务提交后页面刷新或关闭不会中断，可在任务中心查看进度并取消任务。"
+            type="info"
+            showIcon
+          />
           <Card title="创建备份">
             <Alert
               message="备份说明"
@@ -817,9 +839,12 @@ const SettingsPage: React.FC<unknown> = () => {
           <Card
             title="备份列表"
             extra={
-              <Button onClick={loadBackups} loading={backupLoading}>
-                刷新
-              </Button>
+              <Space>
+                <Button onClick={openTaskCenter}>任务中心</Button>
+                <Button onClick={loadBackups} loading={backupLoading}>
+                  刷新
+                </Button>
+              </Space>
             }
           >
             <Table

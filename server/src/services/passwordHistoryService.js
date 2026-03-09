@@ -16,8 +16,17 @@ const MAX_PASSWORD_HISTORY = 5;
  * @returns {Promise<void>}
  */
 async function savePasswordHistory(userId, passwordHash) {
+  return savePasswordHistoryWithOptions(userId, passwordHash);
+}
+
+async function savePasswordHistoryWithOptions(
+  userId,
+  passwordHash,
+  options = {},
+) {
+  const runQuery = options.queryExecutor || query;
   // 先检查当前历史记录数量
-  const [countResult] = await query(
+  const [countResult] = await runQuery(
     `SELECT COUNT(*) as count FROM password_history WHERE user_id = ?`,
     [userId],
   );
@@ -25,7 +34,7 @@ async function savePasswordHistory(userId, passwordHash) {
   const currentCount = countResult.count || 0;
 
   // 插入新密码历史
-  await query(
+  await runQuery(
     `INSERT INTO password_history (user_id, password_hash) VALUES (?, ?)`,
     [userId, passwordHash],
   );
@@ -34,7 +43,7 @@ async function savePasswordHistory(userId, passwordHash) {
   if (currentCount >= MAX_PASSWORD_HISTORY) {
     // 注意：LIMIT 不能作为参数绑定，需要直接拼接（确保是整数）
     const limit = parseInt(MAX_PASSWORD_HISTORY, 10);
-    await query(
+    await runQuery(
       `DELETE FROM password_history 
        WHERE user_id = ? 
        AND id NOT IN (
@@ -57,10 +66,19 @@ async function savePasswordHistory(userId, passwordHash) {
  * @returns {Promise<boolean>} 如果密码在历史记录中返回true
  */
 async function checkPasswordHistory(userId, password) {
+  return checkPasswordHistoryWithOptions(userId, password);
+}
+
+async function checkPasswordHistoryWithOptions(
+  userId,
+  password,
+  options = {},
+) {
+  const runQuery = options.queryExecutor || query;
   // 获取用户最近的密码历史
   // 注意：LIMIT 不能作为参数绑定，需要直接拼接（确保是整数）
   const limit = parseInt(MAX_PASSWORD_HISTORY, 10);
-  const history = await query(
+  const history = await runQuery(
     `SELECT password_hash FROM password_history 
      WHERE user_id = ? 
      ORDER BY created_at DESC 
@@ -103,7 +121,9 @@ async function getPasswordHistoryCount(userId) {
 
 module.exports = {
   savePasswordHistory,
+  savePasswordHistoryWithOptions,
   checkPasswordHistory,
+  checkPasswordHistoryWithOptions,
   cleanOldPasswords,
   getPasswordHistoryCount,
   MAX_PASSWORD_HISTORY,

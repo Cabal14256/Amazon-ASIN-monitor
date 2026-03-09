@@ -40,6 +40,20 @@ setInterval(() => {
   }
 }, RATE_LIMIT_LOG_INTERVAL).unref?.();
 
+function getStatusSourceLabel(source) {
+  const sourceMap = {
+    AUTO: '自动检测',
+    MANUAL: '人工标记',
+    'AUTO+MANUAL': '自动检测 + 人工标记',
+    NORMAL: '正常',
+  };
+  return sourceMap[source] || source || '未知';
+}
+
+function includesManualSource(source) {
+  return String(source || '').includes('MANUAL');
+}
+
 /**
  * 发送飞书通知
  * @param {string} region - 区域代码（US或EU），用于查找webhook配置
@@ -150,6 +164,7 @@ function buildFeishuCard(data) {
     totalGroups = 0,
     brokenGroups = 0,
     brokenGroupNames = [],
+    brokenGroupDetails = [],
     brokenASINs = [],
     brokenByType = { SP_API_ERROR: 0, NO_VARIANTS: 0 },
     checkTime,
@@ -178,6 +193,12 @@ function buildFeishuCard(data) {
   const spApiErrorCount = brokenByType?.SP_API_ERROR || 0;
   const noVariantsCount = brokenByType?.NO_VARIANTS || 0;
   const totalBrokenASINs = brokenASINs.length;
+  const manualBrokenASINCount = brokenASINs.filter((item) =>
+    includesManualSource(item?.statusSource),
+  ).length;
+  const manualBrokenGroupCount = brokenGroupDetails.filter((item) =>
+    includesManualSource(item?.statusSource),
+  ).length;
   const buildAmazonAsinUrl = (asin) => {
     if (!asin) {
       return '';
@@ -207,13 +228,20 @@ function buildFeishuCard(data) {
     if (noVariantsCount > 0) {
       contentText += `  ⚠️ 无父变体ASIN：${noVariantsCount} 个\n`;
     }
+    if (manualBrokenASINCount > 0) {
+      contentText += `  🏷️ 含人工标记：${manualBrokenASINCount} 个\n`;
+    }
     contentText += `\n`;
+  }
+
+  if (manualBrokenGroupCount > 0) {
+    contentText += `含人工标记异常分组：${manualBrokenGroupCount} 个\n\n`;
   }
 
   contentText += `${statusText}\n`;
 
-  // 如果有异常，按变体组分组显示异常ASIN
-  if (brokenGroups > 0 && brokenASINs.length > 0) {
+  // 如果有异常，按变体组分组显示异常ASIN / 人工说明
+  if (brokenGroups > 0) {
     // 按变体组名称分组
     const asinsByGroup = {};
     for (const asinItem of brokenASINs) {
@@ -223,28 +251,75 @@ function buildFeishuCard(data) {
       }
       asinsByGroup[groupName].push(asinItem);
     }
+    const groupDetailMap = {};
+    for (const groupItem of brokenGroupDetails) {
+      if (!groupItem?.groupName) {
+        continue;
+      }
+      groupDetailMap[groupItem.groupName] = groupItem;
+    }
 
-    // 构建异常变体组和ASIN列表（按照brokenGroupNames的顺序，但只显示有异常ASIN的）
+    // 构建异常变体组和ASIN列表（优先保留原始顺序，同时补上仅组级人工标记的项）
+    const orderedGroupNames = [];
     const displayedGroups = new Set();
     for (const groupName of brokenGroupNames) {
-      if (
-        asinsByGroup[groupName] &&
-        asinsByGroup[groupName].length > 0 &&
-        !displayedGroups.has(groupName)
-      ) {
+      if (!groupName || displayedGroups.has(groupName)) {
+        continue;
+      }
+      orderedGroupNames.push(groupName);
+      displayedGroups.add(groupName);
+    }
+    for (const groupName of Object.keys(asinsByGroup)) {
+      if (!displayedGroups.has(groupName)) {
+        orderedGroupNames.push(groupName);
         displayedGroups.add(groupName);
-        contentText += `\n⚠️ ${groupName}\n`;
-        for (const asinItem of asinsByGroup[groupName]) {
-          const asin = asinItem.asin || '';
-          const brand = asinItem.brand || '';
-          const asinUrl = buildAmazonAsinUrl(asin);
-          const asinLabel = asinUrl ? `[${asin}](${asinUrl})` : asin;
-          contentText += `- ${asinLabel}`;
-          if (brand) {
-            contentText += ` ⚠️ 品牌：${brand}`;
-          }
-          contentText += '\n';
+      }
+    }
+    for (const groupName of Object.keys(groupDetailMap)) {
+      if (!displayedGroups.has(groupName)) {
+        orderedGroupNames.push(groupName);
+        displayedGroups.add(groupName);
+      }
+    }
+
+    for (const groupName of orderedGroupNames) {
+      const groupAsins = asinsByGroup[groupName] || [];
+      const groupDetail = groupDetailMap[groupName];
+
+      contentText += `\n⚠️ ${groupName}\n`;
+      if (groupDetail?.statusSource && groupDetail.statusSource !== 'NORMAL') {
+        contentText += `  来源：${getStatusSourceLabel(
+          groupDetail.statusSource,
+        )}\n`;
+      }
+      if (groupDetail?.manualBrokenReason) {
+        contentText += `  说明：${groupDetail.manualBrokenReason}\n`;
+      }
+
+      for (const asinItem of groupAsins) {
+        const asin = asinItem.asin || '';
+        const brand = asinItem.brand || '';
+        const asinUrl = buildAmazonAsinUrl(asin);
+        const asinLabel = asinUrl ? `[${asin}](${asinUrl})` : asin;
+        const extraParts = [];
+
+        if (brand) {
+          extraParts.push(`品牌：${brand}`);
         }
+        if (asinItem.statusSource && asinItem.statusSource !== 'NORMAL') {
+          extraParts.push(
+            `来源：${getStatusSourceLabel(asinItem.statusSource)}`,
+          );
+        }
+        if (asinItem.manualBrokenReason) {
+          extraParts.push(`说明：${asinItem.manualBrokenReason}`);
+        }
+
+        contentText += `- ${asinLabel}`;
+        if (extraParts.length > 0) {
+          contentText += `（${extraParts.join('；')}）`;
+        }
+        contentText += '\n';
       }
     }
   }

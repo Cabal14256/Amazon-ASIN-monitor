@@ -9,10 +9,10 @@ router.use(authenticateToken);
 // 获取用户列表（需要 user:read 权限）
 router.get('/users', checkPermission('user:read'), userController.getUserList);
 
-// 获取所有角色（用于下拉选择，需要 user:read 权限）
+// 获取所有角色（用于下拉选择，需要 role:read 权限）
 router.get(
   '/users/roles/all',
-  checkPermission('user:read'),
+  checkPermission('role:read'),
   userController.getAllRoles,
 );
 
@@ -33,10 +33,10 @@ router.put(
   userController.updateUser,
 );
 
-// 删除用户（需要 user:write 权限）
+// 删除用户（需要 user:delete 权限）
 router.delete(
   '/users/:userId',
-  checkPermission('user:write'),
+  checkPermission('user:delete'),
   userController.deleteUser,
 );
 

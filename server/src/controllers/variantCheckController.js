@@ -181,7 +181,9 @@ exports.checkASIN = async (req, res) => {
 // ===============================
 exports.batchCheckVariantGroups = async (req, res) => {
   try {
-    const { groupIds, country, forceRefresh, useAsync } = req.body;
+    const { groupIds, country, forceRefresh } = req.body;
+    const shouldUseAsync =
+      req.body.useAsync !== 'false' && req.body.useAsync !== false;
     const userId = req.user?.userId || req.user?.id;
 
     if (!groupIds || !Array.isArray(groupIds) || groupIds.length === 0) {
@@ -192,15 +194,23 @@ exports.batchCheckVariantGroups = async (req, res) => {
       });
     }
 
-    // 如果使用异步模式，创建后台任务
-    if (useAsync === true) {
+    if (shouldUseAsync) {
       const { v4: uuidv4 } = require('uuid');
       const batchCheckTaskQueue = require('../services/batchCheckTaskQueue');
-      const logger = require('../utils/logger');
+      const taskRegistryService = require('../services/taskRegistryService');
 
       const taskId = uuidv4();
+      await taskRegistryService.createTask({
+        taskId,
+        taskType: 'batch-check',
+        taskSubType: 'variant-group',
+        title: '批量变体检查',
+        userId,
+        message: '批量检查任务已创建，等待处理',
+      });
       await batchCheckTaskQueue.enqueue({
         taskId,
+        taskSubType: 'variant-group',
         groupIds,
         country,
         forceRefresh,

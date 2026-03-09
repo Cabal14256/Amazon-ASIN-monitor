@@ -2,6 +2,12 @@ const { query } = require('../config/database');
 const { v4: uuidv4 } = require('uuid');
 const cacheService = require('../services/cacheService');
 const logger = require('../utils/logger');
+const {
+  buildAsinEffectiveBrokenExpr,
+  buildVariantGroupEffectiveBrokenExpr,
+  decorateAsinStatus,
+  decorateVariantGroupStatus,
+} = require('../utils/variantStatus');
 
 // 转换ASIN类型：将旧格式(MAIN_LINK/SUB_REVIEW)转换为新格式(1/2)
 function normalizeAsinType(asinType) {
@@ -32,6 +38,8 @@ class VariantGroup {
     const cacheKey = `variantGroups:${country || 'ALL'}:${
       variantStatus || 'ALL'
     }:pageSize:${pageSize}`;
+    const groupEffectiveBrokenExpr = buildVariantGroupEffectiveBrokenExpr('vg');
+    const asinEffectiveBrokenExpr = buildAsinEffectiveBrokenExpr('a');
     if (shouldUseCache) {
       const cachedValue = await cacheService.getAsync(cacheKey);
       if (cachedValue) {
@@ -63,23 +71,10 @@ class VariantGroup {
 
     if (variantStatus) {
       const isBroken = variantStatus === 'BROKEN' ? 1 : 0;
-      // 使用子查询检查变体组是否有指定状态的ASIN
-      // 对于"异常"：至少有一个ASIN的is_broken=1
-      // 对于"正常"：所有ASIN的is_broken=0（或没有ASIN）
       if (isBroken === 1) {
-        // 筛选异常：至少有一个异常的ASIN
-        sql += ` AND EXISTS (
-          SELECT 1 FROM asins a2 
-          WHERE a2.variant_group_id = vg.id 
-          AND a2.is_broken = 1
-        )`;
+        sql += ` AND ${groupEffectiveBrokenExpr}`;
       } else {
-        // 筛选正常：没有异常的ASIN（所有ASIN都是正常的，或者没有ASIN）
-        sql += ` AND NOT EXISTS (
-          SELECT 1 FROM asins a2 
-          WHERE a2.variant_group_id = vg.id 
-          AND a2.is_broken = 1
-        )`;
+        sql += ` AND NOT ${groupEffectiveBrokenExpr}`;
       }
     }
 
@@ -110,17 +105,9 @@ class VariantGroup {
       if (variantStatus) {
         const isBroken = variantStatus === 'BROKEN' ? 1 : 0;
         if (isBroken === 1) {
-          countSql += ` AND EXISTS (
-            SELECT 1 FROM asins a2 
-            WHERE a2.variant_group_id = vg.id 
-            AND a2.is_broken = 1
-          )`;
+          countSql += ` AND ${groupEffectiveBrokenExpr}`;
         } else {
-          countSql += ` AND NOT EXISTS (
-            SELECT 1 FROM asins a2 
-            WHERE a2.variant_group_id = vg.id 
-            AND a2.is_broken = 1
-          )`;
+          countSql += ` AND NOT ${groupEffectiveBrokenExpr}`;
         }
       }
     } else {
@@ -132,17 +119,9 @@ class VariantGroup {
       if (variantStatus) {
         const isBroken = variantStatus === 'BROKEN' ? 1 : 0;
         if (isBroken === 1) {
-          countSql += ` AND EXISTS (
-            SELECT 1 FROM asins a2 
-            WHERE a2.variant_group_id = vg.id 
-            AND a2.is_broken = 1
-          )`;
+          countSql += ` AND ${groupEffectiveBrokenExpr}`;
         } else {
-          countSql += ` AND NOT EXISTS (
-            SELECT 1 FROM asins a2 
-            WHERE a2.variant_group_id = vg.id 
-            AND a2.is_broken = 1
-          )`;
+          countSql += ` AND NOT ${groupEffectiveBrokenExpr}`;
         }
       }
     }
@@ -171,8 +150,9 @@ class VariantGroup {
 
     if (variantStatus) {
       const isBroken = variantStatus === 'BROKEN' ? 1 : 0;
-      totalASINsSql += ` AND a.is_broken = ?`;
-      totalASINsValues.push(isBroken);
+      totalASINsSql += isBroken
+        ? ` AND ${asinEffectiveBrokenExpr}`
+        : ` AND NOT ${asinEffectiveBrokenExpr}`;
     }
 
     const totalASINsResult = await query(totalASINsSql, totalASINsValues);
@@ -199,8 +179,9 @@ class VariantGroup {
       const allAsins = await query(
         `SELECT 
           id, asin, name, asin_type, country, site, brand, variant_group_id, 
-          is_broken, variant_status, create_time, update_time,
-          last_check_time, feishu_notify_enabled
+          is_broken, variant_status, manual_broken, manual_broken_reason,
+          manual_broken_updated_at, manual_broken_updated_by,
+          create_time, update_time, last_check_time, feishu_notify_enabled
         FROM asins 
         WHERE variant_group_id IN (${placeholders})
         ORDER BY variant_group_id, create_time ASC`,
@@ -222,42 +203,48 @@ class VariantGroup {
         const asins = asinsByGroupId[group.id] || [];
         logger.debug(`变体组 ${group.id} 查询到的ASIN数量:`, asins.length);
 
-        group.children = asins.map((asin) => ({
-          id: asin.id,
-          asin: asin.asin,
-          name: asin.name,
-          asinType: normalizeAsinType(asin.asin_type), // 转换为驼峰命名并标准化
-          country: asin.country,
-          site: asin.site,
-          brand: asin.brand,
-          parentId: group.id,
-          isBroken: asin.is_broken,
-          variantStatus: asin.variant_status,
-          createTime: asin.create_time,
-          updateTime: asin.update_time,
-          lastCheckTime: asin.last_check_time,
-          feishuNotifyEnabled:
-            asin.feishu_notify_enabled !== null
-              ? asin.feishu_notify_enabled
-              : 1, // 默认为1
-        }));
-
-        // 根据ASIN的变体状态动态计算变体组状态
-        // 如果至少有一个ASIN的变体状态为异常，则整个变体组显示为异常
-        const hasBrokenASIN = group.children.some(
-          (child) => child.isBroken === 1,
-        );
-        if (hasBrokenASIN) {
-          group.is_broken = 1;
-          group.isBroken = 1;
-          group.variant_status = 'BROKEN';
-          group.variantStatus = 'BROKEN';
-        } else {
-          group.is_broken = 0;
-          group.isBroken = 0;
-          group.variant_status = 'NORMAL';
-          group.variantStatus = 'NORMAL';
-        }
+        const children = asins.map((asin) => {
+          const normalized = decorateAsinStatus(asin);
+          return {
+            id: normalized.id,
+            asin: normalized.asin,
+            name: normalized.name,
+            asinType: normalizeAsinType(normalized.asin_type),
+            country: normalized.country,
+            site: normalized.site,
+            brand: normalized.brand,
+            parentId: group.id,
+            isBroken: normalized.isBroken,
+            variantStatus: normalized.variantStatus,
+            autoIsBroken: normalized.autoIsBroken,
+            autoVariantStatus: normalized.autoVariantStatus,
+            manualBroken: normalized.manualBroken,
+            manualBrokenReason: normalized.manualBrokenReason,
+            manualBrokenUpdatedAt: normalized.manualBrokenUpdatedAt,
+            manualBrokenUpdatedBy: normalized.manualBrokenUpdatedBy,
+            statusSource: normalized.statusSource,
+            createTime: normalized.create_time,
+            updateTime: normalized.update_time,
+            lastCheckTime: normalized.last_check_time,
+            feishuNotifyEnabled:
+              normalized.feishu_notify_enabled !== null
+                ? normalized.feishu_notify_enabled
+                : 1,
+          };
+        });
+        const decoratedGroup = decorateVariantGroupStatus(group, children);
+        group.children = children;
+        group.isBroken = decoratedGroup.isBroken;
+        group.variantStatus = decoratedGroup.variantStatus;
+        group.autoIsBroken = decoratedGroup.autoIsBroken;
+        group.autoVariantStatus = decoratedGroup.autoVariantStatus;
+        group.manualBroken = decoratedGroup.manualBroken;
+        group.manualBrokenReason = decoratedGroup.manualBrokenReason;
+        group.manualBrokenUpdatedAt = decoratedGroup.manualBrokenUpdatedAt;
+        group.manualBrokenUpdatedBy = decoratedGroup.manualBrokenUpdatedBy;
+        group.statusSource = decoratedGroup.statusSource;
+        group.is_broken = decoratedGroup.isBroken;
+        group.variant_status = decoratedGroup.variantStatus;
 
         // 添加字段映射（驼峰命名）
         group.updateTime = group.update_time;
@@ -347,45 +334,54 @@ class VariantGroup {
       const asins = await query(
         `SELECT 
           id, asin, name, asin_type, country, site, brand, variant_group_id, 
-          is_broken, variant_status, create_time, update_time,
-          last_check_time, feishu_notify_enabled
+          is_broken, variant_status, manual_broken, manual_broken_reason,
+          manual_broken_updated_at, manual_broken_updated_by,
+          create_time, update_time, last_check_time, feishu_notify_enabled
         FROM asins WHERE variant_group_id = ? ORDER BY create_time ASC`,
         [id],
       );
-      group.children = asins.map((asin) => ({
-        id: asin.id,
-        asin: asin.asin,
-        name: asin.name,
-        asinType: asin.asin_type,
-        country: asin.country,
-        site: asin.site,
-        brand: asin.brand,
-        parentId: group.id,
-        isBroken: asin.is_broken,
-        variantStatus: asin.variant_status,
-        createTime: asin.create_time,
-        updateTime: asin.update_time,
-        lastCheckTime: asin.last_check_time,
-        feishuNotifyEnabled:
-          asin.feishu_notify_enabled !== null ? asin.feishu_notify_enabled : 1,
-      }));
-
-      // 根据ASIN的变体状态动态计算变体组状态
-      // 如果至少有一个ASIN的变体状态为异常，则整个变体组显示为异常
-      const hasBrokenASIN = group.children.some(
-        (child) => child.isBroken === 1,
-      );
-      if (hasBrokenASIN) {
-        group.is_broken = 1;
-        group.isBroken = 1;
-        group.variant_status = 'BROKEN';
-        group.variantStatus = 'BROKEN';
-      } else {
-        group.is_broken = 0;
-        group.isBroken = 0;
-        group.variant_status = 'NORMAL';
-        group.variantStatus = 'NORMAL';
-      }
+      const children = asins.map((asin) => {
+        const normalized = decorateAsinStatus(asin);
+        return {
+          id: normalized.id,
+          asin: normalized.asin,
+          name: normalized.name,
+          asinType: normalizeAsinType(normalized.asin_type),
+          country: normalized.country,
+          site: normalized.site,
+          brand: normalized.brand,
+          parentId: group.id,
+          isBroken: normalized.isBroken,
+          variantStatus: normalized.variantStatus,
+          autoIsBroken: normalized.autoIsBroken,
+          autoVariantStatus: normalized.autoVariantStatus,
+          manualBroken: normalized.manualBroken,
+          manualBrokenReason: normalized.manualBrokenReason,
+          manualBrokenUpdatedAt: normalized.manualBrokenUpdatedAt,
+          manualBrokenUpdatedBy: normalized.manualBrokenUpdatedBy,
+          statusSource: normalized.statusSource,
+          createTime: normalized.create_time,
+          updateTime: normalized.update_time,
+          lastCheckTime: normalized.last_check_time,
+          feishuNotifyEnabled:
+            normalized.feishu_notify_enabled !== null
+              ? normalized.feishu_notify_enabled
+              : 1,
+        };
+      });
+      const decoratedGroup = decorateVariantGroupStatus(group, children);
+      group.children = children;
+      group.isBroken = decoratedGroup.isBroken;
+      group.variantStatus = decoratedGroup.variantStatus;
+      group.autoIsBroken = decoratedGroup.autoIsBroken;
+      group.autoVariantStatus = decoratedGroup.autoVariantStatus;
+      group.manualBroken = decoratedGroup.manualBroken;
+      group.manualBrokenReason = decoratedGroup.manualBrokenReason;
+      group.manualBrokenUpdatedAt = decoratedGroup.manualBrokenUpdatedAt;
+      group.manualBrokenUpdatedBy = decoratedGroup.manualBrokenUpdatedBy;
+      group.statusSource = decoratedGroup.statusSource;
+      group.is_broken = decoratedGroup.isBroken;
+      group.variant_status = decoratedGroup.variantStatus;
 
       // 添加字段映射（驼峰命名）
       group.updateTime = group.update_time;
@@ -423,8 +419,9 @@ class VariantGroup {
     const asins = await query(
       `SELECT
         id, asin, name, asin_type, country, site, brand, variant_group_id,
-        is_broken, variant_status, create_time, update_time,
-        last_check_time, feishu_notify_enabled
+        is_broken, variant_status, manual_broken, manual_broken_reason,
+        manual_broken_updated_at, manual_broken_updated_by,
+        create_time, update_time, last_check_time, feishu_notify_enabled
       FROM asins WHERE variant_group_id IN (${placeholders})
       ORDER BY variant_group_id, create_time ASC`,
       uniqueIds,
@@ -442,38 +439,48 @@ class VariantGroup {
     const groupMap = new Map();
     for (const group of groups) {
       const groupAsins = asinsByGroupId[group.id] || [];
-      group.children = groupAsins.map((asin) => ({
-        id: asin.id,
-        asin: asin.asin,
-        name: asin.name,
-        asinType: normalizeAsinType(asin.asin_type),
-        country: asin.country,
-        site: asin.site,
-        brand: asin.brand,
-        parentId: group.id,
-        isBroken: asin.is_broken,
-        variantStatus: asin.variant_status,
-        createTime: asin.create_time,
-        updateTime: asin.update_time,
-        lastCheckTime: asin.last_check_time,
-        feishuNotifyEnabled:
-          asin.feishu_notify_enabled !== null ? asin.feishu_notify_enabled : 1,
-      }));
-
-      const hasBrokenASIN = group.children.some(
-        (child) => child.isBroken === 1,
-      );
-      if (hasBrokenASIN) {
-        group.is_broken = 1;
-        group.isBroken = 1;
-        group.variant_status = 'BROKEN';
-        group.variantStatus = 'BROKEN';
-      } else {
-        group.is_broken = 0;
-        group.isBroken = 0;
-        group.variant_status = 'NORMAL';
-        group.variantStatus = 'NORMAL';
-      }
+      const children = groupAsins.map((asin) => {
+        const normalized = decorateAsinStatus(asin);
+        return {
+          id: normalized.id,
+          asin: normalized.asin,
+          name: normalized.name,
+          asinType: normalizeAsinType(normalized.asin_type),
+          country: normalized.country,
+          site: normalized.site,
+          brand: normalized.brand,
+          parentId: group.id,
+          isBroken: normalized.isBroken,
+          variantStatus: normalized.variantStatus,
+          autoIsBroken: normalized.autoIsBroken,
+          autoVariantStatus: normalized.autoVariantStatus,
+          manualBroken: normalized.manualBroken,
+          manualBrokenReason: normalized.manualBrokenReason,
+          manualBrokenUpdatedAt: normalized.manualBrokenUpdatedAt,
+          manualBrokenUpdatedBy: normalized.manualBrokenUpdatedBy,
+          statusSource: normalized.statusSource,
+          createTime: normalized.create_time,
+          updateTime: normalized.update_time,
+          lastCheckTime: normalized.last_check_time,
+          feishuNotifyEnabled:
+            normalized.feishu_notify_enabled !== null
+              ? normalized.feishu_notify_enabled
+              : 1,
+        };
+      });
+      const decoratedGroup = decorateVariantGroupStatus(group, children);
+      group.children = children;
+      group.isBroken = decoratedGroup.isBroken;
+      group.variantStatus = decoratedGroup.variantStatus;
+      group.autoIsBroken = decoratedGroup.autoIsBroken;
+      group.autoVariantStatus = decoratedGroup.autoVariantStatus;
+      group.manualBroken = decoratedGroup.manualBroken;
+      group.manualBrokenReason = decoratedGroup.manualBrokenReason;
+      group.manualBrokenUpdatedAt = decoratedGroup.manualBrokenUpdatedAt;
+      group.manualBrokenUpdatedBy = decoratedGroup.manualBrokenUpdatedBy;
+      group.statusSource = decoratedGroup.statusSource;
+      group.is_broken = decoratedGroup.isBroken;
+      group.variant_status = decoratedGroup.variantStatus;
 
       group.updateTime = group.update_time;
       group.createTime = group.create_time;
@@ -579,6 +586,34 @@ class VariantGroup {
       id,
     ]);
     this.clearCache();
+  }
+
+  // 更新人工异常标记
+  static async updateManualBroken(id, markedBroken, reason, updatedBy = null) {
+    const normalizedReason =
+      markedBroken && reason ? String(reason).trim().slice(0, 500) : null;
+    const normalizedUpdatedBy =
+      markedBroken && updatedBy ? String(updatedBy).trim().slice(0, 100) : null;
+
+    await query(
+      `UPDATE variant_groups
+       SET manual_broken = ?,
+           manual_broken_reason = ?,
+           manual_broken_updated_at = ?,
+           manual_broken_updated_by = ?,
+           update_time = NOW()
+       WHERE id = ?`,
+      [
+        markedBroken ? 1 : 0,
+        normalizedReason,
+        markedBroken ? new Date() : null,
+        normalizedUpdatedBy,
+        id,
+      ],
+    );
+
+    this.clearCache();
+    return this.findById(id);
   }
 }
 

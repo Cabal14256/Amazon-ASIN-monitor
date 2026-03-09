@@ -239,10 +239,13 @@ async function exportASINData(req, res) {
       '站点',
       '品牌',
       '变体状态',
+      '变体状态来源',
       'ASIN',
       'ASIN名称',
       'ASIN类型',
       'ASIN状态',
+      'ASIN状态来源',
+      '人工异常原因',
       '创建时间',
       '最后检查时间',
     ]);
@@ -260,10 +263,13 @@ async function exportASINData(req, res) {
             group.site || '',
             group.brand || '',
             group.isBroken === 1 ? '异常' : '正常',
+            group.statusSource || '',
             asin.asin || '',
             asin.name || '',
             asin.asinType || '',
             asin.isBroken === 1 ? '异常' : '正常',
+            asin.statusSource || '',
+            asin.manualBrokenReason || group.manualBrokenReason || '',
             asin.createTime || '',
             asin.lastCheckTime || '',
           ]);
@@ -277,10 +283,13 @@ async function exportASINData(req, res) {
           group.site || '',
           group.brand || '',
           group.isBroken === 1 ? '异常' : '正常',
+          group.statusSource || '',
           '',
           '',
           '',
           '',
+          '',
+          group.manualBrokenReason || '',
           group.createTime || '',
           '',
         ]);
@@ -307,10 +316,13 @@ async function exportASINData(req, res) {
       10, // 站点
       15, // 品牌
       10, // 变体状态
+      12, // 变体状态来源
       15, // ASIN
       50, // ASIN名称
       15, // ASIN类型
       10, // ASIN状态
+      12, // ASIN状态来源
+      30, // 人工异常原因
       20, // 创建时间
       20, // 最后检查时间
     ]);
@@ -1016,8 +1028,10 @@ async function exportVariantGroupData(req, res) {
       '站点',
       '品牌',
       '变体状态',
+      '状态来源',
       'ASIN数量',
       '异常ASIN数量',
+      '人工异常原因',
       '创建时间',
       '更新时间',
       '最后检查时间',
@@ -1038,8 +1052,10 @@ async function exportVariantGroupData(req, res) {
         group.site || '',
         group.brand || '',
         group.isBroken === 1 ? '异常' : '正常',
+        group.statusSource || '',
         asinCount,
         brokenAsinCount,
+        group.manualBrokenReason || '',
         group.createTime || '',
         group.updateTime || '',
         group.lastCheckTime || '',
@@ -1066,8 +1082,10 @@ async function exportVariantGroupData(req, res) {
       10, // 站点
       15, // 品牌
       10, // 变体状态
+      12, // 状态来源
       10, // ASIN数量
       12, // 异常ASIN数量
+      30, // 人工异常原因
       20, // 创建时间
       20, // 更新时间
       20, // 最后检查时间
@@ -1712,6 +1730,7 @@ async function createExportTask(req, res) {
   try {
     const { exportType, params } = req.body;
     const userId = req.user?.userId || req.user?.id;
+    const taskRegistryService = require('../services/taskRegistryService');
 
     if (!exportType) {
       return res.status(400).json({
@@ -1726,8 +1745,11 @@ async function createExportTask(req, res) {
       'asin',
       'monitor-history',
       'variant-group',
+      'competitor-asin',
+      'competitor-variant-group',
       'competitor-monitor-history',
       'analytics-monthly-breakdown',
+      'parent-asin-query',
     ];
     if (!validTypes.includes(exportType)) {
       return res.status(400).json({
@@ -1742,9 +1764,22 @@ async function createExportTask(req, res) {
     const permissionMap = {
       asin: 'asin:read',
       'variant-group': 'asin:read',
+      'competitor-asin': 'asin:read',
+      'competitor-variant-group': 'asin:read',
       'monitor-history': 'monitor:read',
       'competitor-monitor-history': 'monitor:read',
       'analytics-monthly-breakdown': 'analytics:read',
+      'parent-asin-query': 'asin:read',
+    };
+    const titleMap = {
+      asin: 'ASIN导出',
+      'variant-group': '变体组导出',
+      'competitor-asin': '竞品ASIN导出',
+      'competitor-variant-group': '竞品变体组导出',
+      'monitor-history': '监控历史导出',
+      'competitor-monitor-history': '竞品监控历史导出',
+      'analytics-monthly-breakdown': '月度被拆统计导出',
+      'parent-asin-query': '父变体查询结果导出',
     };
     const requiredPermission = permissionMap[exportType];
     if (requiredPermission) {
@@ -1763,6 +1798,14 @@ async function createExportTask(req, res) {
 
     // 生成任务ID
     const taskId = uuidv4();
+    await taskRegistryService.createTask({
+      taskId,
+      taskType: 'export',
+      taskSubType: exportType,
+      title: titleMap[exportType] || '导出任务',
+      userId,
+      message: '导出任务已创建，等待处理',
+    });
 
     // 创建后台任务
     await exportTaskQueue.enqueue({

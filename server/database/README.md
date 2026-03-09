@@ -26,7 +26,8 @@ database/
 │   ├── 018_add_analytics_query_index.sql
 │   ├── 020_add_status_change_indexes.sql
 │   ├── 021_add_monitor_history_agg_table.sql
-│   └── 022_add_monitor_history_agg_peak.sql
+│   ├── 022_add_monitor_history_agg_peak.sql
+│   └── 026_normalize_user_status_and_audit_permissions.sql
 ├── MIGRATION.md                # 迁移说明文档
 └── README.md                   # 本文件
 ```
@@ -101,6 +102,7 @@ mysql -u root -p < server/database/competitor-init.sql
 - `020_add_status_change_indexes.sql`: 添加状态变化查询索引
 - `021_add_monitor_history_agg_table.sql`: 添加监控历史聚合表（数据分析加速）
 - `022_add_monitor_history_agg_peak.sql`: 聚合表补充高峰期字段（period-summary 加速）
+- `026_normalize_user_status_and_audit_permissions.sql`: 统一用户状态字段并补齐角色/审计权限
 
 **执行方式**:
 

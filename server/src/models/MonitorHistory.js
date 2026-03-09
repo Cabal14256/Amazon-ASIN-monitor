@@ -2,6 +2,10 @@ const { query } = require('../config/database');
 const cacheService = require('../services/cacheService');
 const analyticsCacheService = require('../services/analyticsCacheService');
 const logger = require('../utils/logger');
+const {
+  buildAsinEffectiveBrokenExpr,
+  buildVariantGroupEffectiveBrokenExpr,
+} = require('../utils/variantStatus');
 
 const AGG_COVERAGE_CACHE = new Map();
 
@@ -630,6 +634,7 @@ class MonitorHistory {
       variantGroupId = '',
       asinId = '',
       country = '',
+      checkType = '',
       startTime = '',
       endTime = '',
     } = params;
@@ -663,6 +668,18 @@ class MonitorHistory {
       } else {
         sql += ` AND country = ?`;
         conditions.push(country);
+      }
+    }
+
+    if (checkType) {
+      if (checkType === 'ASIN') {
+        sql += ` AND ${MonitorHistory.getTrackedAsinHistoryFilter(
+          'check_type',
+          'asin_id',
+        )}`;
+      } else {
+        sql += ` AND check_type = ?`;
+        conditions.push(checkType);
       }
     }
 
@@ -720,11 +737,14 @@ class MonitorHistory {
     };
   }
 
-  // 仅统计真实ASIN（排除父变体 asin_type=1/MAIN_LINK）
-  static getRealAsinFilter(fieldExpr = 'asin_id') {
-    return `${fieldExpr} IN (
-      SELECT id FROM asins
-      WHERE asin_type IS NULL OR asin_type NOT IN ('1', 'MAIN_LINK')
+  // 仅统计 ASIN 检查历史（排除变体组级检查记录）
+  static getTrackedAsinHistoryFilter(
+    checkTypeField = 'check_type',
+    asinIdField = 'asin_id',
+  ) {
+    return `(
+      ${checkTypeField} = 'ASIN'
+      AND ${asinIdField} IN (SELECT id FROM asins)
     )`;
   }
 
@@ -761,7 +781,7 @@ class MonitorHistory {
       conditions.push(endTime);
     }
 
-    whereClause += ` AND ${MonitorHistory.getRealAsinFilter('asin_id')}`;
+    whereClause += ` AND ${MonitorHistory.getTrackedAsinHistoryFilter()}`;
 
     // 由于多个子查询都需要相同的参数，需要将参数数组重复多次
     const allConditions = [...conditions, ...conditions, ...conditions];
@@ -1091,7 +1111,12 @@ class MonitorHistory {
 
   // 高峰期统计
   static async getPeakHoursStatistics(params = {}) {
-    const { country = '', startTime = '', endTime = '' } = params;
+    const {
+      country = '',
+      checkType = '',
+      startTime = '',
+      endTime = '',
+    } = params;
 
     if (!country) {
       throw new Error('高峰期统计需要指定国家');
@@ -1120,6 +1145,18 @@ class MonitorHistory {
     if (endTime) {
       sql += ` AND check_time <= ?`;
       conditions.push(endTime);
+    }
+
+    if (checkType) {
+      if (checkType === 'ASIN') {
+        sql += ` AND ${MonitorHistory.getTrackedAsinHistoryFilter(
+          'check_type',
+          'asin_id',
+        )}`;
+      } else {
+        sql += ` AND check_type = ?`;
+        conditions.push(checkType);
+      }
     }
 
     sql += ` ORDER BY check_time ASC`;
@@ -1519,7 +1556,10 @@ class MonitorHistory {
       conditions.push(endTime);
     }
 
-    whereClause += ` AND ${MonitorHistory.getRealAsinFilter('mh.asin_id')}`;
+    whereClause += ` AND ${MonitorHistory.getTrackedAsinHistoryFilter(
+      'mh.check_type',
+      'mh.asin_id',
+    )}`;
 
     const sql = `
       SELECT
@@ -1715,7 +1755,10 @@ class MonitorHistory {
         conditions.push(endTime);
       }
 
-      whereClause += ` AND ${MonitorHistory.getRealAsinFilter('mh.asin_id')}`;
+      whereClause += ` AND ${MonitorHistory.getTrackedAsinHistoryFilter(
+        'mh.check_type',
+        'mh.asin_id',
+      )}`;
 
       const sql = `
         SELECT
@@ -2091,7 +2134,10 @@ class MonitorHistory {
       conditions.push(brand);
     }
 
-    whereClause += ` AND ${MonitorHistory.getRealAsinFilter('mh.asin_id')}`;
+    whereClause += ` AND ${MonitorHistory.getTrackedAsinHistoryFilter(
+      'mh.check_type',
+      'mh.asin_id',
+    )}`;
 
     // 优化：将高峰时段判断移到数据库层面
     // 构建高峰时段判断的SQL CASE语句
@@ -2175,8 +2221,8 @@ class MonitorHistory {
       FROM monitor_history mh
       ${whereClause}
       GROUP BY ${slotExpr}, mh.country, COALESCE(NULLIF(mh.asin_code, ''), CONCAT('ID#', mh.asin_id))${
-      site ? ', mh.site_snapshot' : ''
-    }${brand ? ', mh.brand_snapshot' : ''}
+        site ? ', mh.site_snapshot' : ''
+      }${brand ? ', mh.brand_snapshot' : ''}
     `;
 
     const safeCurrent = Math.max(1, Number(current) || 1);
@@ -2295,14 +2341,14 @@ class MonitorHistory {
 
   // 按国家统计ASIN当前状态（基于asins表）
   static async getASINStatisticsByCountry() {
+    const asinBrokenExpr = buildAsinEffectiveBrokenExpr('asins');
     const sql = `
       SELECT
         country,
         COUNT(*) as total_asins,
-        SUM(CASE WHEN is_broken = 1 THEN 1 ELSE 0 END) as broken_count,
-        SUM(CASE WHEN is_broken = 0 THEN 1 ELSE 0 END) as normal_count
+        SUM(CASE WHEN ${asinBrokenExpr} THEN 1 ELSE 0 END) as broken_count,
+        SUM(CASE WHEN NOT ${asinBrokenExpr} THEN 1 ELSE 0 END) as normal_count
       FROM asins
-      WHERE asin_type IS NULL OR asin_type NOT IN ('1', 'MAIN_LINK')
       GROUP BY country
       ORDER BY country ASC
     `;
@@ -2316,6 +2362,8 @@ class MonitorHistory {
     const { limit = 10 } = params;
     // 确保limit是正整数
     const safeLimit = Math.max(1, Math.min(Number(limit) || 10, 100));
+    const asinBrokenExpr = buildAsinEffectiveBrokenExpr('a');
+    const groupBrokenExpr = buildVariantGroupEffectiveBrokenExpr('vg');
 
     const sql = `
       SELECT
@@ -2323,12 +2371,12 @@ class MonitorHistory {
         vg.name as variant_group_name,
         vg.country as country,
         COUNT(a.id) as total_asins,
-        SUM(CASE WHEN a.is_broken = 1 THEN 1 ELSE 0 END) as broken_count,
-        SUM(CASE WHEN a.is_broken = 0 THEN 1 ELSE 0 END) as normal_count
+        SUM(CASE WHEN ${asinBrokenExpr} THEN 1 ELSE 0 END) as broken_count,
+        SUM(CASE WHEN NOT ${asinBrokenExpr} THEN 1 ELSE 0 END) as normal_count
       FROM variant_groups vg
       LEFT JOIN asins a ON a.variant_group_id = vg.id
       WHERE a.id IS NOT NULL
-        AND (a.asin_type IS NULL OR a.asin_type NOT IN ('1', 'MAIN_LINK'))
+        AND ${groupBrokenExpr}
       GROUP BY vg.id, vg.name, vg.country
       HAVING broken_count > 0
       ORDER BY broken_count DESC, total_asins DESC
