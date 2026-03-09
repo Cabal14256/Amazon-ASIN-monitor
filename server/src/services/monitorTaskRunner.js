@@ -153,6 +153,7 @@ async function processCountry(
     totalGroups: 0,
     brokenGroups: 0,
     brokenGroupNames: [],
+    brokenGroupDetails: [],
     brokenASINs: [],
     brokenByType: { SP_API_ERROR: 0, NO_VARIANTS: 0 }, // 按类型统计异常
     checkTime: taskCheckTime,
@@ -305,11 +306,21 @@ async function processCountry(
           SP_API_ERROR: 0,
           NO_VARIANTS: 0,
         };
+        const updatedGroup = result?.groupSnapshot || groupSnapshot;
+        const variantGroupName = updatedGroup?.name || group.name || null;
 
         if (result?.isBroken) {
           broken++;
           countryResult.brokenGroups++;
           countryResult.brokenGroupNames.push(group.name);
+          countryResult.brokenGroupDetails.push({
+            groupName: variantGroupName,
+            statusSource: updatedGroup?.statusSource || 'NORMAL',
+            manualBroken: updatedGroup?.manualBroken === 1 ? 1 : 0,
+            manualBrokenReason: updatedGroup?.manualBrokenReason || '',
+            manualBrokenUpdatedAt: updatedGroup?.manualBrokenUpdatedAt || null,
+            manualBrokenUpdatedBy: updatedGroup?.manualBrokenUpdatedBy || null,
+          });
 
           // 累加错误类型统计
           countryResult.brokenByType.SP_API_ERROR +=
@@ -317,9 +328,6 @@ async function processCountry(
           countryResult.brokenByType.NO_VARIANTS +=
             brokenByType.NO_VARIANTS || 0;
         }
-
-        const updatedGroup = result?.groupSnapshot || groupSnapshot;
-        const variantGroupName = updatedGroup?.name || group.name || null;
 
         const recordCheckTime = new Date();
         if (!countryCheckStartTime || recordCheckTime < countryCheckStartTime) {
@@ -373,7 +381,9 @@ async function processCountry(
               const errorType =
                 brokenASINItem && typeof brokenASINItem !== 'string'
                   ? brokenASINItem.errorType
-                  : 'NO_VARIANTS';
+                  : asinInfo.statusSource === 'MANUAL'
+                    ? 'MANUAL_MARKED'
+                    : 'NO_VARIANTS';
 
               countryResult.brokenASINs.push({
                 asin: asinInfo.asin,
@@ -381,6 +391,11 @@ async function processCountry(
                 groupName: group.name,
                 brand: asinInfo.brand || '',
                 errorType, // 添加错误类型
+                statusSource: asinInfo.statusSource || 'NORMAL',
+                manualBroken: asinInfo.manualBroken === 1 ? 1 : 0,
+                manualBrokenReason: asinInfo.manualBrokenReason || '',
+                manualBrokenUpdatedAt: asinInfo.manualBrokenUpdatedAt || null,
+                manualBrokenUpdatedBy: asinInfo.manualBrokenUpdatedBy || null,
               });
             }
 
@@ -398,6 +413,8 @@ async function processCountry(
               checkResult: {
                 asin: asinInfo.asin,
                 isBroken: asinInfo.isBroken === 1,
+                statusSource: asinInfo.statusSource || 'NORMAL',
+                manualBrokenReason: asinInfo.manualBrokenReason || '',
               },
               checkTime: recordCheckTime,
             });

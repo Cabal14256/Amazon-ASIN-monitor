@@ -7,8 +7,9 @@ import {
   ProColumns,
   ProTable,
 } from '@ant-design/pro-components';
+import { useAccess } from '@umijs/max';
 import { Button, Popconfirm, Space, Tag } from 'antd';
-import React, { useRef, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import PasswordForm from './components/PasswordForm';
 import PermissionTab from './components/PermissionTab';
 import RoleTab from './components/RoleTab';
@@ -16,8 +17,20 @@ import UserForm from './components/UserForm';
 
 const { getUserList, deleteUser } = services.UserController;
 
+const USER_STATUS_META: Record<
+  API.UserStatus,
+  { label: string; color: string }
+> = {
+  ACTIVE: { label: '启用', color: 'success' },
+  INACTIVE: { label: '停用', color: 'default' },
+  LOCKED: { label: '锁定', color: 'warning' },
+  SUSPENDED: { label: '暂停', color: 'error' },
+  PENDING: { label: '待激活', color: 'processing' },
+};
+
 const UserManagement: React.FC<unknown> = () => {
   const message = useMessage();
+  const access = useAccess();
   const actionRef = useRef<ActionType | null>(null);
   const [selectedRowsState, setSelectedRows] = useState<API.UserInfo[]>([]);
   const [userModalVisible, setUserModalVisible] = useState(false);
@@ -25,22 +38,38 @@ const UserManagement: React.FC<unknown> = () => {
   const [editingUser, setEditingUser] = useState<Partial<API.UserInfo>>();
   const [passwordUserId, setPasswordUserId] = useState<string>();
   const [activeTab, setActiveTab] = useState<'users' | 'roles' | 'permissions'>(
-    'users',
+    access.canReadUser ? 'users' : access.canReadRole ? 'roles' : 'permissions',
   );
-  const tabList = [
-    {
-      tab: '用户管理',
-      key: 'users',
-    },
-    {
-      tab: '角色管理',
-      key: 'roles',
-    },
-    {
-      tab: '权限控制',
-      key: 'permissions',
-    },
-  ];
+  const tabList = useMemo(
+    () =>
+      [
+        access.canReadUser
+          ? {
+              tab: '用户管理',
+              key: 'users',
+            }
+          : null,
+        access.canReadRole
+          ? {
+              tab: '角色管理',
+              key: 'roles',
+            }
+          : null,
+        access.canReadRole
+          ? {
+              tab: '权限控制',
+              key: 'permissions',
+            }
+          : null,
+      ].filter(Boolean) as { tab: string; key: 'users' | 'roles' | 'permissions' }[],
+    [access.canReadRole, access.canReadUser],
+  );
+
+  useEffect(() => {
+    if (!tabList.find((item) => item.key === activeTab) && tabList.length > 0) {
+      setActiveTab(tabList[0].key);
+    }
+  }, [activeTab, tabList]);
 
   /**
    * 删除用户
@@ -79,13 +108,16 @@ const UserManagement: React.FC<unknown> = () => {
       dataIndex: 'status',
       width: 80,
       valueType: 'select',
-      valueEnum: {
-        1: { text: '启用', status: 'Success' },
-        0: { text: '禁用', status: 'Error' },
-      },
+      valueEnum: Object.entries(USER_STATUS_META).reduce(
+        (acc, [status, meta]) => ({
+          ...acc,
+          [status]: { text: meta.label },
+        }),
+        {} as Record<string, { text: string }>,
+      ),
       render: (_: any, record: API.UserInfo) => (
-        <Tag color={record.status === 1 ? 'success' : 'error'}>
-          {record.status === 1 ? '启用' : '禁用'}
+        <Tag color={USER_STATUS_META[record.status || 'INACTIVE']?.color || 'default'}>
+          {USER_STATUS_META[record.status || 'INACTIVE']?.label || record.status}
         </Tag>
       ),
     },
@@ -129,44 +161,51 @@ const UserManagement: React.FC<unknown> = () => {
       valueType: 'option',
       width: 200,
       fixed: 'right',
-      render: (_: any, record: API.UserInfo) => [
-        <Button
-          key="edit"
-          type="link"
-          size="small"
-          onClick={() => {
-            setEditingUser(record);
-            setUserModalVisible(true);
-          }}
-        >
-          编辑
-        </Button>,
-        <Button
-          key="password"
-          type="link"
-          size="small"
-          onClick={() => {
-            setPasswordUserId(record.id);
-            setPasswordModalVisible(true);
-          }}
-        >
-          修改密码
-        </Button>,
-        <Popconfirm
-          key="delete"
-          title="确定要删除这个用户吗？"
-          onConfirm={async () => {
-            const success = await handleRemove([record]);
-            if (success) {
-              actionRef.current?.reload();
-            }
-          }}
-        >
-          <Button type="link" size="small" danger>
-            删除
-          </Button>
-        </Popconfirm>,
-      ],
+      render: (_: any, record: API.UserInfo) =>
+        [
+          access.canWriteUser ? (
+            <Button
+              key="edit"
+              type="link"
+              size="small"
+              onClick={() => {
+                setEditingUser(record);
+                setUserModalVisible(true);
+              }}
+            >
+              编辑
+            </Button>
+          ) : null,
+          access.canWriteUser ? (
+            <Button
+              key="password"
+              type="link"
+              size="small"
+              onClick={() => {
+                setPasswordUserId(record.id);
+                setPasswordModalVisible(true);
+              }}
+            >
+              重置密码
+            </Button>
+          ) : null,
+          access.canDeleteUser ? (
+            <Popconfirm
+              key="delete"
+              title="确定要删除这个用户吗？"
+              onConfirm={async () => {
+                const success = await handleRemove([record]);
+                if (success) {
+                  actionRef.current?.reload();
+                }
+              }}
+            >
+              <Button type="link" size="small" danger>
+                删除
+              </Button>
+            </Popconfirm>
+          ) : null,
+        ].filter(Boolean),
     },
   ];
 
@@ -182,7 +221,7 @@ const UserManagement: React.FC<unknown> = () => {
         setActiveTab(key as 'users' | 'roles' | 'permissions')
       }
     >
-      {activeTab === 'users' && (
+      {activeTab === 'users' && access.canReadUser && (
         <>
           <ProTable<API.UserInfo>
             headerTitle="用户列表"
@@ -191,18 +230,22 @@ const UserManagement: React.FC<unknown> = () => {
             search={{
               labelWidth: 120,
             }}
-            toolBarRender={() => [
-              <Button
-                key="1"
-                type="primary"
-                onClick={() => {
-                  setEditingUser(undefined);
-                  setUserModalVisible(true);
-                }}
-              >
-                新建用户
-              </Button>,
-            ]}
+            toolBarRender={() =>
+              access.canWriteUser
+                ? [
+                    <Button
+                      key="1"
+                      type="primary"
+                      onClick={() => {
+                        setEditingUser(undefined);
+                        setUserModalVisible(true);
+                      }}
+                    >
+                      新建用户
+                    </Button>,
+                  ]
+                : []
+            }
             request={async (params, sort, filter) => {
               void sort;
               void filter;
@@ -225,7 +268,6 @@ const UserManagement: React.FC<unknown> = () => {
                   total,
                 };
               } catch (error: any) {
-                console.error('获取用户列表失败:', error);
                 const errorMessage =
                   error?.response?.data?.errorMessage ||
                   error?.data?.errorMessage ||
@@ -241,18 +283,22 @@ const UserManagement: React.FC<unknown> = () => {
               }
             }}
             columns={columns}
-            rowSelection={{
-              onChange: (_, selectedRows) => {
-                setSelectedRows(selectedRows);
-              },
-            }}
+            rowSelection={
+              access.canDeleteUser
+                ? {
+                    onChange: (_, selectedRows) => {
+                      setSelectedRows(selectedRows);
+                    },
+                  }
+                : undefined
+            }
             pagination={{
               defaultPageSize: 10,
               showSizeChanger: true,
               showQuickJumper: true,
             }}
           />
-          {selectedRowsState?.length > 0 && (
+          {access.canDeleteUser && selectedRowsState?.length > 0 && (
             <FooterToolbar
               extra={
                 <div>
@@ -281,9 +327,9 @@ const UserManagement: React.FC<unknown> = () => {
         </>
       )}
 
-      {activeTab === 'roles' && <RoleTab />}
+      {activeTab === 'roles' && access.canReadRole && <RoleTab />}
 
-      {activeTab === 'permissions' && <PermissionTab />}
+      {activeTab === 'permissions' && access.canReadRole && <PermissionTab />}
 
       <UserForm
         modalVisible={userModalVisible}

@@ -11,10 +11,11 @@ class UserStatusHistory {
    * @param {Object} data - 状态变更数据
    * @returns {Promise<Object>} 创建的记录
    */
-  static async create(data) {
+  static async create(data, options = {}) {
+    const runQuery = options.queryExecutor || query;
     const { userId, oldStatus, newStatus, reason, changedBy } = data;
 
-    await query(
+    await runQuery(
       `INSERT INTO user_status_history (user_id, old_status, new_status, reason, changed_by) 
        VALUES (?, ?, ?, ?, ?)`,
       [userId, oldStatus || null, newStatus, reason || null, changedBy || null],

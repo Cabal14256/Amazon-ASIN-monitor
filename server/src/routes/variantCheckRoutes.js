@@ -11,6 +11,8 @@ router.post(
 router.post('/asins/:asinId/check', variantCheckController.checkASIN);
 router.post(
   '/variant-groups/batch-check',
+  authenticateToken,
+  checkPermission('asin:read'),
   variantCheckController.batchCheckVariantGroups,
 );
 

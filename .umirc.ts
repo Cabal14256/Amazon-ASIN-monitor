@@ -98,15 +98,22 @@ export default defineConfig({
       name: '用户与权限',
       path: '/user-management',
       component: './UserManagement',
-      access: 'canReadUser', // 需要用户查看权限
+      access: 'canAccessUserManagement', // 需要用户或角色查看权限
       icon: 'UserOutlined',
     },
     {
       name: '操作审计',
       path: '/audit-log',
       component: './AuditLog',
-      access: 'canReadUser', // 需要用户查看权限（只有管理员可以查看）
+      access: 'canReadAudit', // 需要审计查看权限
       icon: 'FileTextOutlined',
+    },
+    {
+      name: '任务中心',
+      path: '/tasks',
+      component: './Tasks',
+      access: 'isLogin',
+      icon: 'OrderedListOutlined',
     },
     {
       name: '个人中心',

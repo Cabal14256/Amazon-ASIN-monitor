@@ -86,7 +86,9 @@ function getWorkerQueueConfig() {
     };
   }
 
-  if (tokens.some((token) => ['all', '*'].includes(normalizeQueueToken(token)))) {
+  if (
+    tokens.some((token) => ['all', '*'].includes(normalizeQueueToken(token)))
+  ) {
     return {
       enableAll: true,
       enabledQueues: queueRegistrations.map(({ name }) => name),
@@ -158,7 +160,9 @@ function registerWorkerProcessors() {
   );
   if (skippedQueues.length > 0) {
     logger.info(
-      `[Worker] 根据 WORKER_ENABLED_QUEUES 跳过队列: ${skippedQueues.join(', ')}`,
+      `[Worker] 根据 WORKER_ENABLED_QUEUES 跳过队列: ${skippedQueues.join(
+        ', ',
+      )}`,
     );
   }
 

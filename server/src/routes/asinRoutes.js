@@ -2,6 +2,7 @@ const express = require('express');
 const router = express.Router();
 const asinController = require('../controllers/asinController');
 const upload = require('../middleware/fileUpload');
+const { authenticateToken, checkPermission } = require('../middleware/auth');
 
 // 文件上传验证中间件（检查文件是否存在）
 const validateFileUpload = (req, res, next) => {
@@ -25,6 +26,12 @@ router.put(
   '/variant-groups/:groupId/feishu-notify',
   asinController.updateVariantGroupFeishuNotify,
 );
+router.put(
+  '/variant-groups/:groupId/manual-broken',
+  authenticateToken,
+  checkPermission('asin:write'),
+  asinController.updateVariantGroupManualBroken,
+);
 
 // ASIN路由
 router.post('/asins', asinController.createASIN);
@@ -35,10 +42,18 @@ router.put(
   '/asins/:asinId/feishu-notify',
   asinController.updateASINFeishuNotify,
 );
+router.put(
+  '/asins/:asinId/manual-broken',
+  authenticateToken,
+  checkPermission('asin:write'),
+  asinController.updateASINManualBroken,
+);
 
 // Excel导入路由
 router.post(
   '/variant-groups/import-excel',
+  authenticateToken,
+  checkPermission('asin:write'),
   upload.single('file'),
   validateFileUpload,
   asinController.importFromExcel,

@@ -32,8 +32,14 @@ type WebSocketMessage =
   | {
       type: 'task_complete';
       taskId: string;
-      downloadUrl: string;
-      filename: string;
+      downloadUrl: string | null;
+      filename: string | null;
+      timestamp: string;
+    }
+  | {
+      type: 'task_cancelled';
+      taskId: string;
+      message: string;
       timestamp: string;
     }
   | { type: 'task_error'; taskId: string; error: string; timestamp: string }

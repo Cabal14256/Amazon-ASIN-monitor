@@ -77,6 +77,8 @@ export async function getMonitorStatistics(
     asinId?: string;
     /** 国家筛选 */
     country?: string;
+    /** 检查类型 */
+    checkType?: string;
     /** 开始时间 */
     startTime?: string;
     /** 结束时间 */
@@ -179,6 +181,8 @@ export async function getPeakHoursStatistics(
     // query
     /** 国家筛选（必填） */
     country: string;
+    /** 检查类型 */
+    checkType?: string;
     /** 开始时间 */
     startTime?: string;
     /** 结束时间 */
@@ -196,6 +200,47 @@ export async function getPeakHoursStatistics(
       ...(options || {}),
     },
   );
+}
+
+/** Analytics 月度被拆统计（服务端衍生结果） */
+export async function getAnalyticsMonthlyBreakdown(
+  params: {
+    country?: string;
+    month?: string;
+    startTime?: string;
+    endTime?: string;
+  },
+  options?: { [key: string]: any },
+) {
+  return request<any>(
+    '/api/v1/monitor-history/statistics/analytics-monthly-breakdown',
+    {
+      method: 'GET',
+      params: {
+        ...params,
+      },
+      ...(options || {}),
+    },
+  );
+}
+
+/** Analytics 高峰期背景区域（服务端衍生结果） */
+export async function getAnalyticsPeakMarkAreas(
+  params: {
+    groupBy?: string;
+    country?: string;
+    startTime: string;
+    endTime: string;
+  },
+  options?: { [key: string]: any },
+) {
+  return request<any>('/api/v1/monitor-history/statistics/peak-mark-areas', {
+    method: 'GET',
+    params: {
+      ...params,
+    },
+    ...(options || {}),
+  });
 }
 
 /** 全部国家汇总统计 */

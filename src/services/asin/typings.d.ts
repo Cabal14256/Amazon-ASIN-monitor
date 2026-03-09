@@ -4,6 +4,7 @@
 declare namespace API {
   /** 变体状态枚举 */
   type VariantStatus = 'NORMAL' | 'BROKEN';
+  type VariantStatusSource = 'NORMAL' | 'AUTO' | 'MANUAL' | 'AUTO+MANUAL';
 
   /** 国家/区域枚举 */
   type Country = 'US' | 'UK' | 'DE' | 'FR' | 'IT' | 'ES';
@@ -31,6 +32,20 @@ declare namespace API {
     isBroken?: number;
     /** 变体状态文本 */
     variantStatus?: VariantStatus;
+    /** 自动检测状态：0-正常，1-异常 */
+    autoIsBroken?: number;
+    /** 自动检测状态文本 */
+    autoVariantStatus?: VariantStatus;
+    /** 人工异常标记：0-否，1-是 */
+    manualBroken?: number;
+    /** 人工异常原因 */
+    manualBrokenReason?: string;
+    /** 人工异常更新时间 */
+    manualBrokenUpdatedAt?: string;
+    /** 人工异常操作人 */
+    manualBrokenUpdatedBy?: string;
+    /** 状态来源 */
+    statusSource?: VariantStatusSource;
     /** 父级变体组ID */
     parentId?: string;
     /** 创建时间 */
@@ -59,6 +74,20 @@ declare namespace API {
     isBroken?: number;
     /** 变体状态文本 */
     variantStatus?: VariantStatus;
+    /** 自动检测状态：0-正常，1-异常 */
+    autoIsBroken?: number;
+    /** 自动检测状态文本 */
+    autoVariantStatus?: VariantStatus;
+    /** 人工异常标记：0-否，1-是 */
+    manualBroken?: number;
+    /** 人工异常原因 */
+    manualBrokenReason?: string;
+    /** 人工异常更新时间 */
+    manualBrokenUpdatedAt?: string;
+    /** 人工异常操作人 */
+    manualBrokenUpdatedBy?: string;
+    /** 状态来源 */
+    statusSource?: VariantStatusSource;
     /** 父级ID（用于区分变体组和ASIN，变体组此字段为undefined） */
     parentId?: string;
     /** 子级ASIN列表 */

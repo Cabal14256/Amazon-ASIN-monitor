@@ -372,8 +372,8 @@ class MultiLevelRateLimiter {
       secondTokens: distributed
         ? null
         : this.secondLimiter
-          ? this.secondLimiter.getAvailableTokens()
-          : null,
+        ? this.secondLimiter.getAvailableTokens()
+        : null,
       minuteTokens: distributed
         ? null
         : this.minuteLimiter.getAvailableTokens(),

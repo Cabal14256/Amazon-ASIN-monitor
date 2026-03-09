@@ -27,6 +27,7 @@
 | 022 | `022_add_monitor_history_agg_peak.sql` | 聚合表补充高峰期字段 | ✅ 已整合到 init.sql |
 | 023 | `023_add_analytics_fastpath.sql` | 数据分析快路径优化（快照维度、时间槽生成列、聚合维度表） | ✅ 已整合到 init.sql |
 | 024 | `024_fix_missing_password_security_schema.sql` | 修复旧版 init.sql 缺失的密码安全字段与表 | ⚠️ 仅用于升级 |
+| 026 | `026_normalize_user_status_and_audit_permissions.sql` | 统一用户状态字段并补齐角色/审计权限 | ⚠️ 旧库升级必执行 |
 
 > **注意**: 所有标记为 "✅ 已整合到 init.sql" 的迁移脚本，其功能已包含在 `init.sql` 中。新安装系统时直接使用 `init.sql` 即可，无需执行这些迁移脚本。竞品数据库相关的迁移脚本已整合到 `competitor-init.sql`。
 

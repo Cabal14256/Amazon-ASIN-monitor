@@ -206,6 +206,36 @@ export async function updateASINFeishuNotify(
   );
 }
 
+/** 更新ASIN人工异常标记 */
+export async function updateASINManualBroken(
+  params: {
+    // path
+    /** ASIN ID */
+    asinId?: string;
+  },
+  body?: {
+    /** 是否人工标记为异常 */
+    markedBroken?: boolean;
+    /** 人工异常原因 */
+    reason?: string;
+  },
+  options?: { [key: string]: any },
+) {
+  const { asinId: param0 } = params;
+  return request<API.Result_ASINInfo_>(
+    `/api/v1/asins/${param0}/manual-broken`,
+    {
+      method: 'PUT',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      params: { ...params },
+      data: body,
+      ...(options || {}),
+    },
+  );
+}
+
 /** 更新变体组飞书通知开关 */
 export async function updateVariantGroupFeishuNotify(
   params: {
@@ -222,6 +252,36 @@ export async function updateVariantGroupFeishuNotify(
   const { groupId: param0 } = params;
   return request<API.Result_VariantGroup_>(
     `/api/v1/variant-groups/${param0}/feishu-notify`,
+    {
+      method: 'PUT',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      params: { ...params },
+      data: body,
+      ...(options || {}),
+    },
+  );
+}
+
+/** 更新变体组人工异常标记 */
+export async function updateVariantGroupManualBroken(
+  params: {
+    // path
+    /** 变体组ID */
+    groupId?: string;
+  },
+  body?: {
+    /** 是否人工标记为异常 */
+    markedBroken?: boolean;
+    /** 人工异常原因 */
+    reason?: string;
+  },
+  options?: { [key: string]: any },
+) {
+  const { groupId: param0 } = params;
+  return request<API.Result_VariantGroup_>(
+    `/api/v1/variant-groups/${param0}/manual-broken`,
     {
       method: 'PUT',
       headers: {

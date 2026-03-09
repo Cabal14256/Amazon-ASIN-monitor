@@ -21,6 +21,14 @@ router.get(
   monitorController.getPeakHoursStatistics,
 );
 router.get(
+  '/monitor-history/statistics/analytics-monthly-breakdown',
+  monitorController.getAnalyticsMonthlyBreakdown,
+);
+router.get(
+  '/monitor-history/statistics/peak-mark-areas',
+  monitorController.getAnalyticsPeakMarkAreas,
+);
+router.get(
   '/monitor-history/statistics/all-countries-summary',
   monitorController.getAllCountriesSummary,
 );

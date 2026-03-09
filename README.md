@@ -229,8 +229,14 @@ mysql -u root -p amazon_asin_monitor < database/migrations/002_add_monitor_field
 
 ```bash
 cd server
-node init-admin-user.js
+INIT_ADMIN_PASSWORD='YourStrongPassword123' node init-admin-user.js
 ```
+
+说明：
+
+- `INIT_ADMIN_PASSWORD` 必填，脚本不会再输出默认密码。
+- 初始化管理员会强制首次登录修改密码。
+- 如果是旧库升级，请先执行 `server/database/migrations/026_normalize_user_status_and_audit_permissions.sql`。
 
 ### 5. 启动服务
 
@@ -927,6 +933,12 @@ mysql -u root -p < server/database/init.sql
 - `user_roles`: 用户角色关联表
 - `role_permissions`: 角色权限关联表
 
+补充说明：
+
+- `users.status` 已统一为 `ACTIVE / INACTIVE / LOCKED / SUSPENDED / PENDING`
+- 默认细粒度权限包含 `user:*`、`role:*`、`audit:read`
+- 管理员重置密码后，可强制用户下次登录修改密码并清退现有会话
+
 #### 审计表
 
 - `audit_logs`: 操作审计日志表
@@ -960,6 +972,7 @@ mysql -u root -p < server/database/init.sql
 | 020 | `020_add_status_change_indexes.sql` | 添加状态变更索引 | ✅ 已整合到 init.sql |
 | 021 | `021_optimize_variant_group_indexes.sql` | 优化变体组索引 | ✅ 已整合到 init.sql |
 | 024 | `024_fix_missing_password_security_schema.sql` | 修复旧版 init.sql 缺失的密码安全字段与表 | ⚠️ 仅用于升级 |
+| 026 | `026_normalize_user_status_and_audit_permissions.sql` | 统一用户状态字段并补齐角色/审计权限 | ⚠️ 旧库升级必执行 |
 
 > **注意**: 所有标记为 "✅ 已整合到 init.sql" 的迁移脚本，其功能已包含在 `init.sql` 中。新安装系统时直接使用 `init.sql` 即可，无需执行这些迁移脚本。
 
@@ -1232,6 +1245,11 @@ WORKER_ENABLED_QUEUES=variant-check,batch-check
 - `POST /api/v1/users` - 创建用户
 - `PUT /api/v1/users/:userId` - 更新用户
 - `DELETE /api/v1/users/:userId` - 删除用户
+- `PUT /api/v1/users/:userId/password` - 管理员重置用户密码
+- `GET /api/v1/roles` - 查询角色列表
+- `GET /api/v1/permissions` - 查询权限列表
+- `PUT /api/v1/roles/:roleId/permissions` - 更新角色权限
+- `GET /api/v1/audit-logs` - 查询操作审计日志
 
 ### 飞书配置接口
 

@@ -1,5 +1,6 @@
 const MonitorHistory = require('../models/MonitorHistory');
 const logger = require('../utils/logger');
+const analyticsViewService = require('../services/analyticsViewService');
 
 /**
  * 重试辅助函数
@@ -164,11 +165,13 @@ exports.getMonitorHistoryById = async (req, res) => {
 // 获取统计信息
 exports.getStatistics = async (req, res) => {
   try {
-    const { variantGroupId, asinId, country, startTime, endTime } = req.query;
+    const { variantGroupId, asinId, country, checkType, startTime, endTime } =
+      req.query;
     const statistics = await MonitorHistory.getStatistics({
       variantGroupId,
       asinId,
       country,
+      checkType,
       startTime,
       endTime,
     });
@@ -288,7 +291,12 @@ exports.getStatisticsByVariantGroup = async (req, res) => {
 exports.getPeakHoursStatistics = async (req, res) => {
   const startTime = Date.now();
   try {
-    const { country, startTime: startTimeParam, endTime } = req.query;
+    const {
+      country,
+      checkType,
+      startTime: startTimeParam,
+      endTime,
+    } = req.query;
 
     if (!country) {
       return res.status(400).json({
@@ -302,6 +310,7 @@ exports.getPeakHoursStatistics = async (req, res) => {
       async () => {
         return await MonitorHistory.getPeakHoursStatistics({
           country,
+          checkType,
           startTime: startTimeParam,
           endTime,
         });
@@ -324,6 +333,112 @@ exports.getPeakHoursStatistics = async (req, res) => {
       `[统计查询] getPeakHoursStatistics 失败，耗时${duration}ms:`,
       error,
     );
+    res.status(500).json({
+      success: false,
+      errorMessage: error.message || '查询失败',
+      errorCode: 500,
+    });
+  }
+};
+
+// 月度被拆统计（服务端衍生结果）
+exports.getAnalyticsMonthlyBreakdown = async (req, res) => {
+  const startTime = Date.now();
+  try {
+    const { country, month, startTime: startTimeParam, endTime } = req.query;
+
+    const now = new Date();
+    const fallbackMonth = `${now.getFullYear()}-${String(
+      now.getMonth() + 1,
+    ).padStart(2, '0')}`;
+    const monthTokenCandidate =
+      month || String(startTimeParam || '').slice(0, 7);
+    const monthToken = /^\d{4}-\d{2}$/.test(monthTokenCandidate)
+      ? monthTokenCandidate
+      : fallbackMonth;
+    const [yearText, monthText] = monthToken.split('-');
+    const year = Number(yearText) || now.getFullYear();
+    const monthNumber = Math.min(
+      12,
+      Math.max(1, Number(monthText) || now.getMonth() + 1),
+    );
+    const daysInMonth = new Date(year, monthNumber, 0).getDate();
+    const effectiveStartTime =
+      startTimeParam ||
+      `${year}-${String(monthNumber).padStart(2, '0')}-01 00:00:00`;
+    const effectiveEndTime =
+      endTime ||
+      `${year}-${String(monthNumber).padStart(2, '0')}-${String(
+        daysInMonth,
+      ).padStart(2, '0')} 23:59:59`;
+
+    const statistics = await withRetry(
+      async () =>
+        MonitorHistory.getStatisticsByTime({
+          country,
+          startTime: effectiveStartTime,
+          endTime: effectiveEndTime,
+          groupBy: 'day',
+        }),
+      3,
+      1000,
+    );
+
+    const result = analyticsViewService.buildMonthlyBreakdownRows(
+      statistics,
+      `${year}-${String(monthNumber).padStart(2, '0')}`,
+    );
+    const duration = Date.now() - startTime;
+    logger.info(
+      `[统计查询] getAnalyticsMonthlyBreakdown 完成，耗时${duration}ms`,
+    );
+
+    res.json({
+      success: true,
+      data: result,
+      errorCode: 0,
+    });
+  } catch (error) {
+    const duration = Date.now() - startTime;
+    logger.error(
+      `[统计查询] getAnalyticsMonthlyBreakdown 失败，耗时${duration}ms:`,
+      error,
+    );
+    res.status(500).json({
+      success: false,
+      errorMessage: error.message || '查询失败',
+      errorCode: 500,
+    });
+  }
+};
+
+// 高峰期标记区域（服务端衍生结果）
+exports.getAnalyticsPeakMarkAreas = async (req, res) => {
+  try {
+    const { groupBy = 'hour', country = '', startTime, endTime } = req.query;
+
+    if (!startTime || !endTime) {
+      return res.status(400).json({
+        success: false,
+        errorMessage: '请提供开始时间和结束时间',
+        errorCode: 400,
+      });
+    }
+
+    const areas = analyticsViewService.buildPeakHoursMarkAreas({
+      groupBy,
+      country,
+      startTime,
+      endTime,
+    });
+
+    res.json({
+      success: true,
+      data: areas,
+      errorCode: 0,
+    });
+  } catch (error) {
+    logger.error('获取高峰期标记区域失败:', error);
     res.status(500).json({
       success: false,
       errorMessage: error.message || '查询失败',

@@ -2,7 +2,7 @@
 import GlobalAlert from '@/components/GlobalAlert';
 import { logout } from '@/services/auth/AuthController';
 import { debugError, debugLog, debugWarn } from '@/utils/debug';
-import { clearToken, getToken } from '@/utils/token';
+import { clearToken, getToken, hasAuthSession } from '@/utils/token';
 import * as Icons from '@ant-design/icons';
 import {
   FileTextOutlined,
@@ -22,13 +22,14 @@ export async function getInitialState(): Promise<{
   roles?: string[];
   sessionId?: string;
 }> {
-  // 从storage获取token
-  const token = getToken();
+  const legacyToken = getToken();
+  const hasSession = hasAuthSession();
 
   // 调试日志
   if (process.env.NODE_ENV === 'development') {
     debugLog('[getInitialState] 开始执行', {
-      hasToken: !!token,
+      hasSession,
+      hasLegacyToken: !!legacyToken,
       pathname: window.location.pathname,
     });
   }
@@ -38,16 +39,16 @@ export async function getInitialState(): Promise<{
   const isLoginPage =
     currentPath === '/login' || currentPath.startsWith('/login');
 
-  if (!token) {
+  if (!hasSession) {
     // 调试日志
     if (process.env.NODE_ENV === 'development') {
-      debugLog('[getInitialState] 没有token', {
+      debugLog('[getInitialState] 没有会话', {
         isLoginPage,
         currentPath,
       });
     }
 
-    // 如果没有token且不在登录页，强制重定向到登录页
+    // 如果没有会话且不在登录页，强制重定向到登录页
     if (!isLoginPage) {
       // 使用 window.location 强制重定向，避免路由拦截
       const targetPath = currentPath === '/' ? '/home' : currentPath;
@@ -60,10 +61,10 @@ export async function getInitialState(): Promise<{
     return {};
   }
 
-  // 调试日志：有token，准备调用API
+  // 调试日志：有会话，准备调用API
   if (process.env.NODE_ENV === 'development') {
-    debugLog('[getInitialState] 有token，准备调用API', {
-      tokenLength: token.length,
+    debugLog('[getInitialState] 有会话，准备调用API', {
+      hasLegacyToken: !!legacyToken,
       isLoginPage,
       currentPath,
     });
@@ -78,9 +79,12 @@ export async function getInitialState(): Promise<{
     const response = await umiRequest<API.Result_CurrentUser_>(
       '/api/v1/auth/current-user',
       {
-        headers: {
-          Authorization: `Bearer ${token}`,
-        },
+        credentials: 'include',
+        headers: legacyToken
+          ? {
+              Authorization: `Bearer ${legacyToken}`,
+            }
+          : undefined,
         skipErrorHandler: true,
         timeout: 5000, // 5秒超时
       },
@@ -98,11 +102,27 @@ export async function getInitialState(): Promise<{
 
     if (response?.success && response?.data) {
       const userData = {
-        currentUser: response.data.user,
+        currentUser: response.data.user
+          ? {
+              ...response.data.user,
+              force_password_change:
+                response.data.mustChangePassword ||
+                response.data.user.force_password_change,
+            }
+          : response.data.user,
         permissions: response.data.permissions || [],
         roles: response.data.roles || [],
         sessionId: response.data.sessionId,
       };
+
+      if (
+        userData.currentUser?.force_password_change &&
+        !isLoginPage &&
+        !currentPath.startsWith('/profile')
+      ) {
+        window.location.href = '/profile?tab=password&force=1';
+        return userData;
+      }
 
       // 调试日志
       if (process.env.NODE_ENV === 'development') {
@@ -124,7 +144,7 @@ export async function getInitialState(): Promise<{
         errorCode: response.errorCode,
       });
 
-      // 如果是401错误，清除token并重定向
+      // 如果是401错误，清除会话并重定向
       if (response.errorCode === 401) {
         clearToken();
         if (!isLoginPage) {
@@ -136,9 +156,9 @@ export async function getInitialState(): Promise<{
       }
 
       // 非401错误，如果是临时问题，允许继续访问
-      if (token) {
+      if (hasSession) {
         debugWarn(
-          '[getInitialState] API返回失败，但token存在，允许继续访问（可能是临时问题）',
+          '[getInitialState] API返回失败，但会话存在，允许继续访问（可能是临时问题）',
         );
         return {
           permissions: [],
@@ -161,14 +181,14 @@ export async function getInitialState(): Promise<{
     const errorCode =
       error?.data?.errorCode || error?.response?.data?.errorCode;
 
-    // 如果是401或403错误，说明token无效或过期
+    // 如果是401或403错误，说明会话无效或过期
     if (
       errorStatus === 401 ||
       errorStatus === 403 ||
       errorCode === 401 ||
       errorCode === 403
     ) {
-      debugWarn('[getInitialState] Token无效或过期，清除token并重定向到登录页');
+      debugWarn('[getInitialState] 会话无效或过期，清除会话并重定向到登录页');
       clearToken();
       // 如果不在登录页，重定向到登录页
       if (!isLoginPage) {
@@ -188,11 +208,11 @@ export async function getInitialState(): Promise<{
       error?.response?.status === 0 ||
       !error?.response?.status;
 
-    // 如果是网络错误或超时，且有token，可能是临时问题
+    // 如果是网络错误或超时，且有会话，可能是临时问题
     // 返回一个状态让权限检查通过，这样用户可以看到页面（虽然可能没有完整功能）
-    if (isNetworkError && token) {
+    if (isNetworkError && hasSession) {
       debugWarn(
-        '[getInitialState] 网络错误，但token存在，允许继续访问（可能是临时问题）',
+        '[getInitialState] 网络错误，但会话存在，允许继续访问（可能是临时问题）',
       );
       return {
         permissions: [],
@@ -201,11 +221,11 @@ export async function getInitialState(): Promise<{
     }
 
     // 如果是500错误（服务器错误），可能是数据库连接问题或后端问题
-    // 如果后端返回500，说明后端有问题，不应该清除token（token可能仍然有效）
+    // 如果后端返回500，说明后端有问题，不应该清除会话（会话可能仍然有效）
     // 返回一个状态让权限检查通过，但用户可能无法使用完整功能
-    if ((errorStatus === 500 || errorCode === 500) && token) {
+    if ((errorStatus === 500 || errorCode === 500) && hasSession) {
       debugError(
-        '[getInitialState] 服务器错误，但token存在，允许继续访问（可能是临时问题）',
+        '[getInitialState] 服务器错误，但会话存在，允许继续访问（可能是临时问题）',
       );
       return {
         permissions: [],
@@ -213,10 +233,10 @@ export async function getInitialState(): Promise<{
       };
     }
 
-    // 其他错误，如果有token，也允许继续访问（可能是临时问题）
-    if (token) {
+    // 其他错误，如果有会话，也允许继续访问（可能是临时问题）
+    if (hasSession) {
       debugWarn(
-        '[getInitialState] 获取用户信息失败，但token存在，允许继续访问（可能是临时问题）',
+        '[getInitialState] 获取用户信息失败，但会话存在，允许继续访问（可能是临时问题）',
       );
       return {
         permissions: [],
@@ -225,17 +245,17 @@ export async function getInitialState(): Promise<{
     }
   }
 
-  // 如果没有token，返回空对象
-  if (!token) {
+  // 如果没有会话，返回空对象
+  if (!hasSession) {
     return {};
   }
 
-  // 如果到这里，说明有token但获取用户信息失败（没有返回数据）
-  // 可能是网络问题或后端问题，不应该清除token
+  // 如果到这里，说明有会话但获取用户信息失败（没有返回数据）
+  // 可能是网络问题或后端问题，不应该清除会话
   // 返回一个状态让权限检查通过，这样用户可以看到页面
-  if (token) {
+  if (hasSession) {
     debugWarn(
-      '[getInitialState] 有token但未获取到用户数据，允许继续访问（可能是临时问题）',
+      '[getInitialState] 有会话但未获取到用户数据，允许继续访问（可能是临时问题）',
     );
     return {
       permissions: [],
@@ -522,14 +542,14 @@ export const layout = ({ initialState, setInitialState }: any) => {
     },
     // 路由变化时的处理
     onPageChange: () => {
-      const token = getToken();
+      const hasSession = hasAuthSession();
       const currentPath = window.location.pathname;
       const isLoginPage =
         currentPath === '/login' || currentPath.startsWith('/login');
       const is403Page = currentPath === '/403';
 
       // 如果未登录且访问的页面不是登录页和403页，重定向到登录页
-      if (!token && !isLoginPage && !is403Page) {
+      if (!hasSession && !isLoginPage && !is403Page) {
         history.push(`/login?redirect=${encodeURIComponent(currentPath)}`);
       }
     },
@@ -576,12 +596,14 @@ function dedupeApiPrefix(baseURL: string | undefined, url: string | undefined) {
 // 请求配置
 export const request = {
   baseURL: resolveRequestBaseURL(),
+  credentials: 'include' as const,
   // 请求拦截器 - 添加Token
   requestInterceptors: [
     (config: any) => {
       if (typeof config.url === 'string') {
         config.baseURL = dedupeApiPrefix(config.baseURL, config.url);
       }
+      config.credentials = 'include';
       const token = getToken();
       if (token && config.headers) {
         config.headers.Authorization = `Bearer ${token}`;

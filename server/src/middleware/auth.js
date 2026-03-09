@@ -3,13 +3,17 @@ const { secret } = require('../config/jwt');
 const User = require('../models/User');
 const Session = require('../models/Session');
 const logger = require('../utils/logger');
+const { clearAuthCookies, readAuthToken } = require('../utils/authCookie');
+const {
+  isUserActive,
+  getUserStatusErrorMessage,
+} = require('../utils/userStatus');
 
 /**
  * 验证Token中间件
  */
 async function authenticateToken(req, res, next) {
-  const authHeader = req.headers['authorization'];
-  const token = authHeader && authHeader.split(' ')[1]; // Bearer TOKEN
+  const token = readAuthToken(req);
 
   if (!token) {
     return res.status(401).json({
@@ -24,6 +28,7 @@ async function authenticateToken(req, res, next) {
     const sessionId = decoded.sessionId;
     const session = sessionId ? await Session.findById(sessionId) : null;
     if (!session) {
+      clearAuthCookies(res, req);
       return res.status(401).json({
         success: false,
         errorMessage: '会话不存在或已过期',
@@ -31,6 +36,7 @@ async function authenticateToken(req, res, next) {
       });
     }
     if (session.user_id !== decoded.userId || session.status !== 'ACTIVE') {
+      clearAuthCookies(res, req);
       return res.status(403).json({
         success: false,
         errorMessage: '会话已失效',
@@ -40,6 +46,7 @@ async function authenticateToken(req, res, next) {
 
     if (Session.isExpired(session)) {
       await Session.markExpired(sessionId);
+      clearAuthCookies(res, req);
       return res.status(401).json({
         success: false,
         errorMessage: '会话已过期',
@@ -51,6 +58,7 @@ async function authenticateToken(req, res, next) {
     const user = await User.findByIdWithPassword(decoded.userId);
 
     if (!user) {
+      clearAuthCookies(res, req);
       return res.status(401).json({
         success: false,
         errorMessage: '用户不存在',
@@ -58,10 +66,11 @@ async function authenticateToken(req, res, next) {
       });
     }
 
-    if (user.status !== 1) {
+    if (!isUserActive(user.status, user.locked_until)) {
+      clearAuthCookies(res, req);
       return res.status(403).json({
         success: false,
-        errorMessage: '用户已被禁用',
+        errorMessage: getUserStatusErrorMessage(user.status, user.locked_until),
         errorCode: 403,
       });
     }
@@ -72,6 +81,7 @@ async function authenticateToken(req, res, next) {
     next();
   } catch (error) {
     if (error.name === 'TokenExpiredError') {
+      clearAuthCookies(res, req);
       return res.status(401).json({
         success: false,
         errorMessage: '认证令牌已过期',
@@ -79,10 +89,23 @@ async function authenticateToken(req, res, next) {
       });
     }
 
-    return res.status(403).json({
+    if (error.name === 'JsonWebTokenError' || error.name === 'NotBeforeError') {
+      clearAuthCookies(res, req);
+      return res.status(403).json({
+        success: false,
+        errorMessage: '无效的认证令牌',
+        errorCode: 403,
+      });
+    }
+
+    logger.error('[authenticateToken] 鉴权流程异常', {
+      message: error.message,
+      name: error.name,
+    });
+    return res.status(500).json({
       success: false,
-      errorMessage: '无效的认证令牌',
-      errorCode: 403,
+      errorMessage: '鉴权服务暂时不可用',
+      errorCode: 500,
     });
   }
 }

@@ -1,5 +1,9 @@
 const { query } = require('../config/database');
 const logger = require('../utils/logger');
+const {
+  buildAsinEffectiveBrokenExpr,
+  buildVariantGroupEffectiveBrokenExpr,
+} = require('../utils/variantStatus');
 
 const DASHBOARD_TTL_MS = 30 * 1000;
 let dashboardCache = {
@@ -34,6 +38,11 @@ exports.getDashboardData = async (req, res) => {
     const todayStartStr = `${year}-${month}-${day} 00:00:00`;
 
     logger.debug('[getDashboardData] 今日开始时间:', todayStartStr);
+    const groupBrokenExpr =
+      buildVariantGroupEffectiveBrokenExpr('variant_groups');
+    const groupBrokenExprForList = buildVariantGroupEffectiveBrokenExpr('vg');
+    const asinBrokenExpr = buildAsinEffectiveBrokenExpr('asins');
+    const asinBrokenExprForList = buildAsinEffectiveBrokenExpr('a');
 
     const [
       overviewResult,
@@ -47,17 +56,17 @@ exports.getDashboardData = async (req, res) => {
       query(
         `SELECT
           (SELECT COUNT(*) FROM variant_groups) as totalGroups,
-          (SELECT COUNT(*) FROM asins WHERE asin_type IS NULL OR asin_type NOT IN ('1', 'MAIN_LINK')) as totalASINs,
-          (SELECT COUNT(*) FROM variant_groups WHERE is_broken = 1) as brokenGroups,
-          (SELECT COUNT(*) FROM asins WHERE is_broken = 1 AND (asin_type IS NULL OR asin_type NOT IN ('1', 'MAIN_LINK'))) as brokenASINs,
-          (SELECT COUNT(*) FROM monitor_history WHERE check_time >= ?) as todayChecks,
-          (SELECT COUNT(*) FROM monitor_history WHERE check_time >= ? AND is_broken = 1) as todayBroken`,
+          (SELECT COUNT(*) FROM asins) as totalASINs,
+          (SELECT COUNT(*) FROM variant_groups WHERE ${groupBrokenExpr}) as brokenGroups,
+          (SELECT COUNT(*) FROM asins WHERE ${asinBrokenExpr}) as brokenASINs,
+          (SELECT COUNT(*) FROM monitor_history WHERE check_time >= ? AND check_type = 'ASIN' AND asin_id IN (SELECT id FROM asins)) as todayChecks,
+          (SELECT COUNT(*) FROM monitor_history WHERE check_time >= ? AND check_type = 'ASIN' AND is_broken = 1 AND asin_id IN (SELECT id FROM asins)) as todayBroken`,
         [todayStartStr, todayStartStr],
       ),
       query(
         `SELECT id, name, country, site, brand, variant_status, update_time 
          FROM variant_groups 
-         WHERE is_broken = 1 
+         WHERE ${groupBrokenExprForList}
          ORDER BY update_time DESC 
          LIMIT 10`,
       ),
@@ -66,8 +75,7 @@ exports.getDashboardData = async (req, res) => {
                 a.update_time, vg.name as variant_group_name 
          FROM asins a
          LEFT JOIN variant_groups vg ON vg.id = a.variant_group_id
-         WHERE a.is_broken = 1
-           AND (a.asin_type IS NULL OR a.asin_type NOT IN ('1', 'MAIN_LINK'))
+         WHERE ${asinBrokenExprForList}
          ORDER BY a.update_time DESC 
          LIMIT 10`,
       ),
@@ -87,7 +95,7 @@ exports.getDashboardData = async (req, res) => {
         `SELECT 
           country,
           COUNT(*) as total,
-          SUM(CASE WHEN is_broken = 1 THEN 1 ELSE 0 END) as broken
+          SUM(CASE WHEN ${groupBrokenExpr} THEN 1 ELSE 0 END) as broken
          FROM variant_groups
          GROUP BY country
          ORDER BY country`,
@@ -96,9 +104,8 @@ exports.getDashboardData = async (req, res) => {
         `SELECT 
           country,
           COUNT(*) as total,
-          SUM(CASE WHEN is_broken = 1 THEN 1 ELSE 0 END) as broken
+          SUM(CASE WHEN ${asinBrokenExpr} THEN 1 ELSE 0 END) as broken
          FROM asins
-         WHERE asin_type IS NULL OR asin_type NOT IN ('1', 'MAIN_LINK')
          GROUP BY country`,
       ),
       query(
@@ -107,7 +114,9 @@ exports.getDashboardData = async (req, res) => {
           COUNT(*) as total,
           SUM(CASE WHEN is_broken = 1 THEN 1 ELSE 0 END) as broken
          FROM monitor_history 
-         WHERE check_time >= ? 
+         WHERE check_time >= ?
+          AND check_type = 'ASIN'
+          AND asin_id IN (SELECT id FROM asins)
          GROUP BY country`,
         [todayStartStr],
       ),

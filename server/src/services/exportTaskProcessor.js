@@ -3,12 +3,18 @@ const fs = require('fs').promises;
 const path = require('path');
 const { Worker } = require('worker_threads');
 const VariantGroup = require('../models/VariantGroup');
-const ASIN = require('../models/ASIN');
 const MonitorHistory = require('../models/MonitorHistory');
+const CompetitorVariantGroup = require('../models/CompetitorVariantGroup');
 const CompetitorMonitorHistory = require('../models/CompetitorMonitorHistory');
 const { getUTC8String } = require('../utils/dateTime');
 const logger = require('../utils/logger');
 const websocketService = require('./websocketService');
+const taskRegistryService = require('./taskRegistryService');
+const {
+  throwIfTaskCancelled,
+  isTaskCancelledError,
+} = require('./taskCancellationService');
+const variantCheckService = require('./variantCheckService');
 
 const EXPORT_WORKER_SCRIPT = path.join(
   __dirname,
@@ -144,7 +150,11 @@ async function fetchAllData(
   baseParams,
   pageSize = 10000,
   progressCallback = null,
+  beforePage = null,
 ) {
+  if (typeof beforePage === 'function') {
+    await beforePage(1);
+  }
   const firstPage = await queryFn({ ...baseParams, current: 1, pageSize });
   const total = firstPage.total;
   let allData = [...firstPage.list];
@@ -159,6 +169,9 @@ async function fetchAllData(
     }
 
     for (let page = 2; page <= totalPages; page++) {
+      if (typeof beforePage === 'function') {
+        await beforePage(page);
+      }
       const pageResult = await queryFn({
         ...baseParams,
         current: page,
@@ -283,6 +296,11 @@ function normalizeAsinFilter(asinValue) {
  */
 function updateProgress(job, taskId, progress, message, userId = null) {
   job.progress(progress);
+  taskRegistryService
+    .updateTaskProgress(taskId, progress, message)
+    .catch((error) => {
+      logger.warn('[导出任务] 更新任务注册表进度失败:', error.message);
+    });
   websocketService.sendTaskProgress(taskId, progress, message, userId);
 }
 
@@ -294,6 +312,11 @@ async function processExportTask(job) {
 
   try {
     await ensureExportDir();
+    await taskRegistryService.markTaskProcessing(taskId, {
+      taskSubType: exportType,
+      message: '导出任务开始处理',
+    });
+    await throwIfTaskCancelled(taskId, '导出任务已取消');
     updateProgress(job, taskId, 5, '正在初始化...', userId);
 
     let result;
@@ -306,6 +329,17 @@ async function processExportTask(job) {
         break;
       case 'variant-group':
         result = await processVariantGroupExport(job, taskId, params, userId);
+        break;
+      case 'competitor-asin':
+        result = await processCompetitorASINExport(job, taskId, params, userId);
+        break;
+      case 'competitor-variant-group':
+        result = await processCompetitorVariantGroupExport(
+          job,
+          taskId,
+          params,
+          userId,
+        );
         break;
       case 'competitor-monitor-history':
         result = await processCompetitorMonitorHistoryExport(
@@ -323,6 +357,9 @@ async function processExportTask(job) {
           userId,
         );
         break;
+      case 'parent-asin-query':
+        result = await processParentAsinQueryExport(job, taskId, params, userId);
+        break;
       default:
         throw new Error(`不支持的导出类型: ${exportType}`);
     }
@@ -331,6 +368,13 @@ async function processExportTask(job) {
 
     // 通知任务完成
     const downloadUrl = `/api/v1/tasks/${taskId}/download`;
+    const completedResult = {
+      ...result,
+      downloadUrl,
+    };
+    await taskRegistryService.markTaskCompleted(taskId, completedResult, {
+      message: '导出完成',
+    });
     websocketService.sendTaskComplete(
       taskId,
       downloadUrl,
@@ -338,9 +382,32 @@ async function processExportTask(job) {
       userId,
     );
 
-    return result;
+    return completedResult;
   } catch (error) {
+    if (isTaskCancelledError(error)) {
+      logger.info(`[导出任务] 任务已取消 (${taskId}): ${error.message}`);
+      await taskRegistryService.markTaskCancelled(taskId, {
+        message: error.message || '导出任务已取消',
+      });
+      websocketService.sendTaskCancelled(
+        taskId,
+        error.message || '导出任务已取消',
+        userId,
+      );
+      return {
+        cancelled: true,
+        message: error.message || '导出任务已取消',
+      };
+    }
+
     logger.error(`[导出任务] 处理失败 (${taskId}):`, error);
+    await taskRegistryService.markTaskFailed(
+      taskId,
+      error.message || '导出失败',
+      {
+        message: error.message || '导出失败',
+      },
+    );
     websocketService.sendTaskError(taskId, error.message || '导出失败', userId);
     throw error;
   }
@@ -365,6 +432,12 @@ async function processASINExport(job, taskId, params, userId) {
     (progress, message) => {
       updateProgress(job, taskId, progress, message, userId);
     },
+    async (page) => {
+      await throwIfTaskCancelled(
+        taskId,
+        `导出任务已取消（在查询第 ${page} 页前停止）`,
+      );
+    },
   );
 
   updateProgress(job, taskId, 30, '正在处理数据...', userId);
@@ -388,6 +461,12 @@ async function processASINExport(job, taskId, params, userId) {
   const totalItems = allGroups.length;
   let processedItems = 0;
   for (const group of allGroups) {
+    if (processedItems % 20 === 0) {
+      await throwIfTaskCancelled(
+        taskId,
+        `导出任务已取消（已处理 ${processedItems}/${totalItems} 个分组）`,
+      );
+    }
     if (group.children && group.children.length > 0) {
       for (const asin of group.children) {
         excelData.push([
@@ -570,6 +649,7 @@ async function processMonitorHistoryExport(job, taskId, params, userId) {
       : await MonitorHistory.findAll(batchParams);
   };
 
+  await throwIfTaskCancelled(taskId, '导出任务已取消');
   const firstBatch = await queryBatch(1);
   const total = Number(firstBatch?.total) || 0;
   const totalMessage =
@@ -639,11 +719,19 @@ async function processMonitorHistoryExport(job, taskId, params, userId) {
   let currentBatch = firstBatch;
   let page = 1;
   while ((currentBatch.list || []).length > 0) {
+    await throwIfTaskCancelled(
+      taskId,
+      `导出任务已取消（在处理第 ${page} 批监控历史前停止）`,
+    );
     processBatch(currentBatch);
     if ((currentBatch.list || []).length < batchSize) {
       break;
     }
     page += 1;
+    await throwIfTaskCancelled(
+      taskId,
+      `导出任务已取消（在查询第 ${page} 批监控历史前停止）`,
+    );
     currentBatch = await queryBatch(page);
   }
 
@@ -678,6 +766,12 @@ async function processVariantGroupExport(job, taskId, params, userId) {
     (progress, message) => {
       updateProgress(job, taskId, progress, message, userId);
     },
+    async (page) => {
+      await throwIfTaskCancelled(
+        taskId,
+        `导出任务已取消（在查询第 ${page} 页前停止）`,
+      );
+    },
   );
 
   updateProgress(job, taskId, 30, '正在处理数据...', userId);
@@ -700,6 +794,12 @@ async function processVariantGroupExport(job, taskId, params, userId) {
   const totalItems = allGroups.length;
   let processedItems = 0;
   for (const group of allGroups) {
+    if (processedItems % 20 === 0) {
+      await throwIfTaskCancelled(
+        taskId,
+        `导出任务已取消（已处理 ${processedItems}/${totalItems} 个分组）`,
+      );
+    }
     const asinCount = group.children?.length || 0;
     const brokenAsinCount =
       group.children?.filter((asin) => asin.isBroken === 1).length || 0;
@@ -747,6 +847,216 @@ async function processVariantGroupExport(job, taskId, params, userId) {
 }
 
 /**
+ * 处理竞品ASIN数据导出
+ */
+async function processCompetitorASINExport(job, taskId, params, userId) {
+  const { keyword, country, variantStatus } = params;
+
+  updateProgress(job, taskId, 10, '正在查询数据...', userId);
+
+  const allGroups = await fetchAllData(
+    (queryParams) => CompetitorVariantGroup.findAll(queryParams),
+    {
+      keyword: keyword || '',
+      country: country || '',
+      variantStatus: variantStatus || '',
+    },
+    10000,
+    (progress, message) => {
+      updateProgress(job, taskId, progress, message, userId);
+    },
+    async (page) => {
+      await throwIfTaskCancelled(
+        taskId,
+        `导出任务已取消（在查询第 ${page} 页前停止）`,
+      );
+    },
+  );
+
+  updateProgress(job, taskId, 30, '正在处理数据...', userId);
+
+  const excelData = [];
+  excelData.push([
+    '变体组名称',
+    '变体组ID',
+    '国家',
+    '品牌',
+    '变体状态',
+    'ASIN',
+    'ASIN名称',
+    'ASIN类型',
+    'ASIN状态',
+    '创建时间',
+    '最后检查时间',
+  ]);
+
+  const totalItems = allGroups.length;
+  let processedItems = 0;
+  for (const group of allGroups) {
+    if (processedItems % 20 === 0) {
+      await throwIfTaskCancelled(
+        taskId,
+        `导出任务已取消（已处理 ${processedItems}/${totalItems} 个分组）`,
+      );
+    }
+    if (group.children && group.children.length > 0) {
+      for (const asin of group.children) {
+        excelData.push([
+          group.name || '',
+          group.id || '',
+          group.country || '',
+          group.brand || '',
+          group.isBroken === 1 ? '异常' : '正常',
+          asin.asin || '',
+          asin.name || '',
+          asin.asinType || '',
+          asin.isBroken === 1 ? '异常' : '正常',
+          asin.createTime || '',
+          asin.lastCheckTime || '',
+        ]);
+      }
+    } else {
+      excelData.push([
+        group.name || '',
+        group.id || '',
+        group.country || '',
+        group.brand || '',
+        group.isBroken === 1 ? '异常' : '正常',
+        '',
+        '',
+        '',
+        '',
+        group.createTime || '',
+        '',
+      ]);
+    }
+    processedItems += 1;
+    if (totalItems > 0) {
+      const progress = 30 + Math.floor((processedItems / totalItems) * 40);
+      updateProgress(
+        job,
+        taskId,
+        progress,
+        `正在处理数据... (${processedItems}/${totalItems})`,
+        userId,
+      );
+    }
+  }
+
+  updateProgress(job, taskId, 75, '正在生成Excel文件...', userId);
+  const filename = `竞品ASIN数据_${getUTC8String('YYYY-MM-DD')}.xlsx`;
+  const filepath = path.join(EXPORT_DIR, `${taskId}.xlsx`);
+
+  updateProgress(job, taskId, 90, '正在生成Excel文件...', userId);
+
+  await writeAoaWorkbookToFile({
+    excelData,
+    sheetName: '竞品ASIN数据',
+    columnWidths: [20, 40, 10, 15, 10, 15, 50, 15, 10, 20, 20],
+    filepath,
+  });
+
+  return { filename, filepath };
+}
+
+/**
+ * 处理竞品变体组数据导出
+ */
+async function processCompetitorVariantGroupExport(job, taskId, params, userId) {
+  const { keyword, country, variantStatus } = params;
+
+  updateProgress(job, taskId, 10, '正在查询数据...', userId);
+
+  const allGroups = await fetchAllData(
+    (queryParams) => CompetitorVariantGroup.findAll(queryParams),
+    {
+      keyword: keyword || '',
+      country: country || '',
+      variantStatus: variantStatus || '',
+    },
+    10000,
+    (progress, message) => {
+      updateProgress(job, taskId, progress, message, userId);
+    },
+    async (page) => {
+      await throwIfTaskCancelled(
+        taskId,
+        `导出任务已取消（在查询第 ${page} 页前停止）`,
+      );
+    },
+  );
+
+  updateProgress(job, taskId, 30, '正在处理数据...', userId);
+
+  const excelData = [];
+  excelData.push([
+    '变体组名称',
+    '变体组ID',
+    '国家',
+    '品牌',
+    '变体状态',
+    'ASIN数量',
+    '异常ASIN数量',
+    '创建时间',
+    '更新时间',
+    '最后检查时间',
+  ]);
+
+  const totalItems = allGroups.length;
+  let processedItems = 0;
+  for (const group of allGroups) {
+    if (processedItems % 20 === 0) {
+      await throwIfTaskCancelled(
+        taskId,
+        `导出任务已取消（已处理 ${processedItems}/${totalItems} 个分组）`,
+      );
+    }
+    const asinCount = group.children?.length || 0;
+    const brokenAsinCount =
+      group.children?.filter((asin) => asin.isBroken === 1).length || 0;
+
+    excelData.push([
+      group.name || '',
+      group.id || '',
+      group.country || '',
+      group.brand || '',
+      group.isBroken === 1 ? '异常' : '正常',
+      asinCount,
+      brokenAsinCount,
+      group.createTime || '',
+      group.updateTime || '',
+      group.lastCheckTime || '',
+    ]);
+    processedItems += 1;
+    if (totalItems > 0) {
+      const progress = 30 + Math.floor((processedItems / totalItems) * 40);
+      updateProgress(
+        job,
+        taskId,
+        progress,
+        `正在处理数据... (${processedItems}/${totalItems})`,
+        userId,
+      );
+    }
+  }
+
+  updateProgress(job, taskId, 75, '正在生成Excel文件...', userId);
+  const filename = `竞品变体组数据_${getUTC8String('YYYY-MM-DD')}.xlsx`;
+  const filepath = path.join(EXPORT_DIR, `${taskId}.xlsx`);
+
+  updateProgress(job, taskId, 90, '正在生成Excel文件...', userId);
+
+  await writeAoaWorkbookToFile({
+    excelData,
+    sheetName: '竞品变体组数据',
+    columnWidths: [30, 40, 10, 15, 10, 10, 12, 20, 20, 20],
+    filepath,
+  });
+
+  return { filename, filepath };
+}
+
+/**
  * 处理竞品监控历史导出
  */
 async function processCompetitorMonitorHistoryExport(
@@ -782,6 +1092,12 @@ async function processCompetitorMonitorHistoryExport(
     (progress, message) => {
       updateProgress(job, taskId, progress, message, userId);
     },
+    async (page) => {
+      await throwIfTaskCancelled(
+        taskId,
+        `导出任务已取消（在查询第 ${page} 页前停止）`,
+      );
+    },
   );
 
   updateProgress(job, taskId, 30, '正在处理数据...', userId);
@@ -801,6 +1117,12 @@ async function processCompetitorMonitorHistoryExport(
   const totalItems = allHistory.length;
   let processedItems = 0;
   for (const history of allHistory) {
+    if (processedItems % 100 === 0) {
+      await throwIfTaskCancelled(
+        taskId,
+        `导出任务已取消（已处理 ${processedItems}/${totalItems} 条记录）`,
+      );
+    }
     let checkResult = '';
     if (history.checkResult) {
       try {
@@ -923,6 +1245,12 @@ async function processAnalyticsMonthlyBreakdownExport(
   let linkTotal = 0;
 
   for (let day = 1; day <= daysInMonth; day += 1) {
+    if ((day - 1) % 7 === 0) {
+      await throwIfTaskCancelled(
+        taskId,
+        `导出任务已取消（已处理 ${day - 1}/${daysInMonth} 天数据）`,
+      );
+    }
     const dayText = String(day).padStart(2, '0');
     const dateKey = `${normalizedMonthToken}-${dayText}`;
     const stat = statMap.get(dateKey);
@@ -962,6 +1290,84 @@ async function processAnalyticsMonthlyBreakdownExport(
     excelData,
     sheetName: '月度被拆统计',
     columnWidths: [12, 12, 14, 12],
+    filepath,
+  });
+
+  return { filename, filepath };
+}
+
+async function processParentAsinQueryExport(job, taskId, params, userId) {
+  const { asins, country } = params || {};
+
+  if (!asins || typeof asins !== 'string') {
+    throw new Error('请提供ASIN列表');
+  }
+  if (!country || typeof country !== 'string') {
+    throw new Error('请提供国家代码');
+  }
+
+  const asinList = asins
+    .split(/[,\n]/)
+    .map((asin) => asin.trim().toUpperCase())
+    .filter((asin) => asin && /^[A-Z][A-Z0-9]{9}$/.test(asin));
+
+  if (asinList.length === 0) {
+    throw new Error('没有有效的ASIN');
+  }
+
+  updateProgress(job, taskId, 10, '开始查询ASIN父变体...', userId);
+  await throwIfTaskCancelled(taskId, '导出任务已取消');
+
+  const results = await variantCheckService.batchQueryParentAsin(asinList, country);
+
+  updateProgress(job, taskId, 80, '正在生成Excel文件...', userId);
+
+  const excelData = [[
+    'ASIN',
+    '国家',
+    '是否有父变体',
+    '父变体ASIN',
+    '父体标题',
+    '产品标题',
+    '品牌',
+    '是否有变体',
+    '变体数量',
+    '查询时间',
+    '错误信息',
+  ]];
+
+  const queryTime = getUTC8String('YYYY-MM-DD HH:mm:ss');
+  for (let index = 0; index < results.length; index += 1) {
+    if (index % 50 === 0) {
+      await throwIfTaskCancelled(
+        taskId,
+        `导出任务已取消（已处理 ${index}/${results.length} 条父体记录）`,
+      );
+    }
+    const result = results[index];
+    excelData.push([
+      result.asin || '',
+      country || '',
+      result.hasParentAsin ? '是' : '否',
+      result.parentAsin || '',
+      result.parentTitle || '',
+      result.title || '',
+      result.brand || '',
+      result.hasVariants ? '是' : '否',
+      result.variantCount || 0,
+      queryTime,
+      result.error || '',
+    ]);
+  }
+
+  updateProgress(job, taskId, 90, '正在生成Excel文件...', userId);
+  const filename = `ASIN父变体查询结果_${getUTC8String('YYYY-MM-DD')}.xlsx`;
+  const filepath = path.join(EXPORT_DIR, `${taskId}.xlsx`);
+
+  await writeAoaWorkbookToFile({
+    excelData,
+    sheetName: '父变体查询结果',
+    columnWidths: [15, 10, 15, 15, 50, 50, 20, 15, 12, 20, 30],
     filepath,
   });
 

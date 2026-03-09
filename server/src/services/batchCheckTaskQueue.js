@@ -51,9 +51,7 @@ let processorRegistered = false;
 let processorConcurrency = 0;
 
 function getWorkerConcurrency() {
-  const configured = Number(
-    process.env.BATCH_CHECK_QUEUE_WORKER_CONCURRENCY,
-  );
+  const configured = Number(process.env.BATCH_CHECK_QUEUE_WORKER_CONCURRENCY);
   if (Number.isFinite(configured) && configured > 0) {
     return Math.max(Math.floor(configured), 1);
   }

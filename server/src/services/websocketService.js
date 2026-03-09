@@ -1,11 +1,169 @@
 const WebSocket = require('ws');
+const jwt = require('jsonwebtoken');
+const { secret } = require('../config/jwt');
+const Session = require('../models/Session');
+const User = require('../models/User');
 const logger = require('../utils/logger');
 const { getUTC8ISOString } = require('../utils/dateTime');
+const { readAuthToken } = require('../utils/authCookie');
+const {
+  isUserActive,
+  getUserStatusErrorMessage,
+} = require('../utils/userStatus');
+
+function normalizeUserId(userId) {
+  if (!userId) {
+    return null;
+  }
+  return String(userId);
+}
+
+async function authenticateConnection(req) {
+  const token = readAuthToken(req);
+  if (!token) {
+    return {
+      success: false,
+      code: 4401,
+      reason: '未提供认证令牌',
+    };
+  }
+
+  try {
+    const decoded = jwt.verify(token, secret);
+    const sessionId = decoded.sessionId;
+    const session = sessionId ? await Session.findById(sessionId) : null;
+
+    if (!session) {
+      return {
+        success: false,
+        code: 4401,
+        reason: '会话不存在或已过期',
+      };
+    }
+
+    if (session.user_id !== decoded.userId || session.status !== 'ACTIVE') {
+      return {
+        success: false,
+        code: 4403,
+        reason: '会话已失效',
+      };
+    }
+
+    if (Session.isExpired(session)) {
+      await Session.markExpired(sessionId);
+      return {
+        success: false,
+        code: 4401,
+        reason: '会话已过期',
+      };
+    }
+
+    await Session.touch(sessionId);
+    const user = await User.findByIdWithPassword(decoded.userId);
+
+    if (!user) {
+      return {
+        success: false,
+        code: 4401,
+        reason: '用户不存在',
+      };
+    }
+
+    if (!isUserActive(user.status, user.locked_until)) {
+      return {
+        success: false,
+        code: 4403,
+        reason: getUserStatusErrorMessage(user.status, user.locked_until),
+      };
+    }
+
+    return {
+      success: true,
+      userId: normalizeUserId(user.id),
+      sessionId,
+    };
+  } catch (error) {
+    return {
+      success: false,
+      code: error?.name === 'TokenExpiredError' ? 4401 : 4403,
+      reason:
+        error?.name === 'TokenExpiredError'
+          ? '认证令牌已过期'
+          : '无效的认证令牌',
+    };
+  }
+}
 
 class WebSocketService {
   constructor() {
     this.wss = null;
     this.clients = new Set();
+    this.clientUsers = new Map();
+  }
+
+  removeClient(ws) {
+    this.clients.delete(ws);
+    this.clientUsers.delete(ws);
+  }
+
+  async handleConnection(ws, req) {
+    const authResult = await authenticateConnection(req);
+    if (!authResult.success) {
+      logger.warn('[WebSocket] 已拒绝未授权连接', {
+        reason: authResult.reason,
+        ip: req.socket?.remoteAddress || null,
+      });
+      ws.close(authResult.code, authResult.reason);
+      return;
+    }
+
+    const userId = normalizeUserId(authResult.userId);
+    this.clients.add(ws);
+    this.clientUsers.set(ws, userId);
+
+    logger.info('[WebSocket] 新客户端连接', {
+      userId,
+      sessionId: authResult.sessionId,
+    });
+
+    this.sendToClient(ws, {
+      type: 'connected',
+      message: 'WebSocket连接成功',
+    });
+
+    ws.on('message', (message) => {
+      try {
+        const data = JSON.parse(message.toString());
+        logger.debug('[WebSocket] 收到客户端消息:', {
+          type: data?.type,
+          userId,
+        });
+
+        if (data.type === 'ping') {
+          this.sendToClient(ws, { type: 'pong' });
+        }
+      } catch (error) {
+        logger.error('[WebSocket] 解析客户端消息失败:', {
+          message: error.message,
+          userId,
+        });
+      }
+    });
+
+    ws.on('close', () => {
+      logger.info('[WebSocket] 客户端断开连接', {
+        userId,
+      });
+      this.removeClient(ws);
+    });
+
+    ws.on('error', (error) => {
+      logger.error('[WebSocket] 连接错误:', {
+        message: error.message,
+        userId,
+      });
+      this.removeClient(ws);
+    });
   }
 
   /**
@@ -16,41 +174,7 @@ class WebSocketService {
     this.wss = new WebSocket.Server({ server, path: '/ws' });
 
     this.wss.on('connection', (ws, req) => {
-      logger.info('[WebSocket] 新客户端连接');
-      this.clients.add(ws);
-
-      // 发送连接成功消息
-      this.sendToClient(ws, {
-        type: 'connected',
-        message: 'WebSocket连接成功',
-      });
-
-      // 处理客户端消息
-      ws.on('message', (message) => {
-        try {
-          const data = JSON.parse(message.toString());
-          logger.debug('[WebSocket] 收到客户端消息:', data);
-
-          // 可以在这里处理客户端发送的消息
-          if (data.type === 'ping') {
-            this.sendToClient(ws, { type: 'pong' });
-          }
-        } catch (error) {
-          logger.error('[WebSocket] 解析客户端消息失败:', error);
-        }
-      });
-
-      // 处理连接关闭
-      ws.on('close', () => {
-        logger.info('[WebSocket] 客户端断开连接');
-        this.clients.delete(ws);
-      });
-
-      // 处理错误
-      ws.on('error', (error) => {
-        logger.error('[WebSocket] 连接错误:', error);
-        this.clients.delete(ws);
-      });
+      void this.handleConnection(ws, req);
     });
 
     logger.info('[WebSocket] WebSocket服务器已启动，路径: /ws');
@@ -64,7 +188,10 @@ class WebSocketService {
       try {
         ws.send(JSON.stringify(data));
       } catch (error) {
-        logger.error('[WebSocket] 发送消息失败:', error);
+        logger.error('[WebSocket] 发送消息失败:', {
+          message: error.message,
+          userId: this.clientUsers.get(ws) || null,
+        });
       }
     }
   }
@@ -75,12 +202,41 @@ class WebSocketService {
   broadcast(data) {
     const message = JSON.stringify(data);
     this.clients.forEach((client) => {
-      if (client.readyState === WebSocket.OPEN) {
-        try {
-          client.send(message);
-        } catch (error) {
-          logger.error('[WebSocket] 广播消息失败:', error);
-        }
+      if (client.readyState !== WebSocket.OPEN) {
+        return;
+      }
+
+      try {
+        client.send(message);
+      } catch (error) {
+        logger.error('[WebSocket] 广播消息失败:', {
+          message: error.message,
+          userId: this.clientUsers.get(client) || null,
+        });
+      }
+    });
+  }
+
+  broadcastToUser(userId, data) {
+    const targetUserId = normalizeUserId(userId);
+    const message = JSON.stringify(data);
+
+    this.clients.forEach((client) => {
+      if (client.readyState !== WebSocket.OPEN) {
+        return;
+      }
+
+      if (this.clientUsers.get(client) !== targetUserId) {
+        return;
+      }
+
+      try {
+        client.send(message);
+      } catch (error) {
+        logger.error('[WebSocket] 定向发送消息失败:', {
+          message: error.message,
+          userId: targetUserId,
+        });
       }
     });
   }
@@ -139,12 +295,11 @@ class WebSocketService {
     };
 
     if (userId) {
-      // 如果指定了用户ID，只发送给该用户（需要客户端在连接时传递用户信息）
-      // 这里先广播，后续可以优化为按用户发送
-      this.broadcast(data);
-    } else {
-      this.broadcast(data);
+      this.broadcastToUser(userId, data);
+      return;
     }
+
+    this.broadcast(data);
   }
 
   /**
@@ -164,10 +319,11 @@ class WebSocketService {
     };
 
     if (userId) {
-      this.broadcast(data);
-    } else {
-      this.broadcast(data);
+      this.broadcastToUser(userId, data);
+      return;
     }
+
+    this.broadcast(data);
   }
 
   /**
@@ -185,10 +341,33 @@ class WebSocketService {
     };
 
     if (userId) {
-      this.broadcast(data);
-    } else {
-      this.broadcast(data);
+      this.broadcastToUser(userId, data);
+      return;
     }
+
+    this.broadcast(data);
+  }
+
+  /**
+   * 发送任务取消通知
+   * @param {string} taskId - 任务ID
+   * @param {string} message - 取消说明
+   * @param {string} userId - 用户ID（可选）
+   */
+  sendTaskCancelled(taskId, message = '任务已取消', userId = null) {
+    const data = {
+      type: 'task_cancelled',
+      taskId,
+      message,
+      timestamp: getUTC8ISOString(),
+    };
+
+    if (userId) {
+      this.broadcastToUser(userId, data);
+      return;
+    }
+
+    this.broadcast(data);
   }
 }
 

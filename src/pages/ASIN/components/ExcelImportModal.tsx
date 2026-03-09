@@ -1,6 +1,7 @@
 import services from '@/services/asin';
 import { debugError } from '@/utils/debug';
 import { useMessage } from '@/utils/message';
+import { extractAsyncTask, openTaskCenter } from '@/utils/task';
 import {
   DeleteOutlined,
   DownloadOutlined,
@@ -39,6 +40,11 @@ interface ImportResult {
   successCount: number;
   failedCount: number;
   errors?: Array<{ row: number; message: string }>;
+}
+
+interface CreatedTask {
+  taskId: string;
+  status?: string | null;
 }
 
 interface OnlineImportRow {
@@ -88,6 +94,7 @@ const ExcelImportModal: React.FC<ExcelImportModalProps> = (props) => {
   const [fileList, setFileList] = useState<UploadFile[]>([]);
   const [uploading, setUploading] = useState(false);
   const [importResult, setImportResult] = useState<ImportResult | null>(null);
+  const [createdTask, setCreatedTask] = useState<CreatedTask | null>(null);
   const [progress, setProgress] = useState(0);
   const [onlineRows, setOnlineRows] =
     useState<OnlineImportRow[]>(createInitialRows);
@@ -97,6 +104,7 @@ const ExcelImportModal: React.FC<ExcelImportModalProps> = (props) => {
     setUploading(true);
     setProgress(0);
     setImportResult(null);
+    setCreatedTask(null);
 
     const formData = new FormData();
     formData.append('file', file);
@@ -111,6 +119,14 @@ const ExcelImportModal: React.FC<ExcelImportModalProps> = (props) => {
         }
       },
     });
+
+    const task = extractAsyncTask(result);
+    if (result.success && task) {
+      setCreatedTask(task);
+      setProgress(100);
+      message.success('导入任务已创建，请到任务中心查看进度');
+      return;
+    }
 
     if (result.success && result.data) {
       const importData: ImportResult = {
@@ -238,6 +254,7 @@ const ExcelImportModal: React.FC<ExcelImportModalProps> = (props) => {
   const handleCancel = () => {
     setFileList([]);
     setImportResult(null);
+    setCreatedTask(null);
     setProgress(0);
     setOnlineRows(createInitialRows());
     setActiveCell(null);
@@ -622,6 +639,22 @@ const ExcelImportModal: React.FC<ExcelImportModalProps> = (props) => {
       {uploading && progress > 0 && (
         <div style={{ marginTop: 16 }}>
           <Progress percent={progress} status="active" />
+        </div>
+      )}
+
+      {createdTask && (
+        <div style={{ marginTop: 24 }}>
+          <Alert
+            message="导入任务已提交到后台"
+            description={`任务ID：${createdTask.taskId}。页面关闭或刷新不会中断任务，可在任务中心查看进度或取消任务。`}
+            type="success"
+            showIcon
+            action={
+              <Button type="link" size="small" onClick={openTaskCenter}>
+                打开任务中心
+              </Button>
+            }
+          />
         </div>
       )}
 
