@@ -1,6 +1,7 @@
 const { query } = require('../config/database');
 const { v4: uuidv4 } = require('uuid');
 const VariantGroup = require('./VariantGroup');
+const { decorateAsinStatus } = require('../utils/variantStatus');
 
 // 转换ASIN类型：将旧格式(MAIN_LINK/SUB_REVIEW)转换为新格式(1/2)
 function normalizeAsinType(asinType) {
@@ -46,28 +47,39 @@ class ASIN {
     const [asin] = await query(
       `SELECT 
         id, asin, name, asin_type, country, site, brand, variant_group_id, 
-        is_broken, variant_status, create_time, update_time,
-        last_check_time, feishu_notify_enabled
+        is_broken, variant_status, manual_broken, manual_broken_reason,
+        manual_broken_updated_at, manual_broken_updated_by,
+        create_time, update_time, last_check_time, feishu_notify_enabled
       FROM asins WHERE id = ?`,
       [id],
     );
     if (asin) {
+      const normalized = decorateAsinStatus(asin);
       return {
-        id: asin.id,
-        asin: asin.asin,
-        name: asin.name,
-        asinType: normalizeAsinType(asin.asin_type), // 转换为驼峰命名并标准化
-        country: asin.country,
-        site: asin.site,
-        brand: asin.brand,
-        variantGroupId: asin.variant_group_id,
-        isBroken: asin.is_broken,
-        variantStatus: asin.variant_status,
-        createTime: asin.create_time,
-        updateTime: asin.update_time,
-        lastCheckTime: asin.last_check_time,
+        id: normalized.id,
+        asin: normalized.asin,
+        name: normalized.name,
+        asinType: normalizeAsinType(normalized.asin_type), // 转换为驼峰命名并标准化
+        country: normalized.country,
+        site: normalized.site,
+        brand: normalized.brand,
+        variantGroupId: normalized.variant_group_id,
+        isBroken: normalized.isBroken,
+        variantStatus: normalized.variantStatus,
+        autoIsBroken: normalized.autoIsBroken,
+        autoVariantStatus: normalized.autoVariantStatus,
+        manualBroken: normalized.manualBroken,
+        manualBrokenReason: normalized.manualBrokenReason,
+        manualBrokenUpdatedAt: normalized.manualBrokenUpdatedAt,
+        manualBrokenUpdatedBy: normalized.manualBrokenUpdatedBy,
+        statusSource: normalized.statusSource,
+        createTime: normalized.create_time,
+        updateTime: normalized.update_time,
+        lastCheckTime: normalized.last_check_time,
         feishuNotifyEnabled:
-          asin.feishu_notify_enabled !== null ? asin.feishu_notify_enabled : 1,
+          normalized.feishu_notify_enabled !== null
+            ? normalized.feishu_notify_enabled
+            : 1,
       };
     }
     return null;
@@ -206,6 +218,44 @@ class ASIN {
       `UPDATE asins SET is_broken = ?, variant_status = ?, update_time = NOW() WHERE id = ?`,
       [isBroken ? 1 : 0, variantStatus, id],
     );
+  }
+
+  // 更新人工异常标记
+  static async updateManualBroken(id, markedBroken, reason, updatedBy = null) {
+    const normalizedReason =
+      markedBroken && reason ? String(reason).trim().slice(0, 500) : null;
+    const normalizedUpdatedBy =
+      markedBroken && updatedBy ? String(updatedBy).trim().slice(0, 100) : null;
+
+    const existing = await this.findById(id);
+    if (!existing) {
+      return null;
+    }
+
+    await query(
+      `UPDATE asins
+       SET manual_broken = ?,
+           manual_broken_reason = ?,
+           manual_broken_updated_at = ?,
+           manual_broken_updated_by = ?,
+           update_time = NOW()
+       WHERE id = ?`,
+      [
+        markedBroken ? 1 : 0,
+        normalizedReason,
+        markedBroken ? new Date() : null,
+        normalizedUpdatedBy,
+        id,
+      ],
+    );
+
+    if (existing.variantGroupId) {
+      await VariantGroup.updateTimeOnASINChange(existing.variantGroupId);
+    } else {
+      VariantGroup.clearCache();
+    }
+
+    return this.findById(id);
   }
 }
 

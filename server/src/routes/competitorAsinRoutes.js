@@ -2,6 +2,7 @@ const express = require('express');
 const multer = require('multer');
 const router = express.Router();
 const competitorAsinController = require('../controllers/competitorAsinController');
+const { authenticateToken, checkPermission } = require('../middleware/auth');
 
 // 配置multer（内存存储）
 const upload = multer({
@@ -85,6 +86,8 @@ router.put(
 // Excel导入路由
 router.post(
   '/competitor/variant-groups/import-excel',
+  authenticateToken,
+  checkPermission('asin:write'),
   (req, res, next) => {
     upload.single('file')(req, res, (err) => {
       if (err) {

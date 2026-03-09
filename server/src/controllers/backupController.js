@@ -8,16 +8,25 @@ const schedulerService = require('../services/schedulerService');
  */
 async function createBackup(req, res) {
   try {
-    const { tables, description, useAsync } = req.body;
+    const { tables, description } = req.body;
+    const shouldUseAsync =
+      req.body.useAsync !== 'false' && req.body.useAsync !== false;
     const userId = req.user?.userId || req.user?.id;
 
-    // 如果使用异步模式，创建后台任务
-    if (useAsync === true) {
+    if (shouldUseAsync) {
       const { v4: uuidv4 } = require('uuid');
       const backupTaskQueue = require('../services/backupTaskQueue');
-      const logger = require('../utils/logger');
+      const taskRegistryService = require('../services/taskRegistryService');
 
       const taskId = uuidv4();
+      await taskRegistryService.createTask({
+        taskId,
+        taskType: 'backup',
+        taskSubType: 'create',
+        title: '创建备份',
+        userId,
+        message: '备份任务已创建，等待处理',
+      });
       await backupTaskQueue.enqueue({
         taskId,
         taskType: 'create',
@@ -62,7 +71,9 @@ async function createBackup(req, res) {
  */
 async function restoreBackup(req, res) {
   try {
-    const { filename, useAsync } = req.body;
+    const { filename } = req.body;
+    const shouldUseAsync =
+      req.body.useAsync !== 'false' && req.body.useAsync !== false;
     const userId = req.user?.userId || req.user?.id;
 
     if (!filename) {
@@ -73,15 +84,22 @@ async function restoreBackup(req, res) {
       });
     }
 
-    // 如果使用异步模式，创建后台任务
-    if (useAsync === true) {
+    if (shouldUseAsync) {
       const { v4: uuidv4 } = require('uuid');
       const backupTaskQueue = require('../services/backupTaskQueue');
-      const logger = require('../utils/logger');
       const path = require('path');
+      const taskRegistryService = require('../services/taskRegistryService');
 
       const taskId = uuidv4();
       const filepath = path.join(__dirname, '../../backups', filename);
+      await taskRegistryService.createTask({
+        taskId,
+        taskType: 'backup',
+        taskSubType: 'restore',
+        title: '恢复备份',
+        userId,
+        message: '恢复任务已创建，等待处理',
+      });
 
       await backupTaskQueue.enqueue({
         taskId,

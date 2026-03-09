@@ -92,7 +92,11 @@ async function auditLogMiddleware(req, res, next) {
     // GET请求不记录（只读操作）
   } else if (path.includes('/users')) {
     resource = 'user';
-    if (method === 'POST') {
+    if (path.includes('/password') && method === 'PUT') {
+      action = 'RESET_PASSWORD';
+      resourceId = req.params?.userId || null;
+      resourceName = req.body?.username || null;
+    } else if (method === 'POST') {
       action = 'CREATE';
       resourceName = req.body?.username || null;
       resourceId = req.body?.id || null;
@@ -110,6 +114,10 @@ async function auditLogMiddleware(req, res, next) {
         : null;
     }
     // GET请求不记录（只读操作）
+  } else if (path.includes('/roles') && path.includes('/permissions')) {
+    resource = 'role';
+    action = 'UPDATE_ROLE_PERMISSIONS';
+    resourceId = req.params?.roleId || null;
   } else if (path.includes('/roles') && method !== 'GET') {
     resource = 'role';
     action = method; // POST, PUT, DELETE等
@@ -143,7 +151,8 @@ async function auditLogMiddleware(req, res, next) {
     resource = 'monitor';
   } else if (
     path.includes('/auth/change-password') ||
-    path.includes('/auth/profile')
+    path.includes('/auth/profile') ||
+    path.includes('/auth/sessions/revoke')
   ) {
     // 修改密码和更新个人资料也算修改操作
     resource = 'auth';
@@ -151,6 +160,8 @@ async function auditLogMiddleware(req, res, next) {
       action = 'CHANGE_PASSWORD';
     } else if (path.includes('/profile')) {
       action = 'UPDATE_PROFILE';
+    } else if (path.includes('/sessions/revoke')) {
+      action = 'REVOKE_SESSION';
     }
   }
 

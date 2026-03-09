@@ -5,6 +5,7 @@
 
 const { query } = require('../config/database');
 const LoginAttempt = require('../models/LoginAttempt');
+const { USER_STATUS, normalizeUserStatus } = require('../utils/userStatus');
 
 // 登录失败锁定配置
 const MAX_FAILED_ATTEMPTS = 5;
@@ -38,11 +39,16 @@ async function getRecentFailedAttempts(username, minutes = 30) {
  */
 async function isAccountLocked(userId) {
   const [user] = await query(
-    `SELECT locked_until, failed_login_attempts FROM users WHERE id = ?`,
+    `SELECT status, locked_until, failed_login_attempts FROM users WHERE id = ?`,
     [userId],
   );
 
   if (!user) return false;
+
+  const normalizedStatus = normalizeUserStatus(user.status, user.locked_until);
+  if (normalizedStatus === USER_STATUS.LOCKED && !user.locked_until) {
+    return true;
+  }
 
   // 检查锁定时间是否已过期
   if (user.locked_until) {
@@ -73,9 +79,9 @@ async function lockAccount(userId, minutes = LOCKOUT_DURATION_MINUTES) {
 
   await query(
     `UPDATE users 
-     SET locked_until = ?, failed_login_attempts = ? 
+     SET status = ?, locked_until = ?, failed_login_attempts = ? 
      WHERE id = ?`,
-    [lockedUntil, MAX_FAILED_ATTEMPTS, userId],
+    [USER_STATUS.LOCKED, lockedUntil, MAX_FAILED_ATTEMPTS, userId],
   );
 }
 
@@ -87,9 +93,12 @@ async function lockAccount(userId, minutes = LOCKOUT_DURATION_MINUTES) {
 async function unlockAccount(userId) {
   await query(
     `UPDATE users 
-     SET locked_until = NULL, failed_login_attempts = 0, last_failed_login = NULL 
+     SET status = CASE WHEN status = ? THEN ? ELSE status END,
+         locked_until = NULL,
+         failed_login_attempts = 0,
+         last_failed_login = NULL 
      WHERE id = ?`,
-    [userId],
+    [USER_STATUS.LOCKED, USER_STATUS.ACTIVE, userId],
   );
 }
 

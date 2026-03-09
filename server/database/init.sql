@@ -14,6 +14,10 @@ CREATE TABLE IF NOT EXISTS `variant_groups` (
   `brand` VARCHAR(100) NOT NULL COMMENT '品牌',
   `is_broken` TINYINT(1) DEFAULT 0 COMMENT '变体状态: 0-正常, 1-异常',
   `variant_status` VARCHAR(20) DEFAULT 'NORMAL' COMMENT '变体状态文本',
+  `manual_broken` TINYINT(1) DEFAULT 0 COMMENT '人工标记异常: 0-否, 1-是',
+  `manual_broken_reason` VARCHAR(500) DEFAULT NULL COMMENT '人工标记异常原因',
+  `manual_broken_updated_at` DATETIME DEFAULT NULL COMMENT '人工标记异常更新时间',
+  `manual_broken_updated_by` VARCHAR(100) DEFAULT NULL COMMENT '人工标记异常操作人',
   `is_competitor` TINYINT(1) DEFAULT 0 COMMENT '是否竞品: 0-否, 1-是',
   `create_time` DATETIME DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
   `update_time` DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT '更新时间',
@@ -23,6 +27,7 @@ CREATE TABLE IF NOT EXISTS `variant_groups` (
   INDEX `idx_site` (`site`),
   INDEX `idx_brand` (`brand`),
   INDEX `idx_is_broken` (`is_broken`),
+  INDEX `idx_manual_broken` (`manual_broken`),
   INDEX `idx_create_time` (`create_time`),
   INDEX `idx_last_check_time` (`last_check_time`),
   INDEX `idx_feishu_notify_enabled` (`feishu_notify_enabled`),
@@ -42,6 +47,10 @@ CREATE TABLE IF NOT EXISTS `asins` (
   `variant_group_id` VARCHAR(50) NOT NULL COMMENT '所属变体组ID',
   `is_broken` TINYINT(1) DEFAULT 0 COMMENT '变体状态: 0-正常, 1-异常',
   `variant_status` VARCHAR(20) DEFAULT 'NORMAL' COMMENT '变体状态文本',
+  `manual_broken` TINYINT(1) DEFAULT 0 COMMENT '人工标记异常: 0-否, 1-是',
+  `manual_broken_reason` VARCHAR(500) DEFAULT NULL COMMENT '人工标记异常原因',
+  `manual_broken_updated_at` DATETIME DEFAULT NULL COMMENT '人工标记异常更新时间',
+  `manual_broken_updated_by` VARCHAR(100) DEFAULT NULL COMMENT '人工标记异常操作人',
   `create_time` DATETIME DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
   `update_time` DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT '更新时间',
   `last_check_time` DATETIME DEFAULT NULL COMMENT '监控更新时间（上一次检查的时间）',
@@ -53,6 +62,7 @@ CREATE TABLE IF NOT EXISTS `asins` (
   INDEX `idx_asin` (`asin`),
   INDEX `idx_asin_type` (`asin_type`),
   INDEX `idx_is_broken` (`is_broken`),
+  INDEX `idx_manual_broken` (`manual_broken`),
   INDEX `idx_last_check_time` (`last_check_time`),
   INDEX `idx_feishu_notify_enabled` (`feishu_notify_enabled`),
   INDEX `idx_variant_group_country_broken` (`variant_group_id`, `country`, `is_broken`),
@@ -167,7 +177,7 @@ CREATE TABLE IF NOT EXISTS `users` (
   `username` VARCHAR(50) NOT NULL UNIQUE COMMENT '用户名',
   `password` VARCHAR(255) NOT NULL COMMENT '密码（加密存储）',
   `real_name` VARCHAR(100) COMMENT '真实姓名',
-  `status` TINYINT(1) DEFAULT 1 COMMENT '状态: 0-禁用, 1-启用',
+  `status` ENUM('ACTIVE', 'INACTIVE', 'LOCKED', 'SUSPENDED', 'PENDING') NOT NULL DEFAULT 'ACTIVE' COMMENT '状态: ACTIVE/INACTIVE/LOCKED/SUSPENDED/PENDING',
   `last_login_time` DATETIME COMMENT '最后登录时间',
   `last_login_ip` VARCHAR(50) COMMENT '最后登录IP',
   `password_expires_at` DATETIME DEFAULT NULL COMMENT '密码过期时间',
@@ -317,8 +327,8 @@ CREATE TABLE IF NOT EXISTS `audit_logs` (
 -- 插入默认角色
 INSERT INTO `roles` (`id`, `code`, `name`, `description`) VALUES
 ('role-001', 'READONLY', '只读用户', '只能查看数据，不能修改'),
-('role-002', 'EDITOR', '编辑用户', '可以查看和修改数据，但不能管理系统设置'),
-('role-003', 'ADMIN', '管理员', '拥有所有权限，包括系统设置')
+('role-002', 'EDITOR', '编辑用户', '可以查看和修改业务数据与系统设置，但不能管理用户、角色和审计'),
+('role-003', 'ADMIN', '管理员', '拥有所有权限，包括用户、角色、审计和系统设置')
 ON DUPLICATE KEY UPDATE `name` = VALUES(`name`), `description` = VALUES(`description`);
 
 -- 插入默认权限
@@ -335,7 +345,13 @@ INSERT INTO `permissions` (`id`, `code`, `name`, `resource`, `action`, `descript
 ('perm-006', 'settings:write', '修改系统设置', 'settings', 'write', '修改系统配置'),
 -- 用户管理权限
 ('perm-007', 'user:read', '查看用户', 'user', 'read', '查看用户列表'),
-('perm-008', 'user:write', '管理用户', 'user', 'write', '创建、修改、删除用户')
+('perm-008', 'user:write', '管理用户', 'user', 'write', '创建、修改用户信息'),
+('perm-009', 'asin:delete', '删除ASIN', 'asin', 'delete', '删除ASIN记录'),
+('perm-010', 'monitor:write', '管理监控任务', 'monitor', 'write', '创建和管理监控任务'),
+('perm-011', 'user:delete', '删除用户', 'user', 'delete', '删除用户账户'),
+('perm-012', 'role:read', '查看角色', 'role', 'read', '查看角色列表和详情'),
+('perm-013', 'role:write', '管理角色', 'role', 'write', '创建、修改、删除角色和权限分配'),
+('perm-014', 'audit:read', '查看审计日志', 'audit', 'read', '查看操作审计日志')
 ON DUPLICATE KEY UPDATE `name` = VALUES(`name`), `description` = VALUES(`description`);
 
 -- 分配角色权限
@@ -346,12 +362,16 @@ INSERT INTO `role_permissions` (`role_id`, `permission_id`) VALUES
 ('role-001', 'perm-004') -- analytics:read
 ON DUPLICATE KEY UPDATE `role_id` = VALUES(`role_id`);
 
--- 编辑用户：查看和编辑ASIN，但不能管理系统设置
+-- 编辑用户：查看和修改业务数据与系统设置，但不能管理用户、角色和审计
 INSERT INTO `role_permissions` (`role_id`, `permission_id`) VALUES
 ('role-002', 'perm-001'), -- asin:read
 ('role-002', 'perm-002'), -- asin:write
+('role-002', 'perm-009'), -- asin:delete
 ('role-002', 'perm-003'), -- monitor:read
-('role-002', 'perm-004') -- analytics:read
+('role-002', 'perm-010'), -- monitor:write
+('role-002', 'perm-004'), -- analytics:read
+('role-002', 'perm-005'), -- settings:read
+('role-002', 'perm-006') -- settings:write
 ON DUPLICATE KEY UPDATE `role_id` = VALUES(`role_id`);
 
 -- 管理员：所有权限
@@ -363,6 +383,12 @@ INSERT INTO `role_permissions` (`role_id`, `permission_id`) VALUES
 ('role-003', 'perm-005'), -- settings:read
 ('role-003', 'perm-006'), -- settings:write
 ('role-003', 'perm-007'), -- user:read
-('role-003', 'perm-008') -- user:write
+('role-003', 'perm-008'), -- user:write
+('role-003', 'perm-009'), -- asin:delete
+('role-003', 'perm-010'), -- monitor:write
+('role-003', 'perm-011'), -- user:delete
+('role-003', 'perm-012'), -- role:read
+('role-003', 'perm-013'), -- role:write
+('role-003', 'perm-014') -- audit:read
 ON DUPLICATE KEY UPDATE `role_id` = VALUES(`role_id`);
 

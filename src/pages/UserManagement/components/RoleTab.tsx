@@ -1,7 +1,7 @@
 import services from '@/services/role';
 import { useMessage } from '@/utils/message';
 import { ProColumns, ProTable } from '@ant-design/pro-components';
-import { useModel } from '@umijs/max';
+import { useAccess, useModel } from '@umijs/max';
 import {
   Button,
   Card,
@@ -20,8 +20,10 @@ const { getRoleList, getPermissionList, updateRolePermissions } =
 const RoleTab: React.FC = () => {
   const message = useMessage();
   const actionRef = useRef<any>(null);
+  const access = useAccess();
   const { initialState } = useModel('@@initialState');
   const isCurrentUserAdmin = (initialState?.roles || []).includes('ADMIN');
+  const canWriteRole = Boolean(access.canWriteRole);
 
   const [editVisible, setEditVisible] = useState(false);
   const [saving, setSaving] = useState(false);
@@ -52,9 +54,9 @@ const RoleTab: React.FC = () => {
         (role.permissions || []).map((perm) => perm.id || '').filter(Boolean),
       );
       setEditVisible(true);
-    } catch (error: any) {
-      message.error(error?.errorMessage || '获取权限列表失败');
-    }
+      } catch (error: any) {
+        message.error(error?.errorMessage || '获取权限列表失败');
+      }
   };
 
   const handleSaveRolePermissions = async () => {
@@ -142,7 +144,7 @@ const RoleTab: React.FC = () => {
       render: (_: any, record: API.Role) => (
         <Button
           type="link"
-          disabled={!isCurrentUserAdmin}
+          disabled={!canWriteRole}
           onClick={() => handleOpenEditModal(record)}
         >
           编辑权限
@@ -195,9 +197,9 @@ const RoleTab: React.FC = () => {
           columns={columns}
           pagination={false}
         />
-        {!isCurrentUserAdmin && (
+        {!canWriteRole && (
           <Typography.Text type="secondary">
-            仅管理员可编辑角色权限。
+            仅具备角色写权限的用户可编辑角色权限。
           </Typography.Text>
         )}
       </Card>

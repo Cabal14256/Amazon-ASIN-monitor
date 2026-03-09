@@ -9,8 +9,14 @@ router.use(authenticateToken);
 // 创建导出任务（权限检查在控制器中进行，因为不同导出类型需要不同权限）
 router.post('/tasks/export', exportController.createExportTask);
 
+// 查询任务列表
+router.get('/tasks', taskController.listTasks);
+
 // 查询任务状态
 router.get('/tasks/:taskId', taskController.getTaskStatus);
+
+// 取消任务
+router.post('/tasks/:taskId/cancel', taskController.cancelTask);
 
 // 下载任务结果文件
 router.get('/tasks/:taskId/download', taskController.downloadTaskFile);

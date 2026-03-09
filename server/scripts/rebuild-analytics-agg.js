@@ -144,6 +144,7 @@ async function main() {
   const logger = require('../src/utils/logger');
   const { query, testConnection, pool } = require('../src/config/database');
   const analyticsAggService = require('../src/services/analyticsAggService');
+  const analyticsCacheService = require('../src/services/analyticsCacheService');
 
   const closeAndExit = async (code) => {
     try {
@@ -251,6 +252,7 @@ async function main() {
     base: {},
     dim: {},
     verify: {},
+    audit: {},
   };
   let exitCode = 0;
 
@@ -329,6 +331,34 @@ async function main() {
       );
       results.verify.dim = verifyDim;
     }
+
+    results.audit.asinTypeDistribution = await query(
+      `SELECT
+         COALESCE(CAST(asin_type AS CHAR), 'NULL') as asin_type,
+         COUNT(*) as total
+       FROM asins
+       GROUP BY asin_type
+       ORDER BY total DESC`,
+    );
+    results.audit.suspiciousGroups = await query(
+      `SELECT
+         vg.name,
+         vg.country,
+         SUM(CASE WHEN a.asin_type = '1' THEN 1 ELSE 0 END) as main_count,
+         SUM(CASE WHEN a.asin_type = '2' THEN 1 ELSE 0 END) as sub_count,
+         COUNT(*) as total_asins
+       FROM variant_groups vg
+       LEFT JOIN asins a ON a.variant_group_id = vg.id
+       GROUP BY vg.id, vg.name, vg.country
+       HAVING main_count > 1 OR sub_count = 0
+       ORDER BY main_count DESC, total_asins DESC
+       LIMIT 20`,
+    );
+
+    await analyticsCacheService.deleteByPrefix('statisticsByTime:');
+    await analyticsCacheService.deleteByPrefix('allCountriesSummary:');
+    await analyticsCacheService.deleteByPrefix('regionSummary:');
+    await analyticsCacheService.deleteByPrefix('periodSummary:');
 
     logger.info('[Agg Rebuild] 执行完成，结果汇总:', results);
   } catch (error) {

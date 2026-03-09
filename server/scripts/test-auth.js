@@ -126,7 +126,7 @@ async function testAuth() {
         FROM users u
         LEFT JOIN user_roles ur ON u.id = ur.user_id
         LEFT JOIN roles r ON ur.role_id = r.id
-        WHERE u.status = 1
+        WHERE u.status = 'ACTIVE'
         GROUP BY u.id
         HAVING roles LIKE '%ADMIN%' OR roles LIKE '%管理员%'
         LIMIT 5
@@ -143,14 +143,32 @@ async function testAuth() {
 
       // 显示用户统计
       const activeUsers = await query(
-        'SELECT COUNT(*) as count FROM users WHERE status = 1',
+        "SELECT COUNT(*) as count FROM users WHERE status = 'ACTIVE'",
       );
       const inactiveUsers = await query(
-        'SELECT COUNT(*) as count FROM users WHERE status = 0',
+        "SELECT COUNT(*) as count FROM users WHERE status <> 'ACTIVE'",
       );
       logInfo(
         `活跃用户: ${activeUsers[0].count}, 禁用用户: ${inactiveUsers[0].count}`,
       );
+
+      if (activeUsers[0].count === 0 && count > 0) {
+        const [statusColumn] = await query(`
+          SELECT DATA_TYPE as dataType, COLUMN_TYPE as columnType
+          FROM INFORMATION_SCHEMA.COLUMNS
+          WHERE TABLE_SCHEMA = DATABASE()
+            AND TABLE_NAME = 'users'
+            AND COLUMN_NAME = 'status'
+          LIMIT 1
+        `);
+
+        if (statusColumn?.dataType !== 'enum') {
+          logWarning(
+            'users.status 仍是旧版字段格式，建议执行 026_normalize_user_status_and_audit_permissions.sql',
+          );
+          results.warnings++;
+        }
+      }
     }
   } catch (error) {
     logError(`查询用户数据失败: ${error.message}`);
@@ -222,6 +240,13 @@ async function testAuth() {
     } else {
       logSuccess(`找到 ${permissionCount[0].count} 个权限`);
       results.passed++;
+
+      if (permissionCount[0].count < 14) {
+        logWarning(
+          '权限数量仍少于预期，建议执行 026_normalize_user_status_and_audit_permissions.sql',
+        );
+        results.warnings++;
+      }
     }
   } catch (error) {
     if (error.code === 'ER_NO_SUCH_TABLE') {
@@ -243,7 +268,7 @@ async function testAuth() {
     // 尝试查找一个测试用户
     try {
       const testUsers = await query(
-        'SELECT username FROM users WHERE status = 1 LIMIT 1',
+        "SELECT username FROM users WHERE status = 'ACTIVE' LIMIT 1",
       );
       if (testUsers.length > 0) {
         logInfo(`找到测试用户: ${testUsers[0].username}`);

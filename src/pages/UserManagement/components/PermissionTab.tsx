@@ -27,7 +27,6 @@ const PermissionTab: React.FC = () => {
 
       setGroupedPermissions(grouped);
     } catch (error: any) {
-      console.error('获取权限列表失败:', error);
       const errorMessage =
         error?.response?.data?.errorMessage ||
         error?.data?.errorMessage ||

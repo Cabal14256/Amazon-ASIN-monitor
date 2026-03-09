@@ -7,6 +7,7 @@ import { formatBeijing } from '@/utils/beijingTime';
 import { debugLog } from '@/utils/debug';
 import { exportToExcel } from '@/utils/export';
 import { useMessage } from '@/utils/message';
+import { extractAsyncTask } from '@/utils/task';
 import { MoreOutlined } from '@ant-design/icons';
 import {
   ActionType,
@@ -34,7 +35,11 @@ const {
   updateCompetitorASINFeishuNotify,
   updateCompetitorVariantGroupFeishuNotify,
 } = services.CompetitorASINController;
-const { checkCompetitorVariantGroup, checkCompetitorASIN } =
+const {
+  checkCompetitorVariantGroup,
+  checkCompetitorASIN,
+  batchCheckCompetitorVariantGroups,
+} =
   variantCheckServices.CompetitorVariantCheckController;
 
 // 国家选项映射
@@ -124,6 +129,41 @@ const CompetitorASINManagement: React.FC<unknown> = () => {
   const [batchDeleteModalVisible, setBatchDeleteModalVisible] = useState(false);
   const [batchDeleteLoading, setBatchDeleteLoading] = useState(false);
   const [totalASINs, setTotalASINs] = useState<number>(0);
+  const selectedGroupIds = useMemo(
+    () =>
+      selectedRowsState
+        .filter((row) => (row as API.VariantGroup).parentId === undefined)
+        .map((row) => row.id)
+        .filter((id): id is string => Boolean(id)),
+    [selectedRowsState],
+  );
+
+  const handleBatchCheckSelected = useCallback(async () => {
+    if (selectedGroupIds.length === 0) {
+      message.warning('请至少选择一个竞品变体组');
+      return;
+    }
+
+    try {
+      const response = await batchCheckCompetitorVariantGroups({
+        groupIds: selectedGroupIds,
+      });
+      const task = extractAsyncTask(response);
+
+      if (task) {
+        message.success('竞品批量检查任务已创建，请到任务中心查看进度');
+        setSelectedRows([]);
+        return;
+      }
+
+      message.success('竞品批量检查完成');
+      setSelectedRows([]);
+      requestCacheRef.current.clear();
+      actionRef.current?.reload();
+    } catch (error: any) {
+      message.error(error?.errorMessage || error?.message || '批量检查失败');
+    }
+  }, [message, selectedGroupIds]);
 
   // 国家选项枚举（使用useMemo优化）
   const countryValueEnum = useMemo(
@@ -707,7 +747,7 @@ const CompetitorASINManagement: React.FC<unknown> = () => {
         }}
         columns={columns}
         rowSelection={
-          access.canWriteASIN
+          access.canReadASIN
             ? {
                 onChange: (_, selectedRows) => setSelectedRows(selectedRows),
               }
@@ -728,24 +768,39 @@ const CompetitorASINManagement: React.FC<unknown> = () => {
         }}
       />
       {selectedRowsState?.length > 0 && (
-        <Access accessible={access.canWriteASIN}>
+        <Access accessible={access.canReadASIN}>
           <FooterToolbar
             extra={
               <div>
                 已选择{' '}
                 <a style={{ fontWeight: 600 }}>{selectedRowsState.length}</a>{' '}
-                项&nbsp;&nbsp;
+                项
+                {selectedGroupIds.length > 0
+                  ? `，其中竞品变体组 ${selectedGroupIds.length} 项`
+                  : ''}
+                &nbsp;&nbsp;
               </div>
             }
           >
             <Button
-              danger
+              type="primary"
               onClick={() => {
-                setBatchDeleteModalVisible(true);
+                void handleBatchCheckSelected();
               }}
+              disabled={selectedGroupIds.length === 0}
             >
-              批量删除
+              批量检查
             </Button>
+            <Access accessible={access.canWriteASIN}>
+              <Button
+                danger
+                onClick={() => {
+                  setBatchDeleteModalVisible(true);
+                }}
+              >
+                批量删除
+              </Button>
+            </Access>
           </FooterToolbar>
         </Access>
       )}

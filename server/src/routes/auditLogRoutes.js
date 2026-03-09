@@ -5,25 +5,25 @@ const { authenticateToken, checkPermission } = require('../middleware/auth');
 
 router.use(authenticateToken);
 
-// 只有管理员可以查看审计日志
+// 需要审计查看权限
 router.get(
   '/audit-logs',
-  checkPermission('user:read'),
+  checkPermission('audit:read'),
   auditLogController.getAuditLogList,
 );
 router.get(
   '/audit-logs/:id',
-  checkPermission('user:read'),
+  checkPermission('audit:read'),
   auditLogController.getAuditLogDetail,
 );
 router.get(
   '/audit-logs/statistics/actions',
-  checkPermission('user:read'),
+  checkPermission('audit:read'),
   auditLogController.getActionStatistics,
 );
 router.get(
   '/audit-logs/statistics/resources',
-  checkPermission('user:read'),
+  checkPermission('audit:read'),
   auditLogController.getResourceStatistics,
 );
 

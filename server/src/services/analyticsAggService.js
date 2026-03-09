@@ -5,8 +5,8 @@ const AGG_ENABLED = process.env.ANALYTICS_AGG_ENABLED !== '0';
 const BACKFILL_HOURS = Number(process.env.ANALYTICS_AGG_BACKFILL_HOURS) || 48;
 const BACKFILL_DAYS = Number(process.env.ANALYTICS_AGG_BACKFILL_DAYS) || 30;
 const REFRESH_DIM_AGG = process.env.ANALYTICS_AGG_REFRESH_DIM !== '0';
-const REAL_ASIN_FILTER =
-  "mh.asin_id IN (SELECT id FROM asins WHERE asin_type IS NULL OR asin_type NOT IN ('1', 'MAIN_LINK'))";
+const TRACKED_ASIN_FILTER =
+  "mh.check_type = 'ASIN' AND mh.asin_id IN (SELECT id FROM asins)";
 
 let isRefreshing = false;
 
@@ -39,9 +39,7 @@ function buildPeakHourCase(countryField, timeField) {
 
 function buildWhereClause(granularity, options = {}) {
   const conditions = [];
-  let whereClause =
-    "WHERE (mh.asin_id IS NOT NULL OR NULLIF(mh.asin_code, '') IS NOT NULL)";
-  whereClause += ` AND ${REAL_ASIN_FILTER}`;
+  let whereClause = `WHERE ${TRACKED_ASIN_FILTER}`;
 
   if (options.startTime) {
     whereClause += ' AND mh.check_time >= ?';

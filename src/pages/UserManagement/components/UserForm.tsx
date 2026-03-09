@@ -3,10 +3,12 @@ import { useMessage } from '@/utils/message';
 import {
   ModalForm,
   ProFormSelect,
-  ProFormSwitch,
   ProFormText,
+  ProFormSwitch,
+  ProFormTextArea,
 } from '@ant-design/pro-components';
 import React, { useEffect, useState } from 'react';
+import { PASSWORD_POLICY_HINT, validateStrongPassword } from '@/utils/password';
 
 const { createUser, updateUser, getAllRoles } = services.UserController;
 
@@ -34,8 +36,8 @@ const UserForm: React.FC<UserFormProps> = (props) => {
           setRoles(response);
         }
       }
-    } catch (error) {
-      console.error('加载角色列表失败:', error);
+    } catch (_error) {
+      message.error('加载角色列表失败');
     }
   };
 
@@ -50,8 +52,9 @@ const UserForm: React.FC<UserFormProps> = (props) => {
       if (isEdit) {
         await updateUser(values.id || '', {
           real_name: formValues.real_name,
-          status: formValues.status ? 1 : 0,
+          status: formValues.status,
           roleIds: formValues.roleIds,
+          statusReason: formValues.statusReason,
         });
         message.success('更新成功');
       } else {
@@ -60,13 +63,13 @@ const UserForm: React.FC<UserFormProps> = (props) => {
           password: formValues.password,
           real_name: formValues.real_name,
           roleIds: formValues.roleIds,
+          forcePasswordChange: formValues.forcePasswordChange,
         });
         message.success('创建成功');
       }
       onSubmit();
       return true;
     } catch (error: any) {
-      console.error('保存用户错误:', error);
       let errorMessage = '保存失败';
       if (error?.response?.data?.errorMessage) {
         errorMessage = error.response.data.errorMessage;
@@ -93,8 +96,9 @@ const UserForm: React.FC<UserFormProps> = (props) => {
       onFinish={handleSubmit}
       initialValues={{
         ...values,
-        status: values?.status === 1,
+        status: values?.status || 'ACTIVE',
         roleIds: values?.roles?.map((r) => r.id) || [],
+        forcePasswordChange: true,
       }}
       modalProps={{
         destroyOnHidden: true,
@@ -114,10 +118,18 @@ const UserForm: React.FC<UserFormProps> = (props) => {
         <ProFormText.Password
           name="password"
           label="密码"
-          placeholder="请输入密码（至少6位）"
+          placeholder={`请输入密码（${PASSWORD_POLICY_HINT}）`}
           rules={[
             { required: true, message: '请输入密码' },
-            { min: 6, message: '密码长度至少为6位' },
+            {
+              validator: async (_, value) => {
+                const error = validateStrongPassword(value);
+                if (error) {
+                  return Promise.reject(new Error(error));
+                }
+                return Promise.resolve();
+              },
+            },
           ]}
         />
       )}
@@ -129,6 +141,14 @@ const UserForm: React.FC<UserFormProps> = (props) => {
           maxLength: 100,
         }}
       />
+      {!isEdit && (
+        <ProFormSwitch
+          name="forcePasswordChange"
+          label="首次登录强制改密"
+          checkedChildren="是"
+          unCheckedChildren="否"
+        />
+      )}
       <ProFormSelect
         name="roleIds"
         label="角色"
@@ -141,11 +161,28 @@ const UserForm: React.FC<UserFormProps> = (props) => {
         rules={[{ required: true, message: '请至少选择一个角色' }]}
       />
       {isEdit && (
-        <ProFormSwitch
+        <ProFormSelect
           name="status"
           label="状态"
-          checkedChildren="启用"
-          unCheckedChildren="禁用"
+          options={[
+            { label: '启用', value: 'ACTIVE' },
+            { label: '停用', value: 'INACTIVE' },
+            { label: '锁定', value: 'LOCKED' },
+            { label: '暂停', value: 'SUSPENDED' },
+            { label: '待激活', value: 'PENDING' },
+          ]}
+          rules={[{ required: true, message: '请选择用户状态' }]}
+        />
+      )}
+      {isEdit && (
+        <ProFormTextArea
+          name="statusReason"
+          label="状态变更原因"
+          placeholder="如有状态变更，请填写原因"
+          fieldProps={{
+            maxLength: 255,
+            showCount: true,
+          }}
         />
       )}
     </ModalForm>

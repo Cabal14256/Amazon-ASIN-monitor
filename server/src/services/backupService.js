@@ -47,6 +47,12 @@ function escapeSQL(str) {
   return "'" + strValue.replace(/'/g, "''").replace(/\\/g, '\\\\') + "'";
 }
 
+async function runOptionalHook(fn, payload) {
+  if (typeof fn === 'function') {
+    await fn(payload);
+  }
+}
+
 function runBackupSqlWorkerTask(
   task,
   payload,
@@ -250,7 +256,12 @@ async function getTableData(connection, tableName) {
  * @returns {Promise<string>} 备份文件路径
  */
 async function createBackup(options = {}) {
-  const { tables = null, description = '' } = options;
+  const {
+    tables = null,
+    description = '',
+    onProgress = null,
+    checkCancelled = null,
+  } = options;
 
   await ensureBackupDir();
 
@@ -301,15 +312,31 @@ async function createBackup(options = {}) {
     }
 
     logger.info(`准备备份 ${tablesToBackup.length} 个表:`, tablesToBackup);
+    await runOptionalHook(onProgress, {
+      current: 0,
+      total: tablesToBackup.length,
+      stage: 'prepare',
+    });
 
     // 备份每个表
-    for (const tableName of tablesToBackup) {
+    for (let index = 0; index < tablesToBackup.length; index += 1) {
+      const tableName = tablesToBackup[index];
       if (!tableName || typeof tableName !== 'string') {
         logger.warn(`跳过无效的表名: ${tableName}`);
         continue;
       }
 
+      await runOptionalHook(
+        checkCancelled,
+        `备份任务已取消（在处理表 ${tableName} 前停止）`,
+      );
       logger.info(`正在备份表: ${tableName}`);
+      await runOptionalHook(onProgress, {
+        current: index + 1,
+        total: tablesToBackup.length,
+        tableName,
+        stage: 'backup_table',
+      });
 
       try {
         // 生成 CREATE TABLE 语句
@@ -369,6 +396,11 @@ async function createBackup(options = {}) {
  * @returns {Promise<void>}
  */
 async function restoreBackup(filepath) {
+  return restoreBackupWithOptions(filepath, {});
+}
+
+async function restoreBackupWithOptions(filepath, options = {}) {
+  const { onProgress = null, checkCancelled = null } = options;
   // 验证文件是否存在
   try {
     await fs.access(filepath);
@@ -408,11 +440,27 @@ async function restoreBackup(filepath) {
 
     // 执行所有 SQL 语句
     logger.info(`开始恢复备份，共 ${statements.length} 条 SQL 语句`);
+    await runOptionalHook(onProgress, {
+      current: 0,
+      total: statements.length,
+      stage: 'prepare_restore',
+    });
 
     // 禁用外键检查
     await connection.execute('SET FOREIGN_KEY_CHECKS = 0');
 
     for (let i = 0; i < statements.length; i++) {
+      if (i % 25 === 0) {
+        await runOptionalHook(
+          checkCancelled,
+          `恢复任务已取消（已执行 ${i}/${statements.length} 条语句）`,
+        );
+        await runOptionalHook(onProgress, {
+          current: i,
+          total: statements.length,
+          stage: 'restore',
+        });
+      }
       const statement = statements[i].trim();
       if (statement && !statement.startsWith('--')) {
         try {
@@ -435,6 +483,12 @@ async function restoreBackup(filepath) {
         }
       }
     }
+
+    await runOptionalHook(onProgress, {
+      current: statements.length,
+      total: statements.length,
+      stage: 'restore',
+    });
 
     // 启用外键检查
     await connection.execute('SET FOREIGN_KEY_CHECKS = 1');
@@ -553,7 +607,7 @@ async function getBackupFile(filename) {
 
 module.exports = {
   createBackup,
-  restoreBackup,
+  restoreBackup: restoreBackupWithOptions,
   listBackups,
   deleteBackup,
   getBackupFile,

@@ -1,12 +1,22 @@
 const logger = require('../utils/logger');
 const websocketService = require('./websocketService');
-// 导入逻辑会在这里实现，需要从asinController中提取
+const taskRegistryService = require('./taskRegistryService');
+const {
+  throwIfTaskCancelled,
+  isTaskCancelledError,
+} = require('./taskCancellationService');
+const { importFromFile } = require('./importService');
 
 /**
  * 更新任务进度
  */
 function updateProgress(job, taskId, progress, message, userId = null) {
   job.progress(progress);
+  taskRegistryService
+    .updateTaskProgress(taskId, progress, message)
+    .catch((error) => {
+      logger.warn('[导入任务] 更新任务注册表进度失败:', error.message);
+    });
   websocketService.sendTaskProgress(taskId, progress, message, userId);
 }
 
@@ -14,29 +24,69 @@ function updateProgress(job, taskId, progress, message, userId = null) {
  * 处理导入任务
  */
 async function processImportTask(job) {
-  const { taskId, fileBuffer, originalFilename, userId } = job.data;
+  const {
+    taskId,
+    taskSubType = 'asin',
+    fileBuffer,
+    originalFilename,
+    userId,
+  } = job.data;
 
   try {
-    updateProgress(job, taskId, 5, '正在解析Excel文件...', userId);
+    await taskRegistryService.markTaskProcessing(taskId, {
+      taskSubType,
+      message: '导入任务开始处理',
+    });
+    await throwIfTaskCancelled(taskId, '导入任务已取消');
 
-    // 这里需要从asinController中提取导入逻辑
-    // 由于逻辑较长，这里先创建框架
-    // 实际实现需要将asinController.importFromExcel中的逻辑提取到这里
-
-    updateProgress(job, taskId, 50, '正在处理数据...', userId);
-
-    // TODO: 实现实际的导入逻辑
+    const result = await importFromFile(
+      {
+        buffer: fileBuffer,
+        originalname: originalFilename,
+      },
+      {
+        mode: taskSubType === 'competitor-asin' ? 'competitor' : 'standard',
+        onProgress: async (progress, message) => {
+          updateProgress(job, taskId, progress, message, userId);
+        },
+        checkCancelled: async (message) => {
+          await throwIfTaskCancelled(taskId, message);
+        },
+      },
+    );
 
     updateProgress(job, taskId, 100, '导入完成', userId);
-
+    await taskRegistryService.markTaskCompleted(taskId, result, {
+      message: '导入完成',
+    });
     websocketService.sendTaskComplete(taskId, null, null, userId);
 
-    return {
-      success: true,
-      message: '导入完成',
-    };
+    return result;
   } catch (error) {
+    if (isTaskCancelledError(error)) {
+      logger.info(`[导入任务] 任务已取消 (${taskId}): ${error.message}`);
+      await taskRegistryService.markTaskCancelled(taskId, {
+        message: error.message || '导入任务已取消',
+      });
+      websocketService.sendTaskCancelled(
+        taskId,
+        error.message || '导入任务已取消',
+        userId,
+      );
+      return {
+        cancelled: true,
+        message: error.message || '导入任务已取消',
+      };
+    }
+
     logger.error(`[导入任务] 处理失败 (${taskId}):`, error);
+    await taskRegistryService.markTaskFailed(
+      taskId,
+      error.message || '导入失败',
+      {
+        message: error.message || '导入失败',
+      },
+    );
     websocketService.sendTaskError(taskId, error.message || '导入失败', userId);
     throw error;
   }

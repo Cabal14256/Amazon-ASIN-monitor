@@ -1,4 +1,5 @@
 import { debugLog } from '@/utils/debug';
+import { hasAuthSession } from '@/utils/token';
 import type { InitialStateType } from '@@/plugin-initialState/@@initialState';
 
 export default function accessFactory(initialState: InitialStateType) {
@@ -11,10 +12,10 @@ export default function accessFactory(initialState: InitialStateType) {
   // 从 initialState 根级别获取权限和角色（不是从 currentUser 中）
   const permissions = initialStatePermissions || [];
   const roles = initialStateRoles || [];
+  const permissionSet = new Set(permissions);
 
   // 检查是否有 token（用于判断是否正在加载中）
-  const hasToken =
-    typeof window !== 'undefined' && !!localStorage.getItem('token');
+  const hasToken = typeof window !== 'undefined' && hasAuthSession();
 
   // 检查是否已登录（有用户信息）
   // 如果有 token 但用户信息还没加载完，也认为是已登录（数据正在加载中）
@@ -54,14 +55,26 @@ export default function accessFactory(initialState: InitialStateType) {
         roles.includes('EDITOR') ||
         roles.includes('ADMIN')),
 
+    canAccessUserManagement:
+      hasUser &&
+      (permissionSet.has('user:read') || permissionSet.has('role:read')),
+
     // 权限检查（需要用户信息已加载）
-    canReadASIN: hasUser && permissions.includes('asin:read'),
-    canWriteASIN: hasUser && permissions.includes('asin:write'),
-    canReadMonitor: hasUser && permissions.includes('monitor:read'),
-    canReadAnalytics: hasUser && permissions.includes('analytics:read'),
-    canReadSettings: hasUser && permissions.includes('settings:read'),
-    canWriteSettings: hasUser && permissions.includes('settings:write'),
-    canReadUser: hasUser && permissions.includes('user:read'),
-    canWriteUser: hasUser && permissions.includes('user:write'),
+    canReadASIN: hasUser && permissionSet.has('asin:read'),
+    canWriteASIN: hasUser && permissionSet.has('asin:write'),
+    canDeleteASIN: hasUser && permissionSet.has('asin:delete'),
+    canReadMonitor: hasUser && permissionSet.has('monitor:read'),
+    canWriteMonitor: hasUser && permissionSet.has('monitor:write'),
+    canReadAnalytics: hasUser && permissionSet.has('analytics:read'),
+    canReadSettings: hasUser && permissionSet.has('settings:read'),
+    canWriteSettings: hasUser && permissionSet.has('settings:write'),
+    canReadUser: hasUser && permissionSet.has('user:read'),
+    canWriteUser: hasUser && permissionSet.has('user:write'),
+    canDeleteUser: hasUser && permissionSet.has('user:delete'),
+    canReadRole: hasUser && permissionSet.has('role:read'),
+    canWriteRole: hasUser && permissionSet.has('role:write'),
+    canReadAudit: hasUser && permissionSet.has('audit:read'),
+    mustChangePassword:
+      hasUser && Boolean(currentUser?.force_password_change),
   };
 }

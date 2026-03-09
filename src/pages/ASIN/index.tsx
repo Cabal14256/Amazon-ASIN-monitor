@@ -5,7 +5,7 @@ import { formatBeijing } from '@/utils/beijingTime';
 import { debugLog } from '@/utils/debug';
 import { exportToExcel } from '@/utils/export';
 import { useMessage } from '@/utils/message';
-import { waitForTaskResult } from '@/utils/task';
+import { extractAsyncTask, waitForTaskResult } from '@/utils/task';
 import { MoreOutlined } from '@ant-design/icons';
 import {
   ActionType,
@@ -17,11 +17,12 @@ import {
 } from '@ant-design/pro-components';
 import { Access, history, useAccess } from '@umijs/max';
 import type { MenuProps } from 'antd';
-import { Button, Dropdown, Switch, Tag } from 'antd';
+import { Button, Dropdown, Modal, Switch, Tag } from 'antd';
 import React, { useCallback, useMemo, useRef, useState } from 'react';
 import ASINForm from './components/ASINForm';
 import BatchDeleteConfirmModal from './components/BatchDeleteConfirmModal';
 import ExcelImportModal from './components/ExcelImportModal';
+import ManualBrokenModal from './components/ManualBrokenModal';
 import MoveASINModal from './components/MoveASINModal';
 import VariantGroupForm from './components/VariantGroupForm';
 import './index.less';
@@ -31,9 +32,11 @@ const {
   deleteVariantGroup,
   deleteASIN,
   updateASINFeishuNotify,
+  updateASINManualBroken,
   updateVariantGroupFeishuNotify,
+  updateVariantGroupManualBroken,
 } = services.ASINController;
-const { checkVariantGroup, checkASIN } =
+const { checkVariantGroup, checkASIN, batchCheckVariantGroups } =
   variantCheckServices.VariantCheckController;
 
 // 国家选项映射
@@ -47,6 +50,11 @@ const countryMap: Record<
   FR: { text: '法国', color: 'purple', region: 'EU' },
   IT: { text: '意大利', color: 'cyan', region: 'EU' },
   ES: { text: '西班牙', color: 'magenta', region: 'EU' },
+};
+
+type ManualBrokenTarget = {
+  type: 'group' | 'asin';
+  record: Partial<API.VariantGroup | API.ASINInfo>;
 };
 
 const ASINManagement: React.FC<unknown> = () => {
@@ -122,7 +130,119 @@ const ASINManagement: React.FC<unknown> = () => {
   const [excelImportModalVisible, setExcelImportModalVisible] = useState(false);
   const [batchDeleteModalVisible, setBatchDeleteModalVisible] = useState(false);
   const [batchDeleteLoading, setBatchDeleteLoading] = useState(false);
+  const [manualBrokenModalVisible, setManualBrokenModalVisible] =
+    useState(false);
+  const [manualBrokenTarget, setManualBrokenTarget] =
+    useState<ManualBrokenTarget>();
   const [totalASINs, setTotalASINs] = useState<number>(0);
+  const selectedGroupIds = useMemo(
+    () =>
+      selectedRowsState
+        .filter((row) => (row as API.VariantGroup).parentId === undefined)
+        .map((row) => row.id)
+        .filter((id): id is string => Boolean(id)),
+    [selectedRowsState],
+  );
+
+  const handleBatchCheckSelected = useCallback(async () => {
+    if (selectedGroupIds.length === 0) {
+      message.warning('请至少选择一个变体组');
+      return;
+    }
+
+    try {
+      const response = await batchCheckVariantGroups({
+        groupIds: selectedGroupIds,
+      });
+      const task = extractAsyncTask(response);
+
+      if (task) {
+        message.success('批量检查任务已创建，请到任务中心查看进度');
+        setSelectedRows([]);
+        return;
+      }
+
+      message.success('批量检查完成');
+      setSelectedRows([]);
+      requestCacheRef.current.clear();
+      actionRef.current?.reload();
+    } catch (error: any) {
+      message.error(error?.errorMessage || error?.message || '批量检查失败');
+    }
+  }, [message, selectedGroupIds]);
+
+  const refreshTableData = useCallback(() => {
+    requestCacheRef.current.clear();
+    actionRef.current?.reload();
+  }, []);
+
+  const closeManualBrokenModal = useCallback(() => {
+    setManualBrokenModalVisible(false);
+    setManualBrokenTarget(undefined);
+  }, []);
+
+  const handleManualBrokenSubmit = useCallback(
+    async (reason: string) => {
+      if (!manualBrokenTarget?.record?.id) {
+        return;
+      }
+
+      try {
+        if (manualBrokenTarget.type === 'group') {
+          await updateVariantGroupManualBroken(
+            { groupId: manualBrokenTarget.record.id },
+            { markedBroken: true, reason },
+          );
+        } else {
+          await updateASINManualBroken(
+            { asinId: manualBrokenTarget.record.id },
+            { markedBroken: true, reason },
+          );
+        }
+
+        message.success('人工异常标记已更新');
+        closeManualBrokenModal();
+        refreshTableData();
+      } catch (error: any) {
+        message.error(error?.errorMessage || error?.message || '更新失败');
+        throw error;
+      }
+    },
+    [closeManualBrokenModal, manualBrokenTarget, message, refreshTableData],
+  );
+
+  const handleClearManualBroken = useCallback(
+    (record: API.VariantGroup | API.ASINInfo, isGroup: boolean) => {
+      Modal.confirm({
+        title: isGroup ? '取消变体组人工异常标记' : '取消ASIN人工异常标记',
+        content: '取消后将恢复为仅按自动检测结果判断状态。',
+        okText: '确认取消',
+        cancelText: '保留',
+        onOk: async () => {
+          try {
+            if (isGroup) {
+              await updateVariantGroupManualBroken(
+                { groupId: record.id },
+                { markedBroken: false, reason: '' },
+              );
+            } else {
+              await updateASINManualBroken(
+                { asinId: record.id },
+                { markedBroken: false, reason: '' },
+              );
+            }
+
+            message.success('已取消人工异常标记');
+            refreshTableData();
+          } catch (error: any) {
+            message.error(error?.errorMessage || error?.message || '更新失败');
+            throw error;
+          }
+        },
+      });
+    },
+    [message, refreshTableData],
+  );
 
   // 国家选项枚举（使用useMemo优化）
   const countryValueEnum = useMemo(
@@ -277,7 +397,7 @@ const ASINManagement: React.FC<unknown> = () => {
       {
         title: '变体状态',
         dataIndex: 'variantStatus',
-        width: 120,
+        width: 220,
         valueType: 'select' as const,
         valueEnum: {
           NORMAL: { text: '正常', status: 'Success' },
@@ -285,10 +405,65 @@ const ASINManagement: React.FC<unknown> = () => {
         },
         render: (_: any, record: API.VariantGroup | API.ASINInfo) => {
           const isBroken = record.isBroken === 1;
+          const statusSource = record.statusSource || 'NORMAL';
+          const sourceMeta: Record<string, { text: string; color: string }> = {
+            AUTO: { text: '自动检测', color: 'volcano' },
+            MANUAL: { text: '人工标记', color: 'orange' },
+            'AUTO+MANUAL': { text: '自动+人工', color: 'magenta' },
+          };
           return (
-            <Tag color={isBroken ? 'error' : 'success'}>
-              {isBroken ? '异常' : '正常'}
-            </Tag>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+              <div>
+                <Tag color={isBroken ? 'error' : 'success'}>
+                  {isBroken ? '异常' : '正常'}
+                </Tag>
+                {statusSource !== 'NORMAL' && sourceMeta[statusSource] ? (
+                  <Tag color={sourceMeta[statusSource].color}>
+                    {sourceMeta[statusSource].text}
+                  </Tag>
+                ) : null}
+              </div>
+              {record.manualBroken === 1 && record.manualBrokenReason ? (
+                <div
+                  style={{
+                    color: '#8c8c8c',
+                    fontSize: 12,
+                    lineHeight: 1.4,
+                    wordBreak: 'break-word',
+                  }}
+                >
+                  {record.manualBrokenReason}
+                </div>
+              ) : null}
+            </div>
+          );
+        },
+      },
+      {
+        title: '人工标记',
+        dataIndex: 'manualBrokenReason',
+        width: 220,
+        hideInSearch: true,
+        render: (_: any, record: API.VariantGroup | API.ASINInfo) => {
+          if (record.manualBroken !== 1) {
+            return '-';
+          }
+
+          return (
+            <div
+              style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}
+            >
+              <Tag color="orange">已人工标记</Tag>
+              <div style={{ fontSize: 12, lineHeight: 1.4 }}>
+                {record.manualBrokenReason || '-'}
+              </div>
+              <div style={{ color: '#8c8c8c', fontSize: 12 }}>
+                {(record.manualBrokenUpdatedBy || '-') + ' | '}
+                {record.manualBrokenUpdatedAt
+                  ? formatBeijing(record.manualBrokenUpdatedAt)
+                  : '-'}
+              </div>
+            </div>
           );
         },
       },
@@ -460,7 +635,9 @@ const ASINManagement: React.FC<unknown> = () => {
                 actionRef.current?.reload();
               } catch (error: any) {
                 message.destroy(messageKey);
-                message.error(error?.message || error?.errorMessage || '检查失败');
+                message.error(
+                  error?.message || error?.errorMessage || '检查失败',
+                );
               }
             },
           });
@@ -475,6 +652,26 @@ const ASINManagement: React.FC<unknown> = () => {
               history.push(`/monitor-history?type=${type}&id=${id}`);
             },
           });
+
+          if (access.canWriteASIN) {
+            const manuallyBroken = record.manualBroken === 1;
+            menuItems.push({
+              key: manuallyBroken ? 'clearManualBroken' : 'manualBroken',
+              label: manuallyBroken ? '取消人工标记' : '人工标记异常',
+              onClick: () => {
+                if (manuallyBroken) {
+                  handleClearManualBroken(record, isGroup);
+                  return;
+                }
+
+                setManualBrokenTarget({
+                  type: isGroup ? 'group' : 'asin',
+                  record,
+                });
+                setManualBrokenModalVisible(true);
+              },
+            });
+          }
 
           // 添加ASIN（仅变体组，有权限时）
           if (access.canWriteASIN && isGroup) {
@@ -535,7 +732,7 @@ const ASINManagement: React.FC<unknown> = () => {
         },
       },
     ],
-    [countryValueEnum, access, handleRemove, message],
+    [countryValueEnum, access, handleClearManualBroken, handleRemove, message],
   );
 
   return (
@@ -747,7 +944,7 @@ const ASINManagement: React.FC<unknown> = () => {
         }}
         columns={columns}
         rowSelection={
-          access.canWriteASIN
+          access.canReadASIN
             ? {
                 onChange: (_, selectedRows) => setSelectedRows(selectedRows),
               }
@@ -768,24 +965,38 @@ const ASINManagement: React.FC<unknown> = () => {
         }}
       />
       {selectedRowsState?.length > 0 && (
-        <Access accessible={access.canWriteASIN}>
+        <Access accessible={access.canReadASIN}>
           <FooterToolbar
             extra={
               <div>
                 已选择{' '}
-                <a style={{ fontWeight: 600 }}>{selectedRowsState.length}</a>{' '}
-                项&nbsp;&nbsp;
+                <a style={{ fontWeight: 600 }}>{selectedRowsState.length}</a> 项
+                {selectedGroupIds.length > 0
+                  ? `，其中变体组 ${selectedGroupIds.length} 项`
+                  : ''}
+                &nbsp;&nbsp;
               </div>
             }
           >
             <Button
-              danger
+              type="primary"
               onClick={() => {
-                setBatchDeleteModalVisible(true);
+                void handleBatchCheckSelected();
               }}
+              disabled={selectedGroupIds.length === 0}
             >
-              批量删除
+              批量检查
             </Button>
+            <Access accessible={access.canWriteASIN}>
+              <Button
+                danger
+                onClick={() => {
+                  setBatchDeleteModalVisible(true);
+                }}
+              >
+                批量删除
+              </Button>
+            </Access>
           </FooterToolbar>
         </Access>
       )}
@@ -854,6 +1065,13 @@ const ASINManagement: React.FC<unknown> = () => {
           // 刷新表格
           actionRef.current?.reload();
         }}
+      />
+      <ManualBrokenModal
+        open={manualBrokenModalVisible}
+        targetType={manualBrokenTarget?.type || 'group'}
+        record={manualBrokenTarget?.record}
+        onCancel={closeManualBrokenModal}
+        onSubmit={handleManualBrokenSubmit}
       />
       <BatchDeleteConfirmModal
         visible={batchDeleteModalVisible}

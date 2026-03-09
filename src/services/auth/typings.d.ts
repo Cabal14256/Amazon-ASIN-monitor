@@ -6,13 +6,25 @@ declare namespace API {
   };
 
   /** 当前用户信息 */
+  type UserStatus =
+    | 'ACTIVE'
+    | 'INACTIVE'
+    | 'LOCKED'
+    | 'SUSPENDED'
+    | 'PENDING';
+
   type CurrentUser = {
     id?: string;
     username?: string;
     real_name?: string;
-    status?: number;
+    status?: UserStatus;
     last_login_time?: string;
     last_login_ip?: string;
+    password_expires_at?: string;
+    password_changed_at?: string;
+    force_password_change?: boolean;
+    failed_login_attempts?: number;
+    locked_until?: string;
     create_time?: string;
     update_time?: string;
     permissions?: string[];
@@ -30,6 +42,8 @@ declare namespace API {
       permissions?: string[];
       roles?: string[];
       sessionId?: string;
+      mustChangePassword?: boolean;
+      passwordExpired?: boolean;
     };
   }
 
@@ -43,6 +57,8 @@ declare namespace API {
       permissions?: string[];
       roles?: string[];
       sessionId?: string;
+      mustChangePassword?: boolean;
+      passwordExpired?: boolean;
     };
   }
 
@@ -102,17 +118,33 @@ declare namespace API {
   };
 
   /** 用户信息（管理页面） */
+  type UserStatusHistory = {
+    id?: number;
+    user_id?: string;
+    old_status?: string;
+    new_status?: string;
+    reason?: string;
+    changed_by?: string;
+    created_at?: string;
+  };
+
   type UserInfo = {
     id?: string;
     username?: string;
     real_name?: string;
-    status?: number;
+    status?: UserStatus;
     last_login_time?: string;
     last_login_ip?: string;
+    password_expires_at?: string;
+    password_changed_at?: string;
+    force_password_change?: boolean;
+    failed_login_attempts?: number;
+    locked_until?: string;
     create_time?: string;
     update_time?: string;
     roles?: Role[];
     permissions?: string[];
+    statusHistory?: UserStatusHistory[];
   };
 
   /** 用户列表查询参数 */
@@ -129,18 +161,22 @@ declare namespace API {
     password: string;
     real_name?: string;
     roleIds?: string[];
+    forcePasswordChange?: boolean;
   };
 
   /** 更新用户参数 */
   type UpdateUserParams = {
     real_name?: string;
-    status?: number;
+    status?: UserStatus;
     roleIds?: string[];
+    statusReason?: string;
   };
 
   /** 修改密码参数 */
   type UpdatePasswordParams = {
     newPassword: string;
+    forceChangeOnNextLogin?: boolean;
+    revokeAllSessions?: boolean;
   };
 
   /** 用户列表响应 */
