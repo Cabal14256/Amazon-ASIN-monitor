@@ -70,10 +70,7 @@ async function authenticateToken(req, res, next) {
       clearAuthCookies(res, req);
       return res.status(403).json({
         success: false,
-        errorMessage: getUserStatusErrorMessage(
-          user.status,
-          user.locked_until,
-        ),
+        errorMessage: getUserStatusErrorMessage(user.status, user.locked_until),
         errorCode: 403,
       });
     }
@@ -92,11 +89,23 @@ async function authenticateToken(req, res, next) {
       });
     }
 
-    clearAuthCookies(res, req);
-    return res.status(403).json({
+    if (error.name === 'JsonWebTokenError' || error.name === 'NotBeforeError') {
+      clearAuthCookies(res, req);
+      return res.status(403).json({
+        success: false,
+        errorMessage: '无效的认证令牌',
+        errorCode: 403,
+      });
+    }
+
+    logger.error('[authenticateToken] 鉴权流程异常', {
+      message: error.message,
+      name: error.name,
+    });
+    return res.status(500).json({
       success: false,
-      errorMessage: '无效的认证令牌',
-      errorCode: 403,
+      errorMessage: '鉴权服务暂时不可用',
+      errorCode: 500,
     });
   }
 }
