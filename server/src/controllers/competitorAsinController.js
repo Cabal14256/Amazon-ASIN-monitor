@@ -90,7 +90,10 @@ exports.updateCompetitorVariantGroup = async (req, res) => {
 exports.deleteCompetitorVariantGroup = async (req, res) => {
   try {
     const { groupId } = req.params;
-    await CompetitorVariantGroup.delete(groupId);
+    const deleted = await CompetitorVariantGroup.delete(groupId);
+    if (!deleted) {
+      return sendErrorResponse(res, 404, '竞品变体组不存在');
+    }
     sendSuccessResponse(res, '删除成功');
   } catch (error) {
     handleControllerError(error, req, res);
@@ -130,22 +133,16 @@ exports.createCompetitorASIN = async (req, res) => {
 // 更新ASIN
 exports.updateCompetitorASIN = async (req, res) => {
   try {
+    validateRequiredFields(req.body, ['asin', 'country', 'brand']);
     const { asinId } = req.params;
     const { asin, name, country, brand, asinType } = req.body;
-    if (!asin || !country || !brand) {
-      return res.status(400).json({
-        success: false,
-        errorMessage: 'ASIN、国家和品牌为必填项',
-        errorCode: 400,
-      });
-    }
-    // 验证asinType值
+
     if (asinType && !['1', '2'].includes(String(asinType))) {
-      return res.status(400).json({
-        success: false,
-        errorMessage: 'ASIN类型必须是 1（主链）或 2（副评）',
-        errorCode: 400,
-      });
+      return sendErrorResponse(
+        res,
+        400,
+        'ASIN类型必须是 1（主链）或 2（副评）',
+      );
     }
     const asinData = await CompetitorASIN.update(asinId, {
       asin,
@@ -155,24 +152,14 @@ exports.updateCompetitorASIN = async (req, res) => {
       asinType,
     });
     if (!asinData) {
-      return res.status(404).json({
-        success: false,
-        errorMessage: '竞品ASIN不存在',
-        errorCode: 404,
-      });
+      return sendErrorResponse(res, 404, '竞品ASIN不存在');
     }
-    res.json({
-      success: true,
-      data: asinData,
-      errorCode: 0,
-    });
+    sendSuccessResponse(res, asinData);
   } catch (error) {
-    logger.error('更新ASIN错误:', error);
-    res.status(500).json({
-      success: false,
-      errorMessage: error.message || '更新失败',
-      errorCode: 500,
-    });
+    if (error.statusCode === 400) {
+      return sendErrorResponse(res, 400, error.message);
+    }
+    handleControllerError(error, req, res);
   }
 };
 
@@ -182,32 +169,18 @@ exports.moveCompetitorASIN = async (req, res) => {
     const { asinId } = req.params;
     const { targetGroupId } = req.body;
     if (!targetGroupId) {
-      return res.status(400).json({
-        success: false,
-        errorMessage: '目标变体组ID为必填项',
-        errorCode: 400,
-      });
+      return sendErrorResponse(res, 400, '目标变体组ID为必填项');
     }
     const asinData = await CompetitorASIN.moveToGroup(asinId, targetGroupId);
     if (!asinData) {
-      return res.status(404).json({
-        success: false,
-        errorMessage: '竞品ASIN不存在',
-        errorCode: 404,
-      });
+      return sendErrorResponse(res, 404, '竞品ASIN不存在');
     }
-    res.json({
-      success: true,
-      data: asinData,
-      errorCode: 0,
-    });
+    sendSuccessResponse(res, asinData);
   } catch (error) {
-    logger.error('移动ASIN错误:', error);
-    res.status(500).json({
-      success: false,
-      errorMessage: error.message || '移动失败',
-      errorCode: 500,
-    });
+    if (error.statusCode === 400 || error.statusCode === 404) {
+      return sendErrorResponse(res, error.statusCode, error.message);
+    }
+    handleControllerError(error, req, res);
   }
 };
 
@@ -217,32 +190,15 @@ exports.updateCompetitorASINFeishuNotify = async (req, res) => {
     const { asinId } = req.params;
     const { enabled } = req.body;
     if (typeof enabled !== 'boolean' && enabled !== 0 && enabled !== 1) {
-      return res.status(400).json({
-        success: false,
-        errorMessage: 'enabled参数必须是布尔值或0/1',
-        errorCode: 400,
-      });
+      return sendErrorResponse(res, 400, 'enabled参数必须是布尔值或0/1');
     }
     const asinData = await CompetitorASIN.updateFeishuNotify(asinId, enabled);
     if (!asinData) {
-      return res.status(404).json({
-        success: false,
-        errorMessage: '竞品ASIN不存在',
-        errorCode: 404,
-      });
+      return sendErrorResponse(res, 404, '竞品ASIN不存在');
     }
-    res.json({
-      success: true,
-      data: asinData,
-      errorCode: 0,
-    });
+    sendSuccessResponse(res, asinData);
   } catch (error) {
-    logger.error('更新ASIN飞书通知开关错误:', error);
-    res.status(500).json({
-      success: false,
-      errorMessage: error.message || '更新失败',
-      errorCode: 500,
-    });
+    handleControllerError(error, req, res);
   }
 };
 
@@ -252,35 +208,18 @@ exports.updateCompetitorVariantGroupFeishuNotify = async (req, res) => {
     const { groupId } = req.params;
     const { enabled } = req.body;
     if (typeof enabled !== 'boolean' && enabled !== 0 && enabled !== 1) {
-      return res.status(400).json({
-        success: false,
-        errorMessage: 'enabled参数必须是布尔值或0/1',
-        errorCode: 400,
-      });
+      return sendErrorResponse(res, 400, 'enabled参数必须是布尔值或0/1');
     }
     const groupData = await CompetitorVariantGroup.updateFeishuNotify(
       groupId,
       enabled,
     );
     if (!groupData) {
-      return res.status(404).json({
-        success: false,
-        errorMessage: '竞品变体组不存在',
-        errorCode: 404,
-      });
+      return sendErrorResponse(res, 404, '竞品变体组不存在');
     }
-    res.json({
-      success: true,
-      data: groupData,
-      errorCode: 0,
-    });
+    sendSuccessResponse(res, groupData);
   } catch (error) {
-    logger.error('更新变体组飞书通知开关错误:', error);
-    res.status(500).json({
-      success: false,
-      errorMessage: error.message || '更新失败',
-      errorCode: 500,
-    });
+    handleControllerError(error, req, res);
   }
 };
 
@@ -288,19 +227,13 @@ exports.updateCompetitorVariantGroupFeishuNotify = async (req, res) => {
 exports.deleteCompetitorASIN = async (req, res) => {
   try {
     const { asinId } = req.params;
-    await CompetitorASIN.delete(asinId);
-    res.json({
-      success: true,
-      data: '删除成功',
-      errorCode: 0,
-    });
+    const deleted = await CompetitorASIN.delete(asinId);
+    if (!deleted) {
+      return sendErrorResponse(res, 404, '竞品ASIN不存在');
+    }
+    sendSuccessResponse(res, '删除成功');
   } catch (error) {
-    logger.error('删除ASIN错误:', error);
-    res.status(500).json({
-      success: false,
-      errorMessage: error.message || '删除失败',
-      errorCode: 500,
-    });
+    handleControllerError(error, req, res);
   }
 };
 

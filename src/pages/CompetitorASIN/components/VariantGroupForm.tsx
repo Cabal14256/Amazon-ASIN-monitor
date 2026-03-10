@@ -1,4 +1,5 @@
 import services from '@/services/competitor';
+import { debugError } from '@/utils/debug';
 import { useMessage } from '@/utils/message';
 import {
   ModalForm,
@@ -39,7 +40,7 @@ const VariantGroupForm: React.FC<VariantGroupFormProps> = (props) => {
       onSubmit();
       return true;
     } catch (error: any) {
-      console.error('创建变体组错误:', error);
+      debugError('创建竞品变体组失败:', error);
       // 处理各种错误格式
       let errorMessage = '创建失败';
       if (error?.response?.data?.errorMessage) {

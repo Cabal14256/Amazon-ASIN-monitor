@@ -1,4 +1,5 @@
 import services from '@/services/competitor';
+import { debugError } from '@/utils/debug';
 import { useMessage } from '@/utils/message';
 import {
   ModalForm,
@@ -61,7 +62,7 @@ const ASINForm: React.FC<ASINFormProps> = (props) => {
           : [];
       setVariantGroups(list);
     } catch (error) {
-      console.error('加载竞品变体组列表失败:', error);
+      debugError('加载竞品变体组列表失败:', error);
     }
   }, []);
 
@@ -99,16 +100,21 @@ const ASINForm: React.FC<ASINFormProps> = (props) => {
       submittingRef.current = true;
 
       try {
+        const normalizedValues = {
+          ...formValues,
+          asin: formValues.asin?.trim().toUpperCase(),
+          country: formValues.country?.trim().toUpperCase() as API.Country,
+        };
         if (isEdit) {
           await modifyCompetitorASIN(
             {
               asinId: values?.id || '',
             },
-            formValues,
+            normalizedValues,
           );
           message.success('更新成功');
         } else {
-          await addCompetitorASIN(formValues);
+          await addCompetitorASIN(normalizedValues);
           message.success('创建成功');
         }
         onSubmit();
@@ -169,7 +175,7 @@ const ASINForm: React.FC<ASINFormProps> = (props) => {
         label="所属国家"
         placeholder="请选择国家"
         rules={[{ required: true, message: '请选择国家' }]}
-        disabled={!!variantGroupCountry} // 如果从变体组添加，国家字段禁用（已自动设置）
+        disabled={isEdit || !!variantGroupCountry} // 编辑时国家由所属分组决定
         options={[
           { label: '美国 (US)', value: 'US' },
           { label: '英国 (EU)', value: 'UK' },

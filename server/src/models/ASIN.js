@@ -1,7 +1,11 @@
 const { query } = require('../config/database');
 const { v4: uuidv4 } = require('uuid');
 const VariantGroup = require('./VariantGroup');
-const { decorateAsinStatus } = require('../utils/variantStatus');
+const MonitorHistory = require('./MonitorHistory');
+const {
+  buildEffectiveStatus,
+  decorateAsinStatus,
+} = require('../utils/variantStatus');
 
 // 转换ASIN类型：将旧格式(MAIN_LINK/SUB_REVIEW)转换为新格式(1/2)
 function normalizeAsinType(asinType) {
@@ -14,6 +18,36 @@ function normalizeAsinType(asinType) {
   if (type === '1' || type === 1) return '1';
   if (type === '2' || type === 2) return '2';
   return null;
+}
+
+function buildManualActionCheckResult({
+  markedBroken,
+  reason,
+  updatedBy,
+  previousRecord,
+  currentRecord,
+  operationTime,
+}) {
+  return {
+    source: 'MANUAL_ACTION',
+    entityType: 'ASIN',
+    action: markedBroken ? 'MARK_BROKEN' : 'CLEAR_MANUAL_BROKEN',
+    operator: updatedBy || null,
+    reason: reason || '',
+    statusSource: currentRecord?.statusSource || 'NORMAL',
+    manualBroken: currentRecord?.manualBroken === 1 ? 1 : 0,
+    autoIsBroken: currentRecord?.autoIsBroken === 1 ? 1 : 0,
+    effectiveIsBroken: currentRecord?.isBroken === 1 ? 1 : 0,
+    previousStatusSource: previousRecord?.statusSource || 'NORMAL',
+    previousManualBroken: previousRecord?.manualBroken === 1 ? 1 : 0,
+    previousAutoIsBroken: previousRecord?.autoIsBroken === 1 ? 1 : 0,
+    previousEffectiveIsBroken: previousRecord?.isBroken === 1 ? 1 : 0,
+    manualBrokenReason: currentRecord?.manualBrokenReason || '',
+    manualBrokenUpdatedAt:
+      currentRecord?.manualBrokenUpdatedAt || operationTime,
+    manualBrokenUpdatedBy:
+      currentRecord?.manualBrokenUpdatedBy || updatedBy || null,
+  };
 }
 
 class ASIN {
@@ -231,6 +265,7 @@ class ASIN {
     if (!existing) {
       return null;
     }
+    const operationTime = new Date();
 
     await query(
       `UPDATE asins
@@ -243,7 +278,7 @@ class ASIN {
       [
         markedBroken ? 1 : 0,
         normalizedReason,
-        markedBroken ? new Date() : null,
+        markedBroken ? operationTime : null,
         normalizedUpdatedBy,
         id,
       ],
@@ -254,6 +289,51 @@ class ASIN {
     } else {
       VariantGroup.clearCache();
     }
+
+    const updated = {
+      ...existing,
+      ...buildEffectiveStatus({
+        autoBroken: existing.autoIsBroken || 0,
+        manualBroken: markedBroken ? 1 : 0,
+      }),
+      manualBroken: markedBroken ? 1 : 0,
+      manualBrokenReason: normalizedReason,
+      manualBrokenUpdatedAt: markedBroken ? operationTime : null,
+      manualBrokenUpdatedBy: normalizedUpdatedBy,
+    };
+
+    let variantGroupName = null;
+    if (existing.variantGroupId) {
+      const [groupSnapshot] = await query(
+        `SELECT name FROM variant_groups WHERE id = ?`,
+        [existing.variantGroupId],
+      );
+      variantGroupName = groupSnapshot?.name || null;
+    }
+
+    await MonitorHistory.create({
+      asinId: existing.id,
+      asinCode: existing.asin || null,
+      asinName: existing.name || null,
+      siteSnapshot: existing.site || null,
+      brandSnapshot: existing.brand || null,
+      variantGroupId: existing.variantGroupId || null,
+      variantGroupName,
+      checkType: 'ASIN',
+      country: existing.country || null,
+      isBroken: updated.isBroken === 1 ? 1 : 0,
+      checkTime: operationTime,
+      checkResult: buildManualActionCheckResult({
+        markedBroken,
+        reason:
+          normalizedReason ||
+          (markedBroken ? '' : existing.manualBrokenReason || ''),
+        updatedBy: normalizedUpdatedBy || updatedBy || null,
+        previousRecord: existing,
+        currentRecord: updated,
+        operationTime,
+      }),
+    });
 
     return this.findById(id);
   }

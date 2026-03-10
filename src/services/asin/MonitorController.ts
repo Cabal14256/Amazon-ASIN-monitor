@@ -202,7 +202,7 @@ export async function getPeakHoursStatistics(
   );
 }
 
-/** Analytics 月度被拆统计（服务端衍生结果） */
+/** Analytics 月度异常时长统计（服务端衍生结果） */
 export async function getAnalyticsMonthlyBreakdown(
   params: {
     country?: string;
@@ -328,23 +328,41 @@ export async function getPeriodSummary(
   );
 }
 
-/** 按国家统计ASIN当前状态 */
-export async function getASINStatisticsByCountry(options?: {
-  [key: string]: any;
-}) {
+/** 按国家统计ASIN时长 */
+export async function getASINStatisticsByCountry(
+  params?: {
+    // query
+    /** 国家筛选 */
+    country?: string;
+    /** 开始时间 */
+    startTime?: string;
+    /** 结束时间 */
+    endTime?: string;
+  },
+  options?: { [key: string]: any },
+) {
   return request<API.Result_CountryStatistics_>(
     '/api/v1/monitor-history/statistics/asin-by-country',
     {
       method: 'GET',
+      params: {
+        ...params,
+      },
       ...(options || {}),
     },
   );
 }
 
-/** 按变体组统计ASIN当前状态 */
+/** 按变体组统计ASIN时长 */
 export async function getASINStatisticsByVariantGroup(
   params: {
     // query
+    /** 国家筛选 */
+    country?: string;
+    /** 开始时间 */
+    startTime?: string;
+    /** 结束时间 */
+    endTime?: string;
     /** 限制数量 */
     limit?: number;
   },

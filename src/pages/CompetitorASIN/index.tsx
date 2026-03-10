@@ -4,7 +4,7 @@ import {
 } from '@/services/competitor';
 import { buildAmazonProductUrl } from '@/utils/amazon';
 import { formatBeijing } from '@/utils/beijingTime';
-import { debugLog } from '@/utils/debug';
+import { debugError, debugLog } from '@/utils/debug';
 import { exportToExcel } from '@/utils/export';
 import { useMessage } from '@/utils/message';
 import { extractAsyncTask } from '@/utils/task';
@@ -39,8 +39,7 @@ const {
   checkCompetitorVariantGroup,
   checkCompetitorASIN,
   batchCheckCompetitorVariantGroups,
-} =
-  variantCheckServices.CompetitorVariantCheckController;
+} = variantCheckServices.CompetitorVariantCheckController;
 
 // 国家选项映射
 const countryMap: Record<
@@ -737,7 +736,7 @@ const CompetitorASINManagement: React.FC<unknown> = () => {
               total: data.total || 0,
             };
           } catch (error) {
-            console.error('获取变体组列表失败:', error);
+            debugError('获取竞品变体组列表失败:', error);
             return {
               data: [],
               success: false,
@@ -773,8 +772,7 @@ const CompetitorASINManagement: React.FC<unknown> = () => {
             extra={
               <div>
                 已选择{' '}
-                <a style={{ fontWeight: 600 }}>{selectedRowsState.length}</a>{' '}
-                项
+                <a style={{ fontWeight: 600 }}>{selectedRowsState.length}</a> 项
                 {selectedGroupIds.length > 0
                   ? `，其中竞品变体组 ${selectedGroupIds.length} 项`
                   : ''}
@@ -848,6 +846,7 @@ const CompetitorASINManagement: React.FC<unknown> = () => {
         visible={moveModalVisible}
         asinId={movingASIN?.id}
         currentGroupId={movingASIN?.parentId}
+        currentCountry={movingASIN?.country}
         onCancel={() => {
           setMoveModalVisible(false);
           setMovingASIN(undefined);

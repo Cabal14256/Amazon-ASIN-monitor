@@ -14,6 +14,9 @@ const { testConnection } = require('./config/database');
 const {
   testConnection: testCompetitorConnection,
 } = require('./config/competitor-database');
+const {
+  ensureCompetitorSchemaCompatibility,
+} = require('./services/competitorSchemaService');
 const { initScheduler } = require('./services/schedulerService');
 const {
   registerWorkerProcessors,
@@ -227,6 +230,25 @@ async function startServer() {
   if (!competitorDbConnected) {
     logger.error('⚠️  警告: 竞品数据库连接失败，请检查配置');
     logger.info('💡 提示: 请确保已创建竞品数据库并配置 .env 文件');
+  } else {
+    try {
+      const appliedChanges = await ensureCompetitorSchemaCompatibility();
+      if (appliedChanges.length > 0) {
+        logger.warn('[Bootstrap] 竞品库 schema 已自动补齐', {
+          appliedChanges,
+        });
+      } else {
+        logger.info('[Bootstrap] 竞品库 schema 检查通过');
+      }
+    } catch (error) {
+      logger.error('[Bootstrap] 竞品库 schema 检查失败', {
+        code: error.code,
+        message: error.message,
+      });
+      logger.info(
+        '💡 提示: 如仍有旧库兼容问题，可手动执行 server/database/migrations/027_normalize_competitor_schema.sql',
+      );
+    }
   }
 
   if (isWorkerRole(PROCESS_ROLE)) {

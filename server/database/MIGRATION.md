@@ -28,8 +28,9 @@
 | 023 | `023_add_analytics_fastpath.sql` | 数据分析快路径优化（快照维度、时间槽生成列、聚合维度表） | ✅ 已整合到 init.sql |
 | 024 | `024_fix_missing_password_security_schema.sql` | 修复旧版 init.sql 缺失的密码安全字段与表 | ⚠️ 仅用于升级 |
 | 026 | `026_normalize_user_status_and_audit_permissions.sql` | 统一用户状态字段并补齐角色/审计权限 | ⚠️ 旧库升级必执行 |
+| 027 | `027_normalize_competitor_schema.sql` | 补齐旧版竞品库缺失的状态/通知/时间字段 | ⚠️ 使用竞品监控且库较旧时必执行 |
 
-> **注意**: 所有标记为 "✅ 已整合到 init.sql" 的迁移脚本，其功能已包含在 `init.sql` 中。新安装系统时直接使用 `init.sql` 即可，无需执行这些迁移脚本。竞品数据库相关的迁移脚本已整合到 `competitor-init.sql`。
+> **注意**: 所有标记为 "✅ 已整合到 init.sql" 的迁移脚本，其功能已包含在 `init.sql` 中。新安装系统时直接使用 `init.sql` 即可，无需执行这些迁移脚本。竞品数据库相关的迁移脚本已整合到 `competitor-init.sql`。如果旧版竞品库报 `Unknown column 'vg.is_broken'`，请执行 `027_normalize_competitor_schema.sql`。
 
 ---
 
@@ -399,6 +400,28 @@ mysql -u root -p amazon_asin_monitor < server/database/migrations/022_add_monito
 
 ---
 
+### 027: 统一竞品库状态字段与基础时间字段
+
+**文件**: `027_normalize_competitor_schema.sql`
+
+**说明**: 为旧版竞品数据库补齐当前代码依赖的状态字段、通知字段和时间字段，修复 `Unknown column 'vg.is_broken'` 这类因 schema 落后导致的错误。
+
+**变更内容**:
+
+- 为 `competitor_variant_groups` 补齐 `is_broken`、`variant_status`、`feishu_notify_enabled`、`create_time`、`update_time`、`last_check_time`
+- 为 `competitor_asins` 补齐 `is_broken`、`variant_status`、`feishu_notify_enabled`、`create_time`、`update_time`、`last_check_time`
+- 为 `competitor_monitor_history` 补齐 `notification_sent`、`create_time`
+- 为 `competitor_feishu_config` 补齐 `enabled`、`create_time`、`update_time`
+- 回填空的 `variant_status`，并补齐当前代码查询依赖的非唯一索引
+
+**执行方式**:
+
+```bash
+mysql -u root -p amazon_competitor_monitor < server/database/migrations/027_normalize_competitor_schema.sql
+```
+
+---
+
 ## 迁移执行顺序
 
 如果您的数据库是从旧版本升级，请按以下顺序执行迁移脚本：
@@ -432,6 +455,7 @@ mysql -u root -p amazon_asin_monitor < server/database/migrations/023_add_analyt
 
 ```bash
 mysql -u root -p amazon_competitor_monitor < server/database/migrations/013_add_competitor_variant_group_fields.sql
+mysql -u root -p amazon_competitor_monitor < server/database/migrations/027_normalize_competitor_schema.sql
 ```
 
 > **注意**: 如果您的数据库已经包含某些迁移的变更，可以跳过对应的迁移脚本。

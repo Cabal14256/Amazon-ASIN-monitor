@@ -2,13 +2,46 @@ const { query } = require('../config/competitor-database');
 const cacheService = require('../services/cacheService');
 const logger = require('../utils/logger');
 
+const COUNT_CACHE_PREFIX = 'competitorMonitorHistoryCount:';
+
+function invalidateCountCache() {
+  cacheService.deleteByPrefix(COUNT_CACHE_PREFIX);
+  void cacheService.deleteByPrefixAsync(COUNT_CACHE_PREFIX);
+}
+
+function serializeCheckResult(checkResult) {
+  if (checkResult === null || checkResult === undefined) {
+    return null;
+  }
+  return typeof checkResult === 'string'
+    ? checkResult
+    : JSON.stringify(checkResult);
+}
+
+function formatDateToSqlText(date) {
+  const yyyy = date.getFullYear();
+  const mm = String(date.getMonth() + 1).padStart(2, '0');
+  const dd = String(date.getDate()).padStart(2, '0');
+  const hh = String(date.getHours()).padStart(2, '0');
+  const mi = String(date.getMinutes()).padStart(2, '0');
+  const ss = String(date.getSeconds()).padStart(2, '0');
+  return `${yyyy}-${mm}-${dd} ${hh}:${mi}:${ss}`;
+}
+
 function extractParentAsinFromCheckResult(checkResult) {
   if (!checkResult) return null;
+
   let parsedResult = checkResult;
-  if (typeof checkResult === 'string') {
-    if (!checkResult.includes('parentAsin')) return null;
+  for (
+    let index = 0;
+    index < 2 && typeof parsedResult === 'string';
+    index += 1
+  ) {
+    if (!parsedResult.includes('parentAsin')) {
+      return null;
+    }
     try {
-      parsedResult = JSON.parse(checkResult);
+      parsedResult = JSON.parse(parsedResult);
     } catch (error) {
       return null;
     }
@@ -105,14 +138,13 @@ class CompetitorMonitorHistory {
       conditions.push(endTime);
     }
 
-    const countKey = `competitorMonitorHistoryCount:${
-      variantGroupId || 'ALL'
-    }:${asinId || 'ALL'}:${asin || 'ALL'}:${country || 'ALL'}:${
-      checkType || 'ALL'
-    }:${isBroken || 'ALL'}:${startTime || 'ALL'}:${endTime || 'ALL'}`;
+    const countKey = `${COUNT_CACHE_PREFIX}${variantGroupId || 'ALL'}:${
+      asinId || 'ALL'
+    }:${asin || 'ALL'}:${country || 'ALL'}:${checkType || 'ALL'}:${
+      isBroken || 'ALL'
+    }:${startTime || 'ALL'}:${endTime || 'ALL'}`;
     let total = await cacheService.getAsync(countKey);
     if (total === null) {
-      // 获取总数
       const countSql = sql.replace(
         /SELECT[\s\S]*?FROM/,
         'SELECT COUNT(*) as total FROM',
@@ -124,14 +156,12 @@ class CompetitorMonitorHistory {
       logger.debug('CompetitorMonitorHistory.findAll 使用缓存总数:', countKey);
     }
 
-    // 分页 - LIMIT 和 OFFSET 不能使用参数绑定，必须直接拼接（确保是整数）
     const offset = (Number(current) - 1) * Number(pageSize);
     const limit = Number(pageSize);
-    sql += ` ORDER BY mh.check_time DESC LIMIT ${limit} OFFSET ${offset}`;
+    sql += ` ORDER BY mh.check_time DESC, mh.id DESC LIMIT ${limit} OFFSET ${offset}`;
 
     const list = await query(sql, conditions);
 
-    // 转换字段名：数据库下划线命名 -> 前端驼峰命名
     const formattedList = list.map((item) => {
       const parentAsinFromCheckResult = extractParentAsinFromCheckResult(
         item.check_result,
@@ -181,7 +211,6 @@ class CompetitorMonitorHistory {
     );
 
     if (history) {
-      // 转换字段名：数据库下划线命名 -> 前端驼峰命名
       const parentAsinFromCheckResult = extractParentAsinFromCheckResult(
         history.check_result,
       );
@@ -225,11 +254,12 @@ class CompetitorMonitorHistory {
       checkType,
       country,
       isBroken ? 1 : 0,
-      checkResult ? JSON.stringify(checkResult) : null,
+      serializeCheckResult(checkResult),
       checkTime,
       notificationSent ? 1 : 0,
     ]);
 
+    invalidateCountCache();
     return result.insertId;
   }
 
@@ -249,7 +279,7 @@ class CompetitorMonitorHistory {
         entry.checkType || 'GROUP',
         entry.country || null,
         entry.isBroken ? 1 : 0,
-        entry.checkResult ? JSON.stringify(entry.checkResult) : null,
+        serializeCheckResult(entry.checkResult),
         entry.checkTime || new Date(),
         entry.notificationSent ? 1 : 0,
       );
@@ -262,22 +292,73 @@ class CompetitorMonitorHistory {
     `;
 
     const result = await query(sql, values);
+    invalidateCountCache();
     return result;
   }
 
+  static async updateNotificationStatusByRange(
+    country,
+    startTime,
+    endTime,
+    notificationSent = 1,
+  ) {
+    if (!country || !startTime || !endTime) {
+      return 0;
+    }
+
+    const startDate =
+      startTime instanceof Date ? startTime : new Date(startTime);
+    const endDate = endTime instanceof Date ? endTime : new Date(endTime);
+
+    if (Number.isNaN(startDate.getTime()) || Number.isNaN(endDate.getTime())) {
+      return 0;
+    }
+
+    const rangeStart = startDate <= endDate ? startDate : endDate;
+    const rangeEnd = startDate <= endDate ? endDate : startDate;
+    const normalizedRangeStart = new Date(rangeStart);
+    const normalizedRangeEnd = new Date(rangeEnd);
+
+    normalizedRangeStart.setMilliseconds(0);
+    normalizedRangeEnd.setMilliseconds(0);
+
+    const result = await query(
+      `UPDATE competitor_monitor_history
+       SET notification_sent = ?
+       WHERE country = ?
+         AND check_time >= ?
+         AND check_time <= ?
+         AND is_broken = 1
+         AND notification_sent = 0`,
+      [
+        notificationSent ? 1 : 0,
+        country,
+        formatDateToSqlText(normalizedRangeStart),
+        formatDateToSqlText(normalizedRangeEnd),
+      ],
+    );
+
+    invalidateCountCache();
+    return result.affectedRows || 0;
+  }
+
   // 更新通知状态
-  static async updateNotificationStatus(country, checkTime, notificationSent) {
-    const sql = `
-      UPDATE competitor_monitor_history 
-      SET notification_sent = ? 
-      WHERE country = ? AND check_time = ? AND notification_sent = 0
-    `;
-    const result = await query(sql, [
-      notificationSent ? 1 : 0,
+  static async updateNotificationStatus(
+    country,
+    checkTime,
+    notificationSent = 1,
+  ) {
+    const checkTimeDate =
+      checkTime instanceof Date ? checkTime : new Date(checkTime);
+    const timeStart = new Date(checkTimeDate.getTime() - 60 * 1000);
+    const timeEnd = new Date(checkTimeDate.getTime() + 2 * 60 * 1000);
+
+    return this.updateNotificationStatusByRange(
       country,
-      checkTime,
-    ]);
-    return result.affectedRows;
+      timeStart,
+      timeEnd,
+      notificationSent,
+    );
   }
 }
 
