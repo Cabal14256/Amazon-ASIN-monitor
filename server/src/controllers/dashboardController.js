@@ -64,10 +64,10 @@ exports.getDashboardData = async (req, res) => {
         [todayStartStr, todayStartStr],
       ),
       query(
-        `SELECT id, name, country, site, brand, variant_status, update_time 
-         FROM variant_groups 
+        `SELECT vg.id, vg.name, vg.country, vg.site, vg.brand, vg.variant_status, vg.update_time
+         FROM variant_groups vg
          WHERE ${groupBrokenExprForList}
-         ORDER BY update_time DESC 
+         ORDER BY vg.update_time DESC
          LIMIT 10`,
       ),
       query(
@@ -324,7 +324,11 @@ exports.getDashboardData = async (req, res) => {
       errorCode: 0,
     });
   } catch (error) {
-    logger.error('[getDashboardData] 获取仪表盘数据错误:', error);
+    logger.error('[getDashboardData] 获取仪表盘数据错误', {
+      message: error.message,
+      code: error.code,
+      stack: error.stack,
+    });
     res.status(500).json({
       success: false,
       errorMessage: error.message || '获取仪表盘数据失败',
