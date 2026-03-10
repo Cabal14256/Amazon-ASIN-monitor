@@ -30,23 +30,31 @@ const MoveASINModal: React.FC<MoveASINModalProps> = (props) => {
   const [variantGroups, setVariantGroups] = useState<API.VariantGroup[]>([]);
   const [loading, setLoading] = useState(false);
 
+  const parseVariantGroups = (response: unknown): API.VariantGroup[] => {
+    const payload =
+      response && typeof response === 'object' && 'data' in response
+        ? response.data
+        : response;
+
+    if (
+      payload &&
+      typeof payload === 'object' &&
+      'list' in payload &&
+      Array.isArray(payload.list)
+    ) {
+      return payload.list as API.VariantGroup[];
+    }
+
+    return [];
+  };
+
   const loadVariantGroups = async () => {
     try {
       const response = await queryCompetitorVariantGroupList({
         current: 1,
         pageSize: 1000,
       });
-      const payload =
-        response && typeof response === 'object' && 'data' in response
-          ? response.data
-          : response;
-      const list =
-        payload &&
-        typeof payload === 'object' &&
-        'list' in payload &&
-        Array.isArray(payload.list)
-          ? (payload.list as API.VariantGroup[])
-          : [];
+      const list = parseVariantGroups(response);
       // 过滤掉当前变体组
       const groups = list.filter(
         (group: API.VariantGroup) =>
