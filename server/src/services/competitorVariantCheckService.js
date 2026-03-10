@@ -167,7 +167,7 @@ async function checkCompetitorVariantGroup(
   options = {},
 ) {
   try {
-    const { group = null } = options;
+    const { group = null, recordHistory = true } = options;
     const groupSnapshot =
       group || (await CompetitorVariantGroup.findById(variantGroupId));
     if (!groupSnapshot) {
@@ -272,38 +272,6 @@ async function checkCompetitorVariantGroup(
     groupSnapshot.last_check_time = new Date();
     groupSnapshot.lastCheckTime = groupSnapshot.last_check_time;
 
-    // 记录监控历史
-    const checkTime = new Date();
-    await CompetitorMonitorHistory.create({
-      variantGroupId,
-      checkType: 'GROUP',
-      country: groupSnapshot.country,
-      isBroken: isBroken ? 1 : 0,
-      checkTime,
-      checkResult: JSON.stringify({
-        totalASINs: asins.length,
-        brokenCount: brokenASINs.length,
-        results: checkResults,
-      }),
-    });
-
-    // 记录每个ASIN的检查历史
-    if (groupSnapshot.children && groupSnapshot.children.length > 0) {
-      const asinHistoryEntries = groupSnapshot.children.map((asinInfo) => ({
-        asinId: asinInfo.id,
-        variantGroupId,
-        checkType: 'ASIN',
-        country: asinInfo.country,
-        isBroken: asinInfo.isBroken === 1 ? 1 : 0,
-        checkResult: JSON.stringify({
-          asin: asinInfo.asin,
-          isBroken: asinInfo.isBroken === 1,
-        }),
-        checkTime,
-      }));
-      await CompetitorMonitorHistory.bulkCreate(asinHistoryEntries);
-    }
-
     // 统计不同类型的异常
     const brokenByType = {
       SP_API_ERROR: 0,
@@ -317,6 +285,40 @@ async function checkCompetitorVariantGroup(
       brokenByType[errorType] = (brokenByType[errorType] || 0) + 1;
     });
 
+    const details = {
+      totalASINs: asins.length,
+      brokenCount: brokenASINs.length,
+      results: checkResults,
+    };
+
+    if (recordHistory) {
+      const checkTime = new Date();
+      await CompetitorMonitorHistory.create({
+        variantGroupId,
+        checkType: 'GROUP',
+        country: groupSnapshot.country,
+        isBroken: isBroken ? 1 : 0,
+        checkTime,
+        checkResult: details,
+      });
+
+      if (groupSnapshot.children && groupSnapshot.children.length > 0) {
+        const asinHistoryEntries = groupSnapshot.children.map((asinInfo) => ({
+          asinId: asinInfo.id,
+          variantGroupId,
+          checkType: 'ASIN',
+          country: asinInfo.country,
+          isBroken: asinInfo.isBroken === 1 ? 1 : 0,
+          checkResult: {
+            asin: asinInfo.asin,
+            isBroken: asinInfo.isBroken === 1,
+          },
+          checkTime,
+        }));
+        await CompetitorMonitorHistory.bulkCreate(asinHistoryEntries);
+      }
+    }
+
     return {
       isBroken,
       brokenASINs: brokenASINs.map((item) =>
@@ -326,11 +328,7 @@ async function checkCompetitorVariantGroup(
       ),
       brokenByType, // 按类型统计的异常数量
       groupSnapshot,
-      details: {
-        totalASINs: asins.length,
-        brokenCount: brokenASINs.length,
-        results: checkResults,
-      },
+      details,
     };
   } catch (error) {
     logger.error(`检查竞品变体组 ${variantGroupId} 失败:`, error);
@@ -388,11 +386,11 @@ async function checkSingleCompetitorASIN(asinId, forceRefresh = false) {
       country: asin.country,
       isBroken: isBroken ? 1 : 0,
       checkTime,
-      checkResult: JSON.stringify({
+      checkResult: {
         asin: asin.asin,
         isBroken,
         result,
-      }),
+      },
     });
 
     return {

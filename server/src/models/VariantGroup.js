@@ -2,8 +2,10 @@ const { query } = require('../config/database');
 const { v4: uuidv4 } = require('uuid');
 const cacheService = require('../services/cacheService');
 const logger = require('../utils/logger');
+const MonitorHistory = require('./MonitorHistory');
 const {
   buildAsinEffectiveBrokenExpr,
+  buildEffectiveStatus,
   buildVariantGroupEffectiveBrokenExpr,
   decorateAsinStatus,
   decorateVariantGroupStatus,
@@ -22,7 +24,60 @@ function normalizeAsinType(asinType) {
   return null;
 }
 
+function normalizeCountryCode(country) {
+  return country ? String(country).trim().toUpperCase() : country;
+}
+
+function normalizeSiteCode(site) {
+  return site ? String(site).trim() : site;
+}
+
+function buildManualActionCheckResult({
+  markedBroken,
+  reason,
+  updatedBy,
+  previousRecord,
+  currentRecord,
+  operationTime,
+}) {
+  return {
+    source: 'MANUAL_ACTION',
+    entityType: 'GROUP',
+    action: markedBroken ? 'MARK_BROKEN' : 'CLEAR_MANUAL_BROKEN',
+    operator: updatedBy || null,
+    reason: reason || '',
+    statusSource: currentRecord?.statusSource || 'NORMAL',
+    manualBroken: currentRecord?.manualBroken === 1 ? 1 : 0,
+    autoIsBroken: currentRecord?.autoIsBroken === 1 ? 1 : 0,
+    effectiveIsBroken: currentRecord?.isBroken === 1 ? 1 : 0,
+    previousStatusSource: previousRecord?.statusSource || 'NORMAL',
+    previousManualBroken: previousRecord?.manualBroken === 1 ? 1 : 0,
+    previousAutoIsBroken: previousRecord?.autoIsBroken === 1 ? 1 : 0,
+    previousEffectiveIsBroken: previousRecord?.isBroken === 1 ? 1 : 0,
+    manualBrokenReason: currentRecord?.manualBrokenReason || '',
+    manualBrokenUpdatedAt:
+      currentRecord?.manualBrokenUpdatedAt || operationTime,
+    manualBrokenUpdatedBy:
+      currentRecord?.manualBrokenUpdatedBy || updatedBy || null,
+  };
+}
+
 class VariantGroup {
+  static async findExactMatch(params = {}) {
+    const { name, country, site, brand } = params;
+    const normalizedCountry = normalizeCountryCode(country);
+    const normalizedSite = normalizeSiteCode(site);
+    const [group] = await query(
+      `SELECT *
+       FROM variant_groups
+       WHERE name = ? AND country = ? AND site = ? AND brand = ?
+       ORDER BY create_time DESC
+       LIMIT 1`,
+      [name, normalizedCountry, normalizedSite, brand],
+    );
+    return group || null;
+  }
+
   // 查询所有变体组（带分页和筛选）
   static async findAll(params = {}) {
     const {
@@ -594,6 +649,11 @@ class VariantGroup {
       markedBroken && reason ? String(reason).trim().slice(0, 500) : null;
     const normalizedUpdatedBy =
       markedBroken && updatedBy ? String(updatedBy).trim().slice(0, 100) : null;
+    const existing = await this.findById(id);
+    if (!existing) {
+      return null;
+    }
+    const operationTime = new Date();
 
     await query(
       `UPDATE variant_groups
@@ -606,13 +666,50 @@ class VariantGroup {
       [
         markedBroken ? 1 : 0,
         normalizedReason,
-        markedBroken ? new Date() : null,
+        markedBroken ? operationTime : null,
         normalizedUpdatedBy,
         id,
       ],
     );
 
     this.clearCache();
+
+    const hasManualBrokenChild = Array.isArray(existing.children)
+      ? existing.children.some((child) => Number(child.manualBroken) === 1)
+      : false;
+    const updated = {
+      ...existing,
+      ...buildEffectiveStatus({
+        autoBroken: existing.autoIsBroken || 0,
+        manualBroken: markedBroken || hasManualBrokenChild ? 1 : 0,
+      }),
+      manualBroken: markedBroken ? 1 : 0,
+      manualBrokenReason: normalizedReason,
+      manualBrokenUpdatedAt: markedBroken ? operationTime : null,
+      manualBrokenUpdatedBy: normalizedUpdatedBy,
+    };
+
+    await MonitorHistory.create({
+      variantGroupId: existing.id,
+      variantGroupName: existing.name || null,
+      siteSnapshot: existing.site || null,
+      brandSnapshot: existing.brand || null,
+      checkType: 'GROUP',
+      country: existing.country || null,
+      isBroken: updated.isBroken === 1 ? 1 : 0,
+      checkTime: operationTime,
+      checkResult: buildManualActionCheckResult({
+        markedBroken,
+        reason:
+          normalizedReason ||
+          (markedBroken ? '' : existing.manualBrokenReason || ''),
+        updatedBy: normalizedUpdatedBy || updatedBy || null,
+        previousRecord: existing,
+        currentRecord: updated,
+        operationTime,
+      }),
+    });
+
     return this.findById(id);
   }
 }

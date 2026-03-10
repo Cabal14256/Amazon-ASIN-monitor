@@ -1,9 +1,10 @@
+import { cancelTask } from '@/services/task';
 import { history } from '@umijs/max';
 import { Button, Modal, Progress, message } from 'antd';
 import React from 'react';
 import ReactDOM from 'react-dom/client';
 import { formatBeijingNow } from './beijingTime';
-import { cancelTask } from '@/services/task';
+import { debugError } from './debug';
 import { getToken } from './token';
 
 function normalizeBaseURL(baseURL: string): string {
@@ -334,6 +335,31 @@ export async function exportToExcelAsync(
   let cancelLoading = false;
   let disposed = false;
 
+  const cleanup = () => {
+    if (disposed) {
+      return;
+    }
+    disposed = true;
+    if (unsubscribe) {
+      unsubscribe();
+      unsubscribe = null;
+    }
+    if (pollInterval !== null) {
+      clearInterval(pollInterval);
+      pollInterval = null;
+    }
+    if (timeoutHandle !== null) {
+      clearTimeout(timeoutHandle);
+      timeoutHandle = null;
+    }
+    setTimeout(() => {
+      root.unmount();
+      if (document.body.contains(progressContainer)) {
+        document.body.removeChild(progressContainer);
+      }
+    }, 500);
+  };
+
   const renderModal = () => {
     if (disposed) {
       return;
@@ -391,31 +417,6 @@ export async function exportToExcelAsync(
     progress = newProgress;
     progressMessage = msg;
     renderModal();
-  };
-
-  const cleanup = () => {
-    if (disposed) {
-      return;
-    }
-    disposed = true;
-    if (unsubscribe) {
-      unsubscribe();
-      unsubscribe = null;
-    }
-    if (pollInterval !== null) {
-      clearInterval(pollInterval);
-      pollInterval = null;
-    }
-    if (timeoutHandle !== null) {
-      clearTimeout(timeoutHandle);
-      timeoutHandle = null;
-    }
-    setTimeout(() => {
-      root.unmount();
-      if (document.body.contains(progressContainer)) {
-        document.body.removeChild(progressContainer);
-      }
-    }, 500);
   };
 
   try {
@@ -573,9 +574,7 @@ export async function exportToExcelAsync(
                 .catch((downloadError: any) => {
                   modalState.visible = false;
                   updateProgress(0, '导出失败');
-                  message.error(
-                    downloadError?.message || '下载导出文件失败',
-                  );
+                  message.error(downloadError?.message || '下载导出文件失败');
                   cleanup();
                 });
             } else if (status === 'failed') {
@@ -602,7 +601,7 @@ export async function exportToExcelAsync(
           }
         }
       } catch (error) {
-        console.error('查询任务状态失败:', error);
+        debugError('查询导出任务状态失败:', error);
       }
     }, 2000); // 每2秒轮询一次
 
@@ -620,7 +619,7 @@ export async function exportToExcelAsync(
       }
     }, 30 * 60 * 1000);
   } catch (error: any) {
-    console.error('导出失败:', error);
+    debugError('异步导出失败:', error);
     modalState.visible = false;
     updateProgress(0, '导出失败');
     message.error(error?.message || '导出失败，请重试');
@@ -816,7 +815,7 @@ export async function exportToExcel(
 
                           message.success('导出成功');
                         } catch (redirectError: any) {
-                          console.error('直接下载失败:', redirectError);
+                          debugError('导出直链下载失败:', redirectError);
                           currentModalState.visible = false;
                           currentRoot.render(
                             React.createElement(ProgressModal, {
@@ -887,7 +886,7 @@ export async function exportToExcel(
                       message.success('导出成功');
                       return;
                     } catch (blobError) {
-                      console.error('处理文件数据失败:', blobError);
+                      debugError('处理导出文件数据失败:', blobError);
                       throw new Error(
                         '处理导出文件失败: ' + (blobError as Error).message,
                       );
@@ -896,7 +895,7 @@ export async function exportToExcel(
                     throw new Error(data.errorMessage || '导出失败');
                   }
                 } catch (e) {
-                  console.error('解析 SSE 数据失败:', e, dataLine);
+                  debugError('解析导出 SSE 数据失败:', e, dataLine);
                   // 如果是 JSON 解析错误，继续处理，可能是数据不完整
                   // 如果是其他错误，可能需要抛出
                   if (e instanceof Error && !e.message.includes('JSON')) {
@@ -908,7 +907,7 @@ export async function exportToExcel(
           }
         }
       } catch (streamError) {
-        console.error('读取 SSE 流失败:', streamError);
+        debugError('读取导出 SSE 流失败:', streamError);
         throw new Error(
           '读取导出数据流失败: ' + (streamError as Error).message,
         );
@@ -947,7 +946,7 @@ export async function exportToExcel(
       message.success('导出成功');
     }
   } catch (error: any) {
-    console.error('导出失败:', error);
+    debugError('同步导出失败:', error);
 
     // 关闭进度条
     modalState.visible = false;

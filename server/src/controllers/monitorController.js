@@ -341,7 +341,7 @@ exports.getPeakHoursStatistics = async (req, res) => {
   }
 };
 
-// 月度被拆统计（服务端衍生结果）
+// 月度异常时长统计（服务端衍生结果）
 exports.getAnalyticsMonthlyBreakdown = async (req, res) => {
   const startTime = Date.now();
   try {
@@ -716,10 +716,15 @@ exports.getPeriodSummary = async (req, res) => {
   }
 };
 
-// 按国家统计ASIN当前状态
+// 按国家统计ASIN时长
 exports.getASINStatisticsByCountry = async (req, res) => {
   try {
-    const statistics = await MonitorHistory.getASINStatisticsByCountry();
+    const { country, startTime, endTime } = req.query;
+    const statistics = await MonitorHistory.getASINStatisticsByCountry({
+      country,
+      startTime,
+      endTime,
+    });
 
     res.json({
       success: true,
@@ -727,7 +732,7 @@ exports.getASINStatisticsByCountry = async (req, res) => {
       errorCode: 0,
     });
   } catch (error) {
-    logger.error('按国家统计ASIN当前状态错误:', error);
+    logger.error('按国家统计ASIN时长错误:', error);
     res.status(500).json({
       success: false,
       errorMessage: error.message || '查询失败',
@@ -736,11 +741,14 @@ exports.getASINStatisticsByCountry = async (req, res) => {
   }
 };
 
-// 按变体组统计ASIN当前状态
+// 按变体组统计ASIN时长
 exports.getASINStatisticsByVariantGroup = async (req, res) => {
   try {
-    const { limit = 10 } = req.query;
+    const { limit = 10, country, startTime, endTime } = req.query;
     const statistics = await MonitorHistory.getASINStatisticsByVariantGroup({
+      country,
+      startTime,
+      endTime,
       limit,
     });
 
@@ -750,7 +758,7 @@ exports.getASINStatisticsByVariantGroup = async (req, res) => {
       errorCode: 0,
     });
   } catch (error) {
-    logger.error('按变体组统计ASIN当前状态错误:', error);
+    logger.error('按变体组统计ASIN时长错误:', error);
     res.status(500).json({
       success: false,
       errorMessage: error.message || '查询失败',

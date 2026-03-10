@@ -1,4 +1,4 @@
-const { query } = require('../config/competitor-database');
+const { query, withTransaction } = require('../config/competitor-database');
 const { v4: uuidv4 } = require('uuid');
 const cacheService = require('../services/cacheService');
 const logger = require('../utils/logger');
@@ -16,7 +16,44 @@ function normalizeAsinType(asinType) {
   return null;
 }
 
+function normalizeCountryCode(country) {
+  return country ? String(country).trim().toUpperCase() : country;
+}
+
+function buildCompetitorAsinBrokenExpr(alias = 'a') {
+  return `COALESCE(${alias}.is_broken, 0) = 1`;
+}
+
+function buildCompetitorVariantGroupBrokenExpr(
+  groupAlias = 'vg',
+  childAlias = 'a2',
+) {
+  const childBrokenExpr = buildCompetitorAsinBrokenExpr(childAlias);
+  return `(
+    COALESCE(${groupAlias}.is_broken, 0) = 1
+    OR EXISTS (
+      SELECT 1
+      FROM competitor_asins ${childAlias}
+      WHERE ${childAlias}.variant_group_id = ${groupAlias}.id
+        AND ${childBrokenExpr}
+    )
+  )`;
+}
+
 class CompetitorVariantGroup {
+  static async findExactMatch(params = {}) {
+    const { name, country, brand } = params;
+    const normalizedCountry = normalizeCountryCode(country);
+    const [group] = await query(
+      `SELECT * FROM competitor_variant_groups
+       WHERE name = ? AND country = ? AND brand = ?
+       ORDER BY create_time DESC
+       LIMIT 1`,
+      [name, normalizedCountry, brand],
+    );
+    return group || null;
+  }
+
   // 查询所有变体组（带分页和筛选）
   static async findAll(params = {}) {
     const {
@@ -32,6 +69,9 @@ class CompetitorVariantGroup {
     const cacheKey = `competitorVariantGroups:${country || 'ALL'}:${
       variantStatus || 'ALL'
     }:pageSize:${pageSize}`;
+    const groupEffectiveBrokenExpr =
+      buildCompetitorVariantGroupBrokenExpr('vg');
+    const asinEffectiveBrokenExpr = buildCompetitorAsinBrokenExpr('a');
     if (shouldUseCache) {
       const cachedValue = await cacheService.getAsync(cacheKey);
       if (cachedValue) {
@@ -63,8 +103,9 @@ class CompetitorVariantGroup {
 
     if (variantStatus) {
       const isBroken = variantStatus === 'BROKEN' ? 1 : 0;
-      sql += ` AND vg.is_broken = ?`;
-      queryValues.push(isBroken);
+      sql += isBroken
+        ? ` AND ${groupEffectiveBrokenExpr}`
+        : ` AND NOT ${groupEffectiveBrokenExpr}`;
     }
 
     sql += ` GROUP BY vg.id`;
@@ -84,8 +125,9 @@ class CompetitorVariantGroup {
     }
     if (variantStatus) {
       const isBroken = variantStatus === 'BROKEN' ? 1 : 0;
-      countSql += ` AND vg.is_broken = ?`;
-      countValues.push(isBroken);
+      countSql += isBroken
+        ? ` AND ${groupEffectiveBrokenExpr}`
+        : ` AND NOT ${groupEffectiveBrokenExpr}`;
     }
 
     const countResult = await query(countSql, countValues);
@@ -111,8 +153,9 @@ class CompetitorVariantGroup {
 
     if (variantStatus) {
       const isBroken = variantStatus === 'BROKEN' ? 1 : 0;
-      totalASINsSql += ` AND a.is_broken = ?`;
-      totalASINsValues.push(isBroken);
+      totalASINsSql += isBroken
+        ? ` AND ${asinEffectiveBrokenExpr}`
+        : ` AND NOT ${asinEffectiveBrokenExpr}`;
     }
 
     const totalASINsResult = await query(totalASINsSql, totalASINsValues);
@@ -160,10 +203,7 @@ class CompetitorVariantGroup {
       // 为每个变体组分配ASIN数据
       for (const group of list) {
         const asins = asinsByGroupId[group.id] || [];
-        logger.debug(
-          `竞品变体组 ${group.id} 查询到的ASIN数量:`,
-          asins.length,
-        );
+        logger.debug(`竞品变体组 ${group.id} 查询到的ASIN数量:`, asins.length);
 
         group.children = asins.map((asin) => ({
           id: asin.id,
@@ -425,7 +465,8 @@ class CompetitorVariantGroup {
   // 创建变体组
   static async create(data) {
     const id = uuidv4();
-    const { name, country, brand } = data;
+    const { name, brand } = data;
+    const country = normalizeCountryCode(data.country);
     await query(
       `INSERT INTO competitor_variant_groups (id, name, country, brand, is_broken, variant_status, feishu_notify_enabled)
        VALUES (?, ?, ?, ?, 0, 'NORMAL', 0)`,
@@ -437,19 +478,93 @@ class CompetitorVariantGroup {
 
   // 更新变体组
   static async update(id, data) {
-    const { name, country, brand } = data;
-    // 更新变体组信息时更新 update_time
-    await query(
-      `UPDATE competitor_variant_groups SET name = ?, country = ?, brand = ?, update_time = NOW() WHERE id = ?`,
-      [name, country, brand, id],
+    const { name, brand } = data;
+    const country = normalizeCountryCode(data.country);
+
+    const updated = await withTransaction(
+      async ({ query: transactionQuery }) => {
+        const [existingGroup] = await transactionQuery(
+          `SELECT id, country FROM competitor_variant_groups WHERE id = ? FOR UPDATE`,
+          [id],
+        );
+        if (!existingGroup) {
+          return null;
+        }
+
+        const countryChanged = existingGroup.country !== country;
+        if (countryChanged) {
+          const children = await transactionQuery(
+            `SELECT asin FROM competitor_asins WHERE variant_group_id = ? FOR UPDATE`,
+            [id],
+          );
+
+          if (children.length > 0) {
+            const asinCodes = children
+              .map((item) => item.asin)
+              .filter((item) => Boolean(item));
+            if (asinCodes.length > 0) {
+              const placeholders = asinCodes.map(() => '?').join(',');
+              const conflicts = await transactionQuery(
+                `SELECT asin
+               FROM competitor_asins
+               WHERE country = ?
+                 AND variant_group_id <> ?
+                 AND asin IN (${placeholders})
+               LIMIT 5`,
+                [country, id, ...asinCodes],
+              );
+
+              if (conflicts.length > 0) {
+                const conflictList = conflicts
+                  .map((item) => item.asin)
+                  .join(', ');
+                const error = new Error(
+                  `变体组国家更新失败，目标国家已存在相同ASIN: ${conflictList}`,
+                );
+                error.statusCode = 400;
+                throw error;
+              }
+            }
+          }
+        }
+
+        await transactionQuery(
+          `UPDATE competitor_variant_groups
+         SET name = ?, country = ?, brand = ?, update_time = NOW()
+         WHERE id = ?`,
+          [name, country, brand, id],
+        );
+
+        if (countryChanged) {
+          await transactionQuery(
+            `UPDATE competitor_asins
+           SET country = ?, update_time = NOW()
+           WHERE variant_group_id = ?`,
+            [country, id],
+          );
+        }
+
+        return true;
+      },
     );
+
     this.clearCache();
+    if (!updated) {
+      return null;
+    }
     return this.findById(id);
   }
 
   // 删除变体组
   static async delete(id) {
-    // 外键约束会自动删除关联的ASIN
+    const [existing] = await query(
+      `SELECT id FROM competitor_variant_groups WHERE id = ?`,
+      [id],
+    );
+    if (!existing) {
+      return false;
+    }
+
     await query(`DELETE FROM competitor_variant_groups WHERE id = ?`, [id]);
     this.clearCache();
     return true;

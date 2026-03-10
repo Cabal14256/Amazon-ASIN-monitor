@@ -8,6 +8,7 @@ const CompetitorVariantGroup = require('../models/CompetitorVariantGroup');
 const CompetitorMonitorHistory = require('../models/CompetitorMonitorHistory');
 const { getUTC8String } = require('../utils/dateTime');
 const logger = require('../utils/logger');
+const analyticsViewService = require('./analyticsViewService');
 const websocketService = require('./websocketService');
 const taskRegistryService = require('./taskRegistryService');
 const {
@@ -242,6 +243,57 @@ function formatCheckResult(checkResult) {
   }
 }
 
+function parseCheckResultPayload(checkResult) {
+  if (!checkResult) {
+    return null;
+  }
+
+  if (typeof checkResult === 'string') {
+    try {
+      return JSON.parse(checkResult);
+    } catch (error) {
+      return null;
+    }
+  }
+
+  return typeof checkResult === 'object' ? checkResult : null;
+}
+
+function formatCheckTypeLabel(checkType) {
+  if (checkType === 'GROUP') {
+    return '变体组';
+  }
+  if (checkType === 'ASIN') {
+    return 'ASIN';
+  }
+  return checkType || '';
+}
+
+function extractManualExportInfo(checkResult) {
+  const payload = parseCheckResultPayload(checkResult);
+  if (!payload) {
+    return {
+      statusSource: '',
+      manualAction: '',
+      manualReason: '',
+      operator: '',
+    };
+  }
+
+  let manualAction = '';
+  if (payload.source === 'MANUAL_ACTION') {
+    manualAction =
+      payload.action === 'MARK_BROKEN' ? '人工标记异常' : '取消人工标记';
+  }
+
+  return {
+    statusSource: payload.statusSource || '',
+    manualAction,
+    manualReason: payload.reason || payload.manualBrokenReason || '',
+    operator: payload.operator || payload.manualBrokenUpdatedBy || '',
+  };
+}
+
 /**
  * 规范化ASIN筛选参数
  * - 单个值：保持字符串（兼容模糊搜索）
@@ -358,7 +410,12 @@ async function processExportTask(job) {
         );
         break;
       case 'parent-asin-query':
-        result = await processParentAsinQueryExport(job, taskId, params, userId);
+        result = await processParentAsinQueryExport(
+          job,
+          taskId,
+          params,
+          userId,
+        );
         break;
       default:
         throw new Error(`不支持的导出类型: ${exportType}`);
@@ -568,6 +625,10 @@ async function processMonitorHistoryExport(job, taskId, params, userId) {
         '国家',
         '状态变动',
         '检查结果',
+        '状态来源',
+        '人工操作',
+        '人工原因',
+        '操作人',
         '检查详情',
       ]
     : [
@@ -579,6 +640,10 @@ async function processMonitorHistoryExport(job, taskId, params, userId) {
         'ASIN类型',
         '国家',
         '检查结果',
+        '状态来源',
+        '人工操作',
+        '人工原因',
+        '操作人',
         '检查详情',
       ];
 
@@ -595,6 +660,10 @@ async function processMonitorHistoryExport(job, taskId, params, userId) {
         { width: 10 },
         { width: 15 },
         { width: 10 },
+        { width: 14 },
+        { width: 16 },
+        { width: 30 },
+        { width: 16 },
         { width: 100 },
       ]
     : [
@@ -606,6 +675,10 @@ async function processMonitorHistoryExport(job, taskId, params, userId) {
         { width: 10 },
         { width: 10 },
         { width: 10 },
+        { width: 14 },
+        { width: 16 },
+        { width: 30 },
+        { width: 16 },
         { width: 100 },
       ];
 
@@ -665,12 +738,14 @@ async function processMonitorHistoryExport(job, taskId, params, userId) {
         history.check_time || history.checkTime,
       );
       const asinTypeText = formatAsinType(history.asinType);
-      const checkResult = formatCheckResult(history.checkResult);
+      const rawCheckResult = history.checkResult || history.check_result;
+      const checkResult = formatCheckResult(rawCheckResult);
+      const manualInfo = extractManualExportInfo(rawCheckResult);
 
       const rowData = isStatusChanges
         ? [
             checkTimeStr,
-            history.checkType === 'GROUP' ? '变体组' : 'ASIN',
+            formatCheckTypeLabel(history.checkType),
             history.variantGroupName || '',
             history.asin || '',
             history.asinName || '',
@@ -678,17 +753,25 @@ async function processMonitorHistoryExport(job, taskId, params, userId) {
             history.country || '',
             history.statusChange || '',
             history.isBroken === 1 ? '异常' : '正常',
+            manualInfo.statusSource,
+            manualInfo.manualAction,
+            manualInfo.manualReason,
+            manualInfo.operator,
             checkResult,
           ]
         : [
             checkTimeStr,
-            history.checkType === 'GROUP' ? '变体组' : 'ASIN',
+            formatCheckTypeLabel(history.checkType),
             history.variantGroupName || '',
             history.asin || '',
             history.asinName || '',
             asinTypeText,
             history.country || '',
             history.isBroken === 1 ? '异常' : '正常',
+            manualInfo.statusSource,
+            manualInfo.manualAction,
+            manualInfo.manualReason,
+            manualInfo.operator,
             checkResult,
           ];
 
@@ -962,7 +1045,12 @@ async function processCompetitorASINExport(job, taskId, params, userId) {
 /**
  * 处理竞品变体组数据导出
  */
-async function processCompetitorVariantGroupExport(job, taskId, params, userId) {
+async function processCompetitorVariantGroupExport(
+  job,
+  taskId,
+  params,
+  userId,
+) {
   const { keyword, country, variantStatus } = params;
 
   updateProgress(job, taskId, 10, '正在查询数据...', userId);
@@ -1180,7 +1268,7 @@ async function processCompetitorMonitorHistoryExport(
 }
 
 /**
- * 处理月度被拆统计导出
+ * 处理月度异常时长统计导出
  */
 async function processAnalyticsMonthlyBreakdownExport(
   job,
@@ -1230,19 +1318,13 @@ async function processAnalyticsMonthlyBreakdownExport(
 
   updateProgress(job, taskId, 55, '正在处理月度数据...', userId);
 
-  const statMap = new Map();
-  if (Array.isArray(statistics)) {
-    statistics.forEach((item) => {
-      const dateKey = String(item?.time_period || '').slice(0, 10);
-      if (dateKey) {
-        statMap.set(dateKey, item);
-      }
-    });
-  }
-
-  const excelData = [['日期', '被拆数量', '总链接数量', '被拆占比']];
-  let brokenTotal = 0;
-  let linkTotal = 0;
+  const breakdown = analyticsViewService.buildMonthlyBreakdownRows(
+    statistics,
+    normalizedMonthToken,
+  );
+  const excelData = [
+    ['日期', '异常时长（小时）', '总监控时长（小时）', '异常时长占比'],
+  ];
 
   for (let day = 1; day <= daysInMonth; day += 1) {
     if ((day - 1) % 7 === 0) {
@@ -1251,44 +1333,36 @@ async function processAnalyticsMonthlyBreakdownExport(
         `导出任务已取消（已处理 ${day - 1}/${daysInMonth} 天数据）`,
       );
     }
-    const dayText = String(day).padStart(2, '0');
-    const dateKey = `${normalizedMonthToken}-${dayText}`;
-    const stat = statMap.get(dateKey);
-    const brokenAsinsDedup = Number(stat?.broken_asins_dedup) || 0;
-    const totalAsinsDedup = Number(stat?.total_asins_dedup) || 0;
-    const fallbackRatio = Number(stat?.ratio_all_time) || 0;
-    const brokenRatio =
-      totalAsinsDedup > 0
-        ? (brokenAsinsDedup / totalAsinsDedup) * 100
-        : fallbackRatio;
-
-    brokenTotal += brokenAsinsDedup;
-    linkTotal += totalAsinsDedup;
+    const row = breakdown.rows[day - 1] || {
+      day,
+      abnormalDurationHours: 0,
+      totalDurationHours: 0,
+      abnormalDurationRate: 0,
+    };
 
     excelData.push([
-      day,
-      brokenAsinsDedup,
-      totalAsinsDedup,
-      `${brokenRatio.toFixed(2)}%`,
+      row.day,
+      Number(row.abnormalDurationHours.toFixed(2)),
+      Number(row.totalDurationHours.toFixed(2)),
+      `${row.abnormalDurationRate.toFixed(2)}%`,
     ]);
   }
 
-  const averageRatio = linkTotal > 0 ? (brokenTotal / linkTotal) * 100 : 0;
   excelData.push([
-    '平均值被拆占比',
-    brokenTotal,
-    linkTotal,
-    `${averageRatio.toFixed(2)}%`,
+    '总体异常时长占比',
+    Number(breakdown.summary.abnormalDurationTotal.toFixed(2)),
+    Number(breakdown.summary.totalDurationTotal.toFixed(2)),
+    `${breakdown.summary.averageRatio.toFixed(2)}%`,
   ]);
 
   updateProgress(job, taskId, 90, '正在生成Excel文件...', userId);
 
-  const filename = `月度被拆统计_${normalizedMonthToken}.xlsx`;
+  const filename = `月度异常时长统计_${normalizedMonthToken}.xlsx`;
   const filepath = path.join(EXPORT_DIR, `${taskId}.xlsx`);
 
   await writeAoaWorkbookToFile({
     excelData,
-    sheetName: '月度被拆统计',
+    sheetName: '月度异常时长统计',
     columnWidths: [12, 12, 14, 12],
     filepath,
   });
@@ -1318,23 +1392,28 @@ async function processParentAsinQueryExport(job, taskId, params, userId) {
   updateProgress(job, taskId, 10, '开始查询ASIN父变体...', userId);
   await throwIfTaskCancelled(taskId, '导出任务已取消');
 
-  const results = await variantCheckService.batchQueryParentAsin(asinList, country);
+  const results = await variantCheckService.batchQueryParentAsin(
+    asinList,
+    country,
+  );
 
   updateProgress(job, taskId, 80, '正在生成Excel文件...', userId);
 
-  const excelData = [[
-    'ASIN',
-    '国家',
-    '是否有父变体',
-    '父变体ASIN',
-    '父体标题',
-    '产品标题',
-    '品牌',
-    '是否有变体',
-    '变体数量',
-    '查询时间',
-    '错误信息',
-  ]];
+  const excelData = [
+    [
+      'ASIN',
+      '国家',
+      '是否有父变体',
+      '父变体ASIN',
+      '父体标题',
+      '产品标题',
+      '品牌',
+      '是否有变体',
+      '变体数量',
+      '查询时间',
+      '错误信息',
+    ],
+  ];
 
   const queryTime = getUTC8String('YYYY-MM-DD HH:mm:ss');
   for (let index = 0; index < results.length; index += 1) {
