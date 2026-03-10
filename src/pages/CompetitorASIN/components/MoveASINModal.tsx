@@ -1,7 +1,7 @@
 import services from '@/services/competitor';
 import { debugError } from '@/utils/debug';
 import { useMessage } from '@/utils/message';
-import { Modal, Select } from 'antd';
+import { Modal, Select, Typography } from 'antd';
 import React, { useEffect, useState } from 'react';
 
 const { moveCompetitorASIN, queryCompetitorVariantGroupList } =
@@ -30,23 +30,31 @@ const MoveASINModal: React.FC<MoveASINModalProps> = (props) => {
   const [variantGroups, setVariantGroups] = useState<API.VariantGroup[]>([]);
   const [loading, setLoading] = useState(false);
 
+  const parseVariantGroups = (response: unknown): API.VariantGroup[] => {
+    const payload =
+      response && typeof response === 'object' && 'data' in response
+        ? response.data
+        : response;
+
+    if (
+      payload &&
+      typeof payload === 'object' &&
+      'list' in payload &&
+      Array.isArray(payload.list)
+    ) {
+      return payload.list as API.VariantGroup[];
+    }
+
+    return [];
+  };
+
   const loadVariantGroups = async () => {
     try {
       const response = await queryCompetitorVariantGroupList({
         current: 1,
         pageSize: 1000,
       });
-      const payload =
-        response && typeof response === 'object' && 'data' in response
-          ? response.data
-          : response;
-      const list =
-        payload &&
-        typeof payload === 'object' &&
-        'list' in payload &&
-        Array.isArray(payload.list)
-          ? (payload.list as API.VariantGroup[])
-          : [];
+      const list = parseVariantGroups(response);
       // 过滤掉当前变体组
       const groups = list.filter(
         (group: API.VariantGroup) =>
@@ -101,9 +109,9 @@ const MoveASINModal: React.FC<MoveASINModalProps> = (props) => {
       cancelText="取消"
     >
       <div style={{ marginBottom: 16 }}>
-        <label style={{ display: 'block', marginBottom: 8 }}>
+        <Typography.Text style={{ display: 'block', marginBottom: 8 }}>
           选择目标变体组：
-        </label>
+        </Typography.Text>
         <Select
           style={{ width: '100%' }}
           placeholder="请选择目标变体组"
@@ -120,9 +128,9 @@ const MoveASINModal: React.FC<MoveASINModalProps> = (props) => {
         />
       </div>
       {variantGroups.length === 0 && (
-        <div style={{ color: '#999', fontSize: 12 }}>
+        <Typography.Text type="secondary" style={{ fontSize: 12 }}>
           没有可用的同国家变体组（已排除当前变体组）
-        </div>
+        </Typography.Text>
       )}
     </Modal>
   );
