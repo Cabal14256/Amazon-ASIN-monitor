@@ -67,12 +67,14 @@ const formatTooltipValue = (
 ) => {
   if (valueMode === 'percent') {
     const percent = isNaN(value) ? 0 : value;
-    const base = rawValue !== undefined ? ` (${rawValue} 条)` : '';
+    const base = rawValue !== undefined ? ` (${rawValue.toFixed(2)} 小时)` : '';
     return `${percent.toFixed(2)}%${base}`;
   }
   return rawValue !== undefined
-    ? `${value}${rawValue === value ? '' : ` (${rawValue})`}`
-    : `${value}`;
+    ? `${value.toFixed(2)} 小时${
+        rawValue === value ? '' : ` (${rawValue.toFixed(2)} 小时)`
+      }`
+    : `${value.toFixed(2)} 小时`;
 };
 
 const toNumber = (value: unknown) => {
@@ -120,6 +122,8 @@ const formatDuration = (durationMs: number) => {
   )}`;
 };
 
+const formatHours = (value?: number) => `${toNumber(value).toFixed(2)} 小时`;
+
 type ProgressProfile = Record<
   string,
   {
@@ -132,9 +136,9 @@ type ProgressProfile = Record<
 type MonthlyBreakdownRow = {
   date: string;
   day: number;
-  brokenAsinsDedup: number;
-  totalAsinsDedup: number;
-  brokenRatio: number;
+  abnormalDurationHours: number;
+  totalDurationHours: number;
+  abnormalDurationRate: number;
 };
 
 const PROGRESS_PROFILE_KEY = 'analyticsProgressProfile.v1';
@@ -296,8 +300,8 @@ const AnalyticsPageContent: React.FC<unknown> = () => {
         Array.isArray(breakdownData.rows) ? breakdownData.rows : [],
       );
     } catch (error) {
-      console.error('加载月度被拆统计失败:', error);
-      message.error('加载月度被拆统计失败，请稍后重试');
+      console.error('加载月度异常时长统计失败:', error);
+      message.error('加载月度异常时长统计失败，请稍后重试');
       setMonthlyBreakdownRows([]);
     } finally {
       setMonthlyBreakdownLoading(false);
@@ -440,13 +444,23 @@ const AnalyticsPageContent: React.FC<unknown> = () => {
             run: () => getStatisticsByTime({ ...params, groupBy }),
           },
           {
-            // 使用ASIN当前状态统计，而不是监控历史记录
             label: '国家维度统计',
-            run: () => getASINStatisticsByCountry(),
+            run: () =>
+              getASINStatisticsByCountry({
+                country,
+                startTime,
+                endTime,
+              }),
           },
           {
             label: '变体组Top 10',
-            run: () => getASINStatisticsByVariantGroup({ limit: 10 }),
+            run: () =>
+              getASINStatisticsByVariantGroup({
+                limit: 10,
+                country,
+                startTime,
+                endTime,
+              }),
           },
           {
             label: '总体统计',
@@ -700,14 +714,14 @@ const AnalyticsPageContent: React.FC<unknown> = () => {
           timeData && typeof timeData === 'object' && !('success' in timeData)
             ? timeData
             : (timeData as any)?.data || [];
-        // countryData 现在是基于ASIN当前状态的统计
+        // countryData 现在是基于查询时间范围的ASIN时长统计
         const countryStats =
           countryData &&
           typeof countryData === 'object' &&
           !('success' in countryData)
             ? countryData
             : (countryData as any)?.data || [];
-        // variantGroupData 现在是基于ASIN当前状态的统计
+        // variantGroupData 现在是基于查询时间范围的ASIN时长统计
         const variantGroupStats =
           variantGroupData &&
           typeof variantGroupData === 'object' &&
@@ -881,9 +895,16 @@ const AnalyticsPageContent: React.FC<unknown> = () => {
   // 注意：确保数据顺序与颜色数组顺序一致（按字母顺序：异常、正常、总计）
   const normalizedOverall = useMemo(() => {
     return {
-      totalChecks: toNumber(overallStatistics.totalChecks),
-      brokenCount: toNumber(overallStatistics.brokenCount),
-      normalCount: toNumber(overallStatistics.normalCount),
+      totalDurationHours: toNumber(
+        (overallStatistics as any).totalDurationHours || 0,
+      ),
+      abnormalDurationHours: toNumber(
+        (overallStatistics as any).abnormalDurationHours || 0,
+      ),
+      normalDurationHours: toNumber(
+        (overallStatistics as any).normalDurationHours || 0,
+      ),
+      ratioAllTime: toNumber((overallStatistics as any).ratioAllTime || 0),
     };
   }, [overallStatistics]);
 
@@ -894,59 +915,64 @@ const AnalyticsPageContent: React.FC<unknown> = () => {
       if (!parsedTime) {
         return [];
       }
-      // 所有ASIN异常占比（快照口径）- 始终为百分比
-      const ratioAllAsin = toNumber(item.ratio_all_asin || 0);
-      // 所有ASIN异常占比-去重（去重口径）- 始终为百分比
-      const ratioAllTime = toNumber(item.ratio_all_time || 0);
-      const totalAsinsDedup = toNumber(item.total_asins_dedup || 0);
-      const brokenAsinsDedup = toNumber(item.broken_asins_dedup || 0);
-      const totalChecks = toNumber(item.total_checks || 0);
-      const brokenCount = toNumber(item.broken_count || 0);
+      const ratioAllAsin = toNumber(
+        (item as any).ratioAllAsin ?? item.ratio_all_asin ?? 0,
+      );
+      // 所有ASIN异常时长占比（全局时长口径）
+      const ratioAllTime = toNumber(
+        (item as any).ratioAllTime ?? item.ratio_all_time ?? 0,
+      );
+      const totalDurationHours = toNumber(
+        (item as any).totalDurationHours || 0,
+      );
+      const abnormalDurationHours = toNumber(
+        (item as any).abnormalDurationHours || 0,
+      );
 
       const rows = [
         {
           time: parsedTime,
-          type: '所有ASIN异常占比',
+          type: 'ASIN平均异常时长占比',
           value: ratioAllAsin,
           rawValue: ratioAllAsin,
-          totalChecks,
-          brokenCount,
+          totalDurationHours,
+          abnormalDurationHours,
         },
         {
           time: parsedTime,
-          type: '所有ASIN异常占比-去重',
+          type: '所有ASIN异常时长占比',
           value: ratioAllTime,
           rawValue: ratioAllTime,
-          totalAsinsDedup,
-          brokenAsinsDedup,
+          totalDurationHours,
+          abnormalDurationHours,
         },
       ];
       return rows
         .filter((row) => Number.isFinite(row.value))
         .map((row) => {
-          if (row.type === '所有ASIN异常占比') {
+          if (row.type === 'ASIN平均异常时长占比') {
             return {
               ...row,
-              labelValue: `${ratioAllAsin.toFixed(
-                2,
-              )}% (${brokenCount}/${totalChecks} 快照)`,
+              labelValue: `${ratioAllAsin.toFixed(2)}% (平均ASIN时长口径)`,
             };
           } else {
             return {
               ...row,
               labelValue: `${ratioAllTime.toFixed(
                 2,
-              )}% (${brokenAsinsDedup}/${totalAsinsDedup} ASIN)`,
+              )}% (${abnormalDurationHours.toFixed(
+                2,
+              )}/${totalDurationHours.toFixed(2)} 小时)`,
             };
           }
         });
     });
   }, [timeStatistics]);
 
-  const lineTypes = ['所有ASIN异常占比', '所有ASIN异常占比-去重'];
+  const lineTypes = ['ASIN平均异常时长占比', '所有ASIN异常时长占比'];
   const lineColorMap: Record<string, string> = {
-    所有ASIN异常占比: '#ff4d4f',
-    '所有ASIN异常占比-去重': '#1890ff',
+    ASIN平均异常时长占比: '#ff4d4f',
+    所有ASIN异常时长占比: '#1890ff',
   };
 
   // 国家颜色映射（用于饼图和柱状图）
@@ -1241,22 +1267,24 @@ const AnalyticsPageContent: React.FC<unknown> = () => {
     }
   }, []);
 
-  // 国家统计柱状图数据（基于ASIN当前状态）
+  // 国家统计柱状图数据（基于查询时间范围内的时长统计）
   // 注意：确保数据顺序与颜色数组顺序一致
   const countryColumnData = useMemo(() => {
     const data = countryStatistics.flatMap((item) => {
       const countryLabel = countryMap[item.country || ''] || item.country;
-      // 使用 total_asins 和 broken_count 计算正常数量
-      const totalAsins = toNumber((item as any).total_asins || 0);
-      const broken = toNumber(item.broken_count || 0);
-      const normal = totalAsins - broken;
+      const abnormalDurationHours = toNumber(
+        (item as any).abnormalDurationHours || 0,
+      );
+      const normalDurationHours = toNumber(
+        (item as any).normalDurationHours || 0,
+      );
       return [
         attachLabelValue(
           {
             country: countryLabel,
             type: '异常',
-            value: broken,
-            rawValue: broken,
+            value: abnormalDurationHours,
+            rawValue: abnormalDurationHours,
           },
           countryBarValueMode,
         ),
@@ -1264,8 +1292,8 @@ const AnalyticsPageContent: React.FC<unknown> = () => {
           {
             country: countryLabel,
             type: '正常',
-            value: normal,
-            rawValue: normal,
+            value: normalDurationHours,
+            rawValue: normalDurationHours,
           },
           countryBarValueMode,
         ),
@@ -1278,29 +1306,34 @@ const AnalyticsPageContent: React.FC<unknown> = () => {
     if (countryBarValueMode === 'count') {
       return countryColumnData;
     }
-    const total = countryColumnData.reduce((sum, item) => sum + item.value, 0);
-    const percentData = countryColumnData.map((item) =>
-      attachLabelValue(
+    const totalsByCountry = countryColumnData.reduce((acc, item) => {
+      acc[item.country] = (acc[item.country] || 0) + toNumber(item.rawValue);
+      return acc;
+    }, {} as Record<string, number>);
+    const percentData = countryColumnData.map((item) => {
+      const total = totalsByCountry[item.country] || 0;
+      return attachLabelValue(
         {
           ...item,
-          value: total ? (item.value / total) * 100 : 0,
+          value: total ? (toNumber(item.rawValue) / total) * 100 : 0,
         },
         countryBarValueMode,
-      ),
-    );
+      );
+    });
     return filterValidValuesByKey(percentData, 'value');
   }, [countryColumnData, countryBarValueMode]);
 
-  // 国家统计饼图数据（基于ASIN当前状态）
+  // 国家统计饼图数据（按异常时长分布）
   const countryPieData = useMemo(() => {
     const data = countryStatistics.map((item) => {
-      // 使用 total_asins 而不是 total_checks
-      const total = toNumber((item as any).total_asins || 0);
+      const abnormalDurationHours = toNumber(
+        (item as any).abnormalDurationHours || 0,
+      );
       return attachLabelValue(
         {
           type: countryMap[item.country || ''] || item.country,
-          value: total,
-          rawValue: total,
+          value: abnormalDurationHours,
+          rawValue: abnormalDurationHours,
         },
         countryPieValueMode,
       );
@@ -1321,10 +1354,13 @@ const AnalyticsPageContent: React.FC<unknown> = () => {
     return filterValidValuesByKey(percentData, 'value');
   }, [countryStatistics, countryPieValueMode]);
 
-  // 变体组统计柱状图数据
+  // 变体组统计柱状图数据（按异常时长）
   const variantGroupColumnData = useMemo(() => {
     const data = variantGroupStatistics.map((item) => {
-      const broken = toNumber(item.broken_count);
+      const abnormalDurationHours = toNumber(
+        (item as any).abnormalDurationHours || 0,
+      );
+      const abnormalDurationRate = toNumber((item as any).ratioAllTime || 0);
       const countryName = item.country
         ? countryMap[item.country] || item.country
         : '';
@@ -1338,33 +1374,31 @@ const AnalyticsPageContent: React.FC<unknown> = () => {
           country: item.country || '',
           countryName: countryName,
           variantGroupId: item.variant_group_id || '',
-          broken,
-          rawValue: broken,
+          value: abnormalDurationHours,
+          rawValue: abnormalDurationHours,
+          abnormalDurationRate,
         },
         variantGroupValueMode,
       );
     });
-    return filterValidValuesByKey(data, 'broken');
+    return filterValidValuesByKey(data, 'value');
   }, [variantGroupStatistics, variantGroupValueMode]);
 
   const variantGroupDisplayData = useMemo(() => {
     if (variantGroupValueMode === 'count') {
       return variantGroupColumnData;
     }
-    const totalBroken = variantGroupColumnData.reduce(
-      (sum, item) => sum + item.broken,
-      0,
-    );
     const percentData = variantGroupColumnData.map((item) =>
       attachLabelValue(
         {
           ...item,
-          broken: totalBroken ? (item.broken / totalBroken) * 100 : 0,
+          value: toNumber((item as any).abnormalDurationRate || 0),
+          rawValue: toNumber(item.rawValue),
         },
         variantGroupValueMode,
       ),
     );
-    return filterValidValuesByKey(percentData, 'broken');
+    return filterValidValuesByKey(percentData, 'value');
   }, [variantGroupColumnData, variantGroupValueMode]);
 
   const countryTotals = useMemo(() => {
@@ -1479,6 +1513,7 @@ const AnalyticsPageContent: React.FC<unknown> = () => {
     const data = countryPieData.map((item) => ({
       name: item.type,
       value: Number(item.value),
+      rawValue: Number(item.rawValue ?? item.value),
       labelValue: item.labelValue,
     }));
     return {
@@ -1531,8 +1566,8 @@ const AnalyticsPageContent: React.FC<unknown> = () => {
     }
     const categories = variantGroupDisplayData.map((item) => item.name);
     const data = variantGroupDisplayData.map((item) => ({
-      value: Number(item.broken),
-      rawValue: item.rawValue ?? Number(item.broken),
+      value: Number(item.value),
+      rawValue: item.rawValue ?? Number(item.value),
       labelValue: item.labelValue,
       variantGroupId: (item as any).variantGroupId || '',
       originalName: (item as any).originalName || item.name,
@@ -1577,10 +1612,12 @@ const AnalyticsPageContent: React.FC<unknown> = () => {
       },
       series: [
         {
-          name: '异常',
+          name:
+            variantGroupValueMode === 'percent' ? '异常时长占比' : '异常时长',
           type: 'bar',
           data: data.map((item) => ({
             value: item.value,
+            rawValue: item.rawValue,
             labelValue: item.labelValue,
             variantGroupId: item.variantGroupId,
             originalName: item.originalName,
@@ -1595,20 +1632,28 @@ const AnalyticsPageContent: React.FC<unknown> = () => {
     };
   }, [variantGroupDisplayData, variantGroupValueMode]);
 
-  const { totalChecks, brokenCount, normalCount } = normalizedOverall;
+  const {
+    totalDurationHours,
+    abnormalDurationHours,
+    normalDurationHours,
+    ratioAllTime,
+  } = normalizedOverall;
   const monthlyBreakdownSummary = useMemo(() => {
-    const brokenTotal = monthlyBreakdownRows.reduce(
-      (sum, item) => sum + item.brokenAsinsDedup,
+    const abnormalDurationTotal = monthlyBreakdownRows.reduce(
+      (sum, item) => sum + item.abnormalDurationHours,
       0,
     );
-    const linkTotal = monthlyBreakdownRows.reduce(
-      (sum, item) => sum + item.totalAsinsDedup,
+    const totalDurationTotal = monthlyBreakdownRows.reduce(
+      (sum, item) => sum + item.totalDurationHours,
       0,
     );
-    const averageRatio = linkTotal > 0 ? (brokenTotal / linkTotal) * 100 : 0;
+    const averageRatio =
+      totalDurationTotal > 0
+        ? (abnormalDurationTotal / totalDurationTotal) * 100
+        : 0;
     return {
-      brokenTotal,
-      linkTotal,
+      abnormalDurationTotal,
+      totalDurationTotal,
       averageRatio,
     };
   }, [monthlyBreakdownRows]);
@@ -1635,13 +1680,13 @@ const AnalyticsPageContent: React.FC<unknown> = () => {
       await exportToExcel(
         '/v1/export/analytics-monthly-breakdown',
         queryParams,
-        `月度被拆统计_${monthStart.format('YYYY-MM')}${
+        `月度异常时长统计_${monthStart.format('YYYY-MM')}${
           country ? `_${country}` : ''
         }`,
       );
     } catch (error) {
-      console.error('导出月度被拆统计失败:', error);
-      message.error('导出月度被拆统计失败，请重试');
+      console.error('导出月度异常时长统计失败:', error);
+      message.error('导出月度异常时长统计失败，请重试');
     } finally {
       setMonthlyBreakdownExporting(false);
     }
@@ -1776,54 +1821,56 @@ const AnalyticsPageContent: React.FC<unknown> = () => {
       <StatisticCard.Group>
         <StatisticCard
           statistic={{
-            title: '总检查次数',
-            value: totalChecks,
+            title: '总监控时长',
+            value: formatHours(totalDurationHours),
           }}
         />
         <StatisticCard
           statistic={{
-            title: '正常次数',
-            value: normalCount,
+            title: '正常时长',
+            value: formatHours(normalDurationHours),
             status: 'success',
           }}
         />
         <StatisticCard
           statistic={{
-            title: '异常次数',
-            value: brokenCount,
+            title: '异常时长',
+            value: formatHours(abnormalDurationHours),
             status: 'error',
           }}
         />
         <StatisticCard
           statistic={{
-            title: '异常率',
-            value: totalChecks
-              ? `${((brokenCount / totalChecks) * 100).toFixed(2)}%`
-              : '0%',
+            title: '异常时长占比',
+            value: `${ratioAllTime.toFixed(2)}%`,
           }}
         />
-        {country && peakHoursStatistics.peakTotal !== undefined && (
+        {country && peakHoursStatistics.peakDurationHours !== undefined && (
           <>
             <StatisticCard
               statistic={{
-                title: '高峰期异常率',
-                value: peakHoursStatistics.peakTotal
-                  ? `${(peakHoursStatistics.peakRate || 0).toFixed(2)}%`
+                title: '高峰期异常时长占比',
+                value: peakHoursStatistics.peakDurationHours
+                  ? `${(peakHoursStatistics.peakDurationRate || 0).toFixed(2)}%`
                   : '0%',
-                description: `高峰期: ${peakHoursStatistics.peakBroken || 0}/${
-                  peakHoursStatistics.peakTotal || 0
-                }`,
+                description: `高峰期: ${formatHours(
+                  peakHoursStatistics.peakAbnormalDurationHours || 0,
+                )}/${formatHours(peakHoursStatistics.peakDurationHours || 0)}`,
               }}
             />
             <StatisticCard
               statistic={{
-                title: '低峰期异常率',
-                value: peakHoursStatistics.offPeakTotal
-                  ? `${(peakHoursStatistics.offPeakRate || 0).toFixed(2)}%`
+                title: '低峰期异常时长占比',
+                value: peakHoursStatistics.offPeakDurationHours
+                  ? `${(peakHoursStatistics.offPeakDurationRate || 0).toFixed(
+                      2,
+                    )}%`
                   : '0%',
-                description: `低峰期: ${
-                  peakHoursStatistics.offPeakBroken || 0
-                }/${peakHoursStatistics.offPeakTotal || 0}`,
+                description: `低峰期: ${formatHours(
+                  peakHoursStatistics.offPeakAbnormalDurationHours || 0,
+                )}/${formatHours(
+                  peakHoursStatistics.offPeakDurationHours || 0,
+                )}`,
               }}
             />
           </>
@@ -1852,7 +1899,7 @@ const AnalyticsPageContent: React.FC<unknown> = () => {
         {/* 国家统计 */}
         <Col span={12} style={{ marginTop: 16 }}>
           <Card
-            title="国家维度统计（柱状图）"
+            title="国家维度时长统计（柱状图）"
             loading={loading}
             extra={
               <Radio.Group
@@ -1862,7 +1909,7 @@ const AnalyticsPageContent: React.FC<unknown> = () => {
                 buttonStyle="solid"
                 size="small"
               >
-                <Radio.Button value="count">数量</Radio.Button>
+                <Radio.Button value="count">时长</Radio.Button>
                 <Radio.Button value="percent">百分比</Radio.Button>
               </Radio.Group>
             }
@@ -1880,7 +1927,7 @@ const AnalyticsPageContent: React.FC<unknown> = () => {
 
         <Col span={12} style={{ marginTop: 16 }}>
           <Card
-            title="国家维度统计（饼图）"
+            title="国家异常时长分布（饼图）"
             loading={loading}
             extra={
               <Radio.Group
@@ -1890,7 +1937,7 @@ const AnalyticsPageContent: React.FC<unknown> = () => {
                 buttonStyle="solid"
                 size="small"
               >
-                <Radio.Button value="count">数量</Radio.Button>
+                <Radio.Button value="count">时长</Radio.Button>
                 <Radio.Button value="percent">百分比</Radio.Button>
               </Radio.Group>
             }
@@ -1909,7 +1956,7 @@ const AnalyticsPageContent: React.FC<unknown> = () => {
         {/* 变体组统计 */}
         <Col span={24} style={{ marginTop: 16 }}>
           <Card
-            title="变体组异常统计（Top 10）"
+            title="变体组异常时长统计（Top 10）"
             loading={loading}
             extra={
               <Radio.Group
@@ -1919,7 +1966,7 @@ const AnalyticsPageContent: React.FC<unknown> = () => {
                 buttonStyle="solid"
                 size="small"
               >
-                <Radio.Button value="count">数量</Radio.Button>
+                <Radio.Button value="count">时长</Radio.Button>
                 <Radio.Button value="percent">百分比</Radio.Button>
               </Radio.Group>
             }
@@ -1951,7 +1998,7 @@ const AnalyticsPageContent: React.FC<unknown> = () => {
         {/* 全部国家汇总表格 */}
         <Col span={24}>
           <Card
-            title="全部国家汇总表格"
+            title="全部国家时长汇总表"
             loading={loading}
             extra={
               <Space>
@@ -1998,13 +2045,14 @@ const AnalyticsPageContent: React.FC<unknown> = () => {
                     key: 'timeRange',
                   },
                   {
-                    title: '总数量(监控链接)',
-                    dataIndex: 'totalChecks',
-                    key: 'totalChecks',
+                    title: '总监控时长',
+                    dataIndex: 'totalDurationHours',
+                    key: 'totalDurationHours',
                     align: 'right',
+                    render: (value: number) => formatHours(value),
                   },
                   {
-                    title: '所有ASIN异常占比 (ratio_all_asin)',
+                    title: 'ASIN平均异常时长占比 (ratio_all_asin)',
                     dataIndex: 'ratioAllAsin',
                     key: 'ratioAllAsin',
                     align: 'right',
@@ -2018,28 +2066,28 @@ const AnalyticsPageContent: React.FC<unknown> = () => {
                     render: (value: number) => `${value.toFixed(2)}%`,
                   },
                   {
-                    title: '全局高峰异常占比 (global_peak_rate)',
+                    title: '全局高峰异常时长占比 (global_peak_rate)',
                     dataIndex: 'globalPeakRate',
                     key: 'globalPeakRate',
                     align: 'right',
                     render: (value: number) => `${value.toFixed(2)}%`,
                   },
                   {
-                    title: '全局低峰异常占比 (global_low_rate)',
+                    title: '全局低峰异常时长占比 (global_low_rate)',
                     dataIndex: 'globalLowRate',
                     key: 'globalLowRate',
                     align: 'right',
                     render: (value: number) => `${value.toFixed(2)}%`,
                   },
                   {
-                    title: '局部高峰异常占比 (ratio_high)',
+                    title: '局部高峰异常时长占比 (ratio_high)',
                     dataIndex: 'ratioHigh',
                     key: 'ratioHigh',
                     align: 'right',
                     render: (value: number) => `${value.toFixed(2)}%`,
                   },
                   {
-                    title: '局部低峰异常占比 (ratio_low)',
+                    title: '局部低峰异常时长占比 (ratio_low)',
                     dataIndex: 'ratioLow',
                     key: 'ratioLow',
                     align: 'right',
@@ -2056,7 +2104,7 @@ const AnalyticsPageContent: React.FC<unknown> = () => {
         {/* 美国/欧洲表格 */}
         <Col span={24} style={{ marginTop: 16 }}>
           <Card
-            title="美国/欧洲表格"
+            title="美国/欧洲时长汇总表"
             loading={loading}
             extra={
               <Space>
@@ -2116,13 +2164,14 @@ const AnalyticsPageContent: React.FC<unknown> = () => {
                     key: 'timeRange',
                   },
                   {
-                    title: '总数量(监控链接)',
-                    dataIndex: 'totalChecks',
-                    key: 'totalChecks',
+                    title: '总监控时长',
+                    dataIndex: 'totalDurationHours',
+                    key: 'totalDurationHours',
                     align: 'right',
+                    render: (value: number) => formatHours(value),
                   },
                   {
-                    title: '所有ASIN异常占比 (ratio_all_asin)',
+                    title: 'ASIN平均异常时长占比 (ratio_all_asin)',
                     dataIndex: 'ratioAllAsin',
                     key: 'ratioAllAsin',
                     align: 'right',
@@ -2136,28 +2185,28 @@ const AnalyticsPageContent: React.FC<unknown> = () => {
                     render: (value: number) => `${value.toFixed(2)}%`,
                   },
                   {
-                    title: '全局高峰异常占比 (global_peak_rate)',
+                    title: '全局高峰异常时长占比 (global_peak_rate)',
                     dataIndex: 'globalPeakRate',
                     key: 'globalPeakRate',
                     align: 'right',
                     render: (value: number) => `${value.toFixed(2)}%`,
                   },
                   {
-                    title: '全局低峰异常占比 (global_low_rate)',
+                    title: '全局低峰异常时长占比 (global_low_rate)',
                     dataIndex: 'globalLowRate',
                     key: 'globalLowRate',
                     align: 'right',
                     render: (value: number) => `${value.toFixed(2)}%`,
                   },
                   {
-                    title: '局部高峰异常占比 (ratio_high)',
+                    title: '局部高峰异常时长占比 (ratio_high)',
                     dataIndex: 'ratioHigh',
                     key: 'ratioHigh',
                     align: 'right',
                     render: (value: number) => `${value.toFixed(2)}%`,
                   },
                   {
-                    title: '局部低峰异常占比 (ratio_low)',
+                    title: '局部低峰异常时长占比 (ratio_low)',
                     dataIndex: 'ratioLow',
                     key: 'ratioLow',
                     align: 'right',
@@ -2174,7 +2223,7 @@ const AnalyticsPageContent: React.FC<unknown> = () => {
         {/* 周期汇总表格 */}
         <Col span={24} style={{ marginTop: 16 }}>
           <Card
-            title="周期汇总表格"
+            title="周期时长汇总表"
             loading={loading}
             extra={
               <Space>
@@ -2331,13 +2380,14 @@ const AnalyticsPageContent: React.FC<unknown> = () => {
                     render: (text: string) => text || '-',
                   },
                   {
-                    title: '总数量(监控链接)',
-                    dataIndex: 'totalChecks',
-                    key: 'totalChecks',
+                    title: '总监控时长',
+                    dataIndex: 'totalDurationHours',
+                    key: 'totalDurationHours',
                     align: 'right',
+                    render: (value: number) => formatHours(value),
                   },
                   {
-                    title: '所有ASIN异常占比 (ratio_all_asin)',
+                    title: 'ASIN平均异常时长占比 (ratio_all_asin)',
                     dataIndex: 'ratioAllAsin',
                     key: 'ratioAllAsin',
                     align: 'right',
@@ -2351,28 +2401,28 @@ const AnalyticsPageContent: React.FC<unknown> = () => {
                     render: (value: number) => `${value.toFixed(2)}%`,
                   },
                   {
-                    title: '全局高峰异常占比 (global_peak_rate)',
+                    title: '全局高峰异常时长占比 (global_peak_rate)',
                     dataIndex: 'globalPeakRate',
                     key: 'globalPeakRate',
                     align: 'right',
                     render: (value: number) => `${value.toFixed(2)}%`,
                   },
                   {
-                    title: '全局低峰异常占比 (global_low_rate)',
+                    title: '全局低峰异常时长占比 (global_low_rate)',
                     dataIndex: 'globalLowRate',
                     key: 'globalLowRate',
                     align: 'right',
                     render: (value: number) => `${value.toFixed(2)}%`,
                   },
                   {
-                    title: '局部高峰异常占比 (ratio_high)',
+                    title: '局部高峰异常时长占比 (ratio_high)',
                     dataIndex: 'ratioHigh',
                     key: 'ratioHigh',
                     align: 'right',
                     render: (value: number) => `${value.toFixed(2)}%`,
                   },
                   {
-                    title: '局部低峰异常占比 (ratio_low)',
+                    title: '局部低峰异常时长占比 (ratio_low)',
                     dataIndex: 'ratioLow',
                     key: 'ratioLow',
                     align: 'right',
@@ -2389,7 +2439,7 @@ const AnalyticsPageContent: React.FC<unknown> = () => {
       </Row>
 
       <Card
-        title="月度被拆统计（按天）"
+        title="月度异常时长统计（按天）"
         style={{ marginTop: 16 }}
         loading={monthlyBreakdownLoading}
         extra={
@@ -2435,21 +2485,23 @@ const AnalyticsPageContent: React.FC<unknown> = () => {
                 align: 'right',
               },
               {
-                title: '被拆数量',
-                dataIndex: 'brokenAsinsDedup',
-                key: 'brokenAsinsDedup',
+                title: '异常时长',
+                dataIndex: 'abnormalDurationHours',
+                key: 'abnormalDurationHours',
                 align: 'right',
+                render: (value: number) => formatHours(value),
               },
               {
-                title: '总链接数量',
-                dataIndex: 'totalAsinsDedup',
-                key: 'totalAsinsDedup',
+                title: '总监控时长',
+                dataIndex: 'totalDurationHours',
+                key: 'totalDurationHours',
                 align: 'right',
+                render: (value: number) => formatHours(value),
               },
               {
-                title: '被拆占比',
-                dataIndex: 'brokenRatio',
-                key: 'brokenRatio',
+                title: '异常时长占比',
+                dataIndex: 'abnormalDurationRate',
+                key: 'abnormalDurationRate',
                 align: 'right',
                 render: (value: number) => `${toNumber(value).toFixed(2)}%`,
               },
@@ -2458,13 +2510,13 @@ const AnalyticsPageContent: React.FC<unknown> = () => {
               <Table.Summary fixed>
                 <Table.Summary.Row>
                   <Table.Summary.Cell index={0}>
-                    平均值被拆占比
+                    总体异常时长占比
                   </Table.Summary.Cell>
                   <Table.Summary.Cell index={1} align="right">
-                    {monthlyBreakdownSummary.brokenTotal}
+                    {formatHours(monthlyBreakdownSummary.abnormalDurationTotal)}
                   </Table.Summary.Cell>
                   <Table.Summary.Cell index={2} align="right">
-                    {monthlyBreakdownSummary.linkTotal}
+                    {formatHours(monthlyBreakdownSummary.totalDurationTotal)}
                   </Table.Summary.Cell>
                   <Table.Summary.Cell index={3} align="right">
                     {monthlyBreakdownSummary.averageRatio.toFixed(2)}%

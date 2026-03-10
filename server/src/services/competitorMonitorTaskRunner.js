@@ -173,6 +173,7 @@ async function processCompetitorCountry(
         try {
           result = await checkCompetitorVariantGroup(group.id, false, {
             group: groupSnapshot,
+            recordHistory: false,
           });
         } finally {
           competitorMonitorSemaphore.release();

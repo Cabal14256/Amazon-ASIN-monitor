@@ -51,40 +51,49 @@ function buildMonthlyBreakdownRows(statistics = [], monthToken) {
     0,
   ).getDate();
   const rows = [];
-  let brokenTotal = 0;
-  let linkTotal = 0;
+  let abnormalDurationTotal = 0;
+  let totalDurationTotal = 0;
 
   for (let day = 1; day <= daysInMonth; day += 1) {
     const date = `${normalizedMonth.token}-${pad2(day)}`;
     const stat = rowMap.get(date);
-    const brokenAsinsDedup = toNumber(stat?.broken_asins_dedup);
-    const totalAsinsDedup = toNumber(stat?.total_asins_dedup);
-    const fallbackRatio = toNumber(stat?.ratio_all_time);
-    const brokenRatio =
-      totalAsinsDedup > 0
-        ? (brokenAsinsDedup / totalAsinsDedup) * 100
+    const abnormalDurationHours = toNumber(
+      stat?.abnormalDurationHours ?? stat?.abnormal_duration_hours,
+    );
+    const totalDurationHours = toNumber(
+      stat?.totalDurationHours ?? stat?.total_duration_hours,
+    );
+    const fallbackRatio = toNumber(stat?.ratioAllTime ?? stat?.ratio_all_time);
+    const abnormalDurationRate =
+      totalDurationHours > 0
+        ? (abnormalDurationHours / totalDurationHours) * 100
         : fallbackRatio;
 
-    brokenTotal += brokenAsinsDedup;
-    linkTotal += totalAsinsDedup;
+    abnormalDurationTotal += abnormalDurationHours;
+    totalDurationTotal += totalDurationHours;
 
     rows.push({
       date,
       day,
-      brokenAsinsDedup,
-      totalAsinsDedup,
-      brokenRatio: Number.isFinite(brokenRatio) ? brokenRatio : 0,
+      abnormalDurationHours,
+      totalDurationHours,
+      abnormalDurationRate: Number.isFinite(abnormalDurationRate)
+        ? abnormalDurationRate
+        : 0,
     });
   }
 
-  const averageRatio = linkTotal > 0 ? (brokenTotal / linkTotal) * 100 : 0;
+  const averageRatio =
+    totalDurationTotal > 0
+      ? (abnormalDurationTotal / totalDurationTotal) * 100
+      : 0;
 
   return {
     month: normalizedMonth.token,
     rows,
     summary: {
-      brokenTotal,
-      linkTotal,
+      abnormalDurationTotal,
+      totalDurationTotal,
       averageRatio: Number.isFinite(averageRatio) ? averageRatio : 0,
     },
   };

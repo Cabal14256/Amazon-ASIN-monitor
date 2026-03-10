@@ -11,12 +11,20 @@ interface MoveASINModalProps {
   visible: boolean;
   asinId?: string;
   currentGroupId?: string;
+  currentCountry?: string;
   onCancel: () => void;
   onSuccess: () => void;
 }
 
 const MoveASINModal: React.FC<MoveASINModalProps> = (props) => {
-  const { visible, asinId, currentGroupId, onCancel, onSuccess } = props;
+  const {
+    visible,
+    asinId,
+    currentGroupId,
+    currentCountry,
+    onCancel,
+    onSuccess,
+  } = props;
   const message = useMessage();
   const [targetGroupId, setTargetGroupId] = useState<string>();
   const [variantGroups, setVariantGroups] = useState<API.VariantGroup[]>([]);
@@ -41,7 +49,9 @@ const MoveASINModal: React.FC<MoveASINModalProps> = (props) => {
           : [];
       // 过滤掉当前变体组
       const groups = list.filter(
-        (group: API.VariantGroup) => group.id !== currentGroupId,
+        (group: API.VariantGroup) =>
+          group.id !== currentGroupId &&
+          (!currentCountry || group.country === currentCountry),
       );
       setVariantGroups(groups);
     } catch (error) {
@@ -55,7 +65,7 @@ const MoveASINModal: React.FC<MoveASINModalProps> = (props) => {
       loadVariantGroups();
       setTargetGroupId(undefined);
     }
-  }, [visible, currentGroupId]);
+  }, [visible, currentGroupId, currentCountry]);
 
   const handleOk = async () => {
     if (!targetGroupId) {
@@ -111,7 +121,7 @@ const MoveASINModal: React.FC<MoveASINModalProps> = (props) => {
       </div>
       {variantGroups.length === 0 && (
         <Typography.Text type="secondary" style={{ fontSize: 12 }}>
-          没有可用的变体组（已排除当前变体组）
+          没有可用的同国家变体组（已排除当前变体组）
         </Typography.Text>
       )}
     </Modal>

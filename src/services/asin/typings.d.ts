@@ -214,6 +214,14 @@ declare namespace API {
     groupCount?: number;
     /** ASIN数量 */
     asinCount?: number;
+    /** 总监控时长（小时） */
+    totalDurationHours?: number;
+    /** 异常时长（小时） */
+    abnormalDurationHours?: number;
+    /** 正常时长（小时） */
+    normalDurationHours?: number;
+    /** 异常时长占比（百分比） */
+    ratioAllTime?: number;
   }
 
   interface Result_MonitorStatistics_ {
@@ -226,6 +234,8 @@ declare namespace API {
   interface TimeStatistics {
     /** 时间周期 */
     time_period?: string;
+    /** 时间周期（驼峰兼容） */
+    timePeriod?: string;
     /** 总检查次数 */
     total_checks?: number;
     /** 异常次数 */
@@ -236,10 +246,32 @@ declare namespace API {
     ratio_all_asin?: number;
     /** 所有ASIN异常占比-去重（去重口径，百分比） */
     ratio_all_time?: number;
+    /** 所有ASIN平均异常时长占比（百分比） */
+    ratioAllAsin?: number;
+    /** 所有ASIN异常时长占比（百分比） */
+    ratioAllTime?: number;
     /** 去重口径总ASIN数 */
     total_asins_dedup?: number;
     /** 去重口径异常ASIN数 */
     broken_asins_dedup?: number;
+    /** 去重口径总ASIN数（驼峰兼容） */
+    totalAsinsDedup?: number;
+    /** 去重口径异常ASIN数（驼峰兼容） */
+    brokenAsinsDedup?: number;
+    /** 总监控时长（小时） */
+    totalDurationHours?: number;
+    /** 异常时长（小时） */
+    abnormalDurationHours?: number;
+    /** 正常时长（小时） */
+    normalDurationHours?: number;
+    /** 高峰总时长（小时） */
+    peakDurationHours?: number;
+    /** 高峰异常时长（小时） */
+    peakAbnormalDurationHours?: number;
+    /** 低峰总时长（小时） */
+    lowDurationHours?: number;
+    /** 低峰异常时长（小时） */
+    lowAbnormalDurationHours?: number;
     /** 总ASIN数（兼容字段） */
     total_asins?: number;
     /** 异常ASIN数（兼容字段） */
@@ -264,6 +296,16 @@ declare namespace API {
     broken_count?: number;
     /** 正常次数 */
     normal_count?: number;
+    /** 总监控时长（小时） */
+    totalDurationHours?: number;
+    /** 异常时长（小时） */
+    abnormalDurationHours?: number;
+    /** 正常时长（小时） */
+    normalDurationHours?: number;
+    /** 所有ASIN平均异常时长占比（百分比） */
+    ratioAllAsin?: number;
+    /** 所有ASIN异常时长占比（百分比） */
+    ratioAllTime?: number;
   }
 
   interface Result_CountryStatistics_ {
@@ -286,6 +328,16 @@ declare namespace API {
     broken_count?: number;
     /** 正常次数 */
     normal_count?: number;
+    /** 总监控时长（小时） */
+    totalDurationHours?: number;
+    /** 异常时长（小时） */
+    abnormalDurationHours?: number;
+    /** 正常时长（小时） */
+    normalDurationHours?: number;
+    /** 所有ASIN平均异常时长占比（百分比） */
+    ratioAllAsin?: number;
+    /** 所有ASIN异常时长占比（百分比） */
+    ratioAllTime?: number;
   }
 
   interface Result_VariantGroupStatistics_ {
@@ -308,6 +360,18 @@ declare namespace API {
     offPeakTotal?: number;
     /** 低峰期异常率（百分比） */
     offPeakRate?: number;
+    /** 高峰期总时长（小时） */
+    peakDurationHours?: number;
+    /** 高峰期异常时长（小时） */
+    peakAbnormalDurationHours?: number;
+    /** 高峰期异常时长占比（百分比） */
+    peakDurationRate?: number;
+    /** 低峰期总时长（小时） */
+    offPeakDurationHours?: number;
+    /** 低峰期异常时长（小时） */
+    offPeakAbnormalDurationHours?: number;
+    /** 低峰期异常时长占比（百分比） */
+    offPeakDurationRate?: number;
   }
 
   interface Result_PeakHoursStatistics_ {
@@ -455,6 +519,12 @@ declare namespace API {
     timeRange?: string;
     /** 总数量(监控链接) */
     totalChecks?: number;
+    /** 总监控时长（小时） */
+    totalDurationHours?: number;
+    /** 异常时长（小时） */
+    abnormalDurationHours?: number;
+    /** 正常时长（小时） */
+    normalDurationHours?: number;
     /** 所有ASIN异常占比（快照口径，百分比） */
     ratioAllAsin?: number;
     /** 所有ASIN异常时长占比（去重口径，百分比） */
@@ -481,6 +551,14 @@ declare namespace API {
     lowBroken?: number;
     /** 低峰时段快照总数 */
     lowTotal?: number;
+    /** 高峰总时长（小时） */
+    peakDurationHours?: number;
+    /** 高峰异常时长（小时） */
+    peakAbnormalDurationHours?: number;
+    /** 低峰总时长（小时） */
+    lowDurationHours?: number;
+    /** 低峰异常时长（小时） */
+    lowAbnormalDurationHours?: number;
   }
 
   interface Result_AllCountriesSummary_ {
@@ -499,6 +577,12 @@ declare namespace API {
     timeRange?: string;
     /** 总数量(监控链接) */
     totalChecks?: number;
+    /** 总监控时长（小时） */
+    totalDurationHours?: number;
+    /** 异常时长（小时） */
+    abnormalDurationHours?: number;
+    /** 正常时长（小时） */
+    normalDurationHours?: number;
     /** 所有ASIN异常占比（快照口径，百分比） */
     ratioAllAsin?: number;
     /** 所有ASIN异常时长占比（去重口径，百分比） */
@@ -525,6 +609,14 @@ declare namespace API {
     lowBroken?: number;
     /** 低峰时段快照总数 */
     lowTotal?: number;
+    /** 高峰总时长（小时） */
+    peakDurationHours?: number;
+    /** 高峰异常时长（小时） */
+    peakAbnormalDurationHours?: number;
+    /** 低峰总时长（小时） */
+    lowDurationHours?: number;
+    /** 低峰异常时长（小时） */
+    lowAbnormalDurationHours?: number;
   }
 
   interface Result_RegionSummary_ {
@@ -545,6 +637,12 @@ declare namespace API {
     brand?: string;
     /** 总数量(监控链接) */
     totalChecks?: number;
+    /** 总监控时长（小时） */
+    totalDurationHours?: number;
+    /** 异常时长（小时） */
+    abnormalDurationHours?: number;
+    /** 正常时长（小时） */
+    normalDurationHours?: number;
     /** 所有ASIN异常占比（快照口径，百分比） */
     ratioAllAsin?: number;
     /** 所有ASIN异常时长占比（去重口径，百分比） */
@@ -571,6 +669,14 @@ declare namespace API {
     lowBroken?: number;
     /** 低峰时段快照总数 */
     lowTotal?: number;
+    /** 高峰总时长（小时） */
+    peakDurationHours?: number;
+    /** 高峰异常时长（小时） */
+    peakAbnormalDurationHours?: number;
+    /** 低峰总时长（小时） */
+    lowDurationHours?: number;
+    /** 低峰异常时长（小时） */
+    lowAbnormalDurationHours?: number;
   }
 
   interface PageInfo_PeriodSummary_ {

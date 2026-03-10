@@ -27,7 +27,8 @@ database/
 │   ├── 020_add_status_change_indexes.sql
 │   ├── 021_add_monitor_history_agg_table.sql
 │   ├── 022_add_monitor_history_agg_peak.sql
-│   └── 026_normalize_user_status_and_audit_permissions.sql
+│   ├── 026_normalize_user_status_and_audit_permissions.sql
+│   └── 027_normalize_competitor_schema.sql
 ├── MIGRATION.md                # 迁移说明文档
 └── README.md                   # 本文件
 ```
@@ -103,6 +104,7 @@ mysql -u root -p < server/database/competitor-init.sql
 - `021_add_monitor_history_agg_table.sql`: 添加监控历史聚合表（数据分析加速）
 - `022_add_monitor_history_agg_peak.sql`: 聚合表补充高峰期字段（period-summary 加速）
 - `026_normalize_user_status_and_audit_permissions.sql`: 统一用户状态字段并补齐角色/审计权限
+- `027_normalize_competitor_schema.sql`: 补齐旧版竞品库缺失的状态/通知/时间字段
 
 **执行方式**:
 
@@ -160,6 +162,13 @@ cat server/database/MIGRATION.md
 mysql -u root -p amazon_asin_monitor < server/database/migrations/001_add_asin_type.sql
 mysql -u root -p amazon_asin_monitor < server/database/migrations/002_add_monitor_fields.sql
 # ... 依此类推
+```
+
+如已启用竞品监控，旧版竞品库还需要执行：
+
+```bash
+mysql -u root -p amazon_competitor_monitor < server/database/migrations/013_add_competitor_variant_group_fields.sql
+mysql -u root -p amazon_competitor_monitor < server/database/migrations/027_normalize_competitor_schema.sql
 ```
 
 ## 数据库表结构

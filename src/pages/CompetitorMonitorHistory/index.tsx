@@ -1,5 +1,6 @@
 import services from '@/services/competitor';
 import { toBeijingDayjs } from '@/utils/beijingTime';
+import { debugError } from '@/utils/debug';
 import { exportToExcel } from '@/utils/export';
 import {
   ActionType,
@@ -30,6 +31,7 @@ const countryMap: Record<
 const CompetitorMonitorHistoryPage: React.FC<unknown> = () => {
   const actionRef = useRef<ActionType | null>(null);
   const formRef = useRef<ProFormInstance | undefined>(undefined);
+  const currentQueryParamsRef = useRef<Record<string, any>>({});
   const [searchParams] = useSearchParams();
 
   // 从URL参数获取筛选条件
@@ -216,6 +218,11 @@ const CompetitorMonitorHistoryPage: React.FC<unknown> = () => {
             requestParams.asinId = id;
           }
 
+          const exportParams = { ...requestParams };
+          delete exportParams.current;
+          delete exportParams.pageSize;
+          currentQueryParamsRef.current = exportParams;
+
           // 处理排序
           if (sorter && Object.keys(sorter).length > 0) {
             // 这里可以根据需要处理排序逻辑
@@ -248,32 +255,9 @@ const CompetitorMonitorHistoryPage: React.FC<unknown> = () => {
             key="export"
             onClick={async () => {
               try {
-                // 获取当前表格的筛选条件
-                const formValues = formRef.current?.getFieldsValue?.() || {};
-
-                // 构建查询参数对象
-                const queryParams: Record<string, any> = {};
-                if (formValues.startTime) {
-                  queryParams.startTime = formValues.startTime;
-                }
-                if (formValues.endTime) {
-                  queryParams.endTime = formValues.endTime;
-                }
-                if (formValues.country) {
-                  queryParams.country = formValues.country;
-                }
-                if (formValues.checkType) {
-                  queryParams.checkType = formValues.checkType;
-                }
-                if (
-                  formValues.isBroken !== undefined &&
-                  formValues.isBroken !== ''
-                ) {
-                  queryParams.isBroken = formValues.isBroken;
-                }
-                if (formValues.asin) {
-                  queryParams.asin = formValues.asin;
-                }
+                const queryParams: Record<string, any> = {
+                  ...currentQueryParamsRef.current,
+                };
                 if (type === 'group' && id) {
                   queryParams.variantGroupId = id;
                 } else if (type === 'asin' && id) {
@@ -286,7 +270,7 @@ const CompetitorMonitorHistoryPage: React.FC<unknown> = () => {
                   '竞品监控历史',
                 );
               } catch (error) {
-                console.error('导出失败:', error);
+                debugError('竞品监控历史导出失败:', error);
               }
             }}
           >
