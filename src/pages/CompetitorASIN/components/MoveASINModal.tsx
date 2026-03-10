@@ -1,6 +1,7 @@
 import services from '@/services/competitor';
+import { debugError } from '@/utils/debug';
 import { useMessage } from '@/utils/message';
-import { Modal, Select } from 'antd';
+import { Modal, Select, Typography } from 'antd';
 import React, { useEffect, useState } from 'react';
 
 const { moveCompetitorASIN, queryCompetitorVariantGroupList } =
@@ -44,7 +45,7 @@ const MoveASINModal: React.FC<MoveASINModalProps> = (props) => {
       );
       setVariantGroups(groups);
     } catch (error) {
-      console.error('加载竞品变体组列表失败:', error);
+      debugError('加载竞品变体组列表失败:', error);
       message.error('加载竞品变体组列表失败');
     }
   };
@@ -90,9 +91,9 @@ const MoveASINModal: React.FC<MoveASINModalProps> = (props) => {
       cancelText="取消"
     >
       <div style={{ marginBottom: 16 }}>
-        <label style={{ display: 'block', marginBottom: 8 }}>
+        <Typography.Text style={{ display: 'block', marginBottom: 8 }}>
           选择目标变体组：
-        </label>
+        </Typography.Text>
         <Select
           style={{ width: '100%' }}
           placeholder="请选择目标变体组"
@@ -109,9 +110,9 @@ const MoveASINModal: React.FC<MoveASINModalProps> = (props) => {
         />
       </div>
       {variantGroups.length === 0 && (
-        <div style={{ color: '#999', fontSize: 12 }}>
+        <Typography.Text type="secondary" style={{ fontSize: 12 }}>
           没有可用的变体组（已排除当前变体组）
-        </div>
+        </Typography.Text>
       )}
     </Modal>
   );

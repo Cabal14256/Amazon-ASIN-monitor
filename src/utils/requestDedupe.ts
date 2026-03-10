@@ -8,6 +8,13 @@ interface PendingRequest {
   timestamp: number;
 }
 
+type Primitive = string | number | boolean | null;
+type NormalizedValue =
+  | Primitive
+  | undefined
+  | NormalizedValue[]
+  | { [key: string]: NormalizedValue };
+
 class RequestDedupe {
   private pendingRequests: Map<string, PendingRequest> = new Map();
   private readonly TTL = 5000; // 5秒内的相同请求会被去重
@@ -15,9 +22,96 @@ class RequestDedupe {
   /**
    * 生成请求的唯一键
    */
-  private generateKey(url: string, params: any): string {
-    const sortedParams = JSON.stringify(params, Object.keys(params).sort());
-    return `${url}:${sortedParams}`;
+  private generateKey(url: string, params: unknown): string {
+    return `${url}:${this.stableStringify(params)}`;
+  }
+
+  /**
+   * 稳定序列化（对象按 key 排序，防止同参不同序导致重复请求）
+   * 同时兼容 Date / Map / Set / BigInt，并避免循环引用导致异常。
+   */
+  private stableStringify(value: unknown): string {
+    if (value === undefined) {
+      return 'undefined';
+    }
+
+    if (typeof value === 'bigint') {
+      return `bigint:${value.toString()}`;
+    }
+
+    if (typeof value === 'function') {
+      return '[Function]';
+    }
+
+    if (typeof value === 'symbol') {
+      return value.toString();
+    }
+
+    if (value === null || typeof value !== 'object') {
+      return JSON.stringify(value);
+    }
+
+    const seen = new WeakSet<object>();
+    const normalized = this.normalizeValue(value, seen);
+    return JSON.stringify(normalized);
+  }
+
+  private normalizeValue(
+    value: unknown,
+    seen: WeakSet<object>,
+  ): NormalizedValue {
+    if (value === null) {
+      return null;
+    }
+
+    if (value === undefined) {
+      return undefined;
+    }
+
+    if (typeof value === 'bigint') {
+      return `bigint:${value.toString()}`;
+    }
+
+    if (typeof value !== 'object') {
+      return value as Primitive;
+    }
+
+    if (seen.has(value)) {
+      return '[Circular]';
+    }
+
+    seen.add(value);
+
+    if (value instanceof Date) {
+      return `date:${value.toISOString()}`;
+    }
+
+    if (Array.isArray(value)) {
+      return value.map((item) => this.normalizeValue(item, seen));
+    }
+
+    if (value instanceof Map) {
+      return Array.from(value.entries())
+        .map(([k, v]) => [String(k), this.normalizeValue(v, seen)] as const)
+        .sort(([a], [b]) => a.localeCompare(b))
+        .map(([k, v]) => ({ key: k, value: v }));
+    }
+
+    if (value instanceof Set) {
+      return Array.from(value.values())
+        .map((item) => this.stableStringify(item))
+        .sort();
+    }
+
+    return Object.keys(value as Record<string, unknown>)
+      .sort()
+      .reduce<Record<string, NormalizedValue>>((result, key) => {
+        result[key] = this.normalizeValue(
+          (value as Record<string, unknown>)[key],
+          seen,
+        );
+        return result;
+      }, {});
   }
 
   /**
@@ -41,8 +135,8 @@ class RequestDedupe {
    */
   async request<T>(
     url: string,
-    params: any,
-    requestFn: (params: any) => Promise<T>,
+    params: unknown,
+    requestFn: (params: unknown) => Promise<T>,
   ): Promise<T> {
     this.cleanup();
 
@@ -77,4 +171,3 @@ class RequestDedupe {
 }
 
 export const requestDedupe = new RequestDedupe();
-
