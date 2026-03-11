@@ -1703,6 +1703,7 @@ async function exportAnalyticsMonthlyBreakdown(req, res) {
       startTime: effectiveStartTime,
       endTime: effectiveEndTime,
       groupBy: 'day',
+      sourceGranularityOverride: 'day',
     });
 
     if (isProgressMode) {

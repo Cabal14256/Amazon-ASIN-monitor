@@ -7,6 +7,7 @@
  *   node scripts/rebuild-analytics-agg.js --yes --backup
  *   node scripts/rebuild-analytics-agg.js --no-truncate --start-time="2026-02-01 00:00:00" --end-time="2026-02-29 23:59:59"
  *   node scripts/rebuild-analytics-agg.js --yes --skip-dim
+ *   node scripts/rebuild-analytics-agg.js --yes --skip-variant-group
  */
 
 const path = require('path');
@@ -19,6 +20,7 @@ function parseArgs(argv) {
     truncate: true,
     backup: false,
     skipDim: false,
+    skipVariantGroup: false,
     granularity: 'both',
     startTime: '',
     endTime: '',
@@ -47,6 +49,10 @@ function parseArgs(argv) {
     }
     if (item === '--skip-dim') {
       args.skipDim = true;
+      continue;
+    }
+    if (item === '--skip-variant-group') {
+      args.skipVariantGroup = true;
       continue;
     }
     if (item === '--allow-partial') {
@@ -117,6 +123,7 @@ function usage() {
     '  --no-truncate          不清空聚合表，只执行 UPSERT 刷新',
     '  --backup               清空前备份当前聚合表到 *_bak_YYYYMMDD_HHMMSS',
     '  --skip-dim             跳过 monitor_history_agg_dim',
+    '  --skip-variant-group   跳过 monitor_history_agg_variant_group',
     '  --granularity=...      hour/day/both，默认 both',
     '  --start-time=...       指定窗口开始时间（与 end-time 成对使用）',
     '  --end-time=...         指定窗口结束时间（与 start-time 成对使用）',
@@ -210,6 +217,7 @@ async function main() {
 
   const granularityList = buildGranularityList(args.granularity);
   const includeDim = !args.skipDim;
+  const includeVariantGroup = !args.skipVariantGroup;
   const [rangeRow] = await query(
     `SELECT
        DATE_FORMAT(MIN(check_time), '%Y-%m-%d %H:%i:%s') as min_time,
@@ -234,6 +242,7 @@ async function main() {
     truncate: args.truncate,
     backup: args.backup,
     includeDim,
+    includeVariantGroup,
     granularityList,
     startTime,
     endTime,
@@ -251,6 +260,7 @@ async function main() {
   const results = {
     base: {},
     dim: {},
+    variantGroup: {},
     verify: {},
     audit: {},
   };
@@ -278,9 +288,25 @@ async function main() {
           `[Agg Rebuild] monitor_history_agg_dim 已备份到 ${aggDimBakTable}`,
         );
       }
+
+      if (includeVariantGroup) {
+        const aggVariantGroupBakTable = `monitor_history_agg_variant_group_bak_${suffix}`;
+        await query(
+          `CREATE TABLE \`${aggVariantGroupBakTable}\` LIKE monitor_history_agg_variant_group`,
+        );
+        await query(
+          `INSERT INTO \`${aggVariantGroupBakTable}\` SELECT * FROM monitor_history_agg_variant_group`,
+        );
+        logger.info(
+          `[Agg Rebuild] monitor_history_agg_variant_group 已备份到 ${aggVariantGroupBakTable}`,
+        );
+      }
     }
 
     if (args.truncate) {
+      if (includeVariantGroup) {
+        await query('TRUNCATE TABLE monitor_history_agg_variant_group');
+      }
       if (includeDim) {
         await query('TRUNCATE TABLE monitor_history_agg_dim');
       }
@@ -300,6 +326,16 @@ async function main() {
       for (const granularity of granularityList) {
         results.dim[granularity] =
           await analyticsAggService.refreshMonitorHistoryAggDim(
+            granularity,
+            options,
+          );
+      }
+    }
+
+    if (includeVariantGroup) {
+      for (const granularity of granularityList) {
+        results.variantGroup[granularity] =
+          await analyticsAggService.refreshMonitorHistoryAggVariantGroup(
             granularity,
             options,
           );
@@ -332,6 +368,20 @@ async function main() {
       results.verify.dim = verifyDim;
     }
 
+    if (includeVariantGroup) {
+      const verifyVariantGroup = await query(
+        `SELECT
+           granularity,
+           COUNT(*) as row_count,
+           DATE_FORMAT(MIN(time_slot), '%Y-%m-%d %H:%i:%s') as min_slot,
+           DATE_FORMAT(MAX(time_slot), '%Y-%m-%d %H:%i:%s') as max_slot
+         FROM monitor_history_agg_variant_group
+         GROUP BY granularity
+         ORDER BY granularity ASC`,
+      );
+      results.verify.variantGroup = verifyVariantGroup;
+    }
+
     results.audit.asinTypeDistribution = await query(
       `SELECT
          COALESCE(CAST(asin_type AS CHAR), 'NULL') as asin_type,
@@ -359,6 +409,8 @@ async function main() {
     await analyticsCacheService.deleteByPrefix('allCountriesSummary:');
     await analyticsCacheService.deleteByPrefix('regionSummary:');
     await analyticsCacheService.deleteByPrefix('periodSummary:');
+    await analyticsCacheService.deleteByPrefix('asinStatisticsByCountry:');
+    await analyticsCacheService.deleteByPrefix('asinStatisticsByVariantGroup:');
 
     logger.info('[Agg Rebuild] 执行完成，结果汇总:', results);
   } catch (error) {

@@ -60,6 +60,15 @@ async function withRetry(fn, maxRetries = 3, delay = 1000) {
   throw lastError;
 }
 
+function sendAnalyticsResult(res, result) {
+  res.json({
+    success: true,
+    data: result?.data ?? result,
+    meta: result?.meta,
+    errorCode: 0,
+  });
+}
+
 // 查询监控历史列表
 exports.getMonitorHistory = async (req, res) => {
   try {
@@ -209,6 +218,7 @@ exports.getStatisticsByTime = async (req, res) => {
           startTime: startTimeParam,
           endTime,
           groupBy,
+          includeMeta: true,
         });
       },
       3,
@@ -218,11 +228,7 @@ exports.getStatisticsByTime = async (req, res) => {
     const duration = Date.now() - startTime;
     logger.info(`[统计查询] getStatisticsByTime 完成，耗时${duration}ms`);
 
-    res.json({
-      success: true,
-      data: statistics,
-      errorCode: 0,
-    });
+    sendAnalyticsResult(res, statistics);
   } catch (error) {
     const duration = Date.now() - startTime;
     logger.error(
@@ -379,6 +385,8 @@ exports.getAnalyticsMonthlyBreakdown = async (req, res) => {
           startTime: effectiveStartTime,
           endTime: effectiveEndTime,
           groupBy: 'day',
+          // 月度按天明细不需要回退到小时粒度，避免整月查询扫描原始小时数据。
+          sourceGranularityOverride: 'day',
         }),
       3,
       1000,
@@ -534,6 +542,7 @@ exports.getAllCountriesSummary = async (req, res) => {
           startTime: startTimeParam,
           endTime,
           timeSlotGranularity,
+          includeMeta: true,
         });
       },
       3,
@@ -543,11 +552,7 @@ exports.getAllCountriesSummary = async (req, res) => {
     const duration = Date.now() - startTime;
     logger.info(`[统计查询] getAllCountriesSummary 完成，耗时${duration}ms`);
 
-    res.json({
-      success: true,
-      data: statistics,
-      errorCode: 0,
-    });
+    sendAnalyticsResult(res, statistics);
   } catch (error) {
     const duration = Date.now() - startTime;
     logger.error(
@@ -582,6 +587,7 @@ exports.getRegionSummary = async (req, res) => {
           startTime: startTimeParam,
           endTime,
           timeSlotGranularity,
+          includeMeta: true,
         });
       },
       3,
@@ -595,11 +601,7 @@ exports.getRegionSummary = async (req, res) => {
       }条记录`,
     );
 
-    res.json({
-      success: true,
-      data: statistics,
-      errorCode: 0,
-    });
+    sendAnalyticsResult(res, statistics);
   } catch (error) {
     const duration = Date.now() - startTime;
     const errorCode = error.code || '';
@@ -664,6 +666,7 @@ exports.getPeriodSummary = async (req, res) => {
           timeSlotGranularity,
           current,
           pageSize,
+          includeMeta: true,
         });
       },
       3,
@@ -677,11 +680,7 @@ exports.getPeriodSummary = async (req, res) => {
       }条记录，总计${result?.total || 0}条`,
     );
 
-    res.json({
-      success: true,
-      data: result,
-      errorCode: 0,
-    });
+    sendAnalyticsResult(res, result);
   } catch (error) {
     const duration = Date.now() - startTime;
     const errorCode = error.code || '';
@@ -724,13 +723,10 @@ exports.getASINStatisticsByCountry = async (req, res) => {
       country,
       startTime,
       endTime,
+      includeMeta: true,
     });
 
-    res.json({
-      success: true,
-      data: statistics,
-      errorCode: 0,
-    });
+    sendAnalyticsResult(res, statistics);
   } catch (error) {
     logger.error('按国家统计ASIN时长错误:', error);
     res.status(500).json({
@@ -750,13 +746,10 @@ exports.getASINStatisticsByVariantGroup = async (req, res) => {
       startTime,
       endTime,
       limit,
+      includeMeta: true,
     });
 
-    res.json({
-      success: true,
-      data: statistics,
-      errorCode: 0,
-    });
+    sendAnalyticsResult(res, statistics);
   } catch (error) {
     logger.error('按变体组统计ASIN时长错误:', error);
     res.status(500).json({

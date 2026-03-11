@@ -16,6 +16,15 @@ router.get(
 );
 
 router.post(
+  '/ops/analytics/cache/clear',
+  (req, res, next) => {
+    logger.info('[Ops Route] 手动清理分析缓存');
+    next();
+  },
+  opsController.clearAnalyticsCache,
+);
+
+router.post(
   '/ops/analytics/refresh',
   (req, res, next) => {
     logger.info('[Ops Route] 手动触发聚合刷新');

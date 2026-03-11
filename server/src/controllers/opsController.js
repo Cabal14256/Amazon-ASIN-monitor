@@ -1,4 +1,5 @@
 const cacheService = require('../services/cacheService');
+const analyticsCacheService = require('../services/analyticsCacheService');
 const riskControlService = require('../services/riskControlService');
 const schedulerService = require('../services/schedulerService');
 const monitorTaskQueue = require('../services/monitorTaskQueue');
@@ -10,6 +11,17 @@ const {
 } = require('../services/workerProcessorRegistry');
 const logger = require('../utils/logger');
 
+const ANALYTICS_CACHE_PREFIXES = [
+  'statisticsByTime:',
+  'allCountriesSummary:',
+  'regionSummary:',
+  'periodSummary:',
+  'asinStatisticsByCountry:',
+  'asinStatisticsByVariantGroup:',
+];
+
+let lastAnalyticsCacheClearedAt = null;
+
 async function getQueueStats(queue, limiterConfig) {
   const counts = await queue.getJobCounts();
   const isPaused = await queue.isPaused();
@@ -17,6 +29,13 @@ async function getQueueStats(queue, limiterConfig) {
     counts,
     isPaused,
     limiter: limiterConfig,
+  };
+}
+
+function getAnalyticsCacheStatus() {
+  return {
+    prefixes: ANALYTICS_CACHE_PREFIXES,
+    lastClearedAt: lastAnalyticsCacheClearedAt,
   };
 }
 
@@ -43,6 +62,7 @@ exports.getOpsOverview = async (req, res) => {
         workerRegisteredQueues: workerStatus.registeredQueues,
         workerProcessorDetails: workerStatus.details,
         cache: cacheService.getMemoryStats(),
+        analyticsCache: getAnalyticsCacheStatus(),
         riskControl: riskControlService.getMetrics(),
         scheduler: schedulerService.getSchedulerStatus(),
         analyticsAgg: analyticsAggService.getAggStatus(),
@@ -58,6 +78,34 @@ exports.getOpsOverview = async (req, res) => {
     res.status(500).json({
       success: false,
       errorMessage: '获取运行概览失败',
+      errorCode: 500,
+    });
+  }
+};
+
+exports.clearAnalyticsCache = async (req, res) => {
+  try {
+    await Promise.all(
+      ANALYTICS_CACHE_PREFIXES.map((prefix) =>
+        analyticsCacheService.deleteByPrefix(prefix),
+      ),
+    );
+    lastAnalyticsCacheClearedAt = new Date().toISOString();
+    logger.info('[Ops] 分析缓存清理完成');
+
+    res.json({
+      success: true,
+      data: {
+        prefixes: ANALYTICS_CACHE_PREFIXES,
+        clearedAt: lastAnalyticsCacheClearedAt,
+      },
+      errorCode: 0,
+    });
+  } catch (error) {
+    logger.error('[Ops] 清理分析缓存失败:', error.message);
+    res.status(500).json({
+      success: false,
+      errorMessage: '清理分析缓存失败',
       errorCode: 500,
     });
   }
@@ -95,16 +143,16 @@ exports.refreshAnalyticsAgg = async (req, res) => {
 
     let result;
     if (granularity) {
-      result = await analyticsAggService.refreshMonitorHistoryAgg(
+      result = await analyticsAggService.refreshAnalyticsAggBundle(
         granularity,
         options,
       );
     } else if (startTime || endTime) {
-      const hourResult = await analyticsAggService.refreshMonitorHistoryAgg(
+      const hourResult = await analyticsAggService.refreshAnalyticsAggBundle(
         'hour',
         options,
       );
-      const dayResult = await analyticsAggService.refreshMonitorHistoryAgg(
+      const dayResult = await analyticsAggService.refreshAnalyticsAggBundle(
         'day',
         options,
       );

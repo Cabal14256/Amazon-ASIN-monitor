@@ -230,6 +230,14 @@ declare namespace API {
     data?: MonitorStatistics;
   }
 
+  interface AnalyticsResponseMeta {
+    source?: string;
+    cacheHit?: boolean;
+    cacheTime?: string | null;
+    dataFreshness?: 'cached' | 'fresh';
+    lastUpdatedAt?: string | null;
+  }
+
   /** 按时间统计信息 */
   interface TimeStatistics {
     /** 时间周期 */
@@ -284,6 +292,7 @@ declare namespace API {
     success?: boolean;
     errorMessage?: string;
     data?: TimeStatistics[];
+    meta?: AnalyticsResponseMeta;
   }
 
   /** 按国家统计信息 */
@@ -312,6 +321,7 @@ declare namespace API {
     success?: boolean;
     errorMessage?: string;
     data?: CountryStatistics[];
+    meta?: AnalyticsResponseMeta;
   }
 
   /** 按变体组统计信息 */
@@ -344,6 +354,7 @@ declare namespace API {
     success?: boolean;
     errorMessage?: string;
     data?: VariantGroupStatistics[];
+    meta?: AnalyticsResponseMeta;
   }
 
   /** 高峰期统计信息 */
@@ -565,6 +576,7 @@ declare namespace API {
     success?: boolean;
     errorMessage?: string;
     data?: AllCountriesSummary;
+    meta?: AnalyticsResponseMeta;
   }
 
   /** 区域汇总统计 */
@@ -623,6 +635,7 @@ declare namespace API {
     success?: boolean;
     errorMessage?: string;
     data?: RegionSummary[];
+    meta?: AnalyticsResponseMeta;
   }
 
   /** 周期汇总统计 */
@@ -690,6 +703,7 @@ declare namespace API {
     success?: boolean;
     errorMessage?: string;
     data?: PageInfo_PeriodSummary_;
+    meta?: AnalyticsResponseMeta;
   }
 
   interface AbnormalDurationStatisticsItem {
