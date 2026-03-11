@@ -1,6 +1,7 @@
 const logger = require('../utils/logger');
 const websocketService = require('./websocketService');
 const taskRegistryService = require('./taskRegistryService');
+const { normalizeImportTaskResult } = require('./taskResultService');
 const {
   throwIfTaskCancelled,
   isTaskCancelledError,
@@ -55,13 +56,17 @@ async function processImportTask(job) {
       },
     );
 
-    updateProgress(job, taskId, 100, '导入完成', userId);
-    await taskRegistryService.markTaskCompleted(taskId, result, {
+    job.progress(100);
+    const completedResult = normalizeImportTaskResult(result, {
+      originalFilename,
+      taskSubType,
+    });
+    await taskRegistryService.markTaskCompleted(taskId, completedResult, {
       message: '导入完成',
     });
     websocketService.sendTaskComplete(taskId, null, null, userId);
 
-    return result;
+    return completedResult;
   } catch (error) {
     if (isTaskCancelledError(error)) {
       logger.info(`[导入任务] 任务已取消 (${taskId}): ${error.message}`);

@@ -8,6 +8,7 @@ import type { TableColumnsType } from 'antd';
 import {
   Alert,
   Button,
+  Descriptions,
   Modal,
   Popconfirm,
   Progress,
@@ -49,6 +50,28 @@ type TaskRecord = {
   result?: any;
 };
 
+type StructuredTaskResult = {
+  summary?: string;
+  verificationPassed?: boolean;
+  warnings?: string[];
+  filename?: string | null;
+  downloadUrl?: string | null;
+  mimeType?: string | null;
+  fileSizeBytes?: number | null;
+  total?: number;
+  processedCount?: number;
+  successCount?: number;
+  failedCount?: number;
+  missingCount?: number;
+  errors?: Array<{ row?: number; message?: string }>;
+  failedSamples?: Array<{ groupId?: string; error?: string }>;
+  healthCheck?: {
+    passed?: boolean;
+    checkedAt?: string;
+    message?: string;
+  };
+};
+
 const statusMeta: Record<TaskStatus, { color: string; text: string }> = {
   pending: { color: 'default', text: '等待中' },
   processing: { color: 'processing', text: '执行中' },
@@ -76,6 +99,59 @@ function saveBlob(blob: Blob, filename: string) {
   window.URL.revokeObjectURL(downloadUrl);
 }
 
+function getStructuredTaskResult(
+  task: TaskRecord | null | undefined,
+): StructuredTaskResult | null {
+  const result = task?.result;
+  if (!result || typeof result !== 'object' || Array.isArray(result)) {
+    return null;
+  }
+  return result as StructuredTaskResult;
+}
+
+function getTaskWarnings(task: TaskRecord | null | undefined) {
+  const warnings = getStructuredTaskResult(task)?.warnings;
+  return Array.isArray(warnings)
+    ? warnings.filter(
+        (item): item is string => typeof item === 'string' && !!item,
+      )
+    : [];
+}
+
+function hasTaskDownload(task: TaskRecord) {
+  if (task.status !== 'completed') {
+    return false;
+  }
+  const result = getStructuredTaskResult(task);
+  return Boolean(
+    task.downloadUrl ||
+      task.filename ||
+      result?.downloadUrl ||
+      result?.filename,
+  );
+}
+
+function hasStructuredTaskDetail(task: TaskRecord) {
+  if (!['completed', 'failed', 'cancelled'].includes(task.status)) {
+    return false;
+  }
+  return Boolean(getStructuredTaskResult(task) || task.error || task.message);
+}
+
+function formatFileSize(fileSizeBytes?: number | null) {
+  const size = Number(fileSizeBytes);
+  if (!Number.isFinite(size) || size <= 0) {
+    return '-';
+  }
+  if (size < 1024) {
+    return `${size} B`;
+  }
+  if (size < 1024 * 1024) {
+    return `${(size / 1024).toFixed(1)} KB`;
+  }
+  return `${(size / 1024 / 1024).toFixed(1)} MB`;
+}
+
 function getResultSummary(task: TaskRecord) {
   if (task.status === 'failed') {
     return task.error || task.message || '-';
@@ -88,6 +164,9 @@ function getResultSummary(task: TaskRecord) {
   }
 
   const result = task.result || {};
+  if (typeof result.summary === 'string' && result.summary.trim()) {
+    return result.summary;
+  }
   if (task.taskType === 'export') {
     return task.filename || result.filename || '文件已生成';
   }
@@ -171,6 +250,14 @@ const TaskCenterPage: React.FC = () => {
     () => extractImportResult(detailTask),
     [detailTask],
   );
+  const detailResult = useMemo(
+    () => getStructuredTaskResult(detailTask),
+    [detailTask],
+  );
+  const detailWarnings = useMemo(
+    () => getTaskWarnings(detailTask),
+    [detailTask],
+  );
 
   const handleCancelTask = async (taskId: string) => {
     try {
@@ -184,8 +271,12 @@ const TaskCenterPage: React.FC = () => {
 
   const handleDownloadTask = async (task: TaskRecord) => {
     try {
+      const result = getStructuredTaskResult(task);
       const blob = await downloadTaskFile({ taskId: task.taskId });
-      saveBlob(blob, task.filename || `task-${task.taskId}.xlsx`);
+      saveBlob(
+        blob,
+        task.filename || result?.filename || `task-${task.taskId}.bin`,
+      );
       message.success('下载成功');
     } catch (error: any) {
       message.error(error?.message || '下载失败');
@@ -285,7 +376,7 @@ const TaskCenterPage: React.FC = () => {
               <Button size="small">取消</Button>
             </Popconfirm>
           ) : null}
-          {record.taskType === 'export' && record.status === 'completed' ? (
+          {hasTaskDownload(record) ? (
             <Button
               size="small"
               type="link"
@@ -294,8 +385,7 @@ const TaskCenterPage: React.FC = () => {
               下载
             </Button>
           ) : null}
-          {record.taskType === 'import' &&
-          ['completed', 'failed', 'cancelled'].includes(record.status) ? (
+          {hasStructuredTaskDetail(record) ? (
             <Button
               size="small"
               type="link"
@@ -372,29 +462,65 @@ const TaskCenterPage: React.FC = () => {
                 detailTask.message || detailTask.error || '无附加消息'
               }
             />
-            {detailImportResult ? (
+            {detailResult ? (
               <>
-                <Alert
-                  type={
-                    detailImportResult.failedCount === 0 &&
-                    detailImportResult.missingCount === 0 &&
-                    detailImportResult.verificationPassed
-                      ? 'success'
-                      : 'warning'
-                  }
-                  showIcon
-                  message={`导入结果：总计 ${detailImportResult.total} 条，成功 ${detailImportResult.successCount} 条，失败 ${detailImportResult.failedCount} 条`}
-                  description={
-                    detailImportResult.verificationPassed
-                      ? '后台结果已校验：成功数 + 失败数与总计一致。'
-                      : `后台结果校验未通过：仍有 ${detailImportResult.missingCount} 条记录未归类。`
-                  }
-                />
-                {detailImportResult.errors &&
+                <Descriptions bordered size="small" column={2}>
+                  <Descriptions.Item label="结果摘要" span={2}>
+                    {detailResult.summary || getResultSummary(detailTask)}
+                  </Descriptions.Item>
+                  <Descriptions.Item label="后台校验">
+                    {detailResult.verificationPassed === false
+                      ? '未通过'
+                      : '通过'}
+                  </Descriptions.Item>
+                  <Descriptions.Item label="警告数量">
+                    {detailWarnings.length}
+                  </Descriptions.Item>
+                  <Descriptions.Item label="文件名">
+                    {detailTask.filename || detailResult.filename || '-'}
+                  </Descriptions.Item>
+                  <Descriptions.Item label="文件大小">
+                    {formatFileSize(detailResult.fileSizeBytes)}
+                  </Descriptions.Item>
+                  {detailResult.healthCheck ? (
+                    <Descriptions.Item label="恢复校验" span={2}>
+                      {detailResult.healthCheck.message || '-'}
+                    </Descriptions.Item>
+                  ) : null}
+                </Descriptions>
+                {detailWarnings.length > 0 ? (
+                  <Alert
+                    type="warning"
+                    showIcon
+                    message="任务警告"
+                    description={detailWarnings.join('；')}
+                  />
+                ) : null}
+                {detailImportResult ? (
+                  <Alert
+                    type={
+                      detailImportResult.failedCount === 0 &&
+                      detailImportResult.missingCount === 0 &&
+                      detailImportResult.verificationPassed
+                        ? 'success'
+                        : 'warning'
+                    }
+                    showIcon
+                    message={`导入结果：总计 ${detailImportResult.total} 条，成功 ${detailImportResult.successCount} 条，失败 ${detailImportResult.failedCount} 条`}
+                    description={
+                      detailImportResult.verificationPassed
+                        ? '后台结果已校验：成功数 + 失败数与总计一致。'
+                        : `后台结果校验未通过：仍有 ${detailImportResult.missingCount} 条记录未归类。`
+                    }
+                  />
+                ) : null}
+                {detailImportResult?.errors &&
                 detailImportResult.errors.length > 0 ? (
                   <Table
                     size="small"
-                    rowKey={(_, index) => `${detailTask.taskId}-${index}`}
+                    rowKey={(_, index) =>
+                      `${detailTask.taskId}-import-${index}`
+                    }
                     pagination={{ pageSize: 8 }}
                     dataSource={detailImportResult.errors}
                     columns={[
@@ -407,6 +533,29 @@ const TaskCenterPage: React.FC = () => {
                       {
                         title: '错误信息',
                         dataIndex: 'message',
+                      },
+                    ]}
+                  />
+                ) : null}
+                {Array.isArray(detailResult.failedSamples) &&
+                detailResult.failedSamples.length > 0 ? (
+                  <Table
+                    size="small"
+                    rowKey={(_, index) =>
+                      `${detailTask.taskId}-failed-${index}`
+                    }
+                    pagination={{ pageSize: 8 }}
+                    dataSource={detailResult.failedSamples}
+                    columns={[
+                      {
+                        title: '对象',
+                        dataIndex: 'groupId',
+                        width: 180,
+                        render: (value?: string) => value || '-',
+                      },
+                      {
+                        title: '错误信息',
+                        dataIndex: 'error',
                       },
                     ]}
                   />

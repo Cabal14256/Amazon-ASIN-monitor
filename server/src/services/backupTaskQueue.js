@@ -28,9 +28,11 @@ function buildRedisUrl() {
 }
 
 const redisUrl = buildRedisUrl();
+const bullPrefix = String(process.env.BULL_PREFIX || 'bull').trim() || 'bull';
 const DEFAULT_WORKER_CONCURRENCY = 1;
 
 const backupTaskQueue = new Queue('backup-task-queue', redisUrl, {
+  prefix: bullPrefix,
   defaultJobOptions: {
     attempts: 2,
     backoff: {
@@ -74,7 +76,7 @@ function registerProcessor() {
     logger.info(`[备份任务] 开始处理任务 ${taskId}, 类型: ${taskType}`);
 
     const backupTaskProcessor = require('./backupTaskProcessor');
-    await backupTaskProcessor.processBackupTask(job);
+    return backupTaskProcessor.processBackupTask(job);
   });
 
   processorRegistered = true;
@@ -130,7 +132,21 @@ async function getJobState(taskId) {
   }
 
   const state = await job.getState();
-  const progress = job.progress || 0;
+  const progress =
+    typeof job.progress === 'function'
+      ? await job.progress()
+      : job.progress || 0;
+  let returnvalue = job.returnvalue;
+  if (
+    (returnvalue === null || returnvalue === undefined) &&
+    state === 'completed'
+  ) {
+    try {
+      returnvalue = await job.finished();
+    } catch (error) {
+      returnvalue = null;
+    }
+  }
 
   return {
     id: job.id,
@@ -138,7 +154,7 @@ async function getJobState(taskId) {
     state,
     progress,
     data: job.data,
-    returnvalue: job.returnvalue,
+    returnvalue,
     failedReason: job.failedReason,
   };
 }

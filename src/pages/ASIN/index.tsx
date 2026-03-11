@@ -54,6 +54,7 @@ const countryMap: Record<
 
 type ManualBrokenTarget = {
   type: 'group' | 'asin';
+  action: 'MARK_BROKEN' | 'EXCLUDE_GROUP_MANUAL';
   record: Partial<API.VariantGroup | API.ASINInfo>;
 };
 
@@ -66,6 +67,9 @@ const getASINOwnManualBroken = (record: API.ASINInfo) =>
 const getASINInheritedManualBroken = (record: API.ASINInfo) =>
   record.inheritedManualBroken === 1;
 
+const getASINGroupManualExcluded = (record: API.ASINInfo) =>
+  record.manualExcludedFromGroup === 1;
+
 const getManualBrokenScopeMeta = (
   record: API.VariantGroup | API.ASINInfo,
 ): { label: string; color: string } => {
@@ -76,6 +80,9 @@ const getManualBrokenScopeMeta = (
   const scope = (record as API.ASINInfo).manualBrokenScope || 'NONE';
   if (scope === 'GROUP') {
     return { label: '继承父变体标记', color: 'gold' };
+  }
+  if (scope === 'GROUP_EXCLUDED') {
+    return { label: '已排除父变体标记', color: 'default' };
   }
   if (scope === 'SELF+GROUP') {
     return { label: '自身+父变体', color: 'magenta' };
@@ -222,18 +229,25 @@ const ASINManagement: React.FC<unknown> = () => {
         } else {
           await updateASINManualBroken(
             { asinId: manualBrokenTarget.record.id },
-            { markedBroken: true, reason },
+            {
+              action: manualBrokenTarget.action,
+              markedBroken: manualBrokenTarget.action === 'MARK_BROKEN',
+              reason,
+            },
           );
         }
 
         const isInheritedAsinTarget =
           manualBrokenTarget.type === 'asin' &&
+          manualBrokenTarget.action === 'MARK_BROKEN' &&
           (manualBrokenTarget.record as API.ASINInfo).inheritedManualBroken ===
             1 &&
           (manualBrokenTarget.record as API.ASINInfo).selfManualBroken !== 1;
 
         message.success(
-          isInheritedAsinTarget
+          manualBrokenTarget.action === 'EXCLUDE_GROUP_MANUAL'
+            ? '已排除父变体人工标记'
+            : isInheritedAsinTarget
             ? '已为 ASIN 追加单独人工标记'
             : '人工异常标记已更新',
         );
@@ -268,7 +282,11 @@ const ASINManagement: React.FC<unknown> = () => {
             } else {
               await updateASINManualBroken(
                 { asinId: record.id },
-                { markedBroken: false, reason: '' },
+                {
+                  action: 'CLEAR_SELF_MANUAL',
+                  markedBroken: false,
+                  reason: '',
+                },
               );
             }
 
@@ -277,6 +295,35 @@ const ASINManagement: React.FC<unknown> = () => {
                 ? '已取消 ASIN 单独人工标记，当前仍继承父变体标记'
                 : '已取消人工异常标记',
             );
+            refreshTableData();
+          } catch (error: any) {
+            message.error(error?.errorMessage || error?.message || '更新失败');
+            throw error;
+          }
+        },
+      });
+    },
+    [message, refreshTableData],
+  );
+
+  const handleClearGroupExclusion = useCallback(
+    (record: API.ASINInfo) => {
+      Modal.confirm({
+        title: '取消排除父变体标记',
+        content: '取消后，该 ASIN 会重新继承父变体的人工标记状态。',
+        okText: '确认取消',
+        cancelText: '保留',
+        onOk: async () => {
+          try {
+            await updateASINManualBroken(
+              { asinId: record.id },
+              {
+                action: 'CLEAR_GROUP_EXCLUSION',
+                markedBroken: false,
+                reason: '',
+              },
+            );
+            message.success('已恢复继承父变体人工标记');
             refreshTableData();
           } catch (error: any) {
             message.error(error?.errorMessage || error?.message || '更新失败');
@@ -457,7 +504,9 @@ const ASINManagement: React.FC<unknown> = () => {
             'AUTO+MANUAL': { text: '自动+人工', color: 'magenta' },
           };
           const manualScopeMeta =
-            !isGroup && record.manualBroken === 1
+            !isGroup &&
+            (record.manualBroken === 1 ||
+              (record as API.ASINInfo).manualBrokenScope === 'GROUP_EXCLUDED')
               ? getManualBrokenScopeMeta(record)
               : null;
           return (
@@ -488,6 +537,20 @@ const ASINManagement: React.FC<unknown> = () => {
                 >
                   {record.manualBrokenReason}
                 </div>
+              ) : !isGroup &&
+                (record as API.ASINInfo).manualBrokenScope ===
+                  'GROUP_EXCLUDED' &&
+                (record as API.ASINInfo).manualExcludedReason ? (
+                <div
+                  style={{
+                    color: '#8c8c8c',
+                    fontSize: 12,
+                    lineHeight: 1.4,
+                    wordBreak: 'break-word',
+                  }}
+                >
+                  {(record as API.ASINInfo).manualExcludedReason}
+                </div>
               ) : null}
             </div>
           );
@@ -499,11 +562,25 @@ const ASINManagement: React.FC<unknown> = () => {
         width: 220,
         hideInSearch: true,
         render: (_: any, record: API.VariantGroup | API.ASINInfo) => {
-          if (record.manualBroken !== 1) {
+          const asinRecord = record as API.ASINInfo;
+          const isGroupExcluded =
+            !isGroupRecord(record) &&
+            asinRecord.manualBrokenScope === 'GROUP_EXCLUDED';
+
+          if (record.manualBroken !== 1 && !isGroupExcluded) {
             return '-';
           }
 
           const scopeMeta = getManualBrokenScopeMeta(record);
+          const reason = isGroupExcluded
+            ? asinRecord.manualExcludedReason
+            : record.manualBrokenReason;
+          const updatedBy = isGroupExcluded
+            ? asinRecord.manualExcludedUpdatedBy
+            : record.manualBrokenUpdatedBy;
+          const updatedAt = isGroupExcluded
+            ? asinRecord.manualExcludedUpdatedAt
+            : record.manualBrokenUpdatedAt;
 
           return (
             <div
@@ -511,13 +588,11 @@ const ASINManagement: React.FC<unknown> = () => {
             >
               <Tag color={scopeMeta.color}>{scopeMeta.label}</Tag>
               <div style={{ fontSize: 12, lineHeight: 1.4 }}>
-                {record.manualBrokenReason || '-'}
+                {reason || '-'}
               </div>
               <div style={{ color: '#8c8c8c', fontSize: 12 }}>
-                {(record.manualBrokenUpdatedBy || '-') + ' | '}
-                {record.manualBrokenUpdatedAt
-                  ? formatBeijing(record.manualBrokenUpdatedAt)
-                  : '-'}
+                {(updatedBy || '-') + ' | '}
+                {updatedAt ? formatBeijing(updatedAt) : '-'}
               </div>
             </div>
           );
@@ -715,6 +790,9 @@ const ASINManagement: React.FC<unknown> = () => {
               : getASINOwnManualBroken(record as API.ASINInfo);
             const inheritedManualBroken =
               !isGroup && getASINInheritedManualBroken(record as API.ASINInfo);
+            const groupManualExcluded =
+              !isGroup && getASINGroupManualExcluded(record as API.ASINInfo);
+
             menuItems.push({
               key: ownManualBroken ? 'clearManualBroken' : 'manualBroken',
               label: ownManualBroken
@@ -730,11 +808,37 @@ const ASINManagement: React.FC<unknown> = () => {
 
                 setManualBrokenTarget({
                   type: isGroup ? 'group' : 'asin',
+                  action: 'MARK_BROKEN',
                   record,
                 });
                 setManualBrokenModalVisible(true);
               },
             });
+
+            if (!isGroup && inheritedManualBroken && !groupManualExcluded) {
+              menuItems.push({
+                key: 'excludeGroupManual',
+                label: '排除父变体标记',
+                onClick: () => {
+                  setManualBrokenTarget({
+                    type: 'asin',
+                    action: 'EXCLUDE_GROUP_MANUAL',
+                    record,
+                  });
+                  setManualBrokenModalVisible(true);
+                },
+              });
+            }
+
+            if (!isGroup && groupManualExcluded) {
+              menuItems.push({
+                key: 'clearGroupExclusion',
+                label: '取消排除父标记',
+                onClick: () => {
+                  handleClearGroupExclusion(record as API.ASINInfo);
+                },
+              });
+            }
           }
 
           // 添加ASIN（仅变体组，有权限时）
@@ -796,7 +900,14 @@ const ASINManagement: React.FC<unknown> = () => {
         },
       },
     ],
-    [countryValueEnum, access, handleClearManualBroken, handleRemove, message],
+    [
+      countryValueEnum,
+      access,
+      handleClearGroupExclusion,
+      handleClearManualBroken,
+      handleRemove,
+      message,
+    ],
   );
 
   return (
@@ -1132,6 +1243,11 @@ const ASINManagement: React.FC<unknown> = () => {
       <ManualBrokenModal
         open={manualBrokenModalVisible}
         targetType={manualBrokenTarget?.type || 'group'}
+        action={
+          manualBrokenTarget?.action === 'EXCLUDE_GROUP_MANUAL'
+            ? 'exclude'
+            : 'mark'
+        }
         record={manualBrokenTarget?.record}
         onCancel={closeManualBrokenModal}
         onSubmit={handleManualBrokenSubmit}

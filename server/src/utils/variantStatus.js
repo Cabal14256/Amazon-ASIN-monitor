@@ -36,18 +36,24 @@ function buildEffectiveStatus({ autoBroken = 0, manualBroken = 0 }) {
 function buildAsinManualBrokenScope(
   selfManualBroken = 0,
   inheritedManualBroken = 0,
+  manualExcludedFromGroup = 0,
 ) {
   const self = toFlag(selfManualBroken);
   const inherited = toFlag(inheritedManualBroken);
+  const excluded = toFlag(manualExcludedFromGroup);
+  const effectiveInherited = inherited && !excluded;
 
-  if (self && inherited) {
+  if (self && effectiveInherited) {
     return 'SELF+GROUP';
   }
   if (self) {
     return 'SELF';
   }
-  if (inherited) {
+  if (effectiveInherited) {
     return 'GROUP';
+  }
+  if (excluded && inherited) {
+    return 'GROUP_EXCLUDED';
   }
   return 'NONE';
 }
@@ -58,15 +64,28 @@ function decorateAsinStatus(record, options = {}) {
   }
 
   const selfManualBroken = toFlag(record.manual_broken);
-  const inheritedManualBroken = toFlag(options.parentManualBroken);
+  const inheritedManualBrokenRaw = toFlag(options.parentManualBroken);
+  const manualExcludedFromGroup = toFlag(record.manual_excluded_from_group);
+  const inheritedManualBroken =
+    inheritedManualBrokenRaw && !manualExcludedFromGroup;
   const effectiveManualBroken = selfManualBroken || inheritedManualBroken;
   const manualBrokenScope = buildAsinManualBrokenScope(
     selfManualBroken,
-    inheritedManualBroken,
+    inheritedManualBrokenRaw,
+    manualExcludedFromGroup,
   );
   const selfManualBrokenReason = record.manual_broken_reason || null;
   const selfManualBrokenUpdatedAt = record.manual_broken_updated_at || null;
   const selfManualBrokenUpdatedBy = record.manual_broken_updated_by || null;
+  const manualExcludedReason = manualExcludedFromGroup
+    ? record.manual_excluded_reason || null
+    : null;
+  const manualExcludedUpdatedAt = manualExcludedFromGroup
+    ? record.manual_excluded_updated_at || null
+    : null;
+  const manualExcludedUpdatedBy = manualExcludedFromGroup
+    ? record.manual_excluded_updated_by || null
+    : null;
   const inheritedManualBrokenReason = inheritedManualBroken
     ? options.parentManualBrokenReason || null
     : null;
@@ -98,6 +117,10 @@ function decorateAsinStatus(record, options = {}) {
     selfManualBrokenReason,
     selfManualBrokenUpdatedAt,
     selfManualBrokenUpdatedBy,
+    manualExcludedFromGroup: manualExcludedFromGroup ? 1 : 0,
+    manualExcludedReason,
+    manualExcludedUpdatedAt,
+    manualExcludedUpdatedBy,
     inheritedManualBroken: inheritedManualBroken ? 1 : 0,
     inheritedManualBrokenReason,
     inheritedManualBrokenUpdatedAt,
@@ -135,12 +158,16 @@ function decorateVariantGroupStatus(record, children = []) {
 
 function buildAsinEffectiveBrokenExpr(alias = 'a', variantGroupAlias = '') {
   const inheritedGroupManualExpr = variantGroupAlias
-    ? `COALESCE(${variantGroupAlias}.manual_broken, 0) = 1`
+    ? `(
+      COALESCE(${variantGroupAlias}.manual_broken, 0) = 1
+      AND COALESCE(${alias}.manual_excluded_from_group, 0) = 0
+    )`
     : `EXISTS (
       SELECT 1
       FROM variant_groups vg_manual
       WHERE vg_manual.id = ${alias}.variant_group_id
         AND COALESCE(vg_manual.manual_broken, 0) = 1
+        AND COALESCE(${alias}.manual_excluded_from_group, 0) = 0
     )`;
 
   return `(

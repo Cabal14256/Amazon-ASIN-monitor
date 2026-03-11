@@ -4,8 +4,7 @@ const redisConfig = require('../config/redis');
 const TASK_META_KEY_PREFIX = 'task:meta:';
 const USER_TASK_INDEX_PREFIX = 'task:user:';
 const TASK_TTL_SECONDS = Number(process.env.TASK_META_TTL_SECONDS) || 86400 * 7;
-const USER_TASK_MAX_ITEMS =
-  Number(process.env.TASK_USER_MAX_ITEMS) || 200;
+const USER_TASK_MAX_ITEMS = Number(process.env.TASK_USER_MAX_ITEMS) || 200;
 
 const memoryTasks = new Map();
 const memoryUserTasks = new Map();
@@ -30,6 +29,16 @@ function cloneTask(task) {
 }
 
 function getRedisClient() {
+  if (
+    ['true', '1', 'yes', 'on'].includes(
+      String(process.env.TASK_REGISTRY_MEMORY_ONLY || '')
+        .trim()
+        .toLowerCase(),
+    )
+  ) {
+    return null;
+  }
+
   if (!redisConfig.isRedisAvailable()) {
     return null;
   }
@@ -60,6 +69,19 @@ function syncMemoryIndex(task) {
 
 async function persistTask(task) {
   const redisClient = getRedisClient();
+  const currentTask = memoryTasks.get(task.taskId);
+  const nextStatus = task?.status;
+  const currentStatus = currentTask?.status;
+
+  // 防止并发更新把终态（completed/failed/cancelled）回写成处理中状态
+  if (
+    currentTask &&
+    isTerminalTaskStatus(currentStatus) &&
+    !isTerminalTaskStatus(nextStatus)
+  ) {
+    return cloneTask(currentTask);
+  }
+
   syncMemoryIndex(task);
 
   if (!redisClient) {
@@ -78,7 +100,9 @@ async function persistTask(task) {
       const userTaskKey = getUserTaskKey(task.userId);
       await redisClient.zadd(
         userTaskKey,
-        new Date(task.updatedAt || task.createdAt || getNowISOString()).getTime(),
+        new Date(
+          task.updatedAt || task.createdAt || getNowISOString(),
+        ).getTime(),
         task.taskId,
       );
       await redisClient.expire(userTaskKey, TASK_TTL_SECONDS);
@@ -142,6 +166,13 @@ async function updateTask(taskId, patch = {}) {
     taskId,
     createdAt: getNowISOString(),
   };
+  if (
+    existingTask &&
+    isTerminalTaskStatus(existingTask.status) &&
+    (!patch.status || !isTerminalTaskStatus(patch.status))
+  ) {
+    return existingTask;
+  }
   const nextTask = {
     ...existingTask,
     ...patch,
@@ -167,6 +198,9 @@ async function markTaskProcessing(taskId, patch = {}) {
 
 async function updateTaskProgress(taskId, progress, message, patch = {}) {
   const existingTask = await readTask(taskId);
+  if (existingTask && isTerminalTaskStatus(existingTask.status)) {
+    return existingTask;
+  }
   return updateTask(taskId, {
     progress,
     message,

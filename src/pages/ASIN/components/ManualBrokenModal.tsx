@@ -4,6 +4,7 @@ import React, { useEffect, useMemo, useState } from 'react';
 interface ManualBrokenModalProps {
   open: boolean;
   targetType: 'group' | 'asin';
+  action?: 'mark' | 'exclude';
   record?: Partial<API.VariantGroup | API.ASINInfo>;
   onCancel: () => void;
   onSubmit: (reason: string) => Promise<void>;
@@ -12,6 +13,7 @@ interface ManualBrokenModalProps {
 const ManualBrokenModal: React.FC<ManualBrokenModalProps> = ({
   open,
   targetType,
+  action = 'mark',
   record,
   onCancel,
   onSubmit,
@@ -23,18 +25,31 @@ const ManualBrokenModal: React.FC<ManualBrokenModalProps> = ({
     if (open) {
       form.setFieldsValue({
         reason: String(
-          (record as API.ASINInfo | undefined)?.selfManualBrokenReason ||
-            record?.manualBrokenReason ||
-            '',
+          action === 'exclude'
+            ? (record as API.ASINInfo | undefined)?.manualExcludedReason || ''
+            : (record as API.ASINInfo | undefined)?.selfManualBrokenReason ||
+                record?.manualBrokenReason ||
+                '',
         ),
       });
       return;
     }
     form.resetFields();
-  }, [form, open, record]);
+  }, [action, form, open, record]);
 
+  const isExcludeAction = action === 'exclude';
   const title =
-    targetType === 'group' ? '人工标记变体组异常' : '人工标记ASIN异常';
+    targetType === 'group'
+      ? '人工标记变体组异常'
+      : isExcludeAction
+      ? '排除父变体人工标记'
+      : '人工标记ASIN异常';
+  const okText = isExcludeAction ? '确认排除' : '确认标记';
+  const reasonLabel = isExcludeAction ? '排除原因' : '异常原因';
+  const reasonPlaceholder = isExcludeAction
+    ? '例如：该 ASIN 已单独核实正常，不继承父变体人工标记'
+    : '例如：副评评论共享受限，业务上判定为异常';
+
   const summary = useMemo(() => {
     if (!record) {
       return '-';
@@ -61,7 +76,7 @@ const ManualBrokenModal: React.FC<ManualBrokenModalProps> = ({
     <Modal
       title={title}
       open={open}
-      okText="确认标记"
+      okText={okText}
       cancelText="取消"
       confirmLoading={submitting}
       destroyOnClose
@@ -74,15 +89,20 @@ const ManualBrokenModal: React.FC<ManualBrokenModalProps> = ({
       <Form form={form} layout="vertical">
         <Form.Item
           name="reason"
-          label="异常原因"
+          label={reasonLabel}
           rules={[
-            { required: true, message: '请填写人工异常原因' },
+            {
+              required: true,
+              message: isExcludeAction
+                ? '请填写排除父变体人工标记的原因'
+                : '请填写人工异常原因',
+            },
             { max: 500, message: '原因长度不能超过500个字符' },
           ]}
         >
           <Input.TextArea
             rows={4}
-            placeholder="例如：副评评论共享受限，业务上判定为异常"
+            placeholder={reasonPlaceholder}
             maxLength={500}
             showCount
           />

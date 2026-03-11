@@ -27,9 +27,11 @@ function buildRedisUrl() {
 }
 
 const redisUrl = buildRedisUrl();
+const bullPrefix = String(process.env.BULL_PREFIX || 'bull').trim() || 'bull';
 const DEFAULT_WORKER_CONCURRENCY = 1;
 
 const variantCheckTaskQueue = new Queue('variant-check-task-queue', redisUrl, {
+  prefix: bullPrefix,
   defaultJobOptions: {
     attempts: 2,
     backoff: {
@@ -133,7 +135,21 @@ async function getJobState(taskId) {
   }
 
   const state = await job.getState();
-  const progress = job.progress || 0;
+  const progress =
+    typeof job.progress === 'function'
+      ? await job.progress()
+      : job.progress || 0;
+  let returnvalue = job.returnvalue;
+  if (
+    (returnvalue === null || returnvalue === undefined) &&
+    state === 'completed'
+  ) {
+    try {
+      returnvalue = await job.finished();
+    } catch (error) {
+      returnvalue = null;
+    }
+  }
 
   return {
     id: job.id,
@@ -141,7 +157,7 @@ async function getJobState(taskId) {
     state,
     progress,
     data: job.data,
-    returnvalue: job.returnvalue,
+    returnvalue,
     failedReason: job.failedReason,
   };
 }

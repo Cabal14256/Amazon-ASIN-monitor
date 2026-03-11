@@ -23,6 +23,29 @@ function parseMarkedBroken(value) {
   return null;
 }
 
+function parseManualBrokenAction(body = {}) {
+  const action = String(body?.action || '')
+    .trim()
+    .toUpperCase();
+  const supportedActions = new Set([
+    'MARK_BROKEN',
+    'CLEAR_SELF_MANUAL',
+    'EXCLUDE_GROUP_MANUAL',
+    'CLEAR_GROUP_EXCLUSION',
+  ]);
+
+  if (supportedActions.has(action)) {
+    return action;
+  }
+
+  const markedBroken = parseMarkedBroken(body?.markedBroken);
+  if (markedBroken === null) {
+    return null;
+  }
+
+  return markedBroken ? 'MARK_BROKEN' : 'CLEAR_SELF_MANUAL';
+}
+
 // 查询变体组列表
 exports.getVariantGroups = async (req, res) => {
   try {
@@ -262,14 +285,18 @@ exports.updateASINFeishuNotify = async (req, res) => {
 exports.updateASINManualBroken = async (req, res) => {
   try {
     const { asinId } = req.params;
-    const markedBroken = parseMarkedBroken(req.body?.markedBroken);
+    const action = parseManualBrokenAction(req.body);
     const reason = String(req.body?.reason || '').trim();
 
-    if (markedBroken === null) {
-      return sendErrorResponse(res, 400, 'markedBroken参数必须是布尔值或0/1');
+    if (!action) {
+      return sendErrorResponse(
+        res,
+        400,
+        'action参数无效，或 markedBroken 参数必须是布尔值或0/1',
+      );
     }
-    if (markedBroken && !reason) {
-      return sendErrorResponse(res, 400, '人工标记异常时必须填写原因');
+    if (['MARK_BROKEN', 'EXCLUDE_GROUP_MANUAL'].includes(action) && !reason) {
+      return sendErrorResponse(res, 400, '当前操作必须填写原因');
     }
     if (reason.length > 500) {
       return sendErrorResponse(res, 400, '原因长度不能超过500个字符');
@@ -281,12 +308,11 @@ exports.updateASINManualBroken = async (req, res) => {
       req.user?.userId ||
       req.user?.id ||
       null;
-    const asinData = await ASIN.updateManualBroken(
-      asinId,
-      markedBroken,
+    const asinData = await ASIN.updateManualBrokenAction(asinId, {
+      action,
       reason,
       updatedBy,
-    );
+    });
 
     if (!asinData) {
       return sendErrorResponse(res, 404, 'ASIN不存在');

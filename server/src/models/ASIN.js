@@ -18,7 +18,7 @@ function normalizeAsinType(asinType) {
 }
 
 function buildManualActionCheckResult({
-  markedBroken,
+  action,
   reason,
   updatedBy,
   previousRecord,
@@ -28,7 +28,7 @@ function buildManualActionCheckResult({
   return {
     source: 'MANUAL_ACTION',
     entityType: 'ASIN',
-    action: markedBroken ? 'MARK_BROKEN' : 'CLEAR_MANUAL_BROKEN',
+    action,
     operator: updatedBy || null,
     reason: reason || '',
     statusSource: currentRecord?.statusSource || 'NORMAL',
@@ -44,6 +44,66 @@ function buildManualActionCheckResult({
       currentRecord?.manualBrokenUpdatedAt || operationTime,
     manualBrokenUpdatedBy:
       currentRecord?.manualBrokenUpdatedBy || updatedBy || null,
+    manualBrokenScope: currentRecord?.manualBrokenScope || 'NONE',
+    manualExcludedFromGroup:
+      currentRecord?.manualExcludedFromGroup === 1 ? 1 : 0,
+    manualExcludedReason: currentRecord?.manualExcludedReason || '',
+    manualExcludedUpdatedAt: currentRecord?.manualExcludedUpdatedAt || null,
+    manualExcludedUpdatedBy: currentRecord?.manualExcludedUpdatedBy || null,
+  };
+}
+
+function buildParentManualOptions(record) {
+  return {
+    parentManualBroken: record?.parent_manual_broken || 0,
+    parentManualBrokenReason: record?.parent_manual_broken_reason || null,
+    parentManualBrokenUpdatedAt:
+      record?.parent_manual_broken_updated_at || null,
+    parentManualBrokenUpdatedBy:
+      record?.parent_manual_broken_updated_by || null,
+  };
+}
+
+function mapDecoratedAsin(normalized, parentId = normalized?.variant_group_id) {
+  return {
+    id: normalized.id,
+    asin: normalized.asin,
+    name: normalized.name,
+    asinType: normalizeAsinType(normalized.asin_type),
+    country: normalized.country,
+    site: normalized.site,
+    brand: normalized.brand,
+    variantGroupId: normalized.variant_group_id,
+    parentId,
+    isBroken: normalized.isBroken,
+    variantStatus: normalized.variantStatus,
+    autoIsBroken: normalized.autoIsBroken,
+    autoVariantStatus: normalized.autoVariantStatus,
+    manualBroken: normalized.manualBroken,
+    manualBrokenScope: normalized.manualBrokenScope,
+    manualBrokenReason: normalized.manualBrokenReason,
+    manualBrokenUpdatedAt: normalized.manualBrokenUpdatedAt,
+    manualBrokenUpdatedBy: normalized.manualBrokenUpdatedBy,
+    selfManualBroken: normalized.selfManualBroken,
+    selfManualBrokenReason: normalized.selfManualBrokenReason,
+    selfManualBrokenUpdatedAt: normalized.selfManualBrokenUpdatedAt,
+    selfManualBrokenUpdatedBy: normalized.selfManualBrokenUpdatedBy,
+    manualExcludedFromGroup: normalized.manualExcludedFromGroup,
+    manualExcludedReason: normalized.manualExcludedReason,
+    manualExcludedUpdatedAt: normalized.manualExcludedUpdatedAt,
+    manualExcludedUpdatedBy: normalized.manualExcludedUpdatedBy,
+    inheritedManualBroken: normalized.inheritedManualBroken,
+    inheritedManualBrokenReason: normalized.inheritedManualBrokenReason,
+    inheritedManualBrokenUpdatedAt: normalized.inheritedManualBrokenUpdatedAt,
+    inheritedManualBrokenUpdatedBy: normalized.inheritedManualBrokenUpdatedBy,
+    statusSource: normalized.statusSource,
+    createTime: normalized.create_time,
+    updateTime: normalized.update_time,
+    lastCheckTime: normalized.last_check_time,
+    feishuNotifyEnabled:
+      normalized.feishu_notify_enabled !== null
+        ? normalized.feishu_notify_enabled
+        : 1,
   };
 }
 
@@ -81,12 +141,9 @@ class ASIN {
 
     const list = await query(sql, conditions);
     return list.map((asin) =>
-      decorateAsinStatus(asin, {
-        parentManualBroken: asin.parent_manual_broken,
-        parentManualBrokenReason: asin.parent_manual_broken_reason,
-        parentManualBrokenUpdatedAt: asin.parent_manual_broken_updated_at,
-        parentManualBrokenUpdatedBy: asin.parent_manual_broken_updated_by,
-      }),
+      mapDecoratedAsin(
+        decorateAsinStatus(asin, buildParentManualOptions(asin)),
+      ),
     );
   }
 
@@ -97,7 +154,9 @@ class ASIN {
         a.id, a.asin, a.name, a.asin_type, a.country, a.site, a.brand,
         a.variant_group_id, a.is_broken, a.variant_status, a.manual_broken,
         a.manual_broken_reason, a.manual_broken_updated_at,
-        a.manual_broken_updated_by, a.create_time, a.update_time,
+        a.manual_broken_updated_by, a.manual_excluded_from_group,
+        a.manual_excluded_reason, a.manual_excluded_updated_at,
+        a.manual_excluded_updated_by, a.create_time, a.update_time,
         a.last_check_time, a.feishu_notify_enabled,
         vg.manual_broken as parent_manual_broken,
         vg.manual_broken_reason as parent_manual_broken_reason,
@@ -109,49 +168,9 @@ class ASIN {
       [id],
     );
     if (asin) {
-      const normalized = decorateAsinStatus(asin, {
-        parentManualBroken: asin.parent_manual_broken,
-        parentManualBrokenReason: asin.parent_manual_broken_reason,
-        parentManualBrokenUpdatedAt: asin.parent_manual_broken_updated_at,
-        parentManualBrokenUpdatedBy: asin.parent_manual_broken_updated_by,
-      });
-      return {
-        id: normalized.id,
-        asin: normalized.asin,
-        name: normalized.name,
-        asinType: normalizeAsinType(normalized.asin_type), // 转换为驼峰命名并标准化
-        country: normalized.country,
-        site: normalized.site,
-        brand: normalized.brand,
-        variantGroupId: normalized.variant_group_id,
-        isBroken: normalized.isBroken,
-        variantStatus: normalized.variantStatus,
-        autoIsBroken: normalized.autoIsBroken,
-        autoVariantStatus: normalized.autoVariantStatus,
-        manualBroken: normalized.manualBroken,
-        manualBrokenScope: normalized.manualBrokenScope,
-        manualBrokenReason: normalized.manualBrokenReason,
-        manualBrokenUpdatedAt: normalized.manualBrokenUpdatedAt,
-        manualBrokenUpdatedBy: normalized.manualBrokenUpdatedBy,
-        selfManualBroken: normalized.selfManualBroken,
-        selfManualBrokenReason: normalized.selfManualBrokenReason,
-        selfManualBrokenUpdatedAt: normalized.selfManualBrokenUpdatedAt,
-        selfManualBrokenUpdatedBy: normalized.selfManualBrokenUpdatedBy,
-        inheritedManualBroken: normalized.inheritedManualBroken,
-        inheritedManualBrokenReason: normalized.inheritedManualBrokenReason,
-        inheritedManualBrokenUpdatedAt:
-          normalized.inheritedManualBrokenUpdatedAt,
-        inheritedManualBrokenUpdatedBy:
-          normalized.inheritedManualBrokenUpdatedBy,
-        statusSource: normalized.statusSource,
-        createTime: normalized.create_time,
-        updateTime: normalized.update_time,
-        lastCheckTime: normalized.last_check_time,
-        feishuNotifyEnabled:
-          normalized.feishu_notify_enabled !== null
-            ? normalized.feishu_notify_enabled
-            : 1,
-      };
+      return mapDecoratedAsin(
+        decorateAsinStatus(asin, buildParentManualOptions(asin)),
+      );
     }
     return null;
   }
@@ -293,16 +312,69 @@ class ASIN {
 
   // 更新人工异常标记
   static async updateManualBroken(id, markedBroken, reason, updatedBy = null) {
-    const normalizedReason =
-      markedBroken && reason ? String(reason).trim().slice(0, 500) : null;
-    const normalizedUpdatedBy =
-      markedBroken && updatedBy ? String(updatedBy).trim().slice(0, 100) : null;
+    return this.updateManualBrokenAction(id, {
+      action: markedBroken ? 'MARK_BROKEN' : 'CLEAR_SELF_MANUAL',
+      reason,
+      updatedBy,
+    });
+  }
 
+  static async updateManualBrokenAction(
+    id,
+    { action, reason, updatedBy = null } = {},
+  ) {
     const existing = await this.findById(id);
     if (!existing) {
       return null;
     }
+
+    const normalizedAction = String(action || '')
+      .trim()
+      .toUpperCase();
+    const normalizedReason = reason ? String(reason).trim().slice(0, 500) : '';
+    const normalizedUpdatedBy = updatedBy
+      ? String(updatedBy).trim().slice(0, 100)
+      : null;
     const operationTime = new Date();
+    const nextState = {
+      manualBroken: existing.selfManualBroken === 1 ? 1 : 0,
+      manualBrokenReason: existing.selfManualBrokenReason || null,
+      manualBrokenUpdatedAt: existing.selfManualBrokenUpdatedAt || null,
+      manualBrokenUpdatedBy: existing.selfManualBrokenUpdatedBy || null,
+      manualExcludedFromGroup: existing.manualExcludedFromGroup === 1 ? 1 : 0,
+      manualExcludedReason: existing.manualExcludedReason || null,
+      manualExcludedUpdatedAt: existing.manualExcludedUpdatedAt || null,
+      manualExcludedUpdatedBy: existing.manualExcludedUpdatedBy || null,
+    };
+
+    switch (normalizedAction) {
+      case 'MARK_BROKEN':
+        nextState.manualBroken = 1;
+        nextState.manualBrokenReason = normalizedReason || null;
+        nextState.manualBrokenUpdatedAt = operationTime;
+        nextState.manualBrokenUpdatedBy = normalizedUpdatedBy;
+        break;
+      case 'CLEAR_SELF_MANUAL':
+        nextState.manualBroken = 0;
+        nextState.manualBrokenReason = null;
+        nextState.manualBrokenUpdatedAt = null;
+        nextState.manualBrokenUpdatedBy = null;
+        break;
+      case 'EXCLUDE_GROUP_MANUAL':
+        nextState.manualExcludedFromGroup = 1;
+        nextState.manualExcludedReason = normalizedReason || null;
+        nextState.manualExcludedUpdatedAt = operationTime;
+        nextState.manualExcludedUpdatedBy = normalizedUpdatedBy;
+        break;
+      case 'CLEAR_GROUP_EXCLUSION':
+        nextState.manualExcludedFromGroup = 0;
+        nextState.manualExcludedReason = null;
+        nextState.manualExcludedUpdatedAt = null;
+        nextState.manualExcludedUpdatedBy = null;
+        break;
+      default:
+        throw new Error('不支持的人工标记动作');
+    }
 
     await query(
       `UPDATE asins
@@ -310,13 +382,21 @@ class ASIN {
            manual_broken_reason = ?,
            manual_broken_updated_at = ?,
            manual_broken_updated_by = ?,
+           manual_excluded_from_group = ?,
+           manual_excluded_reason = ?,
+           manual_excluded_updated_at = ?,
+           manual_excluded_updated_by = ?,
            update_time = NOW()
        WHERE id = ?`,
       [
-        markedBroken ? 1 : 0,
-        normalizedReason,
-        markedBroken ? operationTime : null,
-        normalizedUpdatedBy,
+        nextState.manualBroken,
+        nextState.manualBrokenReason,
+        nextState.manualBrokenUpdatedAt,
+        nextState.manualBrokenUpdatedBy,
+        nextState.manualExcludedFromGroup,
+        nextState.manualExcludedReason,
+        nextState.manualExcludedUpdatedAt,
+        nextState.manualExcludedUpdatedBy,
         id,
       ],
     );
@@ -327,22 +407,7 @@ class ASIN {
       VariantGroup.clearCache();
     }
 
-    const updated = decorateAsinStatus(
-      {
-        ...existing,
-        is_broken: existing.autoIsBroken || 0,
-        manual_broken: markedBroken ? 1 : 0,
-        manual_broken_reason: normalizedReason,
-        manual_broken_updated_at: markedBroken ? operationTime : null,
-        manual_broken_updated_by: normalizedUpdatedBy,
-      },
-      {
-        parentManualBroken: existing.inheritedManualBroken || 0,
-        parentManualBrokenReason: existing.inheritedManualBrokenReason,
-        parentManualBrokenUpdatedAt: existing.inheritedManualBrokenUpdatedAt,
-        parentManualBrokenUpdatedBy: existing.inheritedManualBrokenUpdatedBy,
-      },
-    );
+    const updated = await this.findById(id);
 
     let variantGroupName = null;
     if (existing.variantGroupId) {
@@ -363,13 +428,15 @@ class ASIN {
       variantGroupName,
       checkType: 'ASIN',
       country: existing.country || null,
-      isBroken: updated.isBroken === 1 ? 1 : 0,
+      isBroken: updated?.isBroken === 1 ? 1 : 0,
       checkTime: operationTime,
       checkResult: buildManualActionCheckResult({
-        markedBroken,
+        action: normalizedAction,
         reason:
           normalizedReason ||
-          (markedBroken ? '' : existing.manualBrokenReason || ''),
+          existing.manualBrokenReason ||
+          existing.manualExcludedReason ||
+          '',
         updatedBy: normalizedUpdatedBy || updatedBy || null,
         previousRecord: existing,
         currentRecord: updated,
@@ -377,7 +444,7 @@ class ASIN {
       }),
     });
 
-    return this.findById(id);
+    return updated;
   }
 }
 
