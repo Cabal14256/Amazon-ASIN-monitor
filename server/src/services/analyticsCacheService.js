@@ -115,8 +115,18 @@ async function set(key, value, ttlMs) {
   await setToRedis(key, value, ttlMs);
 }
 
+async function getLatest(key) {
+  return get(`latest:${key}`);
+}
+
+async function rememberLatest(key, value, ttlMs) {
+  await set(`latest:${key}`, value, ttlMs);
+}
+
 module.exports = {
   get,
+  getLatest,
+  rememberLatest,
   set,
   deleteByPrefix,
 };

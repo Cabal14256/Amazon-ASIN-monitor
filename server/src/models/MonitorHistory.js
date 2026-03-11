@@ -1,6 +1,7 @@
-const { query } = require('../config/database');
+const { query, getPoolStatus } = require('../config/database');
 const cacheService = require('../services/cacheService');
 const analyticsCacheService = require('../services/analyticsCacheService');
+const analyticsAggService = require('../services/analyticsAggService');
 const logger = require('../utils/logger');
 
 const AGG_COVERAGE_CACHE = new Map();
@@ -79,6 +80,8 @@ function buildAnalyticsMeta({
   cacheHit = false,
   generatedAt = '',
   lastUpdatedAt = '',
+  busyFallback = false,
+  busyReason = '',
 } = {}) {
   const normalizedSource = String(source || 'raw').trim() || 'raw';
   const effectiveSource =
@@ -93,6 +96,8 @@ function buildAnalyticsMeta({
     cacheTime: cacheHit ? normalizedUpdatedAt : null,
     dataFreshness: cacheHit ? 'cached' : 'fresh',
     lastUpdatedAt: normalizedUpdatedAt,
+    busyFallback: Boolean(busyFallback),
+    busyReason: busyFallback ? busyReason || null : null,
   };
 }
 
@@ -122,7 +127,11 @@ function unpackAnalyticsEnvelope(payload) {
   return null;
 }
 
-function resolveCachedAnalyticsResult(cached, includeMeta = false) {
+function resolveCachedAnalyticsResult(
+  cached,
+  includeMeta = false,
+  metaPatch = {},
+) {
   const envelope = unpackAnalyticsEnvelope(cached);
   if (envelope) {
     const data = envelope.data;
@@ -136,6 +145,8 @@ function resolveCachedAnalyticsResult(cached, includeMeta = false) {
         cacheHit: true,
         generatedAt: envelope.meta?.generatedAt || '',
         lastUpdatedAt: envelope.meta?.lastUpdatedAt || '',
+        busyFallback: metaPatch.busyFallback === true,
+        busyReason: metaPatch.busyReason || '',
       }),
     };
   }
@@ -149,13 +160,21 @@ function resolveCachedAnalyticsResult(cached, includeMeta = false) {
     meta: buildAnalyticsMeta({
       source: 'cache',
       cacheHit: true,
+      busyFallback: metaPatch.busyFallback === true,
+      busyReason: metaPatch.busyReason || '',
     }),
   };
 }
 
 function finalizeAnalyticsResult(
   data,
-  { includeMeta = false, source = 'raw', generatedAt = '' } = {},
+  {
+    includeMeta = false,
+    source = 'raw',
+    generatedAt = '',
+    busyFallback = false,
+    busyReason = '',
+  } = {},
 ) {
   if (!includeMeta) {
     return data;
@@ -168,8 +187,77 @@ function finalizeAnalyticsResult(
       cacheHit: false,
       generatedAt,
       lastUpdatedAt: generatedAt,
+      busyFallback,
+      busyReason,
     }),
   };
+}
+
+function getAnalyticsBusyContext() {
+  const poolStatus = getPoolStatus();
+  const aggStatus = analyticsAggService.getAggStatus();
+  const connectionLimit = Number(poolStatus?.config?.connectionLimit) || 0;
+  const activeConnections = Number(poolStatus?.activeConnections) || 0;
+  const queueLength = Number(poolStatus?.queueLength) || 0;
+  const activeRatio =
+    connectionLimit > 0 ? activeConnections / connectionLimit : 0;
+  const queueThreshold =
+    Number(process.env.ANALYTICS_BUSY_QUEUE_THRESHOLD) || 10;
+  const ratioThreshold =
+    Number(process.env.ANALYTICS_BUSY_ACTIVE_CONNECTION_RATIO) || 0.85;
+
+  if (aggStatus?.isRefreshing) {
+    return {
+      busy: true,
+      reason: '聚合刷新进行中，优先返回最近一次缓存结果',
+      poolStatus,
+      aggStatus,
+    };
+  }
+
+  if (queueLength >= queueThreshold || activeRatio >= ratioThreshold) {
+    return {
+      busy: true,
+      reason: '数据库连接池繁忙，优先返回最近一次缓存结果',
+      poolStatus,
+      aggStatus,
+    };
+  }
+
+  return {
+    busy: false,
+    reason: '',
+    poolStatus,
+    aggStatus,
+  };
+}
+
+async function getBusyFallbackAnalyticsResult(
+  latestKey,
+  includeMeta = false,
+  busyContext = {},
+) {
+  if (!busyContext?.busy || !latestKey) {
+    return null;
+  }
+
+  const cached = await analyticsCacheService.getLatest(latestKey);
+  if (cached === null) {
+    return null;
+  }
+
+  return resolveCachedAnalyticsResult(cached, includeMeta, {
+    busyFallback: true,
+    busyReason: busyContext.reason || '',
+  });
+}
+
+async function storeAnalyticsResult(cacheKey, latestKey, data, meta, ttlMs) {
+  const envelope = buildAnalyticsEnvelope(data, meta);
+  await analyticsCacheService.set(cacheKey, envelope, ttlMs);
+  if (latestKey) {
+    await analyticsCacheService.rememberLatest(latestKey, envelope, ttlMs);
+  }
 }
 
 function formatDateToDayText(date) {
@@ -1776,11 +1864,26 @@ class MonitorHistory {
     const cacheKey = `statisticsByTime:${ANALYTICS_CACHE_VERSION}:${country}:${startTime}:${endTime}:${groupBy}:${
       sourceGranularityOverride || 'auto'
     }`;
+    const latestCacheKey = `statisticsByTime:${country}:${groupBy}:${
+      sourceGranularityOverride || 'auto'
+    }`;
     const ttlMs =
       Number(process.env.ANALYTICS_STATISTICS_BY_TIME_TTL_MS) || 300000;
     const cached = await analyticsCacheService.get(cacheKey);
     if (cached !== null) {
       return resolveCachedAnalyticsResult(cached, includeMeta);
+    }
+    const busyContext = getAnalyticsBusyContext();
+    const busyFallbackResult = await getBusyFallbackAnalyticsResult(
+      latestCacheKey,
+      includeMeta,
+      busyContext,
+    );
+    if (busyFallbackResult) {
+      logger.warn(
+        `[统计查询] getStatisticsByTime busy fallback hit, country=${country}, groupBy=${groupBy}`,
+      );
+      return busyFallbackResult;
     }
 
     const sourceGranularity =
@@ -1833,12 +1936,14 @@ class MonitorHistory {
     }
 
     const generatedAt = formatDateToSqlText(new Date());
-    await analyticsCacheService.set(
+    await storeAnalyticsResult(
       cacheKey,
-      buildAnalyticsEnvelope(list, {
+      latestCacheKey,
+      list,
+      {
         source,
         generatedAt,
-      }),
+      },
       ttlMs,
     );
     return finalizeAnalyticsResult(list, {
@@ -2158,7 +2263,7 @@ class MonitorHistory {
     const now = Date.now();
     const cached = AGG_COVERAGE_CACHE.get(cacheKey);
     if (cached && now - cached.cachedAt < cacheTtlMs) {
-      return cached;
+      return resolveCachedAnalyticsResult(cached, includeMeta);
     }
 
     const sql = `
@@ -2404,11 +2509,23 @@ class MonitorHistory {
 
     // 生成缓存键
     const cacheKey = `allCountriesSummary:${ANALYTICS_CACHE_VERSION}:${startTime}:${endTime}:${timeSlotGranularity}`;
+    const latestCacheKey = `allCountriesSummary:${timeSlotGranularity}`;
     const ttlMs =
       Number(process.env.ANALYTICS_ALL_COUNTRIES_SUMMARY_TTL_MS) || 300000;
     const cached = await analyticsCacheService.get(cacheKey);
     if (cached !== null) {
       return resolveCachedAnalyticsResult(cached, includeMeta);
+    }
+    const busyFallbackResult = await getBusyFallbackAnalyticsResult(
+      latestCacheKey,
+      includeMeta,
+      getAnalyticsBusyContext(),
+    );
+    if (busyFallbackResult) {
+      logger.warn(
+        `[统计查询] getAllCountriesSummary busy fallback hit, granularity=${timeSlotGranularity}`,
+      );
+      return busyFallbackResult;
     }
 
     const sourceGranularity = MonitorHistory.getDurationSourceGranularity(
@@ -2485,12 +2602,14 @@ class MonitorHistory {
     };
 
     const generatedAt = formatDateToSqlText(new Date());
-    await analyticsCacheService.set(
+    await storeAnalyticsResult(
       cacheKey,
-      buildAnalyticsEnvelope(result, {
+      latestCacheKey,
+      result,
+      {
         source,
         generatedAt,
-      }),
+      },
       ttlMs,
     );
     return finalizeAnalyticsResult(result, {
@@ -2511,10 +2630,22 @@ class MonitorHistory {
 
     // 生成缓存键
     const cacheKey = `regionSummary:${ANALYTICS_CACHE_VERSION}:${startTime}:${endTime}:${timeSlotGranularity}`;
+    const latestCacheKey = `regionSummary:${timeSlotGranularity}`;
     const ttlMs = Number(process.env.ANALYTICS_REGION_SUMMARY_TTL_MS) || 300000;
     const cached = await analyticsCacheService.get(cacheKey);
     if (cached !== null) {
       return resolveCachedAnalyticsResult(cached, includeMeta);
+    }
+    const busyFallbackResult = await getBusyFallbackAnalyticsResult(
+      latestCacheKey,
+      includeMeta,
+      getAnalyticsBusyContext(),
+    );
+    if (busyFallbackResult) {
+      logger.warn(
+        `[统计查询] getRegionSummary busy fallback hit, granularity=${timeSlotGranularity}`,
+      );
+      return busyFallbackResult;
     }
 
     const sourceGranularity = MonitorHistory.getDurationSourceGranularity(
@@ -2558,25 +2689,73 @@ class MonitorHistory {
       source = 'raw';
     }
 
+    const supportedRegionCountries = ['US', 'UK', 'DE', 'FR', 'ES', 'IT'];
+    const euCountryCodes = ['UK', 'DE', 'FR', 'ES', 'IT'];
+    const regionLabelMap = {
+      US: '美国',
+      EU_TOTAL: '欧洲汇总',
+      UK: '英国',
+      DE: '德国',
+      FR: '法国',
+      ES: '西班牙',
+      IT: '意大利',
+    };
+    const timeRangeLabel =
+      startTime && endTime ? `${startTime} ~ ${endTime}` : '';
     const regionRows = sourceRows.filter((row) =>
-      ['US', 'UK', 'DE', 'FR', 'IT', 'ES'].includes(row.country),
+      supportedRegionCountries.includes(
+        String(row.country || '').toUpperCase(),
+      ),
     );
-    const result = MonitorHistory.buildDurationRowsByGroup(regionRows, {
-      sourceGranularity,
-      targetGranularity: timeSlotGranularity,
-      queryStartDate,
-      queryEndDate,
-      buildGroupKey: (_, row) => (row.country === 'US' ? 'US' : 'EU'),
-      buildGroupMeta: (_, row) => {
-        const regionCode = row.country === 'US' ? 'US' : 'EU';
-        return {
-          region: regionCode === 'US' ? '美国' : '欧洲',
-          regionCode,
-          timeRange: startTime && endTime ? `${startTime} ~ ${endTime}` : '',
-        };
+
+    const countryRegionResult = MonitorHistory.buildDurationRowsByGroup(
+      regionRows,
+      {
+        sourceGranularity,
+        targetGranularity: timeSlotGranularity,
+        queryStartDate,
+        queryEndDate,
+        buildGroupKey: (_, row) => {
+          const regionCode = String(row.country || '').toUpperCase();
+          return supportedRegionCountries.includes(regionCode)
+            ? regionCode
+            : '';
+        },
+        buildGroupMeta: (_, row) => {
+          const regionCode = String(row.country || '').toUpperCase();
+          return {
+            region: regionLabelMap[regionCode] || regionCode,
+            regionCode,
+            timeRange: timeRangeLabel,
+          };
+        },
       },
-    });
-    const rowByRegion = new Map(result.map((item) => [item.regionCode, item]));
+    );
+
+    const euSummaryResult = MonitorHistory.buildDurationRowsByGroup(
+      regionRows.filter((row) =>
+        euCountryCodes.includes(String(row.country || '').toUpperCase()),
+      ),
+      {
+        sourceGranularity,
+        targetGranularity: timeSlotGranularity,
+        queryStartDate,
+        queryEndDate,
+        buildGroupKey: () => 'EU_TOTAL',
+        buildGroupMeta: () => ({
+          region: regionLabelMap.EU_TOTAL,
+          regionCode: 'EU_TOTAL',
+          timeRange: timeRangeLabel,
+        }),
+      },
+    );
+
+    const rowByRegion = new Map(
+      [...countryRegionResult, ...euSummaryResult].map((item) => [
+        item.regionCode,
+        item,
+      ]),
+    );
     const defaultMetrics = {
       totalDurationHours: 0,
       abnormalDurationHours: 0,
@@ -2596,21 +2775,31 @@ class MonitorHistory {
       lowDurationHours: 0,
       lowAbnormalDurationHours: 0,
     };
-    const normalizedResult = ['US', 'EU'].map((regionCode) => ({
-      region: regionCode === 'US' ? '美国' : '欧洲',
+    const normalizedResult = [
+      'US',
+      'EU_TOTAL',
+      'UK',
+      'DE',
+      'FR',
+      'ES',
+      'IT',
+    ].map((regionCode) => ({
+      region: regionLabelMap[regionCode] || regionCode,
       regionCode,
-      timeRange: startTime && endTime ? `${startTime} ~ ${endTime}` : '',
+      timeRange: timeRangeLabel,
       ...defaultMetrics,
       ...(rowByRegion.get(regionCode) || {}),
     }));
 
     const generatedAt = formatDateToSqlText(new Date());
-    await analyticsCacheService.set(
+    await storeAnalyticsResult(
       cacheKey,
-      buildAnalyticsEnvelope(normalizedResult, {
+      latestCacheKey,
+      normalizedResult,
+      {
         source,
         generatedAt,
-      }),
+      },
       ttlMs,
     );
     return finalizeAnalyticsResult(normalizedResult, {
@@ -2821,12 +3010,24 @@ class MonitorHistory {
 
     // 生成缓存键
     const cacheKey = `periodSummary:${ANALYTICS_CACHE_VERSION}:${country}:${site}:${brand}:${startTime}:${endTime}:${timeSlotGranularity}:${current}:${pageSize}`;
+    const latestCacheKey = `periodSummary:${country}:${site}:${brand}:${timeSlotGranularity}:${current}:${pageSize}`;
     const periodSummaryCacheTtl =
       Number(process.env.ANALYTICS_PERIOD_SUMMARY_TTL_MS) || 300000;
     const cached = await analyticsCacheService.get(cacheKey);
     if (cached !== null) {
       logger.info(`[缓存命中] getPeriodSummary 缓存键: ${cacheKey}`);
       return resolveCachedAnalyticsResult(cached, includeMeta);
+    }
+    const busyFallbackResult = await getBusyFallbackAnalyticsResult(
+      latestCacheKey,
+      includeMeta,
+      getAnalyticsBusyContext(),
+    );
+    if (busyFallbackResult) {
+      logger.warn(
+        `[统计查询] getPeriodSummary busy fallback hit, country=${country}, site=${site}, brand=${brand}`,
+      );
+      return busyFallbackResult;
     }
     logger.info(
       `[缓存未命中] getPeriodSummary 缓存键: ${cacheKey}，将查询数据库`,
@@ -2965,12 +3166,14 @@ class MonitorHistory {
     };
     const generatedAt = formatDateToSqlText(new Date());
 
-    await analyticsCacheService.set(
+    await storeAnalyticsResult(
       cacheKey,
-      buildAnalyticsEnvelope(finalResult, {
+      latestCacheKey,
+      finalResult,
+      {
         source,
         generatedAt,
-      }),
+      },
       periodSummaryCacheTtl,
     );
     logger.info(
@@ -2992,8 +3195,8 @@ class MonitorHistory {
       endTime = '',
       includeMeta = false,
     } = params;
-    const { country = '', startTime = '', endTime = '' } = params;
     const cacheKey = `asinStatisticsByCountry:${ANALYTICS_CACHE_VERSION}:${country}:${startTime}:${endTime}`;
+    const latestCacheKey = `asinStatisticsByCountry:${country}`;
     const ttlMs = Number(process.env.ANALYTICS_ASIN_COUNTRY_TTL_MS) || 300000;
     const cached = await analyticsCacheService.get(cacheKey);
     if (cached !== null) {
@@ -3068,12 +3271,14 @@ class MonitorHistory {
       });
 
     const generatedAt = formatDateToSqlText(new Date());
-    await analyticsCacheService.set(
+    await storeAnalyticsResult(
       cacheKey,
-      buildAnalyticsEnvelope(result, {
+      latestCacheKey,
+      result,
+      {
         source,
         generatedAt,
-      }),
+      },
       ttlMs,
     );
     return finalizeAnalyticsResult(result, {
@@ -3097,16 +3302,9 @@ class MonitorHistory {
       limit = 10,
       includeMeta = false,
     } = params;
-    const cacheKey = `asinStatisticsByVariantGroup:${ANALYTICS_CACHE_VERSION}:${country}:${startTime}:${endTime}:${limit}`;
-    const ttlMs =
-      Number(process.env.ANALYTICS_ASIN_VARIANT_GROUP_TTL_MS) || 300000;
-    const cached = await analyticsCacheService.get(cacheKey);
-    if (cached !== null) {
-      return resolveCachedAnalyticsResult(cached, includeMeta);
-    }
-
     const safeLimit = Math.max(1, Math.min(Number(limit) || 10, 100));
     const cacheKey = `asinStatisticsByVariantGroup:${ANALYTICS_CACHE_VERSION}:${country}:${startTime}:${endTime}:${safeLimit}`;
+    const latestCacheKey = `asinStatisticsByVariantGroup:${country}:${safeLimit}`;
     const ttlMs =
       Number(process.env.ANALYTICS_ASIN_VARIANT_GROUP_TTL_MS) || 300000;
     const cached = await analyticsCacheService.get(cacheKey);
@@ -3114,7 +3312,7 @@ class MonitorHistory {
       logger.debug(
         `[缓存命中] getASINStatisticsByVariantGroup 缓存键: ${cacheKey}`,
       );
-      return cached;
+      return resolveCachedAnalyticsResult(cached, includeMeta);
     }
 
     const sourceGranularity = MonitorHistory.getDurationSourceGranularity(
@@ -3193,12 +3391,14 @@ class MonitorHistory {
       .slice(0, safeLimit);
 
     const generatedAt = formatDateToSqlText(new Date());
-    await analyticsCacheService.set(
+    await storeAnalyticsResult(
       cacheKey,
-      buildAnalyticsEnvelope(result, {
+      latestCacheKey,
+      result,
+      {
         source,
         generatedAt,
-      }),
+      },
       ttlMs,
     );
     return finalizeAnalyticsResult(result, {
@@ -3206,11 +3406,6 @@ class MonitorHistory {
       source,
       generatedAt,
     });
-    await analyticsCacheService.set(cacheKey, result, ttlMs);
-    logger.debug(
-      `[缓存存储] getASINStatisticsByVariantGroup 结果已缓存，键: ${cacheKey}，TTL: ${ttlMs}ms`,
-    );
-    return result;
   }
 
   // 获取异常时长统计

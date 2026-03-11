@@ -37,6 +37,7 @@ function buildRedisUrl() {
 }
 
 const redisUrl = buildRedisUrl();
+const bullPrefix = String(process.env.BULL_PREFIX || 'bull').trim() || 'bull';
 const LIMITER_MAX = Number(process.env.COMPETITOR_QUEUE_LIMITER_MAX) || 1;
 const LIMITER_DURATION_MS =
   Number(process.env.COMPETITOR_QUEUE_LIMITER_DURATION_MS) || 200;
@@ -46,6 +47,7 @@ const competitorMonitorTaskQueue = new Queue(
   'competitor-monitor-task-queue',
   redisUrl,
   {
+    prefix: bullPrefix,
     defaultJobOptions: {
       attempts: 3,
       backoff: {

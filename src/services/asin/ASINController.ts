@@ -214,6 +214,8 @@ export async function updateASINManualBroken(
     asinId?: string;
   },
   body?: {
+    /** 显式人工标记动作 */
+    action?: API.ManualBrokenAction;
     /** 是否人工标记为异常 */
     markedBroken?: boolean;
     /** 人工异常原因 */

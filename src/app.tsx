@@ -1,6 +1,7 @@
 // 运行时配置
 import GlobalAlert from '@/components/GlobalAlert';
 import { logout } from '@/services/auth/AuthController';
+import { wsClient } from '@/services/websocket';
 import { debugError, debugLog, debugWarn } from '@/utils/debug';
 import { clearToken, getToken, hasAuthSession } from '@/utils/token';
 import * as Icons from '@ant-design/icons';
@@ -11,8 +12,16 @@ import {
 } from '@ant-design/icons';
 import { history, request as umiRequest } from '@umijs/max';
 import type { MenuProps } from 'antd';
-import { App as AntdApp, Avatar, Badge, Button, Dropdown, Space } from 'antd';
-import React, { useEffect } from 'react';
+import {
+  App as AntdApp,
+  Avatar,
+  Badge,
+  Button,
+  Dropdown,
+  Space,
+  message,
+} from 'antd';
+import React, { useEffect, useRef } from 'react';
 
 // 全局初始化数据配置，用于 Layout 用户信息和权限初始化
 // 更多信息见文档：https://umijs.org/docs/api/runtime-config#getinitialstate
@@ -291,6 +300,8 @@ export const layout = ({ initialState, setInitialState }: any) => {
     childrenRender: (children: React.ReactNode) => {
       // 创建一个组件来处理动态隐藏/显示逻辑
       const LayoutWrapper = () => {
+        const handledTaskEventsRef = useRef<Set<string>>(new Set());
+
         useEffect(() => {
           const updateSiderActions = () => {
             const sider = document.querySelector(
@@ -358,6 +369,55 @@ export const layout = ({ initialState, setInitialState }: any) => {
           return () => {
             observer.disconnect();
             clearInterval(interval);
+          };
+        }, []);
+
+        useEffect(() => {
+          wsClient.connect();
+          const unsubscribe = wsClient.onMessage((payload) => {
+            if (
+              !payload ||
+              (payload.type !== 'task_complete' &&
+                payload.type !== 'task_error' &&
+                payload.type !== 'task_cancelled')
+            ) {
+              return;
+            }
+
+            const eventKey = `${payload.type}:${payload.taskId}:${
+              'timestamp' in payload ? payload.timestamp : ''
+            }`;
+            if (handledTaskEventsRef.current.has(eventKey)) {
+              return;
+            }
+            handledTaskEventsRef.current.add(eventKey);
+            if (handledTaskEventsRef.current.size > 200) {
+              handledTaskEventsRef.current.clear();
+            }
+
+            if (payload.type === 'task_complete') {
+              message.success(
+                payload.filename
+                  ? `后台任务已完成：${payload.filename}`
+                  : `后台任务 ${payload.taskId} 已完成`,
+              );
+              return;
+            }
+
+            if (payload.type === 'task_cancelled') {
+              message.warning(
+                payload.message || `后台任务 ${payload.taskId} 已取消`,
+              );
+              return;
+            }
+
+            message.error(
+              payload.error || `后台任务 ${payload.taskId} 执行失败`,
+            );
+          });
+
+          return () => {
+            unsubscribe();
           };
         }, []);
 

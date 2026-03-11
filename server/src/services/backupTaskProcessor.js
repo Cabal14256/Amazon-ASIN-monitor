@@ -3,6 +3,11 @@ const logger = require('../utils/logger');
 const websocketService = require('./websocketService');
 const taskRegistryService = require('./taskRegistryService');
 const {
+  buildFileTaskResult,
+  buildStructuredTaskResult,
+  verifyDatabaseHealth,
+} = require('./taskResultService');
+const {
   throwIfTaskCancelled,
   isTaskCancelledError,
 } = require('./taskCancellationService');
@@ -53,6 +58,14 @@ async function processBackupTask(job) {
           await throwIfTaskCancelled(taskId, message);
         },
       });
+      result = await buildFileTaskResult({
+        filepath: result.filepath,
+        filename: result.filename,
+        downloadUrl: `/api/v1/tasks/${taskId}/download`,
+        mimeType: 'application/sql; charset=utf-8',
+        summary: `备份文件已生成：${result.filename || taskId}`,
+        extra: result,
+      });
       updateProgress(job, taskId, 90, '备份创建完成', userId);
     } else if (taskType === 'restore') {
       updateProgress(job, taskId, 20, '正在恢复备份...', userId);
@@ -73,6 +86,21 @@ async function processBackupTask(job) {
       });
       result = { message: '恢复成功' };
       updateProgress(job, taskId, 90, '备份恢复完成', userId);
+      const healthCheck = await verifyDatabaseHealth();
+      if (!healthCheck.passed) {
+        const error = new Error(
+          healthCheck.message || '备份恢复后数据库健康检查未通过',
+        );
+        error.statusCode = 500;
+        throw error;
+      }
+      result = buildStructuredTaskResult({
+        ...result,
+        summary: '备份恢复完成，数据库健康检查通过',
+        verificationPassed: true,
+        warnings: [],
+        healthCheck,
+      });
     } else {
       throw new Error(`不支持的备份任务类型: ${taskType}`);
     }
@@ -82,7 +110,12 @@ async function processBackupTask(job) {
       message: taskType === 'create' ? '备份创建完成' : '备份恢复完成',
     });
 
-    websocketService.sendTaskComplete(taskId, null, null, userId);
+    websocketService.sendTaskComplete(
+      taskId,
+      result.downloadUrl || null,
+      result.filename || null,
+      userId,
+    );
 
     return result;
   } catch (error) {

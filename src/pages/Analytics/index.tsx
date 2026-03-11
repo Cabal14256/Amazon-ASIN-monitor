@@ -8,7 +8,6 @@ import { QuestionCircleOutlined } from '@ant-design/icons';
 import { PageContainer, StatisticCard } from '@ant-design/pro-components';
 import { history, useAccess } from '@umijs/max';
 import {
-  Alert,
   Button,
   Card,
   Col,
@@ -23,7 +22,7 @@ import {
   Tag,
   Tooltip,
 } from 'antd';
-import dayjs, { type Dayjs } from 'dayjs';
+import { type Dayjs } from 'dayjs';
 import React, {
   useCallback,
   useEffect,
@@ -35,7 +34,6 @@ import React, {
 const { RangePicker } = DatePicker;
 const {
   getStatisticsByTime,
-  getAnalyticsMonthlyBreakdown,
   getAnalyticsPeakMarkAreas,
   getMonitorStatistics,
   getPeakHoursStatistics,
@@ -131,10 +129,6 @@ const formatHours = (value?: number) => `${toNumber(value).toFixed(2)} 小时`;
 const formatPercent = (value?: number) => `${toNumber(value).toFixed(2)}%`;
 
 const durationSummaryMetricCopy = {
-  ratioAllAsin: {
-    label: '单个ASIN平均异常占比',
-    tooltip: '先分别计算每个 ASIN 的异常时长占比，再对全部 ASIN 取平均。',
-  },
   ratioAllTime: {
     label: '整体异常时长占比',
     tooltip: '异常时长 / 总监控时长，反映整体异常程度。',
@@ -175,13 +169,6 @@ const renderDurationSummaryMetricTitle = (key: DurationSummaryMetricKey) => {
 };
 
 const durationSummaryRateColumns = [
-  {
-    title: renderDurationSummaryMetricTitle('ratioAllAsin'),
-    dataIndex: 'ratioAllAsin',
-    key: 'ratioAllAsin',
-    align: 'right' as const,
-    render: (value?: number) => formatPercent(value),
-  },
   {
     title: renderDurationSummaryMetricTitle('ratioAllTime'),
     dataIndex: 'ratioAllTime',
@@ -227,14 +214,6 @@ type ProgressProfile = Record<
     lastTotal?: number;
   }
 >;
-
-type MonthlyBreakdownRow = {
-  date: string;
-  day: number;
-  abnormalDurationHours: number;
-  totalDurationHours: number;
-  abnormalDurationRate: number;
-};
 
 const normalizePeriodSummaryResponse = (
   result: any,
@@ -309,17 +288,6 @@ type PeakMarkArea = {
   name: string;
 };
 
-const analyticsMetaLabels = {
-  time: '时间趋势',
-  country: '国家维度',
-  variantGroup: '变体组 Top 10',
-  allCountries: '全部国家汇总',
-  region: '区域汇总',
-  period: '周期汇总',
-} as const;
-
-type AnalyticsMetaSectionKey = keyof typeof analyticsMetaLabels;
-
 const unwrapAnalyticsResponse = <T,>(
   result: any,
   fallback: T,
@@ -338,23 +306,6 @@ const unwrapAnalyticsResponse = <T,>(
     data: (result?.data ?? result ?? fallback) as T,
     meta: result?.meta as API.AnalyticsResponseMeta | undefined,
   };
-};
-
-const formatAnalyticsSource = (source?: string) => {
-  switch (source) {
-    case 'agg':
-      return '聚合表';
-    case 'raw':
-      return '原始表';
-    case 'cache+agg':
-      return '缓存 + 聚合表';
-    case 'cache+raw':
-      return '缓存 + 原始表';
-    case 'cache':
-      return '缓存';
-    default:
-      return source || '未知来源';
-  }
 };
 
 const AnalyticsPageContent: React.FC<unknown> = () => {
@@ -440,29 +391,7 @@ const AnalyticsPageContent: React.FC<unknown> = () => {
     site?: string;
     brand?: string;
   }>({});
-  const [monthlyBreakdownMonth, setMonthlyBreakdownMonth] = useState<Dayjs>(
-    dayjs().startOf('month'),
-  );
-  const [monthlyBreakdownLoading, setMonthlyBreakdownLoading] = useState(false);
-  const [monthlyBreakdownExporting, setMonthlyBreakdownExporting] =
-    useState(false);
-  const [monthlyBreakdownRows, setMonthlyBreakdownRows] = useState<
-    MonthlyBreakdownRow[]
-  >([]);
   const [peakHoursMarkAreas, setPeakHoursMarkAreas] = useState<PeakMarkArea[]>(
-    [],
-  );
-  const [analyticsMetaMap, setAnalyticsMetaMap] = useState<
-    Partial<Record<AnalyticsMetaSectionKey, API.AnalyticsResponseMeta>>
-  >({});
-
-  const updateAnalyticsMeta = useCallback(
-    (section: AnalyticsMetaSectionKey, meta?: API.AnalyticsResponseMeta) => {
-      setAnalyticsMetaMap((prev) => ({
-        ...prev,
-        [section]: meta,
-      }));
-    },
     [],
   );
 
@@ -495,41 +424,6 @@ const AnalyticsPageContent: React.FC<unknown> = () => {
       periodTimeSlot,
     ],
   );
-
-  const loadMonthlyBreakdown = useCallback(async () => {
-    setMonthlyBreakdownLoading(true);
-    try {
-      const monthStart = monthlyBreakdownMonth.startOf('month');
-      const monthEnd = monthlyBreakdownMonth.endOf('month');
-      const params: Record<string, any> = {
-        startTime: monthStart.format('YYYY-MM-DD 00:00:00'),
-        endTime: monthEnd.format('YYYY-MM-DD 23:59:59'),
-        groupBy: 'day',
-      };
-      if (country) {
-        params.country = country;
-      }
-
-      const result = await getAnalyticsMonthlyBreakdown({
-        ...params,
-        month: monthStart.format('YYYY-MM'),
-      });
-      const breakdownData =
-        result && typeof result === 'object' && !('success' in result)
-          ? result
-          : (result as any)?.data || {};
-
-      setMonthlyBreakdownRows(
-        Array.isArray(breakdownData.rows) ? breakdownData.rows : [],
-      );
-    } catch (error) {
-      console.error('加载月度异常时长统计失败:', error);
-      message.error('加载月度异常时长统计失败，请稍后重试');
-      setMonthlyBreakdownRows([]);
-    } finally {
-      setMonthlyBreakdownLoading(false);
-    }
-  }, [country, monthlyBreakdownMonth, message]);
 
   // 加载所有统计数据（使用useCallback优化，支持重试）
   const loadStatistics = useCallback(
@@ -932,16 +826,15 @@ const AnalyticsPageContent: React.FC<unknown> = () => {
         const peakData =
           peakDataResult?.status === 'fulfilled' ? peakDataResult.value : null;
 
-        const { data: timeStats, meta: timeMeta } = unwrapAnalyticsResponse<
+        const { data: timeStats } = unwrapAnalyticsResponse<
           API.TimeStatistics[]
         >(timeData, []);
-        const { data: countryStats, meta: countryMeta } =
-          unwrapAnalyticsResponse<API.CountryStatistics[]>(countryData, []);
-        const { data: variantGroupStats, meta: variantGroupMeta } =
-          unwrapAnalyticsResponse<API.VariantGroupStatistics[]>(
-            variantGroupData,
-            [],
-          );
+        const { data: countryStats } = unwrapAnalyticsResponse<
+          API.CountryStatistics[]
+        >(countryData, []);
+        const { data: variantGroupStats } = unwrapAnalyticsResponse<
+          API.VariantGroupStatistics[]
+        >(variantGroupData, []);
         const overallStats =
           overallData &&
           typeof overallData === 'object' &&
@@ -970,7 +863,6 @@ const AnalyticsPageContent: React.FC<unknown> = () => {
         // 处理汇总表格数据
         // 确保正确处理返回数据，包括 success 包装的情况
         let allCountriesStats = null;
-        let allCountriesMeta: API.AnalyticsResponseMeta | undefined;
         if (allCountriesDataResult?.status === 'fulfilled') {
           const payload =
             unwrapAnalyticsResponse<API.AllCountriesSummary | null>(
@@ -978,19 +870,16 @@ const AnalyticsPageContent: React.FC<unknown> = () => {
               null,
             );
           allCountriesStats = payload.data;
-          allCountriesMeta = payload.meta;
         }
         setAllCountriesSummary(allCountriesStats);
 
         let regionStats: API.RegionSummary[] = [];
-        let regionMeta: API.AnalyticsResponseMeta | undefined;
         if (regionDataResult?.status === 'fulfilled') {
           const payload = unwrapAnalyticsResponse<API.RegionSummary[]>(
             regionDataResult.value,
             [],
           );
           regionStats = Array.isArray(payload.data) ? payload.data : [];
-          regionMeta = payload.meta;
         }
         setRegionSummary(regionStats);
 
@@ -1005,7 +894,6 @@ const AnalyticsPageContent: React.FC<unknown> = () => {
           current: periodSummary.current,
           pageSize: periodSummary.pageSize,
         };
-        let periodMeta: API.AnalyticsResponseMeta | undefined;
         if (periodDataResult?.status === 'fulfilled') {
           const payload = unwrapAnalyticsResponse<{
             list?: API.PeriodSummary[];
@@ -1020,30 +908,8 @@ const AnalyticsPageContent: React.FC<unknown> = () => {
             current: normalizedData.current || periodSummary.current,
             pageSize: normalizedData.pageSize || periodSummary.pageSize,
           };
-          periodMeta = payload.meta;
         }
-        const periodStats =
-          periodDataResult?.status === 'fulfilled'
-            ? normalizePeriodSummaryResponse(
-                periodDataResult.value,
-                periodSummary.current,
-                periodSummary.pageSize,
-              )
-            : {
-                list: [],
-                total: 0,
-                current: periodSummary.current,
-                pageSize: periodSummary.pageSize,
-              };
         setPeriodSummary(periodStats);
-        setAnalyticsMetaMap({
-          time: timeMeta,
-          country: countryMeta,
-          variantGroup: variantGroupMeta,
-          allCountries: allCountriesMeta,
-          region: regionMeta,
-          period: periodMeta,
-        });
       } catch (error: any) {
         console.error('加载统计数据失败:', error);
 
@@ -1099,7 +965,6 @@ const AnalyticsPageContent: React.FC<unknown> = () => {
   // 只在组件首次加载时执行一次查询
   useEffect(() => {
     loadStatistics();
-    loadMonthlyBreakdown();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
@@ -1136,10 +1001,6 @@ const AnalyticsPageContent: React.FC<unknown> = () => {
       if (!parsedTime) {
         return [];
       }
-      const ratioAllAsin = toNumber(
-        (item as any).ratioAllAsin ?? item.ratio_all_asin ?? 0,
-      );
-      // 所有ASIN异常时长占比（全局时长口径）
       const ratioAllTime = toNumber(
         (item as any).ratioAllTime ?? item.ratio_all_time ?? 0,
       );
@@ -1150,15 +1011,11 @@ const AnalyticsPageContent: React.FC<unknown> = () => {
         (item as any).abnormalDurationHours || 0,
       );
 
-      const rows = [
-        {
-          time: parsedTime,
-          type: 'ASIN平均异常时长占比',
-          value: ratioAllAsin,
-          rawValue: ratioAllAsin,
-          totalDurationHours,
-          abnormalDurationHours,
-        },
+      if (!Number.isFinite(ratioAllTime)) {
+        return [];
+      }
+
+      return [
         {
           time: parsedTime,
           type: '所有ASIN异常时长占比',
@@ -1166,33 +1023,18 @@ const AnalyticsPageContent: React.FC<unknown> = () => {
           rawValue: ratioAllTime,
           totalDurationHours,
           abnormalDurationHours,
+          labelValue: `${ratioAllTime.toFixed(
+            2,
+          )}% (${abnormalDurationHours.toFixed(2)}/${totalDurationHours.toFixed(
+            2,
+          )} 小时)`,
         },
       ];
-      return rows
-        .filter((row) => Number.isFinite(row.value))
-        .map((row) => {
-          if (row.type === 'ASIN平均异常时长占比') {
-            return {
-              ...row,
-              labelValue: `${ratioAllAsin.toFixed(2)}% (平均ASIN时长口径)`,
-            };
-          } else {
-            return {
-              ...row,
-              labelValue: `${ratioAllTime.toFixed(
-                2,
-              )}% (${abnormalDurationHours.toFixed(
-                2,
-              )}/${totalDurationHours.toFixed(2)} 小时)`,
-            };
-          }
-        });
     });
   }, [timeStatistics]);
 
-  const lineTypes = ['ASIN平均异常时长占比', '所有ASIN异常时长占比'];
+  const lineTypes = ['所有ASIN异常时长占比'];
   const lineColorMap: Record<string, string> = {
-    ASIN平均异常时长占比: '#ff4d4f',
     所有ASIN异常时长占比: '#1890ff',
   };
 
@@ -1859,30 +1701,9 @@ const AnalyticsPageContent: React.FC<unknown> = () => {
     normalDurationHours,
     ratioAllTime,
   } = normalizedOverall;
-  const monthlyBreakdownSummary = useMemo(() => {
-    const abnormalDurationTotal = monthlyBreakdownRows.reduce(
-      (sum, item) => sum + item.abnormalDurationHours,
-      0,
-    );
-    const totalDurationTotal = monthlyBreakdownRows.reduce(
-      (sum, item) => sum + item.totalDurationHours,
-      0,
-    );
-    const averageRatio =
-      totalDurationTotal > 0
-        ? (abnormalDurationTotal / totalDurationTotal) * 100
-        : 0;
-    return {
-      abnormalDurationTotal,
-      totalDurationTotal,
-      averageRatio,
-    };
-  }, [monthlyBreakdownRows]);
-
   const handleRefreshAll = useCallback(() => {
     void loadStatistics();
-    void loadMonthlyBreakdown();
-  }, [loadMonthlyBreakdown, loadStatistics]);
+  }, [loadStatistics]);
 
   const handleForceRefreshAnalytics = useCallback(async () => {
     const startTime = dateRange[0].format('YYYY-MM-DD HH:mm:ss');
@@ -1897,66 +1718,12 @@ const AnalyticsPageContent: React.FC<unknown> = () => {
       });
       message.success('分析缓存与聚合数据已刷新');
       await loadStatistics();
-      await loadMonthlyBreakdown();
     } catch (error) {
       message.error('强制刷新分析数据失败，请稍后重试');
     } finally {
       setForceRefreshLoading(false);
     }
-  }, [dateRange, loadMonthlyBreakdown, loadStatistics, message]);
-
-  const analyticsMetaTags = useMemo(
-    () =>
-      (Object.keys(analyticsMetaLabels) as AnalyticsMetaSectionKey[])
-        .map((key) => {
-          const meta = analyticsMetaMap[key];
-          if (!meta) {
-            return null;
-          }
-
-          const updatedAt =
-            parseTimeLabel(meta.lastUpdatedAt || meta.cacheTime || '') || '-';
-          const freshnessLabel =
-            meta.dataFreshness === 'cached' ? '缓存结果' : '最新结果';
-          return (
-            <Tag key={key} color={meta.cacheHit ? 'blue' : 'green'}>
-              {analyticsMetaLabels[key]}: {formatAnalyticsSource(meta.source)} /{' '}
-              {freshnessLabel} / {updatedAt}
-            </Tag>
-          );
-        })
-        .filter(Boolean),
-    [analyticsMetaMap],
-  );
-
-  const handleExportMonthlyBreakdown = useCallback(async () => {
-    setMonthlyBreakdownExporting(true);
-    try {
-      const monthStart = monthlyBreakdownMonth.startOf('month');
-      const monthEnd = monthlyBreakdownMonth.endOf('month');
-      const queryParams: Record<string, any> = {
-        month: monthStart.format('YYYY-MM'),
-        startTime: monthStart.format('YYYY-MM-DD 00:00:00'),
-        endTime: monthEnd.format('YYYY-MM-DD 23:59:59'),
-      };
-      if (country) {
-        queryParams.country = country;
-      }
-
-      await exportToExcel(
-        '/v1/export/analytics-monthly-breakdown',
-        queryParams,
-        `月度异常时长统计_${monthStart.format('YYYY-MM')}${
-          country ? `_${country}` : ''
-        }`,
-      );
-    } catch (error) {
-      console.error('导出月度异常时长统计失败:', error);
-      message.error('导出月度异常时长统计失败，请重试');
-    } finally {
-      setMonthlyBreakdownExporting(false);
-    }
-  }, [country, message, monthlyBreakdownMonth]);
+  }, [dateRange, loadStatistics, message]);
 
   // 导出数据
   const handleExport = async (format: 'excel' | 'csv' = 'excel') => {
@@ -1987,81 +1754,6 @@ const AnalyticsPageContent: React.FC<unknown> = () => {
     }
   };
 
-  const periodSummaryColumns = [
-    {
-      title: '时间范围',
-      dataIndex: 'timeRange',
-      key: 'timeRange',
-    },
-    {
-      title: '国家',
-      dataIndex: 'country',
-      key: 'country',
-      render: (text: string) => (text ? countryMap[text] || text : '-'),
-    },
-    {
-      title: '站点',
-      dataIndex: 'site',
-      key: 'site',
-      render: (text: string) => text || '-',
-    },
-    {
-      title: '品牌',
-      dataIndex: 'brand',
-      key: 'brand',
-      render: (text: string) => text || '-',
-    },
-    {
-      title: '总监控时长',
-      dataIndex: 'totalDurationHours',
-      key: 'totalDurationHours',
-      align: 'right' as const,
-      render: (value: number) => formatHours(value),
-    },
-    {
-      title: 'ASIN平均异常时长占比 (ratio_all_asin)',
-      dataIndex: 'ratioAllAsin',
-      key: 'ratioAllAsin',
-      align: 'right' as const,
-      render: (value: number) => formatPercent(value),
-    },
-    {
-      title: '所有ASIN异常时长占比 (ratio_all_time)',
-      dataIndex: 'ratioAllTime',
-      key: 'ratioAllTime',
-      align: 'right' as const,
-      render: (value: number) => formatPercent(value),
-    },
-    {
-      title: '全局高峰异常时长占比 (global_peak_rate)',
-      dataIndex: 'globalPeakRate',
-      key: 'globalPeakRate',
-      align: 'right' as const,
-      render: (value: number) => formatPercent(value),
-    },
-    {
-      title: '全局低峰异常时长占比 (global_low_rate)',
-      dataIndex: 'globalLowRate',
-      key: 'globalLowRate',
-      align: 'right' as const,
-      render: (value: number) => formatPercent(value),
-    },
-    {
-      title: '局部高峰异常时长占比 (ratio_high)',
-      dataIndex: 'ratioHigh',
-      key: 'ratioHigh',
-      align: 'right' as const,
-      render: (value: number) => formatPercent(value),
-    },
-    {
-      title: '局部低峰异常时长占比 (ratio_low)',
-      dataIndex: 'ratioLow',
-      key: 'ratioLow',
-      align: 'right' as const,
-      render: (value: number) => formatPercent(value),
-    },
-  ];
-
   const periodTimeSlotColumns = [
     {
       title: '时间槽',
@@ -2074,13 +1766,6 @@ const AnalyticsPageContent: React.FC<unknown> = () => {
       key: 'totalDurationHours',
       align: 'right' as const,
       render: (value: number) => formatHours(value),
-    },
-    {
-      title: 'ASIN平均异常时长占比 (ratio_all_asin)',
-      dataIndex: 'ratioAllAsin',
-      key: 'ratioAllAsin',
-      align: 'right' as const,
-      render: (value: number) => formatPercent(value),
     },
     {
       title: '所有ASIN异常时长占比 (ratio_all_time)',
@@ -2243,20 +1928,6 @@ const AnalyticsPageContent: React.FC<unknown> = () => {
           )}
         </Space>
       </Card>
-
-      <Alert
-        showIcon
-        type="info"
-        style={{ marginBottom: 16 }}
-        message="分析页会优先读取结果缓存，并在可用时优先使用聚合表。"
-        description={
-          analyticsMetaTags.length > 0 ? (
-            <Space wrap>{analyticsMetaTags}</Space>
-          ) : (
-            '普通刷新会读取最新可用缓存；管理员可使用“强制刷新分析数据”同步清缓存并刷新聚合。'
-          )
-        }
-      />
 
       {/* 总体统计 */}
       <StatisticCard.Group>
@@ -2465,7 +2136,6 @@ const AnalyticsPageContent: React.FC<unknown> = () => {
                           null,
                         );
                       setAllCountriesSummary(payload.data);
-                      updateAnalyticsMeta('allCountries', payload.meta);
                     });
                   }}
                 >
@@ -2504,7 +2174,7 @@ const AnalyticsPageContent: React.FC<unknown> = () => {
         {/* 美国/欧洲表格 */}
         <Col span={24} style={{ marginTop: 16 }}>
           <Card
-            title="美国/欧洲时长汇总表"
+            title="美国/欧洲时长汇总表（含英德法西意）"
             loading={loading}
             extra={
               <Space>
@@ -2528,7 +2198,6 @@ const AnalyticsPageContent: React.FC<unknown> = () => {
                         API.RegionSummary[]
                       >(result, []);
                       setRegionSummary(payload.data);
-                      updateAnalyticsMeta('region', payload.meta);
                     });
                   }}
                 >
@@ -2550,7 +2219,13 @@ const AnalyticsPageContent: React.FC<unknown> = () => {
                     key: 'region',
                     render: (text: string, record: API.RegionSummary) => (
                       <Tag
-                        color={record.regionCode === 'US' ? 'blue' : 'green'}
+                        color={
+                          record.regionCode === 'US'
+                            ? 'blue'
+                            : record.regionCode === 'EU_TOTAL'
+                            ? 'green'
+                            : 'orange'
+                        }
                       >
                         {text}
                       </Tag>
@@ -2629,35 +2304,6 @@ const AnalyticsPageContent: React.FC<unknown> = () => {
                       periodFilter,
                       value,
                     );
-                    const endTime = dateRange[1].format('YYYY-MM-DD HH:mm:ss');
-                    getPeriodSummary({
-                      startTime,
-                      endTime,
-                      ...periodFilter,
-                      timeSlotGranularity: value,
-                      current: periodSummary.current,
-                      pageSize: periodSummary.pageSize,
-                    }).then((result: any) => {
-                      const payload = unwrapAnalyticsResponse<{
-                        list?: API.PeriodSummary[];
-                        total?: number;
-                        current?: number;
-                        pageSize?: number;
-                      }>(result, {
-                        list: [],
-                        total: 0,
-                        current: periodSummary.current,
-                        pageSize: periodSummary.pageSize,
-                      });
-                      setPeriodSummary({
-                        list: payload.data?.list || [],
-                        total: payload.data?.total || 0,
-                        current: payload.data?.current || periodSummary.current,
-                        pageSize:
-                          payload.data?.pageSize || periodSummary.pageSize,
-                      });
-                      updateAnalyticsMeta('period', payload.meta);
-                    });
                   }}
                 >
                   <Select.Option value="hour">按小时</Select.Option>
@@ -2695,34 +2341,6 @@ const AnalyticsPageContent: React.FC<unknown> = () => {
                       periodFilter,
                       periodTimeSlot,
                     );
-                    const endTime = dateRange[1].format('YYYY-MM-DD HH:mm:ss');
-                    getPeriodSummary({
-                      startTime,
-                      endTime,
-                      ...periodFilter,
-                      timeSlotGranularity: periodTimeSlot,
-                      current: page,
-                      pageSize: size || 10,
-                    }).then((result: any) => {
-                      const payload = unwrapAnalyticsResponse<{
-                        list?: API.PeriodSummary[];
-                        total?: number;
-                        current?: number;
-                        pageSize?: number;
-                      }>(result, {
-                        list: [],
-                        total: 0,
-                        current: page,
-                        pageSize: size || 10,
-                      });
-                      setPeriodSummary({
-                        list: payload.data?.list || [],
-                        total: payload.data?.total || 0,
-                        current: payload.data?.current || page,
-                        pageSize: payload.data?.pageSize || size || 10,
-                      });
-                      updateAnalyticsMeta('period', payload.meta);
-                    });
                   },
                 }}
                 rowKey={(record, index) =>
@@ -2731,8 +2349,8 @@ const AnalyticsPageContent: React.FC<unknown> = () => {
                 columns={[
                   {
                     title: '时间槽',
-                    dataIndex: 'timeSlot',
-                    key: 'timeSlot',
+                    dataIndex: 'timeRange',
+                    key: 'timeRange',
                   },
                   {
                     title: '国家',
@@ -2762,7 +2380,6 @@ const AnalyticsPageContent: React.FC<unknown> = () => {
                   },
                   ...durationSummaryRateColumns,
                 ]}
-                columns={periodSummaryColumns}
                 expandable={{
                   expandedRowRender: renderPeriodTimeSlotDetails,
                   rowExpandable: (record) =>
@@ -2776,98 +2393,6 @@ const AnalyticsPageContent: React.FC<unknown> = () => {
           </Card>
         </Col>
       </Row>
-
-      <Card
-        title="月度异常时长统计（按天）"
-        style={{ marginTop: 16 }}
-        loading={monthlyBreakdownLoading}
-        extra={
-          <Space>
-            <span>月份：</span>
-            <DatePicker
-              picker="month"
-              allowClear={false}
-              value={monthlyBreakdownMonth}
-              onChange={(value) => {
-                if (value) {
-                  setMonthlyBreakdownMonth(value.startOf('month'));
-                }
-              }}
-              format="YYYY-MM"
-            />
-            <Button
-              type="primary"
-              onClick={() => void loadMonthlyBreakdown()}
-              loading={monthlyBreakdownLoading}
-            >
-              查询
-            </Button>
-            <Button
-              onClick={() => void handleExportMonthlyBreakdown()}
-              loading={monthlyBreakdownExporting}
-            >
-              导出Excel
-            </Button>
-          </Space>
-        }
-      >
-        {monthlyBreakdownRows.length > 0 ? (
-          <Table<MonthlyBreakdownRow>
-            dataSource={monthlyBreakdownRows}
-            pagination={false}
-            rowKey="date"
-            columns={[
-              {
-                title: `${monthlyBreakdownMonth.format('M')}月日期`,
-                dataIndex: 'day',
-                key: 'day',
-                align: 'right',
-              },
-              {
-                title: '异常时长',
-                dataIndex: 'abnormalDurationHours',
-                key: 'abnormalDurationHours',
-                align: 'right',
-                render: (value: number) => formatHours(value),
-              },
-              {
-                title: '总监控时长',
-                dataIndex: 'totalDurationHours',
-                key: 'totalDurationHours',
-                align: 'right',
-                render: (value: number) => formatHours(value),
-              },
-              {
-                title: '异常时长占比',
-                dataIndex: 'abnormalDurationRate',
-                key: 'abnormalDurationRate',
-                align: 'right',
-                render: (value: number) => `${toNumber(value).toFixed(2)}%`,
-              },
-            ]}
-            summary={() => (
-              <Table.Summary fixed>
-                <Table.Summary.Row>
-                  <Table.Summary.Cell index={0}>
-                    总体异常时长占比
-                  </Table.Summary.Cell>
-                  <Table.Summary.Cell index={1} align="right">
-                    {formatHours(monthlyBreakdownSummary.abnormalDurationTotal)}
-                  </Table.Summary.Cell>
-                  <Table.Summary.Cell index={2} align="right">
-                    {formatHours(monthlyBreakdownSummary.totalDurationTotal)}
-                  </Table.Summary.Cell>
-                  <Table.Summary.Cell index={3} align="right">
-                    {monthlyBreakdownSummary.averageRatio.toFixed(2)}%
-                  </Table.Summary.Cell>
-                </Table.Summary.Row>
-              </Table.Summary>
-            )}
-          />
-        ) : (
-          <div style={{ textAlign: 'center', padding: 40 }}>暂无数据</div>
-        )}
-      </Card>
     </PageContainer>
   );
 };

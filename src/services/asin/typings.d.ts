@@ -5,7 +5,17 @@ declare namespace API {
   /** 变体状态枚举 */
   type VariantStatus = 'NORMAL' | 'BROKEN';
   type VariantStatusSource = 'NORMAL' | 'AUTO' | 'MANUAL' | 'AUTO+MANUAL';
-  type ManualBrokenScope = 'NONE' | 'SELF' | 'GROUP' | 'SELF+GROUP';
+  type ManualBrokenScope =
+    | 'NONE'
+    | 'SELF'
+    | 'GROUP'
+    | 'SELF+GROUP'
+    | 'GROUP_EXCLUDED';
+  type ManualBrokenAction =
+    | 'MARK_BROKEN'
+    | 'CLEAR_SELF_MANUAL'
+    | 'EXCLUDE_GROUP_MANUAL'
+    | 'CLEAR_GROUP_EXCLUSION';
 
   /** 国家/区域枚举 */
   type Country = 'US' | 'UK' | 'DE' | 'FR' | 'IT' | 'ES';
@@ -55,6 +65,14 @@ declare namespace API {
     selfManualBrokenUpdatedAt?: string;
     /** ASIN自身人工异常操作人 */
     selfManualBrokenUpdatedBy?: string;
+    /** 是否排除父变体人工标记：0-否，1-是 */
+    manualExcludedFromGroup?: number;
+    /** 排除父变体人工标记原因 */
+    manualExcludedReason?: string;
+    /** 排除父变体人工标记更新时间 */
+    manualExcludedUpdatedAt?: string;
+    /** 排除父变体人工标记操作人 */
+    manualExcludedUpdatedBy?: string;
     /** 是否继承父变体人工异常标记：0-否，1-是 */
     inheritedManualBroken?: number;
     /** 继承父变体人工异常原因 */
@@ -255,6 +273,8 @@ declare namespace API {
     cacheTime?: string | null;
     dataFreshness?: 'cached' | 'fresh';
     lastUpdatedAt?: string | null;
+    busyFallback?: boolean;
+    busyReason?: string | null;
   }
 
   /** 按时间统计信息 */

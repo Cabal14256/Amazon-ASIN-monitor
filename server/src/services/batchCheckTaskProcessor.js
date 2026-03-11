@@ -10,6 +10,7 @@ const {
 const {
   mapVariantGroupResultWithVariantView,
 } = require('./variantCheckResultMapper');
+const { normalizeBatchCheckTaskResult } = require('./taskResultService');
 
 const DEFAULT_BATCH_CHECK_GROUP_CONCURRENCY = 2;
 
@@ -141,13 +142,13 @@ async function processBatchCheckTask(job) {
     const failedCount = results.filter((r) => !r.success).length;
 
     updateProgress(job, taskId, 100, '批量检查完成', userId);
-    const result = {
+    const result = normalizeBatchCheckTaskResult({
       success: true,
       total: total,
       successCount,
       failedCount,
       results,
-    };
+    });
     await taskRegistryService.markTaskCompleted(taskId, result, {
       message: '批量检查完成',
     });

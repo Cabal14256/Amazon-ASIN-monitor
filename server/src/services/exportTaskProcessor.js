@@ -11,6 +11,7 @@ const logger = require('../utils/logger');
 const analyticsViewService = require('./analyticsViewService');
 const websocketService = require('./websocketService');
 const taskRegistryService = require('./taskRegistryService');
+const { buildFileTaskResult } = require('./taskResultService');
 const {
   throwIfTaskCancelled,
   isTaskCancelledError,
@@ -425,10 +426,13 @@ async function processExportTask(job) {
 
     // 通知任务完成
     const downloadUrl = `/api/v1/tasks/${taskId}/download`;
-    const completedResult = {
-      ...result,
+    const completedResult = await buildFileTaskResult({
+      filepath: result.filepath,
+      filename: result.filename,
       downloadUrl,
-    };
+      summary: `导出文件已生成：${result.filename || taskId}`,
+      extra: result,
+    });
     await taskRegistryService.markTaskCompleted(taskId, completedResult, {
       message: '导出完成',
     });

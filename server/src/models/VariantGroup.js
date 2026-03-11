@@ -61,6 +61,98 @@ function buildManualActionCheckResult({
   };
 }
 
+function buildParentManualOptions(group) {
+  return {
+    parentManualBroken: group?.manual_broken || 0,
+    parentManualBrokenReason: group?.manual_broken_reason || null,
+    parentManualBrokenUpdatedAt: group?.manual_broken_updated_at || null,
+    parentManualBrokenUpdatedBy: group?.manual_broken_updated_by || null,
+  };
+}
+
+function mapDecoratedAsin(normalized, groupId) {
+  return {
+    id: normalized.id,
+    asin: normalized.asin,
+    name: normalized.name,
+    asinType: normalizeAsinType(normalized.asin_type),
+    country: normalized.country,
+    site: normalized.site,
+    brand: normalized.brand,
+    parentId: groupId,
+    isBroken: normalized.isBroken,
+    variantStatus: normalized.variantStatus,
+    autoIsBroken: normalized.autoIsBroken,
+    autoVariantStatus: normalized.autoVariantStatus,
+    manualBroken: normalized.manualBroken,
+    manualBrokenScope: normalized.manualBrokenScope,
+    manualBrokenReason: normalized.manualBrokenReason,
+    manualBrokenUpdatedAt: normalized.manualBrokenUpdatedAt,
+    manualBrokenUpdatedBy: normalized.manualBrokenUpdatedBy,
+    selfManualBroken: normalized.selfManualBroken,
+    selfManualBrokenReason: normalized.selfManualBrokenReason,
+    selfManualBrokenUpdatedAt: normalized.selfManualBrokenUpdatedAt,
+    selfManualBrokenUpdatedBy: normalized.selfManualBrokenUpdatedBy,
+    manualExcludedFromGroup: normalized.manualExcludedFromGroup,
+    manualExcludedReason: normalized.manualExcludedReason,
+    manualExcludedUpdatedAt: normalized.manualExcludedUpdatedAt,
+    manualExcludedUpdatedBy: normalized.manualExcludedUpdatedBy,
+    inheritedManualBroken: normalized.inheritedManualBroken,
+    inheritedManualBrokenReason: normalized.inheritedManualBrokenReason,
+    inheritedManualBrokenUpdatedAt: normalized.inheritedManualBrokenUpdatedAt,
+    inheritedManualBrokenUpdatedBy: normalized.inheritedManualBrokenUpdatedBy,
+    statusSource: normalized.statusSource,
+    createTime: normalized.create_time,
+    updateTime: normalized.update_time,
+    lastCheckTime: normalized.last_check_time,
+    feishuNotifyEnabled:
+      normalized.feishu_notify_enabled !== null
+        ? normalized.feishu_notify_enabled
+        : 1,
+  };
+}
+
+function buildChildPropagationCheckResult({
+  markedBroken,
+  reason,
+  updatedBy,
+  previousRecord,
+  currentRecord,
+  operationTime,
+  groupRecord,
+}) {
+  return {
+    source: 'MANUAL_ACTION',
+    entityType: 'ASIN',
+    action: markedBroken
+      ? 'APPLY_GROUP_MANUAL_BROKEN'
+      : 'CLEAR_GROUP_MANUAL_BROKEN',
+    operator: updatedBy || null,
+    reason: reason || '',
+    variantGroupId: groupRecord?.id || null,
+    variantGroupName: groupRecord?.name || null,
+    statusSource: currentRecord?.statusSource || 'NORMAL',
+    manualBroken: currentRecord?.manualBroken === 1 ? 1 : 0,
+    autoIsBroken: currentRecord?.autoIsBroken === 1 ? 1 : 0,
+    effectiveIsBroken: currentRecord?.isBroken === 1 ? 1 : 0,
+    previousStatusSource: previousRecord?.statusSource || 'NORMAL',
+    previousManualBroken: previousRecord?.manualBroken === 1 ? 1 : 0,
+    previousAutoIsBroken: previousRecord?.autoIsBroken === 1 ? 1 : 0,
+    previousEffectiveIsBroken: previousRecord?.isBroken === 1 ? 1 : 0,
+    manualBrokenScope: currentRecord?.manualBrokenScope || 'NONE',
+    manualBrokenReason: currentRecord?.manualBrokenReason || '',
+    manualBrokenUpdatedAt:
+      currentRecord?.manualBrokenUpdatedAt || operationTime,
+    manualBrokenUpdatedBy:
+      currentRecord?.manualBrokenUpdatedBy || updatedBy || null,
+    manualExcludedFromGroup:
+      currentRecord?.manualExcludedFromGroup === 1 ? 1 : 0,
+    manualExcludedReason: currentRecord?.manualExcludedReason || '',
+    manualExcludedUpdatedAt: currentRecord?.manualExcludedUpdatedAt || null,
+    manualExcludedUpdatedBy: currentRecord?.manualExcludedUpdatedBy || null,
+  };
+}
+
 class VariantGroup {
   static async findExactMatch(params = {}) {
     const { name, country, site, brand } = params;
@@ -243,6 +335,8 @@ class VariantGroup {
           id, asin, name, asin_type, country, site, brand, variant_group_id, 
           is_broken, variant_status, manual_broken, manual_broken_reason,
           manual_broken_updated_at, manual_broken_updated_by,
+          manual_excluded_from_group, manual_excluded_reason,
+          manual_excluded_updated_at, manual_excluded_updated_by,
           create_time, update_time, last_check_time, feishu_notify_enabled
         FROM asins 
         WHERE variant_group_id IN (${placeholders})
@@ -265,51 +359,12 @@ class VariantGroup {
         const asins = asinsByGroupId[group.id] || [];
         logger.debug(`变体组 ${group.id} 查询到的ASIN数量:`, asins.length);
 
-        const children = asins.map((asin) => {
-          const normalized = decorateAsinStatus(asin, {
-            parentManualBroken: group.manual_broken,
-            parentManualBrokenReason: group.manual_broken_reason,
-            parentManualBrokenUpdatedAt: group.manual_broken_updated_at,
-            parentManualBrokenUpdatedBy: group.manual_broken_updated_by,
-          });
-          return {
-            id: normalized.id,
-            asin: normalized.asin,
-            name: normalized.name,
-            asinType: normalizeAsinType(normalized.asin_type),
-            country: normalized.country,
-            site: normalized.site,
-            brand: normalized.brand,
-            parentId: group.id,
-            isBroken: normalized.isBroken,
-            variantStatus: normalized.variantStatus,
-            autoIsBroken: normalized.autoIsBroken,
-            autoVariantStatus: normalized.autoVariantStatus,
-            manualBroken: normalized.manualBroken,
-            manualBrokenScope: normalized.manualBrokenScope,
-            manualBrokenReason: normalized.manualBrokenReason,
-            manualBrokenUpdatedAt: normalized.manualBrokenUpdatedAt,
-            manualBrokenUpdatedBy: normalized.manualBrokenUpdatedBy,
-            selfManualBroken: normalized.selfManualBroken,
-            selfManualBrokenReason: normalized.selfManualBrokenReason,
-            selfManualBrokenUpdatedAt: normalized.selfManualBrokenUpdatedAt,
-            selfManualBrokenUpdatedBy: normalized.selfManualBrokenUpdatedBy,
-            inheritedManualBroken: normalized.inheritedManualBroken,
-            inheritedManualBrokenReason: normalized.inheritedManualBrokenReason,
-            inheritedManualBrokenUpdatedAt:
-              normalized.inheritedManualBrokenUpdatedAt,
-            inheritedManualBrokenUpdatedBy:
-              normalized.inheritedManualBrokenUpdatedBy,
-            statusSource: normalized.statusSource,
-            createTime: normalized.create_time,
-            updateTime: normalized.update_time,
-            lastCheckTime: normalized.last_check_time,
-            feishuNotifyEnabled:
-              normalized.feishu_notify_enabled !== null
-                ? normalized.feishu_notify_enabled
-                : 1,
-          };
-        });
+        const children = asins.map((asin) =>
+          mapDecoratedAsin(
+            decorateAsinStatus(asin, buildParentManualOptions(group)),
+            group.id,
+          ),
+        );
         const decoratedGroup = decorateVariantGroupStatus(group, children);
         group.children = children;
         group.isBroken = decoratedGroup.isBroken;
@@ -414,55 +469,18 @@ class VariantGroup {
           id, asin, name, asin_type, country, site, brand, variant_group_id, 
           is_broken, variant_status, manual_broken, manual_broken_reason,
           manual_broken_updated_at, manual_broken_updated_by,
+          manual_excluded_from_group, manual_excluded_reason,
+          manual_excluded_updated_at, manual_excluded_updated_by,
           create_time, update_time, last_check_time, feishu_notify_enabled
         FROM asins WHERE variant_group_id = ? ORDER BY create_time ASC`,
         [id],
       );
-      const children = asins.map((asin) => {
-        const normalized = decorateAsinStatus(asin, {
-          parentManualBroken: group.manual_broken,
-          parentManualBrokenReason: group.manual_broken_reason,
-          parentManualBrokenUpdatedAt: group.manual_broken_updated_at,
-          parentManualBrokenUpdatedBy: group.manual_broken_updated_by,
-        });
-        return {
-          id: normalized.id,
-          asin: normalized.asin,
-          name: normalized.name,
-          asinType: normalizeAsinType(normalized.asin_type),
-          country: normalized.country,
-          site: normalized.site,
-          brand: normalized.brand,
-          parentId: group.id,
-          isBroken: normalized.isBroken,
-          variantStatus: normalized.variantStatus,
-          autoIsBroken: normalized.autoIsBroken,
-          autoVariantStatus: normalized.autoVariantStatus,
-          manualBroken: normalized.manualBroken,
-          manualBrokenScope: normalized.manualBrokenScope,
-          manualBrokenReason: normalized.manualBrokenReason,
-          manualBrokenUpdatedAt: normalized.manualBrokenUpdatedAt,
-          manualBrokenUpdatedBy: normalized.manualBrokenUpdatedBy,
-          selfManualBroken: normalized.selfManualBroken,
-          selfManualBrokenReason: normalized.selfManualBrokenReason,
-          selfManualBrokenUpdatedAt: normalized.selfManualBrokenUpdatedAt,
-          selfManualBrokenUpdatedBy: normalized.selfManualBrokenUpdatedBy,
-          inheritedManualBroken: normalized.inheritedManualBroken,
-          inheritedManualBrokenReason: normalized.inheritedManualBrokenReason,
-          inheritedManualBrokenUpdatedAt:
-            normalized.inheritedManualBrokenUpdatedAt,
-          inheritedManualBrokenUpdatedBy:
-            normalized.inheritedManualBrokenUpdatedBy,
-          statusSource: normalized.statusSource,
-          createTime: normalized.create_time,
-          updateTime: normalized.update_time,
-          lastCheckTime: normalized.last_check_time,
-          feishuNotifyEnabled:
-            normalized.feishu_notify_enabled !== null
-              ? normalized.feishu_notify_enabled
-              : 1,
-        };
-      });
+      const children = asins.map((asin) =>
+        mapDecoratedAsin(
+          decorateAsinStatus(asin, buildParentManualOptions(group)),
+          group.id,
+        ),
+      );
       const decoratedGroup = decorateVariantGroupStatus(group, children);
       group.children = children;
       group.isBroken = decoratedGroup.isBroken;
@@ -515,6 +533,8 @@ class VariantGroup {
         id, asin, name, asin_type, country, site, brand, variant_group_id,
         is_broken, variant_status, manual_broken, manual_broken_reason,
         manual_broken_updated_at, manual_broken_updated_by,
+        manual_excluded_from_group, manual_excluded_reason,
+        manual_excluded_updated_at, manual_excluded_updated_by,
         create_time, update_time, last_check_time, feishu_notify_enabled
       FROM asins WHERE variant_group_id IN (${placeholders})
       ORDER BY variant_group_id, create_time ASC`,
@@ -533,51 +553,12 @@ class VariantGroup {
     const groupMap = new Map();
     for (const group of groups) {
       const groupAsins = asinsByGroupId[group.id] || [];
-      const children = groupAsins.map((asin) => {
-        const normalized = decorateAsinStatus(asin, {
-          parentManualBroken: group.manual_broken,
-          parentManualBrokenReason: group.manual_broken_reason,
-          parentManualBrokenUpdatedAt: group.manual_broken_updated_at,
-          parentManualBrokenUpdatedBy: group.manual_broken_updated_by,
-        });
-        return {
-          id: normalized.id,
-          asin: normalized.asin,
-          name: normalized.name,
-          asinType: normalizeAsinType(normalized.asin_type),
-          country: normalized.country,
-          site: normalized.site,
-          brand: normalized.brand,
-          parentId: group.id,
-          isBroken: normalized.isBroken,
-          variantStatus: normalized.variantStatus,
-          autoIsBroken: normalized.autoIsBroken,
-          autoVariantStatus: normalized.autoVariantStatus,
-          manualBroken: normalized.manualBroken,
-          manualBrokenScope: normalized.manualBrokenScope,
-          manualBrokenReason: normalized.manualBrokenReason,
-          manualBrokenUpdatedAt: normalized.manualBrokenUpdatedAt,
-          manualBrokenUpdatedBy: normalized.manualBrokenUpdatedBy,
-          selfManualBroken: normalized.selfManualBroken,
-          selfManualBrokenReason: normalized.selfManualBrokenReason,
-          selfManualBrokenUpdatedAt: normalized.selfManualBrokenUpdatedAt,
-          selfManualBrokenUpdatedBy: normalized.selfManualBrokenUpdatedBy,
-          inheritedManualBroken: normalized.inheritedManualBroken,
-          inheritedManualBrokenReason: normalized.inheritedManualBrokenReason,
-          inheritedManualBrokenUpdatedAt:
-            normalized.inheritedManualBrokenUpdatedAt,
-          inheritedManualBrokenUpdatedBy:
-            normalized.inheritedManualBrokenUpdatedBy,
-          statusSource: normalized.statusSource,
-          createTime: normalized.create_time,
-          updateTime: normalized.update_time,
-          lastCheckTime: normalized.last_check_time,
-          feishuNotifyEnabled:
-            normalized.feishu_notify_enabled !== null
-              ? normalized.feishu_notify_enabled
-              : 1,
-        };
-      });
+      const children = groupAsins.map((asin) =>
+        mapDecoratedAsin(
+          decorateAsinStatus(asin, buildParentManualOptions(group)),
+          group.id,
+        ),
+      );
       const decoratedGroup = decorateVariantGroupStatus(group, children);
       group.children = children;
       group.isBroken = decoratedGroup.isBroken;
@@ -727,19 +708,23 @@ class VariantGroup {
       ],
     );
 
+    if (!markedBroken) {
+      await query(
+        `UPDATE asins
+         SET manual_excluded_from_group = 0,
+             manual_excluded_reason = NULL,
+             manual_excluded_updated_at = NULL,
+             manual_excluded_updated_by = NULL,
+             update_time = NOW()
+         WHERE variant_group_id = ?
+           AND manual_excluded_from_group = 1`,
+        [id],
+      );
+    }
+
     this.clearCache();
 
-    const updated = decorateVariantGroupStatus(
-      {
-        ...existing,
-        is_broken: existing.autoIsBroken || 0,
-        manual_broken: markedBroken ? 1 : 0,
-        manual_broken_reason: normalizedReason,
-        manual_broken_updated_at: markedBroken ? operationTime : null,
-        manual_broken_updated_by: normalizedUpdatedBy,
-      },
-      existing.children || [],
-    );
+    const updated = await this.findById(id);
 
     await MonitorHistory.create({
       variantGroupId: existing.id,
@@ -762,7 +747,39 @@ class VariantGroup {
       }),
     });
 
-    return this.findById(id);
+    const previousChildren = new Map(
+      (existing.children || []).map((child) => [child.id, child]),
+    );
+    const childEntries = (updated?.children || []).map((child) => ({
+      asinId: child.id || null,
+      asinCode: child.asin || null,
+      asinName: child.name || null,
+      siteSnapshot: child.site || null,
+      brandSnapshot: child.brand || null,
+      variantGroupId: updated?.id || existing.id,
+      variantGroupName: updated?.name || existing.name || null,
+      checkType: 'ASIN',
+      country: child.country || existing.country || null,
+      isBroken: child.isBroken === 1 ? 1 : 0,
+      checkTime: operationTime,
+      checkResult: buildChildPropagationCheckResult({
+        markedBroken,
+        reason:
+          normalizedReason ||
+          (markedBroken ? '' : existing.manualBrokenReason || ''),
+        updatedBy: normalizedUpdatedBy || updatedBy || null,
+        previousRecord: previousChildren.get(child.id) || null,
+        currentRecord: child,
+        operationTime,
+        groupRecord: updated || existing,
+      }),
+    }));
+
+    if (childEntries.length > 0) {
+      await MonitorHistory.bulkCreate(childEntries);
+    }
+
+    return updated;
   }
 }
 
