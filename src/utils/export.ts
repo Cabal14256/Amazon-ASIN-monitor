@@ -5,6 +5,7 @@ import React from 'react';
 import ReactDOM from 'react-dom/client';
 import { formatBeijingNow } from './beijingTime';
 import { debugError } from './debug';
+import { waitForTaskResult } from './task';
 import { getToken } from './token';
 
 function normalizeBaseURL(baseURL: string): string {
@@ -328,40 +329,33 @@ export async function exportToExcelAsync(
   let progressMessage = '正在创建任务...';
   const modalState = { visible: true };
   let taskId: string | null = null;
-  let unsubscribe: (() => void) | null = null;
-  let pollInterval: number | null = null;
-  let timeoutHandle: number | null = null;
   let modalClosable = false;
   let cancelLoading = false;
   let disposed = false;
+  let modalDestroyed = false;
+  let backgrounded = false;
+
+  const destroyModal = () => {
+    if (modalDestroyed) {
+      return;
+    }
+    modalDestroyed = true;
+    root.unmount();
+    if (document.body.contains(progressContainer)) {
+      document.body.removeChild(progressContainer);
+    }
+  };
 
   const cleanup = () => {
     if (disposed) {
       return;
     }
     disposed = true;
-    if (unsubscribe) {
-      unsubscribe();
-      unsubscribe = null;
-    }
-    if (pollInterval !== null) {
-      clearInterval(pollInterval);
-      pollInterval = null;
-    }
-    if (timeoutHandle !== null) {
-      clearTimeout(timeoutHandle);
-      timeoutHandle = null;
-    }
-    setTimeout(() => {
-      root.unmount();
-      if (document.body.contains(progressContainer)) {
-        document.body.removeChild(progressContainer);
-      }
-    }, 500);
+    destroyModal();
   };
 
   const renderModal = () => {
-    if (disposed) {
+    if (disposed || modalDestroyed) {
       return;
     }
 
@@ -374,14 +368,18 @@ export async function exportToExcelAsync(
         onClose: modalClosable
           ? () => {
               modalState.visible = false;
-              cleanup();
-              message.info('导出任务已转入后台，可在任务中心查看或取消');
+              backgrounded = true;
+              destroyModal();
+              message.info(
+                '导出任务已转入后台，完成后会自动下载，也可在任务中心查看或取消',
+              );
             }
           : undefined,
         onOpenTaskCenter: taskId
           ? () => {
               modalState.visible = false;
-              cleanup();
+              backgrounded = true;
+              destroyModal();
               history.push('/tasks');
             }
           : undefined,
@@ -419,6 +417,8 @@ export async function exportToExcelAsync(
     renderModal();
   };
 
+  renderModal();
+
   try {
     const baseURL = getBaseURL();
     const token = getToken();
@@ -450,174 +450,72 @@ export async function exportToExcelAsync(
     taskId = taskData.data.taskId;
     modalClosable = true;
     updateProgress(5, '任务已创建，等待处理...');
-
-    // 监听WebSocket消息
-    const { wsClient } = await import('../services/websocket');
-
-    // 确保WebSocket已连接
-    if (!wsClient.isConnected()) {
-      wsClient.connect();
-      // 等待连接建立
-      await new Promise((resolve) => {
-        const checkConnection = setInterval(() => {
-          if (wsClient.isConnected()) {
-            clearInterval(checkConnection);
-            resolve(undefined);
-          }
-        }, 100);
-        setTimeout(() => {
-          clearInterval(checkConnection);
-          resolve(undefined);
-        }, 5000); // 最多等待5秒
-      });
-    }
-
-    unsubscribe = wsClient.onMessage((msg) => {
-      if (disposed) {
-        return;
-      }
-
-      if (msg.type === 'task_progress' && msg.taskId === taskId) {
-        updateProgress(msg.progress, msg.message);
-      } else if (msg.type === 'task_complete' && msg.taskId === taskId) {
-        if (pollInterval !== null) {
-          clearInterval(pollInterval);
-          pollInterval = null;
-        }
-        updateProgress(100, '导出完成，正在下载...');
-
-        const fallbackFilename =
-          msg.filename ||
-          (filename
-            ? `${filename}_${getExportDateSuffix()}.xlsx`
-            : `导出数据_${getExportDateSuffix()}.xlsx`);
-        const downloadUrl = mergeApiURL(
-          baseURL,
-          msg.downloadUrl || `/v1/tasks/${taskId}/download`,
-        );
-        void downloadBlobWithAuth(downloadUrl, token, fallbackFilename)
-          .then(() => {
-            modalState.visible = false;
-            updateProgress(100, '导出完成');
-            message.success('导出成功');
-            cleanup();
-          })
-          .catch((downloadError: any) => {
-            modalState.visible = false;
-            updateProgress(0, '导出失败');
-            message.error(downloadError?.message || '下载导出文件失败');
-            cleanup();
-          });
-      } else if (msg.type === 'task_error' && msg.taskId === taskId) {
-        if (pollInterval !== null) {
-          clearInterval(pollInterval);
-          pollInterval = null;
-        }
-        modalState.visible = false;
-        updateProgress(0, '导出失败');
-        message.error(`导出失败: ${msg.error}`);
-        cleanup();
-      } else if (msg.type === 'task_cancelled' && msg.taskId === taskId) {
-        if (pollInterval !== null) {
-          clearInterval(pollInterval);
-          pollInterval = null;
-        }
-        modalState.visible = false;
-        updateProgress(0, msg.message || '导出任务已取消');
-        message.warning(msg.message || '导出任务已取消');
-        cleanup();
-      }
-    });
-
-    // 轮询任务状态（作为WebSocket的备用方案）
-    pollInterval = window.setInterval(async () => {
-      if (!taskId || disposed) return;
-
+    void (async () => {
       try {
-        const statusResponse = await fetch(
-          mergeApiURL(baseURL, `/v1/tasks/${taskId}`),
-          {
-            headers: buildAuthHeaders(token),
-            credentials: 'include',
+        const completedTask = await waitForTaskResult(taskId!, {
+          timeoutMs: 30 * 60 * 1000,
+          onProgress: (task) => {
+            if (disposed) {
+              return;
+            }
+
+            const nextProgress =
+              typeof task.progress === 'number'
+                ? Math.max(0, Math.min(100, task.progress))
+                : 0;
+            const nextMessage =
+              task.message ||
+              (task.status === 'pending'
+                ? '任务已入队，等待处理...'
+                : `正在处理... (${nextProgress}%)`);
+            updateProgress(nextProgress, nextMessage);
           },
+        });
+
+        if (disposed) {
+          return;
+        }
+
+        const fallbackFilename = ensureFileExtension(
+          completedTask.filename ||
+            completedTask.result?.filename ||
+            filename ||
+            `导出数据_${getExportDateSuffix()}`,
+          '.xlsx',
         );
 
-        if (statusResponse.ok) {
-          const statusData = await statusResponse.json();
-          if (disposed) {
-            return;
-          }
-          if (statusData.success && statusData.data) {
-            const { status, progress: taskProgress, error } = statusData.data;
-
-            if (status === 'completed') {
-              if (pollInterval !== null) {
-                clearInterval(pollInterval);
-                pollInterval = null;
-              }
-              const fallbackFilename =
-                statusData.data.filename ||
-                statusData.data.result?.filename ||
-                filename ||
-                `导出数据_${getExportDateSuffix()}`;
-              void downloadBlobWithAuth(
-                mergeApiURL(baseURL, `/v1/tasks/${taskId}/download`),
-                token,
-                ensureFileExtension(fallbackFilename, '.xlsx'),
-              )
-                .then(() => {
-                  modalState.visible = false;
-                  updateProgress(100, '导出完成');
-                  message.success('导出成功');
-                  cleanup();
-                })
-                .catch((downloadError: any) => {
-                  modalState.visible = false;
-                  updateProgress(0, '导出失败');
-                  message.error(downloadError?.message || '下载导出文件失败');
-                  cleanup();
-                });
-            } else if (status === 'failed') {
-              if (pollInterval !== null) {
-                clearInterval(pollInterval);
-                pollInterval = null;
-              }
-              modalState.visible = false;
-              updateProgress(0, '导出失败');
-              message.error(`导出失败: ${error || '未知错误'}`);
-              cleanup();
-            } else if (status === 'processing' && taskProgress !== undefined) {
-              updateProgress(taskProgress, `正在处理... (${taskProgress}%)`);
-            } else if (status === 'cancelled' || status === 'cancelling') {
-              if (pollInterval !== null) {
-                clearInterval(pollInterval);
-                pollInterval = null;
-              }
-              modalState.visible = false;
-              updateProgress(taskProgress || 0, error || '导出任务已取消');
-              message.warning(error || '导出任务已取消');
-              cleanup();
-            }
-          }
+        if (!backgrounded) {
+          updateProgress(100, '导出完成，正在下载...');
         }
-      } catch (error) {
-        debugError('查询导出任务状态失败:', error);
-      }
-    }, 2000); // 每2秒轮询一次
 
-    // 设置超时（30分钟）
-    timeoutHandle = window.setTimeout(() => {
-      if (pollInterval !== null) {
-        clearInterval(pollInterval);
-        pollInterval = null;
-      }
-      if (modalState.visible) {
-        modalState.visible = false;
-        updateProgress(0, '导出超时');
-        message.error('导出超时，请重试');
+        await downloadBlobWithAuth(
+          mergeApiURL(
+            baseURL,
+            completedTask.downloadUrl || `/v1/tasks/${taskId}/download`,
+          ),
+          token,
+          fallbackFilename,
+        );
+
+        message.success(
+          backgrounded ? '后台导出已完成，文件开始下载' : '导出成功',
+        );
+      } catch (error: any) {
+        const errorMessage = error?.message || '导出失败，请重试';
+        if (!backgrounded && !disposed) {
+          updateProgress(0, errorMessage);
+        }
+        if (errorMessage.includes('取消')) {
+          message.warning(errorMessage);
+        } else if (errorMessage.includes('下载')) {
+          message.error(`${errorMessage}，请到任务中心手动下载`);
+        } else {
+          message.error(errorMessage);
+        }
+      } finally {
         cleanup();
       }
-    }, 30 * 60 * 1000);
+    })();
   } catch (error: any) {
     debugError('异步导出失败:', error);
     modalState.visible = false;

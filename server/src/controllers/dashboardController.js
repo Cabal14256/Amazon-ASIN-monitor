@@ -42,7 +42,7 @@ exports.getDashboardData = async (req, res) => {
       buildVariantGroupEffectiveBrokenExpr('variant_groups');
     const groupBrokenExprForList = buildVariantGroupEffectiveBrokenExpr('vg');
     const asinBrokenExpr = buildAsinEffectiveBrokenExpr('asins');
-    const asinBrokenExprForList = buildAsinEffectiveBrokenExpr('a');
+    const asinBrokenExprForList = buildAsinEffectiveBrokenExpr('a', 'vg');
 
     const [
       overviewResult,

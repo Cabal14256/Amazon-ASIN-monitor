@@ -2,10 +2,7 @@ const { query } = require('../config/database');
 const { v4: uuidv4 } = require('uuid');
 const VariantGroup = require('./VariantGroup');
 const MonitorHistory = require('./MonitorHistory');
-const {
-  buildEffectiveStatus,
-  decorateAsinStatus,
-} = require('../utils/variantStatus');
+const { decorateAsinStatus } = require('../utils/variantStatus');
 
 // 转换ASIN类型：将旧格式(MAIN_LINK/SUB_REVIEW)转换为新格式(1/2)
 function normalizeAsinType(asinType) {
@@ -54,41 +51,70 @@ class ASIN {
   // 查询所有ASIN
   static async findAll(params = {}) {
     const { variantGroupId, country, current = 1, pageSize = 10 } = params;
-    let sql = `SELECT * FROM asins WHERE 1=1`;
+    let sql = `
+      SELECT
+        a.*,
+        vg.manual_broken as parent_manual_broken,
+        vg.manual_broken_reason as parent_manual_broken_reason,
+        vg.manual_broken_updated_at as parent_manual_broken_updated_at,
+        vg.manual_broken_updated_by as parent_manual_broken_updated_by
+      FROM asins a
+      LEFT JOIN variant_groups vg ON vg.id = a.variant_group_id
+      WHERE 1=1
+    `;
     const conditions = [];
 
     if (variantGroupId) {
-      sql += ` AND variant_group_id = ?`;
+      sql += ` AND a.variant_group_id = ?`;
       conditions.push(variantGroupId);
     }
 
     if (country) {
-      sql += ` AND country = ?`;
+      sql += ` AND a.country = ?`;
       conditions.push(country);
     }
 
     // 分页 - LIMIT 和 OFFSET 不能使用参数绑定，必须直接拼接（确保是整数）
     const offset = (Number(current) - 1) * Number(pageSize);
     const limit = Number(pageSize);
-    sql += ` ORDER BY create_time DESC LIMIT ${limit} OFFSET ${offset}`;
+    sql += ` ORDER BY a.create_time DESC LIMIT ${limit} OFFSET ${offset}`;
 
     const list = await query(sql, conditions);
-    return list;
+    return list.map((asin) =>
+      decorateAsinStatus(asin, {
+        parentManualBroken: asin.parent_manual_broken,
+        parentManualBrokenReason: asin.parent_manual_broken_reason,
+        parentManualBrokenUpdatedAt: asin.parent_manual_broken_updated_at,
+        parentManualBrokenUpdatedBy: asin.parent_manual_broken_updated_by,
+      }),
+    );
   }
 
   // 根据ID查询ASIN
   static async findById(id) {
     const [asin] = await query(
       `SELECT 
-        id, asin, name, asin_type, country, site, brand, variant_group_id, 
-        is_broken, variant_status, manual_broken, manual_broken_reason,
-        manual_broken_updated_at, manual_broken_updated_by,
-        create_time, update_time, last_check_time, feishu_notify_enabled
-      FROM asins WHERE id = ?`,
+        a.id, a.asin, a.name, a.asin_type, a.country, a.site, a.brand,
+        a.variant_group_id, a.is_broken, a.variant_status, a.manual_broken,
+        a.manual_broken_reason, a.manual_broken_updated_at,
+        a.manual_broken_updated_by, a.create_time, a.update_time,
+        a.last_check_time, a.feishu_notify_enabled,
+        vg.manual_broken as parent_manual_broken,
+        vg.manual_broken_reason as parent_manual_broken_reason,
+        vg.manual_broken_updated_at as parent_manual_broken_updated_at,
+        vg.manual_broken_updated_by as parent_manual_broken_updated_by
+      FROM asins a
+      LEFT JOIN variant_groups vg ON vg.id = a.variant_group_id
+      WHERE a.id = ?`,
       [id],
     );
     if (asin) {
-      const normalized = decorateAsinStatus(asin);
+      const normalized = decorateAsinStatus(asin, {
+        parentManualBroken: asin.parent_manual_broken,
+        parentManualBrokenReason: asin.parent_manual_broken_reason,
+        parentManualBrokenUpdatedAt: asin.parent_manual_broken_updated_at,
+        parentManualBrokenUpdatedBy: asin.parent_manual_broken_updated_by,
+      });
       return {
         id: normalized.id,
         asin: normalized.asin,
@@ -103,9 +129,20 @@ class ASIN {
         autoIsBroken: normalized.autoIsBroken,
         autoVariantStatus: normalized.autoVariantStatus,
         manualBroken: normalized.manualBroken,
+        manualBrokenScope: normalized.manualBrokenScope,
         manualBrokenReason: normalized.manualBrokenReason,
         manualBrokenUpdatedAt: normalized.manualBrokenUpdatedAt,
         manualBrokenUpdatedBy: normalized.manualBrokenUpdatedBy,
+        selfManualBroken: normalized.selfManualBroken,
+        selfManualBrokenReason: normalized.selfManualBrokenReason,
+        selfManualBrokenUpdatedAt: normalized.selfManualBrokenUpdatedAt,
+        selfManualBrokenUpdatedBy: normalized.selfManualBrokenUpdatedBy,
+        inheritedManualBroken: normalized.inheritedManualBroken,
+        inheritedManualBrokenReason: normalized.inheritedManualBrokenReason,
+        inheritedManualBrokenUpdatedAt:
+          normalized.inheritedManualBrokenUpdatedAt,
+        inheritedManualBrokenUpdatedBy:
+          normalized.inheritedManualBrokenUpdatedBy,
         statusSource: normalized.statusSource,
         createTime: normalized.create_time,
         updateTime: normalized.update_time,
@@ -290,17 +327,22 @@ class ASIN {
       VariantGroup.clearCache();
     }
 
-    const updated = {
-      ...existing,
-      ...buildEffectiveStatus({
-        autoBroken: existing.autoIsBroken || 0,
-        manualBroken: markedBroken ? 1 : 0,
-      }),
-      manualBroken: markedBroken ? 1 : 0,
-      manualBrokenReason: normalizedReason,
-      manualBrokenUpdatedAt: markedBroken ? operationTime : null,
-      manualBrokenUpdatedBy: normalizedUpdatedBy,
-    };
+    const updated = decorateAsinStatus(
+      {
+        ...existing,
+        is_broken: existing.autoIsBroken || 0,
+        manual_broken: markedBroken ? 1 : 0,
+        manual_broken_reason: normalizedReason,
+        manual_broken_updated_at: markedBroken ? operationTime : null,
+        manual_broken_updated_by: normalizedUpdatedBy,
+      },
+      {
+        parentManualBroken: existing.inheritedManualBroken || 0,
+        parentManualBrokenReason: existing.inheritedManualBrokenReason,
+        parentManualBrokenUpdatedAt: existing.inheritedManualBrokenUpdatedAt,
+        parentManualBrokenUpdatedBy: existing.inheritedManualBrokenUpdatedBy,
+      },
+    );
 
     let variantGroupName = null;
     if (existing.variantGroupId) {

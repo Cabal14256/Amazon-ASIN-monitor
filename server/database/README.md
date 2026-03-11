@@ -27,8 +27,10 @@ database/
 │   ├── 020_add_status_change_indexes.sql
 │   ├── 021_add_monitor_history_agg_table.sql
 │   ├── 022_add_monitor_history_agg_peak.sql
+│   ├── 023_add_analytics_fastpath.sql
 │   ├── 026_normalize_user_status_and_audit_permissions.sql
-│   └── 027_normalize_competitor_schema.sql
+│   ├── 027_normalize_competitor_schema.sql
+│   └── 028_add_variant_group_agg_table.sql
 ├── MIGRATION.md                # 迁移说明文档
 └── README.md                   # 本文件
 ```
@@ -103,8 +105,10 @@ mysql -u root -p < server/database/competitor-init.sql
 - `020_add_status_change_indexes.sql`: 添加状态变化查询索引
 - `021_add_monitor_history_agg_table.sql`: 添加监控历史聚合表（数据分析加速）
 - `022_add_monitor_history_agg_peak.sql`: 聚合表补充高峰期字段（period-summary 加速）
+- `023_add_analytics_fastpath.sql`: 添加多维聚合快路径（站点/品牌）
 - `026_normalize_user_status_and_audit_permissions.sql`: 统一用户状态字段并补齐角色/审计权限
 - `027_normalize_competitor_schema.sql`: 补齐旧版竞品库缺失的状态/通知/时间字段
+- `028_add_variant_group_agg_table.sql`: 添加变体组维度聚合表（variant-group 统计加速）
 
 **执行方式**:
 
@@ -179,6 +183,8 @@ mysql -u root -p amazon_competitor_monitor < server/database/migrations/027_norm
 - `asins`: ASIN 表（包含类型、监控时间、通知开关等字段）
 - `monitor_history`: 监控历史表（包含复合索引优化查询）
 - `monitor_history_agg`: 监控历史聚合表（数据分析加速）
+- `monitor_history_agg_dim`: 监控历史多维聚合表（站点/品牌分析加速）
+- `monitor_history_agg_variant_group`: 监控历史变体组聚合表（变体组分析加速）
 
 ### 配置表
 

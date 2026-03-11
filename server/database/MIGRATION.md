@@ -29,8 +29,9 @@
 | 024 | `024_fix_missing_password_security_schema.sql` | 修复旧版 init.sql 缺失的密码安全字段与表 | ⚠️ 仅用于升级 |
 | 026 | `026_normalize_user_status_and_audit_permissions.sql` | 统一用户状态字段并补齐角色/审计权限 | ⚠️ 旧库升级必执行 |
 | 027 | `027_normalize_competitor_schema.sql` | 补齐旧版竞品库缺失的状态/通知/时间字段 | ⚠️ 使用竞品监控且库较旧时必执行 |
+| 028 | `028_add_variant_group_agg_table.sql` | 添加变体组维度聚合表（variant-group 统计加速） | ✅ 已整合到 init.sql |
 
-> **注意**: 所有标记为 "✅ 已整合到 init.sql" 的迁移脚本，其功能已包含在 `init.sql` 中。新安装系统时直接使用 `init.sql` 即可，无需执行这些迁移脚本。竞品数据库相关的迁移脚本已整合到 `competitor-init.sql`。如果旧版竞品库报 `Unknown column 'vg.is_broken'`，请执行 `027_normalize_competitor_schema.sql`。
+> **注意**: 所有标记为 "✅ 已整合到 init.sql" 的迁移脚本，其功能已包含在 `init.sql` 中。新安装系统时直接使用 `init.sql` 即可，无需执行这些迁移脚本。竞品数据库相关的迁移脚本已整合到 `competitor-init.sql`。如果旧版竞品库报 `Unknown column 'vg.is_broken'`，请执行 `027_normalize_competitor_schema.sql`。如果旧库要启用变体组聚合加速，请执行 `028_add_variant_group_agg_table.sql` 并重建聚合表。
 
 ---
 
@@ -400,6 +401,27 @@ mysql -u root -p amazon_asin_monitor < server/database/migrations/022_add_monito
 
 ---
 
+### 028: 添加变体组维度聚合表
+
+**文件**: `028_add_variant_group_agg_table.sql`
+
+**说明**: 新增 `monitor_history_agg_variant_group`，用于加速“按变体组统计 ASIN 时长”这类分析查询。
+
+**变更内容**:
+
+- 新增 `monitor_history_agg_variant_group` 表
+- 按 `granularity + time_slot + country + variant_group_id + asin_key` 作为主键
+- 为变体组统计查询补充按国家、时间槽、变体组的索引
+
+**执行方式**:
+
+```bash
+mysql -u root -p amazon_asin_monitor < server/database/migrations/028_add_variant_group_agg_table.sql
+node server/scripts/rebuild-analytics-agg.js --yes
+```
+
+---
+
 ### 027: 统一竞品库状态字段与基础时间字段
 
 **文件**: `027_normalize_competitor_schema.sql`
@@ -449,6 +471,13 @@ mysql -u root -p amazon_asin_monitor < server/database/migrations/020_add_status
 mysql -u root -p amazon_asin_monitor < server/database/migrations/021_add_monitor_history_agg_table.sql
 mysql -u root -p amazon_asin_monitor < server/database/migrations/022_add_monitor_history_agg_peak.sql
 mysql -u root -p amazon_asin_monitor < server/database/migrations/023_add_analytics_fastpath.sql
+mysql -u root -p amazon_asin_monitor < server/database/migrations/028_add_variant_group_agg_table.sql
+```
+
+执行完 `028_add_variant_group_agg_table.sql` 后，建议立即执行：
+
+```bash
+node server/scripts/rebuild-analytics-agg.js --yes
 ```
 
 竞品数据库迁移（如使用竞品监控功能）：

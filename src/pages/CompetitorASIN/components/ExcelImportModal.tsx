@@ -1,7 +1,12 @@
 import services from '@/services/competitor';
 import { debugError } from '@/utils/debug';
 import { useMessage } from '@/utils/message';
-import { extractAsyncTask, openTaskCenter } from '@/utils/task';
+import {
+  extractAsyncTask,
+  extractImportResult,
+  openTaskCenter,
+  waitForTaskResult,
+} from '@/utils/task';
 import {
   DeleteOutlined,
   DownloadOutlined,
@@ -22,7 +27,7 @@ import {
   Upload,
 } from 'antd';
 import type { RcFile } from 'antd/es/upload';
-import React, { useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import './ExcelImportModal.less';
 
 const { importCompetitorFromExcel } = services.CompetitorASINController;
@@ -37,8 +42,11 @@ interface ExcelImportModalProps {
 interface ImportResult {
   success: boolean;
   total: number;
+  processedCount?: number;
   successCount: number;
   failedCount: number;
+  missingCount?: number;
+  verificationPassed?: boolean;
   errors?: Array<{ row: number; message: string }>;
 }
 
@@ -93,22 +101,42 @@ const ExcelImportModal: React.FC<ExcelImportModalProps> = (props) => {
   const [importResult, setImportResult] = useState<ImportResult | null>(null);
   const [createdTask, setCreatedTask] = useState<CreatedTask | null>(null);
   const [progress, setProgress] = useState(0);
+  const [taskMessage, setTaskMessage] = useState('');
   const [onlineRows, setOnlineRows] =
     useState<OnlineImportRow[]>(createInitialRows);
   const [activeCell, setActiveCell] = useState<ActiveCell | null>(null);
+  const mountedRef = useRef(true);
+
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => {
+      mountedRef.current = false;
+    };
+  }, []);
+
+  const resetImportState = () => {
+    setFileList([]);
+    setImportResult(null);
+    setCreatedTask(null);
+    setProgress(0);
+    setTaskMessage('');
+    setOnlineRows(createInitialRows());
+    setActiveCell(null);
+  };
 
   const submitImport = async (file: RcFile | File) => {
     setUploading(true);
     setProgress(0);
     setImportResult(null);
     setCreatedTask(null);
+    setTaskMessage('');
 
     const formData = new FormData();
     formData.append('file', file);
 
     const result = await importCompetitorFromExcel(formData, {
       onUploadProgress: (progressEvent: any) => {
-        if (progressEvent.total) {
+        if (mountedRef.current && progressEvent.total) {
           const percent = Math.round(
             (progressEvent.loaded * 100) / progressEvent.total,
           );
@@ -119,26 +147,124 @@ const ExcelImportModal: React.FC<ExcelImportModalProps> = (props) => {
 
     const task = extractAsyncTask(result);
     if (result.success && task) {
-      setCreatedTask(task);
-      setProgress(100);
-      message.success('导入任务已创建，请到任务中心查看进度');
+      if (mountedRef.current) {
+        setCreatedTask(task);
+        setProgress(5);
+        setTaskMessage('导入任务已创建，等待后台处理');
+      }
+      message.success('导入任务已创建，正在后台处理');
+
+      const completedTask = await waitForTaskResult(task.taskId, {
+        timeoutMs: 30 * 60 * 1000,
+        onProgress: (taskStatus) => {
+          if (!mountedRef.current) {
+            return;
+          }
+
+          const nextProgress =
+            typeof taskStatus.progress === 'number'
+              ? Math.max(0, Math.min(100, taskStatus.progress))
+              : 0;
+          setCreatedTask({
+            taskId: task.taskId,
+            status: taskStatus.status,
+          });
+          setProgress(nextProgress > 0 ? nextProgress : 5);
+          setTaskMessage(
+            taskStatus.message ||
+              (taskStatus.status === 'pending'
+                ? '任务已入队，等待 worker 处理...'
+                : `正在导入... (${nextProgress}%)`),
+          );
+        },
+      });
+
+      const normalizedResult = extractImportResult(completedTask);
+      if (!normalizedResult) {
+        throw new Error('导入任务已完成，但未返回结果');
+      }
+
+      const importData: ImportResult = {
+        success:
+          normalizedResult.failedCount === 0 &&
+          normalizedResult.missingCount === 0,
+        total: normalizedResult.total,
+        processedCount: normalizedResult.processedCount,
+        successCount: normalizedResult.successCount,
+        failedCount: normalizedResult.failedCount,
+        missingCount: normalizedResult.missingCount,
+        verificationPassed: normalizedResult.verificationPassed,
+        errors: normalizedResult.errors?.map((error) => ({
+          row: typeof error.row === 'number' ? error.row : 0,
+          message: error.message,
+        })),
+      };
+
+      if (mountedRef.current) {
+        setCreatedTask({
+          taskId: task.taskId,
+          status: completedTask.status,
+        });
+        setProgress(100);
+        setTaskMessage(
+          importData.verificationPassed
+            ? '导入完成，结果已校验'
+            : `导入完成，但仍有 ${importData.missingCount || 0} 条记录需要核对`,
+        );
+        setImportResult(importData);
+      }
+
+      if (importData.successCount > 0) {
+        await Promise.resolve(onSuccess());
+      }
+
+      const summary = `导入完成：总计 ${importData.total} 条，成功 ${importData.successCount} 条，失败 ${importData.failedCount} 条`;
+      if (importData.failedCount > 0 || (importData.missingCount || 0) > 0) {
+        message.warning(summary);
+      } else {
+        message.success(summary);
+      }
       return;
     }
 
     if (result.success && result.data) {
-      const importData: ImportResult = {
-        success: true,
-        total: result.data.total || 0,
-        successCount: result.data.successCount || 0,
-        failedCount: result.data.failedCount || 0,
-        errors: result.data.errors,
-      };
+      const rawData = result.data as Record<string, any>;
+      const normalizedResult = extractImportResult(result.data);
+      const importData: ImportResult = normalizedResult
+        ? {
+            success:
+              normalizedResult.failedCount === 0 &&
+              normalizedResult.missingCount === 0,
+            total: normalizedResult.total,
+            processedCount: normalizedResult.processedCount,
+            successCount: normalizedResult.successCount,
+            failedCount: normalizedResult.failedCount,
+            missingCount: normalizedResult.missingCount,
+            verificationPassed: normalizedResult.verificationPassed,
+            errors: normalizedResult.errors?.map((error) => ({
+              row: typeof error.row === 'number' ? error.row : 0,
+              message: error.message,
+            })),
+          }
+        : {
+            success: true,
+            total: rawData.total || 0,
+            processedCount: rawData.processedCount || 0,
+            successCount: rawData.successCount || 0,
+            failedCount: rawData.failedCount || 0,
+            missingCount: rawData.missingCount || 0,
+            verificationPassed: rawData.verificationPassed !== false,
+            errors: rawData.errors,
+          };
       setImportResult(importData);
+      setTaskMessage(
+        importData.verificationPassed
+          ? '导入完成，结果已校验'
+          : `导入完成，但仍有 ${importData.missingCount || 0} 条记录需要核对`,
+      );
       message.success('导入完成');
       if (importData.successCount > 0) {
-        setTimeout(() => {
-          onSuccess();
-        }, 1500);
+        await Promise.resolve(onSuccess());
       }
       return;
     }
@@ -157,9 +283,29 @@ const ExcelImportModal: React.FC<ExcelImportModalProps> = (props) => {
       const errorMessage =
         error.response?.data?.errorMessage || error.message || '导入失败';
       debugError('导入错误详情:', error);
+      setTaskMessage(errorMessage);
       message.error(errorMessage);
       if (error.response?.data?.data) {
-        setImportResult(error.response.data.data);
+        const normalizedResult = extractImportResult(error.response.data.data);
+        setImportResult(
+          normalizedResult
+            ? {
+                success:
+                  normalizedResult.failedCount === 0 &&
+                  normalizedResult.missingCount === 0,
+                total: normalizedResult.total,
+                processedCount: normalizedResult.processedCount,
+                successCount: normalizedResult.successCount,
+                failedCount: normalizedResult.failedCount,
+                missingCount: normalizedResult.missingCount,
+                verificationPassed: normalizedResult.verificationPassed,
+                errors: normalizedResult.errors?.map((item) => ({
+                  row: typeof item.row === 'number' ? item.row : 0,
+                  message: item.message,
+                })),
+              }
+            : error.response.data.data,
+        );
       }
       onError?.(error);
     } finally {
@@ -249,12 +395,6 @@ const ExcelImportModal: React.FC<ExcelImportModalProps> = (props) => {
   };
 
   const handleCancel = () => {
-    setFileList([]);
-    setImportResult(null);
-    setCreatedTask(null);
-    setProgress(0);
-    setOnlineRows(createInitialRows());
-    setActiveCell(null);
     onCancel();
   };
 
@@ -322,9 +462,29 @@ const ExcelImportModal: React.FC<ExcelImportModalProps> = (props) => {
       const errorMessage =
         error.response?.data?.errorMessage || error.message || '导入失败';
       debugError('在线导入错误详情:', error);
+      setTaskMessage(errorMessage);
       message.error(errorMessage);
       if (error.response?.data?.data) {
-        setImportResult(error.response.data.data);
+        const normalizedResult = extractImportResult(error.response.data.data);
+        setImportResult(
+          normalizedResult
+            ? {
+                success:
+                  normalizedResult.failedCount === 0 &&
+                  normalizedResult.missingCount === 0,
+                total: normalizedResult.total,
+                processedCount: normalizedResult.processedCount,
+                successCount: normalizedResult.successCount,
+                failedCount: normalizedResult.failedCount,
+                missingCount: normalizedResult.missingCount,
+                verificationPassed: normalizedResult.verificationPassed,
+                errors: normalizedResult.errors?.map((item) => ({
+                  row: typeof item.row === 'number' ? item.row : 0,
+                  message: item.message,
+                })),
+              }
+            : error.response.data.data,
+        );
       }
     } finally {
       setUploading(false);
@@ -537,7 +697,11 @@ const ExcelImportModal: React.FC<ExcelImportModalProps> = (props) => {
                     loading={uploading}
                     disabled={uploading}
                   >
-                    {uploading ? '上传中...' : '选择文件'}
+                    {uploading
+                      ? createdTask
+                        ? '后台处理中...'
+                        : '上传中...'
+                      : '选择文件'}
                   </Button>
                 </Upload>
               </>
@@ -611,19 +775,41 @@ const ExcelImportModal: React.FC<ExcelImportModalProps> = (props) => {
       {uploading && progress > 0 && (
         <div style={{ marginTop: 16 }}>
           <Progress percent={progress} status="active" />
+          {taskMessage ? (
+            <div style={{ marginTop: 8, color: '#8c8c8c' }}>{taskMessage}</div>
+          ) : null}
         </div>
       )}
 
       {createdTask && (
         <div style={{ marginTop: 24 }}>
           <Alert
-            message="导入任务已提交到后台"
-            description={`任务ID：${createdTask.taskId}。页面关闭或刷新不会中断任务，可在任务中心查看进度或取消任务。`}
-            type="success"
+            message={
+              createdTask.status === 'completed'
+                ? '导入任务已完成'
+                : createdTask.status === 'failed'
+                ? '导入任务失败'
+                : createdTask.status === 'cancelled'
+                ? '导入任务已取消'
+                : '导入任务正在后台执行'
+            }
+            description={`任务ID：${createdTask.taskId}。${
+              taskMessage ||
+              '页面关闭或刷新不会中断任务，可在任务中心查看进度或取消任务。'
+            }`}
+            type={
+              createdTask.status === 'failed'
+                ? 'error'
+                : createdTask.status === 'cancelled'
+                ? 'warning'
+                : createdTask.status === 'completed'
+                ? 'success'
+                : 'info'
+            }
             showIcon
             action={
               <Button type="link" size="small" onClick={openTaskCenter}>
-                打开任务中心
+                任务中心
               </Button>
             }
           />
@@ -633,10 +819,37 @@ const ExcelImportModal: React.FC<ExcelImportModalProps> = (props) => {
       {importResult && (
         <div style={{ marginTop: 24 }}>
           <Alert
-            message={`导入完成：成功 ${importResult.successCount} 条，失败 ${importResult.failedCount} 条`}
-            type={importResult.failedCount === 0 ? 'success' : 'warning'}
+            message={`导入完成：总计 ${importResult.total} 条，成功 ${importResult.successCount} 条，失败 ${importResult.failedCount} 条`}
+            description={
+              importResult.verificationPassed !== false
+                ? '后台结果已校验：成功数 + 失败数与总计一致。'
+                : `后台结果校验未通过：仍有 ${
+                    importResult.missingCount || 0
+                  } 条记录未归类，请重点检查错误详情。`
+            }
+            type={
+              importResult.failedCount === 0 &&
+              (importResult.missingCount || 0) === 0 &&
+              importResult.verificationPassed !== false
+                ? 'success'
+                : 'warning'
+            }
             showIcon
             style={{ marginBottom: 16 }}
+            action={
+              <Space size={4}>
+                <Button
+                  type="link"
+                  size="small"
+                  onClick={() => void onSuccess()}
+                >
+                  刷新列表
+                </Button>
+                <Button type="link" size="small" onClick={resetImportState}>
+                  继续导入
+                </Button>
+              </Space>
+            }
           />
           {importResult.errors && importResult.errors.length > 0 && (
             <div>

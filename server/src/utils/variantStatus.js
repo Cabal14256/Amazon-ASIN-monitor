@@ -33,20 +33,75 @@ function buildEffectiveStatus({ autoBroken = 0, manualBroken = 0 }) {
   };
 }
 
-function decorateAsinStatus(record) {
+function buildAsinManualBrokenScope(
+  selfManualBroken = 0,
+  inheritedManualBroken = 0,
+) {
+  const self = toFlag(selfManualBroken);
+  const inherited = toFlag(inheritedManualBroken);
+
+  if (self && inherited) {
+    return 'SELF+GROUP';
+  }
+  if (self) {
+    return 'SELF';
+  }
+  if (inherited) {
+    return 'GROUP';
+  }
+  return 'NONE';
+}
+
+function decorateAsinStatus(record, options = {}) {
   if (!record) {
     return null;
   }
+
+  const selfManualBroken = toFlag(record.manual_broken);
+  const inheritedManualBroken = toFlag(options.parentManualBroken);
+  const effectiveManualBroken = selfManualBroken || inheritedManualBroken;
+  const manualBrokenScope = buildAsinManualBrokenScope(
+    selfManualBroken,
+    inheritedManualBroken,
+  );
+  const selfManualBrokenReason = record.manual_broken_reason || null;
+  const selfManualBrokenUpdatedAt = record.manual_broken_updated_at || null;
+  const selfManualBrokenUpdatedBy = record.manual_broken_updated_by || null;
+  const inheritedManualBrokenReason = inheritedManualBroken
+    ? options.parentManualBrokenReason || null
+    : null;
+  const inheritedManualBrokenUpdatedAt = inheritedManualBroken
+    ? options.parentManualBrokenUpdatedAt || null
+    : null;
+  const inheritedManualBrokenUpdatedBy = inheritedManualBroken
+    ? options.parentManualBrokenUpdatedBy || null
+    : null;
 
   return {
     ...record,
     ...buildEffectiveStatus({
       autoBroken: record.is_broken,
-      manualBroken: record.manual_broken,
+      manualBroken: effectiveManualBroken ? 1 : 0,
     }),
-    manualBrokenReason: record.manual_broken_reason || null,
-    manualBrokenUpdatedAt: record.manual_broken_updated_at || null,
-    manualBrokenUpdatedBy: record.manual_broken_updated_by || null,
+    manualBroken: effectiveManualBroken ? 1 : 0,
+    manualBrokenScope,
+    manualBrokenReason: selfManualBroken
+      ? selfManualBrokenReason
+      : inheritedManualBrokenReason,
+    manualBrokenUpdatedAt: selfManualBroken
+      ? selfManualBrokenUpdatedAt
+      : inheritedManualBrokenUpdatedAt,
+    manualBrokenUpdatedBy: selfManualBroken
+      ? selfManualBrokenUpdatedBy
+      : inheritedManualBrokenUpdatedBy,
+    selfManualBroken: selfManualBroken ? 1 : 0,
+    selfManualBrokenReason,
+    selfManualBrokenUpdatedAt,
+    selfManualBrokenUpdatedBy,
+    inheritedManualBroken: inheritedManualBroken ? 1 : 0,
+    inheritedManualBrokenReason,
+    inheritedManualBrokenUpdatedAt,
+    inheritedManualBrokenUpdatedBy,
   };
 }
 
@@ -60,7 +115,7 @@ function decorateVariantGroupStatus(record, children = []) {
     toFlag(child.autoIsBroken),
   );
   const hasManualBrokenChild = children.some((child) =>
-    toFlag(child.manualBroken),
+    toFlag(child.selfManualBroken ?? child.manualBroken),
   );
   const effectiveStatus = buildEffectiveStatus({
     autoBroken: toFlag(record.is_broken) || hasAutoBrokenChild ? 1 : 0,
@@ -78,15 +133,28 @@ function decorateVariantGroupStatus(record, children = []) {
   };
 }
 
-function buildAsinEffectiveBrokenExpr(alias = 'a') {
-  return `(COALESCE(${alias}.is_broken, 0) = 1 OR COALESCE(${alias}.manual_broken, 0) = 1)`;
+function buildAsinEffectiveBrokenExpr(alias = 'a', variantGroupAlias = '') {
+  const inheritedGroupManualExpr = variantGroupAlias
+    ? `COALESCE(${variantGroupAlias}.manual_broken, 0) = 1`
+    : `EXISTS (
+      SELECT 1
+      FROM variant_groups vg_manual
+      WHERE vg_manual.id = ${alias}.variant_group_id
+        AND COALESCE(vg_manual.manual_broken, 0) = 1
+    )`;
+
+  return `(
+    COALESCE(${alias}.is_broken, 0) = 1
+    OR COALESCE(${alias}.manual_broken, 0) = 1
+    OR ${inheritedGroupManualExpr}
+  )`;
 }
 
 function buildVariantGroupEffectiveBrokenExpr(
   groupAlias = 'vg',
   childAlias = 'a2',
 ) {
-  const childBrokenExpr = buildAsinEffectiveBrokenExpr(childAlias);
+  const childBrokenExpr = buildAsinEffectiveBrokenExpr(childAlias, groupAlias);
   return `(
     COALESCE(${groupAlias}.is_broken, 0) = 1
     OR COALESCE(${groupAlias}.manual_broken, 0) = 1
@@ -101,6 +169,7 @@ function buildVariantGroupEffectiveBrokenExpr(
 
 module.exports = {
   buildAsinEffectiveBrokenExpr,
+  buildAsinManualBrokenScope,
   buildEffectiveStatus,
   buildVariantGroupEffectiveBrokenExpr,
   decorateAsinStatus,
