@@ -1,13 +1,26 @@
 import taskServices from '@/services/task';
-import { formatBeijing } from '@/utils/beijingTime';
-import { PageContainer } from '@ant-design/pro-components';
-import { ReloadOutlined } from '@ant-design/icons';
-import { Button, Popconfirm, Progress, Segmented, Space, Table, Tag, Typography, message } from 'antd';
-import type { TableColumnsType } from 'antd';
-import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { wsClient } from '@/services/websocket';
+import { formatBeijing } from '@/utils/beijingTime';
+import { extractImportResult } from '@/utils/task';
+import { ReloadOutlined } from '@ant-design/icons';
+import { PageContainer } from '@ant-design/pro-components';
+import type { TableColumnsType } from 'antd';
+import {
+  Alert,
+  Button,
+  Modal,
+  Popconfirm,
+  Progress,
+  Segmented,
+  Space,
+  Table,
+  Tag,
+  Typography,
+  message,
+} from 'antd';
+import React, { useCallback, useEffect, useMemo, useState } from 'react';
 
-const { listTasks, cancelTask, downloadTaskFile } = taskServices;
+const { listTasks, getTaskStatus, cancelTask, downloadTaskFile } = taskServices;
 
 type TaskStatus =
   | 'pending'
@@ -33,13 +46,10 @@ type TaskRecord = {
   canCancel?: boolean;
   filename?: string | null;
   downloadUrl?: string | null;
-  result?: Record<string, any> | null;
+  result?: any;
 };
 
-const statusMeta: Record<
-  TaskStatus,
-  { color: string; text: string }
-> = {
+const statusMeta: Record<TaskStatus, { color: string; text: string }> = {
   pending: { color: 'default', text: '等待中' },
   processing: { color: 'processing', text: '执行中' },
   cancelling: { color: 'warning', text: '取消中' },
@@ -82,7 +92,14 @@ function getResultSummary(task: TaskRecord) {
     return task.filename || result.filename || '文件已生成';
   }
   if (task.taskType === 'import') {
-    return `成功 ${result.successCount || 0}，失败 ${result.failedCount || 0}`;
+    const importResult = extractImportResult(task);
+    if (!importResult) {
+      return task.message || '导入已完成';
+    }
+    const summary = `总计 ${importResult.total}，成功 ${importResult.successCount}，失败 ${importResult.failedCount}`;
+    return importResult.missingCount > 0
+      ? `${summary}，缺失 ${importResult.missingCount}`
+      : summary;
   }
   if (task.taskType === 'batch-check') {
     return `成功 ${result.successCount || 0}，失败 ${result.failedCount || 0}`;
@@ -96,7 +113,11 @@ function getResultSummary(task: TaskRecord) {
 const TaskCenterPage: React.FC = () => {
   const [tasks, setTasks] = useState<TaskRecord[]>([]);
   const [loading, setLoading] = useState(false);
-  const [filter, setFilter] = useState<'all' | 'active'>('active');
+  const [filter, setFilter] = useState<'all' | 'active'>('all');
+  const [detailVisible, setDetailVisible] = useState(false);
+  const [detailLoading, setDetailLoading] = useState(false);
+  const [detailTaskId, setDetailTaskId] = useState<string | null>(null);
+  const [detailTask, setDetailTask] = useState<TaskRecord | null>(null);
 
   const loadTasks = useCallback(async () => {
     setLoading(true);
@@ -146,6 +167,11 @@ const TaskCenterPage: React.FC = () => {
     [tasks],
   );
 
+  const detailImportResult = useMemo(
+    () => extractImportResult(detailTask),
+    [detailTask],
+  );
+
   const handleCancelTask = async (taskId: string) => {
     try {
       await cancelTask({ taskId });
@@ -166,6 +192,25 @@ const TaskCenterPage: React.FC = () => {
     }
   };
 
+  const handleViewTaskDetail = async (taskId: string) => {
+    setDetailTaskId(taskId);
+    setDetailLoading(true);
+    try {
+      const response = await getTaskStatus({ taskId });
+      const detail = extractResponseData<TaskRecord | null>(response, null);
+      if (!detail) {
+        throw new Error('任务详情不存在');
+      }
+      setDetailTask(detail);
+      setDetailVisible(true);
+    } catch (error: any) {
+      message.error(error?.message || '加载任务详情失败');
+    } finally {
+      setDetailLoading(false);
+      setDetailTaskId(null);
+    }
+  };
+
   const columns: TableColumnsType<TaskRecord> = [
     {
       title: '任务',
@@ -173,10 +218,10 @@ const TaskCenterPage: React.FC = () => {
       width: 220,
       render: (_, record) => (
         <Space direction="vertical" size={0}>
-          <Typography.Text strong>{record.title || record.taskType}</Typography.Text>
-          <Typography.Text type="secondary">
-            {record.taskId}
+          <Typography.Text strong>
+            {record.title || record.taskType}
           </Typography.Text>
+          <Typography.Text type="secondary">{record.taskId}</Typography.Text>
         </Space>
       ),
     },
@@ -195,7 +240,11 @@ const TaskCenterPage: React.FC = () => {
       width: 180,
       render: (value: number, record) => (
         <Progress
-          percent={record.status === 'completed' ? 100 : Math.max(0, Number(value || 0))}
+          percent={
+            record.status === 'completed'
+              ? 100
+              : Math.max(0, Number(value || 0))
+          }
           size="small"
           status={record.status === 'failed' ? 'exception' : 'active'}
         />
@@ -223,7 +272,7 @@ const TaskCenterPage: React.FC = () => {
     {
       title: '操作',
       dataIndex: 'actions',
-      width: 180,
+      width: 220,
       fixed: 'right',
       render: (_, record) => (
         <Space>
@@ -237,8 +286,23 @@ const TaskCenterPage: React.FC = () => {
             </Popconfirm>
           ) : null}
           {record.taskType === 'export' && record.status === 'completed' ? (
-            <Button size="small" type="link" onClick={() => handleDownloadTask(record)}>
+            <Button
+              size="small"
+              type="link"
+              onClick={() => handleDownloadTask(record)}
+            >
               下载
+            </Button>
+          ) : null}
+          {record.taskType === 'import' &&
+          ['completed', 'failed', 'cancelled'].includes(record.status) ? (
+            <Button
+              size="small"
+              type="link"
+              loading={detailLoading && detailTaskId === record.taskId}
+              onClick={() => void handleViewTaskDetail(record.taskId)}
+            >
+              详情
             </Button>
           ) : null}
         </Space>
@@ -280,6 +344,82 @@ const TaskCenterPage: React.FC = () => {
           showTotal: (total) => `共 ${total} 条任务`,
         }}
       />
+      <Modal
+        title={detailTask?.title || '任务详情'}
+        open={detailVisible}
+        footer={null}
+        onCancel={() => {
+          setDetailVisible(false);
+          setDetailTask(null);
+        }}
+        width={820}
+      >
+        {detailTask ? (
+          <Space direction="vertical" style={{ width: '100%' }} size="middle">
+            <Alert
+              type={
+                detailTask.status === 'failed'
+                  ? 'error'
+                  : detailTask.status === 'cancelled'
+                  ? 'warning'
+                  : 'info'
+              }
+              showIcon
+              message={`任务状态：${
+                statusMeta[detailTask.status || 'pending']?.text || '未知'
+              }`}
+              description={
+                detailTask.message || detailTask.error || '无附加消息'
+              }
+            />
+            {detailImportResult ? (
+              <>
+                <Alert
+                  type={
+                    detailImportResult.failedCount === 0 &&
+                    detailImportResult.missingCount === 0 &&
+                    detailImportResult.verificationPassed
+                      ? 'success'
+                      : 'warning'
+                  }
+                  showIcon
+                  message={`导入结果：总计 ${detailImportResult.total} 条，成功 ${detailImportResult.successCount} 条，失败 ${detailImportResult.failedCount} 条`}
+                  description={
+                    detailImportResult.verificationPassed
+                      ? '后台结果已校验：成功数 + 失败数与总计一致。'
+                      : `后台结果校验未通过：仍有 ${detailImportResult.missingCount} 条记录未归类。`
+                  }
+                />
+                {detailImportResult.errors &&
+                detailImportResult.errors.length > 0 ? (
+                  <Table
+                    size="small"
+                    rowKey={(_, index) => `${detailTask.taskId}-${index}`}
+                    pagination={{ pageSize: 8 }}
+                    dataSource={detailImportResult.errors}
+                    columns={[
+                      {
+                        title: '行号',
+                        dataIndex: 'row',
+                        width: 100,
+                        render: (value?: number) => value || '-',
+                      },
+                      {
+                        title: '错误信息',
+                        dataIndex: 'message',
+                      },
+                    ]}
+                  />
+                ) : null}
+              </>
+            ) : (
+              <Typography.Text type="secondary">
+                当前任务没有可展示的结构化结果。
+              </Typography.Text>
+            )}
+          </Space>
+        ) : null}
+      </Modal>
     </PageContainer>
   );
 };

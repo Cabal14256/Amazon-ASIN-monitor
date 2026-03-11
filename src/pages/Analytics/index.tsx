@@ -236,6 +236,41 @@ type MonthlyBreakdownRow = {
   abnormalDurationRate: number;
 };
 
+const normalizePeriodSummaryResponse = (
+  result: any,
+  fallbackCurrent: number,
+  fallbackPageSize: number,
+) => {
+  const fallback = {
+    list: [] as API.PeriodSummary[],
+    total: 0,
+    current: fallbackCurrent,
+    pageSize: fallbackPageSize,
+  };
+
+  if (!result || typeof result !== 'object') {
+    return fallback;
+  }
+
+  const payload =
+    'success' in result
+      ? result.success
+        ? result.data
+        : null
+      : result.data || result;
+
+  if (!payload || typeof payload !== 'object' || !Array.isArray(payload.list)) {
+    return fallback;
+  }
+
+  return {
+    list: payload.list,
+    total: Number(payload.total) || 0,
+    current: Number(payload.current) || fallbackCurrent,
+    pageSize: Number(payload.pageSize) || fallbackPageSize,
+  };
+};
+
 const PROGRESS_PROFILE_KEY = 'analyticsProgressProfile.v1';
 
 const readProgressProfile = (): ProgressProfile => {
@@ -429,6 +464,36 @@ const AnalyticsPageContent: React.FC<unknown> = () => {
       }));
     },
     [],
+  );
+
+  const loadPeriodSummaryTable = useCallback(
+    async (
+      current = periodSummary.current,
+      pageSize = periodSummary.pageSize,
+      filter = periodFilter,
+      timeSlotGranularity = periodTimeSlot,
+    ) => {
+      const startTime = dateRange[0].format('YYYY-MM-DD HH:mm:ss');
+      const endTime = dateRange[1].format('YYYY-MM-DD HH:mm:ss');
+      const result = await getPeriodSummary({
+        startTime,
+        endTime,
+        ...filter,
+        timeSlotGranularity,
+        current,
+        pageSize,
+      });
+      setPeriodSummary(
+        normalizePeriodSummaryResponse(result, current, pageSize),
+      );
+    },
+    [
+      dateRange,
+      periodFilter,
+      periodSummary.current,
+      periodSummary.pageSize,
+      periodTimeSlot,
+    ],
   );
 
   const loadMonthlyBreakdown = useCallback(async () => {
@@ -957,6 +1022,19 @@ const AnalyticsPageContent: React.FC<unknown> = () => {
           };
           periodMeta = payload.meta;
         }
+        const periodStats =
+          periodDataResult?.status === 'fulfilled'
+            ? normalizePeriodSummaryResponse(
+                periodDataResult.value,
+                periodSummary.current,
+                periodSummary.pageSize,
+              )
+            : {
+                list: [],
+                total: 0,
+                current: periodSummary.current,
+                pageSize: periodSummary.pageSize,
+              };
         setPeriodSummary(periodStats);
         setAnalyticsMetaMap({
           time: timeMeta,
@@ -1909,6 +1987,153 @@ const AnalyticsPageContent: React.FC<unknown> = () => {
     }
   };
 
+  const periodSummaryColumns = [
+    {
+      title: '时间范围',
+      dataIndex: 'timeRange',
+      key: 'timeRange',
+    },
+    {
+      title: '国家',
+      dataIndex: 'country',
+      key: 'country',
+      render: (text: string) => (text ? countryMap[text] || text : '-'),
+    },
+    {
+      title: '站点',
+      dataIndex: 'site',
+      key: 'site',
+      render: (text: string) => text || '-',
+    },
+    {
+      title: '品牌',
+      dataIndex: 'brand',
+      key: 'brand',
+      render: (text: string) => text || '-',
+    },
+    {
+      title: '总监控时长',
+      dataIndex: 'totalDurationHours',
+      key: 'totalDurationHours',
+      align: 'right' as const,
+      render: (value: number) => formatHours(value),
+    },
+    {
+      title: 'ASIN平均异常时长占比 (ratio_all_asin)',
+      dataIndex: 'ratioAllAsin',
+      key: 'ratioAllAsin',
+      align: 'right' as const,
+      render: (value: number) => formatPercent(value),
+    },
+    {
+      title: '所有ASIN异常时长占比 (ratio_all_time)',
+      dataIndex: 'ratioAllTime',
+      key: 'ratioAllTime',
+      align: 'right' as const,
+      render: (value: number) => formatPercent(value),
+    },
+    {
+      title: '全局高峰异常时长占比 (global_peak_rate)',
+      dataIndex: 'globalPeakRate',
+      key: 'globalPeakRate',
+      align: 'right' as const,
+      render: (value: number) => formatPercent(value),
+    },
+    {
+      title: '全局低峰异常时长占比 (global_low_rate)',
+      dataIndex: 'globalLowRate',
+      key: 'globalLowRate',
+      align: 'right' as const,
+      render: (value: number) => formatPercent(value),
+    },
+    {
+      title: '局部高峰异常时长占比 (ratio_high)',
+      dataIndex: 'ratioHigh',
+      key: 'ratioHigh',
+      align: 'right' as const,
+      render: (value: number) => formatPercent(value),
+    },
+    {
+      title: '局部低峰异常时长占比 (ratio_low)',
+      dataIndex: 'ratioLow',
+      key: 'ratioLow',
+      align: 'right' as const,
+      render: (value: number) => formatPercent(value),
+    },
+  ];
+
+  const periodTimeSlotColumns = [
+    {
+      title: '时间槽',
+      dataIndex: 'timeSlot',
+      key: 'timeSlot',
+    },
+    {
+      title: '总监控时长',
+      dataIndex: 'totalDurationHours',
+      key: 'totalDurationHours',
+      align: 'right' as const,
+      render: (value: number) => formatHours(value),
+    },
+    {
+      title: 'ASIN平均异常时长占比 (ratio_all_asin)',
+      dataIndex: 'ratioAllAsin',
+      key: 'ratioAllAsin',
+      align: 'right' as const,
+      render: (value: number) => formatPercent(value),
+    },
+    {
+      title: '所有ASIN异常时长占比 (ratio_all_time)',
+      dataIndex: 'ratioAllTime',
+      key: 'ratioAllTime',
+      align: 'right' as const,
+      render: (value: number) => formatPercent(value),
+    },
+    {
+      title: '全局高峰异常时长占比 (global_peak_rate)',
+      dataIndex: 'globalPeakRate',
+      key: 'globalPeakRate',
+      align: 'right' as const,
+      render: (value: number) => formatPercent(value),
+    },
+    {
+      title: '全局低峰异常时长占比 (global_low_rate)',
+      dataIndex: 'globalLowRate',
+      key: 'globalLowRate',
+      align: 'right' as const,
+      render: (value: number) => formatPercent(value),
+    },
+    {
+      title: '局部高峰异常时长占比 (ratio_high)',
+      dataIndex: 'ratioHigh',
+      key: 'ratioHigh',
+      align: 'right' as const,
+      render: (value: number) => formatPercent(value),
+    },
+    {
+      title: '局部低峰异常时长占比 (ratio_low)',
+      dataIndex: 'ratioLow',
+      key: 'ratioLow',
+      align: 'right' as const,
+      render: (value: number) => formatPercent(value),
+    },
+  ];
+
+  const renderPeriodTimeSlotDetails = (record: API.PeriodSummary) => (
+    <Table
+      size="small"
+      pagination={false}
+      dataSource={record.timeSlotDetails || []}
+      rowKey={(detail, index) =>
+        `${record.country || ''}_${record.site || ''}_${record.brand || ''}_${
+          detail.timeSlot || index
+        }`
+      }
+      columns={periodTimeSlotColumns}
+      scroll={{ x: 1100 }}
+    />
+  );
+
   return (
     <PageContainer
       header={{
@@ -2398,9 +2623,11 @@ const AnalyticsPageContent: React.FC<unknown> = () => {
                   value={periodTimeSlot}
                   onChange={(value) => {
                     setPeriodTimeSlot(value);
-                    // 重新加载该表格数据
-                    const startTime = dateRange[0].format(
-                      'YYYY-MM-DD HH:mm:ss',
+                    void loadPeriodSummaryTable(
+                      periodSummary.current,
+                      periodSummary.pageSize,
+                      periodFilter,
+                      value,
                     );
                     const endTime = dateRange[1].format('YYYY-MM-DD HH:mm:ss');
                     getPeriodSummary({
@@ -2462,9 +2689,11 @@ const AnalyticsPageContent: React.FC<unknown> = () => {
                       pageSize: size || 10,
                     };
                     setPeriodSummary(newSummary);
-                    // 重新加载数据
-                    const startTime = dateRange[0].format(
-                      'YYYY-MM-DD HH:mm:ss',
+                    void loadPeriodSummaryTable(
+                      page,
+                      size || 10,
+                      periodFilter,
+                      periodTimeSlot,
                     );
                     const endTime = dateRange[1].format('YYYY-MM-DD HH:mm:ss');
                     getPeriodSummary({
@@ -2497,7 +2726,7 @@ const AnalyticsPageContent: React.FC<unknown> = () => {
                   },
                 }}
                 rowKey={(record, index) =>
-                  `${record.timeSlot}_${record.country}_${record.site}_${record.brand}_${index}`
+                  `${record.timeRange}_${record.country}_${record.site}_${record.brand}_${index}`
                 }
                 columns={[
                   {
@@ -2533,6 +2762,12 @@ const AnalyticsPageContent: React.FC<unknown> = () => {
                   },
                   ...durationSummaryRateColumns,
                 ]}
+                columns={periodSummaryColumns}
+                expandable={{
+                  expandedRowRender: renderPeriodTimeSlotDetails,
+                  rowExpandable: (record) =>
+                    Boolean(record.timeSlotDetails?.length),
+                }}
                 scroll={{ x: 1400 }}
               />
             ) : (

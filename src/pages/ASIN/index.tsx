@@ -57,6 +57,32 @@ type ManualBrokenTarget = {
   record: Partial<API.VariantGroup | API.ASINInfo>;
 };
 
+const isGroupRecord = (record: API.VariantGroup | API.ASINInfo) =>
+  (record as API.VariantGroup).parentId === undefined;
+
+const getASINOwnManualBroken = (record: API.ASINInfo) =>
+  record.selfManualBroken === 1;
+
+const getASINInheritedManualBroken = (record: API.ASINInfo) =>
+  record.inheritedManualBroken === 1;
+
+const getManualBrokenScopeMeta = (
+  record: API.VariantGroup | API.ASINInfo,
+): { label: string; color: string } => {
+  if (isGroupRecord(record)) {
+    return { label: '已人工标记', color: 'orange' };
+  }
+
+  const scope = (record as API.ASINInfo).manualBrokenScope || 'NONE';
+  if (scope === 'GROUP') {
+    return { label: '继承父变体标记', color: 'gold' };
+  }
+  if (scope === 'SELF+GROUP') {
+    return { label: '自身+父变体', color: 'magenta' };
+  }
+  return { label: 'ASIN人工标记', color: 'orange' };
+};
+
 const ASINManagement: React.FC<unknown> = () => {
   const message = useMessage();
   const actionRef = useRef<ActionType | null>(null);
@@ -200,7 +226,17 @@ const ASINManagement: React.FC<unknown> = () => {
           );
         }
 
-        message.success('人工异常标记已更新');
+        const isInheritedAsinTarget =
+          manualBrokenTarget.type === 'asin' &&
+          (manualBrokenTarget.record as API.ASINInfo).inheritedManualBroken ===
+            1 &&
+          (manualBrokenTarget.record as API.ASINInfo).selfManualBroken !== 1;
+
+        message.success(
+          isInheritedAsinTarget
+            ? '已为 ASIN 追加单独人工标记'
+            : '人工异常标记已更新',
+        );
         closeManualBrokenModal();
         refreshTableData();
       } catch (error: any) {
@@ -213,9 +249,13 @@ const ASINManagement: React.FC<unknown> = () => {
 
   const handleClearManualBroken = useCallback(
     (record: API.VariantGroup | API.ASINInfo, isGroup: boolean) => {
+      const inheritedManualBroken =
+        !isGroup && getASINInheritedManualBroken(record as API.ASINInfo);
       Modal.confirm({
         title: isGroup ? '取消变体组人工异常标记' : '取消ASIN人工异常标记',
-        content: '取消后将恢复为仅按自动检测结果判断状态。',
+        content: inheritedManualBroken
+          ? '取消后将移除该 ASIN 的单独人工标记，但如果父变体仍被人工标记，该 ASIN 仍会保持异常。'
+          : '取消后将恢复为仅按自动检测结果判断状态。',
         okText: '确认取消',
         cancelText: '保留',
         onOk: async () => {
@@ -232,7 +272,11 @@ const ASINManagement: React.FC<unknown> = () => {
               );
             }
 
-            message.success('已取消人工异常标记');
+            message.success(
+              inheritedManualBroken
+                ? '已取消 ASIN 单独人工标记，当前仍继承父变体标记'
+                : '已取消人工异常标记',
+            );
             refreshTableData();
           } catch (error: any) {
             message.error(error?.errorMessage || error?.message || '更新失败');
@@ -404,6 +448,7 @@ const ASINManagement: React.FC<unknown> = () => {
           BROKEN: { text: '异常', status: 'Error' },
         },
         render: (_: any, record: API.VariantGroup | API.ASINInfo) => {
+          const isGroup = isGroupRecord(record);
           const isBroken = record.isBroken === 1;
           const statusSource = record.statusSource || 'NORMAL';
           const sourceMeta: Record<string, { text: string; color: string }> = {
@@ -411,6 +456,10 @@ const ASINManagement: React.FC<unknown> = () => {
             MANUAL: { text: '人工标记', color: 'orange' },
             'AUTO+MANUAL': { text: '自动+人工', color: 'magenta' },
           };
+          const manualScopeMeta =
+            !isGroup && record.manualBroken === 1
+              ? getManualBrokenScopeMeta(record)
+              : null;
           return (
             <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
               <div>
@@ -420,6 +469,11 @@ const ASINManagement: React.FC<unknown> = () => {
                 {statusSource !== 'NORMAL' && sourceMeta[statusSource] ? (
                   <Tag color={sourceMeta[statusSource].color}>
                     {sourceMeta[statusSource].text}
+                  </Tag>
+                ) : null}
+                {manualScopeMeta ? (
+                  <Tag color={manualScopeMeta.color}>
+                    {manualScopeMeta.label}
                   </Tag>
                 ) : null}
               </div>
@@ -449,11 +503,13 @@ const ASINManagement: React.FC<unknown> = () => {
             return '-';
           }
 
+          const scopeMeta = getManualBrokenScopeMeta(record);
+
           return (
             <div
               style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}
             >
-              <Tag color="orange">已人工标记</Tag>
+              <Tag color={scopeMeta.color}>{scopeMeta.label}</Tag>
               <div style={{ fontSize: 12, lineHeight: 1.4 }}>
                 {record.manualBrokenReason || '-'}
               </div>
@@ -560,7 +616,7 @@ const ASINManagement: React.FC<unknown> = () => {
         width: 80,
         fixed: 'right',
         render: (_: any, record: API.VariantGroup | API.ASINInfo) => {
-          const isGroup = (record as API.VariantGroup).parentId === undefined;
+          const isGroup = isGroupRecord(record);
 
           // 构建完整的操作菜单
           const menuItems: MenuProps['items'] = [];
@@ -654,12 +710,20 @@ const ASINManagement: React.FC<unknown> = () => {
           });
 
           if (access.canWriteASIN) {
-            const manuallyBroken = record.manualBroken === 1;
+            const ownManualBroken = isGroup
+              ? record.manualBroken === 1
+              : getASINOwnManualBroken(record as API.ASINInfo);
+            const inheritedManualBroken =
+              !isGroup && getASINInheritedManualBroken(record as API.ASINInfo);
             menuItems.push({
-              key: manuallyBroken ? 'clearManualBroken' : 'manualBroken',
-              label: manuallyBroken ? '取消人工标记' : '人工标记异常',
+              key: ownManualBroken ? 'clearManualBroken' : 'manualBroken',
+              label: ownManualBroken
+                ? '取消人工标记'
+                : inheritedManualBroken
+                ? '追加人工标记'
+                : '人工标记异常',
               onClick: () => {
-                if (manuallyBroken) {
+                if (ownManualBroken) {
                   handleClearManualBroken(record, isGroup);
                   return;
                 }
@@ -1060,7 +1124,6 @@ const ASINManagement: React.FC<unknown> = () => {
           setExcelImportModalVisible(false);
         }}
         onSuccess={async () => {
-          setExcelImportModalVisible(false);
           requestCacheRef.current.clear();
           // 刷新表格
           actionRef.current?.reload();

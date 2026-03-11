@@ -866,7 +866,6 @@ const CompetitorASINManagement: React.FC<unknown> = () => {
           setExcelImportModalVisible(false);
         }}
         onSuccess={async () => {
-          setExcelImportModalVisible(false);
           requestCacheRef.current.clear();
           if (actionRef.current) {
             await actionRef.current.reload();

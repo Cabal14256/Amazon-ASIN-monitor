@@ -22,7 +22,11 @@ const ManualBrokenModal: React.FC<ManualBrokenModalProps> = ({
   useEffect(() => {
     if (open) {
       form.setFieldsValue({
-        reason: String(record?.manualBrokenReason || ''),
+        reason: String(
+          (record as API.ASINInfo | undefined)?.selfManualBrokenReason ||
+            record?.manualBrokenReason ||
+            '',
+        ),
       });
       return;
     }

@@ -1,3 +1,11 @@
+-- 迁移版本: 028
+-- 迁移名称: 新增按变体组维度的监控历史聚合表
+-- 创建时间: 2026-03-11
+-- 说明:
+-- 1) 新增 monitor_history_agg_variant_group
+-- 2) 用于按变体组统计 ASIN 时长的预聚合加速
+-- 3) 建表后建议执行 node server/scripts/rebuild-analytics-agg.js --yes
+
 USE `amazon_asin_monitor`;
 
 CREATE TABLE IF NOT EXISTS `monitor_history_agg_variant_group` (
@@ -19,3 +27,10 @@ CREATE TABLE IF NOT EXISTS `monitor_history_agg_variant_group` (
   INDEX `idx_agg_variant_group_country_slot` (`country`, `time_slot`),
   INDEX `idx_agg_variant_group_lookup` (`granularity`, `country`, `variant_group_id`, `time_slot`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='监控历史聚合表（按时间槽/国家/变体组/ASIN）';
+  INDEX `idx_agg_variant_group_time_slot` (`time_slot`),
+  INDEX `idx_agg_variant_group_country_time_slot` (`country`, `time_slot`),
+  INDEX `idx_agg_variant_group_group_slot` (`variant_group_id`, `time_slot`),
+  INDEX `idx_agg_variant_group_granularity_time_slot` (`granularity`, `time_slot`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='监控历史聚合表（按时间槽/国家/变体组/ASIN）';
+
+SELECT '新增变体组聚合表完成' AS result;

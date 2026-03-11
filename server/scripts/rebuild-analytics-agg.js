@@ -276,6 +276,17 @@ async function main() {
       );
       logger.info(`[Agg Rebuild] monitor_history_agg 已备份到 ${aggBakTable}`);
 
+      const aggVariantGroupBakTable = `monitor_history_agg_variant_group_bak_${suffix}`;
+      await query(
+        `CREATE TABLE \`${aggVariantGroupBakTable}\` LIKE monitor_history_agg_variant_group`,
+      );
+      await query(
+        `INSERT INTO \`${aggVariantGroupBakTable}\` SELECT * FROM monitor_history_agg_variant_group`,
+      );
+      logger.info(
+        `[Agg Rebuild] monitor_history_agg_variant_group 已备份到 ${aggVariantGroupBakTable}`,
+      );
+
       if (includeDim) {
         const aggDimBakTable = `monitor_history_agg_dim_bak_${suffix}`;
         await query(
@@ -310,6 +321,7 @@ async function main() {
       if (includeDim) {
         await query('TRUNCATE TABLE monitor_history_agg_dim');
       }
+      await query('TRUNCATE TABLE monitor_history_agg_variant_group');
       await query('TRUNCATE TABLE monitor_history_agg');
       logger.info('[Agg Rebuild] 聚合表清空完成');
     }
@@ -317,6 +329,11 @@ async function main() {
     for (const granularity of granularityList) {
       results.base[granularity] =
         await analyticsAggService.refreshMonitorHistoryAgg(
+          granularity,
+          options,
+        );
+      results.variantGroup[granularity] =
+        await analyticsAggService.refreshMonitorHistoryAggVariantGroup(
           granularity,
           options,
         );
@@ -381,6 +398,17 @@ async function main() {
       );
       results.verify.variantGroup = verifyVariantGroup;
     }
+    const verifyVariantGroup = await query(
+      `SELECT
+         granularity,
+         COUNT(*) as row_count,
+         DATE_FORMAT(MIN(time_slot), '%Y-%m-%d %H:%i:%s') as min_slot,
+         DATE_FORMAT(MAX(time_slot), '%Y-%m-%d %H:%i:%s') as max_slot
+       FROM monitor_history_agg_variant_group
+       GROUP BY granularity
+       ORDER BY granularity ASC`,
+    );
+    results.verify.variantGroup = verifyVariantGroup;
 
     results.audit.asinTypeDistribution = await query(
       `SELECT

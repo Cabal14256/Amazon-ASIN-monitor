@@ -5,6 +5,7 @@ declare namespace API {
   /** 变体状态枚举 */
   type VariantStatus = 'NORMAL' | 'BROKEN';
   type VariantStatusSource = 'NORMAL' | 'AUTO' | 'MANUAL' | 'AUTO+MANUAL';
+  type ManualBrokenScope = 'NONE' | 'SELF' | 'GROUP' | 'SELF+GROUP';
 
   /** 国家/区域枚举 */
   type Country = 'US' | 'UK' | 'DE' | 'FR' | 'IT' | 'ES';
@@ -38,12 +39,30 @@ declare namespace API {
     autoVariantStatus?: VariantStatus;
     /** 人工异常标记：0-否，1-是 */
     manualBroken?: number;
+    /** 人工异常标记作用域 */
+    manualBrokenScope?: ManualBrokenScope;
     /** 人工异常原因 */
     manualBrokenReason?: string;
     /** 人工异常更新时间 */
     manualBrokenUpdatedAt?: string;
     /** 人工异常操作人 */
     manualBrokenUpdatedBy?: string;
+    /** ASIN自身人工异常标记：0-否，1-是 */
+    selfManualBroken?: number;
+    /** ASIN自身人工异常原因 */
+    selfManualBrokenReason?: string;
+    /** ASIN自身人工异常更新时间 */
+    selfManualBrokenUpdatedAt?: string;
+    /** ASIN自身人工异常操作人 */
+    selfManualBrokenUpdatedBy?: string;
+    /** 是否继承父变体人工异常标记：0-否，1-是 */
+    inheritedManualBroken?: number;
+    /** 继承父变体人工异常原因 */
+    inheritedManualBrokenReason?: string;
+    /** 继承父变体人工异常更新时间 */
+    inheritedManualBrokenUpdatedAt?: string;
+    /** 继承父变体人工异常操作人 */
+    inheritedManualBrokenUpdatedBy?: string;
     /** 状态来源 */
     statusSource?: VariantStatusSource;
     /** 父级变体组ID */
@@ -638,8 +657,7 @@ declare namespace API {
     meta?: AnalyticsResponseMeta;
   }
 
-  /** 周期汇总统计 */
-  interface PeriodSummary {
+  interface PeriodSummaryTimeSlotDetail {
     /** 时间槽 */
     timeSlot?: string;
     /** 国家 */
@@ -690,6 +708,62 @@ declare namespace API {
     lowDurationHours?: number;
     /** 低峰异常时长（小时） */
     lowAbnormalDurationHours?: number;
+  }
+
+  /** 周期汇总统计 */
+  interface PeriodSummary {
+    /** 查询时间范围 */
+    timeRange?: string;
+    /** 国家 */
+    country?: string;
+    /** 站点 */
+    site?: string;
+    /** 品牌 */
+    brand?: string;
+    /** 总数量(监控链接) */
+    totalChecks?: number;
+    /** 总监控时长（小时） */
+    totalDurationHours?: number;
+    /** 异常时长（小时） */
+    abnormalDurationHours?: number;
+    /** 正常时长（小时） */
+    normalDurationHours?: number;
+    /** 所有ASIN异常占比（快照口径，百分比） */
+    ratioAllAsin?: number;
+    /** 所有ASIN异常时长占比（去重口径，百分比） */
+    ratioAllTime?: number;
+    /** 全局高峰异常占比（百分比） */
+    globalPeakRate?: number;
+    /** 全局低峰异常占比（百分比） */
+    globalLowRate?: number;
+    /** 局部高峰异常占比（百分比） */
+    ratioHigh?: number;
+    /** 局部低峰异常占比（百分比） */
+    ratioLow?: number;
+    /** 异常快照数 */
+    brokenCount?: number;
+    /** 去重口径总ASIN数 */
+    totalAsinsDedup?: number;
+    /** 去重口径异常ASIN数 */
+    brokenAsinsDedup?: number;
+    /** 高峰时段异常快照数 */
+    peakBroken?: number;
+    /** 高峰时段快照总数 */
+    peakTotal?: number;
+    /** 低峰时段异常快照数 */
+    lowBroken?: number;
+    /** 低峰时段快照总数 */
+    lowTotal?: number;
+    /** 高峰总时长（小时） */
+    peakDurationHours?: number;
+    /** 高峰异常时长（小时） */
+    peakAbnormalDurationHours?: number;
+    /** 低峰总时长（小时） */
+    lowDurationHours?: number;
+    /** 低峰异常时长（小时） */
+    lowAbnormalDurationHours?: number;
+    /** 时间槽明细 */
+    timeSlotDetails?: PeriodSummaryTimeSlotDetail[];
   }
 
   interface PageInfo_PeriodSummary_ {

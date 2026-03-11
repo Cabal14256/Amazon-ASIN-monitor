@@ -268,12 +268,95 @@ async function refreshAnalyticsAggBundle(granularity, options = {}) {
         error?.message || error,
       );
       result.dimResult = { skipped: true, reason: 'dim_refresh_failed' };
+async function refreshMonitorHistoryAggVariantGroup(granularity, options = {}) {
+  if (!AGG_ENABLED || !REFRESH_VARIANT_GROUP_AGG) {
+    return { skipped: true, reason: 'disabled' };
+  }
+
+  const slotExpr = getSlotExpr(granularity);
+  const { whereClause, conditions } = buildWhereClause(granularity, options);
+  const isPeakCase = buildPeakHourCase('mh.country', 'mh.check_time');
+
+  const sql = `
+    INSERT INTO monitor_history_agg_variant_group (
+      granularity,
+      time_slot,
+      country,
+      variant_group_id,
+      variant_group_name,
+      asin_key,
+      check_count,
+      broken_count,
+      has_broken,
+      has_peak,
+      first_check_time,
+      last_check_time
+    )
+    SELECT
+      ? as granularity,
+      ${slotExpr} as time_slot,
+      mh.country,
+      mh.variant_group_id,
+      COALESCE(MAX(NULLIF(mh.variant_group_name, '')), MAX(vg.name), '') as variant_group_name,
+      COALESCE(NULLIF(mh.asin_code, ''), CONCAT('ID#', mh.asin_id)) as asin_key,
+      COUNT(*) as check_count,
+      SUM(CASE WHEN mh.is_broken = 1 THEN 1 ELSE 0 END) as broken_count,
+      MAX(mh.is_broken) as has_broken,
+      MAX(${isPeakCase}) as has_peak,
+      MIN(mh.check_time) as first_check_time,
+      MAX(mh.check_time) as last_check_time
+    FROM monitor_history mh
+    LEFT JOIN variant_groups vg ON vg.id = mh.variant_group_id
+    ${whereClause}
+      AND mh.variant_group_id IS NOT NULL
+    GROUP BY
+      ${slotExpr},
+      mh.country,
+      mh.variant_group_id,
+      COALESCE(NULLIF(mh.asin_code, ''), CONCAT('ID#', mh.asin_id))
+    ON DUPLICATE KEY UPDATE
+      variant_group_name = VALUES(variant_group_name),
+      check_count = VALUES(check_count),
+      broken_count = VALUES(broken_count),
+      has_broken = VALUES(has_broken),
+      has_peak = VALUES(has_peak),
+      first_check_time = VALUES(first_check_time),
+      last_check_time = VALUES(last_check_time)
+  `;
+
+  const params = [granularity, ...conditions];
+  const start = Date.now();
+  const result = await query(sql, params);
+  const duration = Date.now() - start;
+  logger.info(
+    `[聚合刷新-variant-group] granularity=${granularity}, 耗时${duration}ms, 影响行数=${
+      result?.affectedRows || 0
+    }`,
+  );
+  return { success: true, duration, affectedRows: result?.affectedRows || 0 };
+}
+
+async function refreshAnalyticsAggBundle(granularity, options = {}) {
+  const baseResult = await refreshMonitorHistoryAgg(granularity, options);
+  let dimResult = { skipped: true, reason: 'disabled' };
+  let variantGroupResult = { skipped: true, reason: 'disabled' };
+
+  if (REFRESH_DIM_AGG) {
+    try {
+      dimResult = await refreshMonitorHistoryAggDim(granularity, options);
+    } catch (error) {
+      logger.warn(
+        '[聚合刷新-dim] 执行失败，将继续使用基础聚合表',
+        error.message,
+      );
+      dimResult = { skipped: true, reason: 'dim_refresh_failed' };
     }
   }
 
   if (REFRESH_VARIANT_GROUP_AGG) {
     try {
       result.variantGroupResult = await refreshMonitorHistoryAggVariantGroup(
+      variantGroupResult = await refreshMonitorHistoryAggVariantGroup(
         granularity,
         options,
       );
@@ -283,6 +366,10 @@ async function refreshAnalyticsAggBundle(granularity, options = {}) {
         error?.message || error,
       );
       result.variantGroupResult = {
+        '[聚合刷新-variant-group] 执行失败，将继续使用原始表回退',
+        error.message,
+      );
+      variantGroupResult = {
         skipped: true,
         reason: 'variant_group_refresh_failed',
       };
@@ -290,6 +377,11 @@ async function refreshAnalyticsAggBundle(granularity, options = {}) {
   }
 
   return result;
+  return {
+    baseResult,
+    dimResult,
+    variantGroupResult,
+  };
 }
 
 async function refreshRecentMonitorHistoryAgg() {
@@ -308,6 +400,16 @@ async function refreshRecentMonitorHistoryAgg() {
       success: true,
       hourResult,
       dayResult,
+    const hourBundle = await refreshAnalyticsAggBundle('hour');
+    const dayBundle = await refreshAnalyticsAggBundle('day');
+    return {
+      success: true,
+      hourResult: hourBundle.baseResult,
+      dayResult: dayBundle.baseResult,
+      hourDimResult: hourBundle.dimResult,
+      dayDimResult: dayBundle.dimResult,
+      hourVariantGroupResult: hourBundle.variantGroupResult,
+      dayVariantGroupResult: dayBundle.variantGroupResult,
     };
   } catch (error) {
     logger.error('[聚合刷新] 执行失败:', error.message);

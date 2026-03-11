@@ -169,6 +169,10 @@ CREATE TABLE IF NOT EXISTS `monitor_history_agg_variant_group` (
   INDEX `idx_agg_variant_group_slot` (`time_slot`),
   INDEX `idx_agg_variant_group_country_slot` (`country`, `time_slot`),
   INDEX `idx_agg_variant_group_lookup` (`granularity`, `country`, `variant_group_id`, `time_slot`)
+  INDEX `idx_agg_variant_group_time_slot` (`time_slot`),
+  INDEX `idx_agg_variant_group_country_time_slot` (`country`, `time_slot`),
+  INDEX `idx_agg_variant_group_group_slot` (`variant_group_id`, `time_slot`),
+  INDEX `idx_agg_variant_group_granularity_time_slot` (`granularity`, `time_slot`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='监控历史聚合表（按时间槽/国家/变体组/ASIN）';
 
 -- 飞书通知配置表（按区域配置：US和EU）

@@ -342,12 +342,33 @@ async function importFromFile(file, options = {}) {
     }
   }
 
-  await runOptionalHook(onProgress, 100, '导入完成');
+  const total = Number(totalDataRows) || 0;
+  const processedCount = successCount + failedCount;
+  const missingCount = Math.max(total - processedCount, 0);
+  const verificationPassed = missingCount === 0;
+
+  if (!verificationPassed) {
+    const verificationMessage = `导入结果校验失败：总计 ${total} 条，已处理 ${processedCount} 条，仍有 ${missingCount} 条未归类`;
+    errors.push({
+      row: 0,
+      message: verificationMessage,
+    });
+    logger.error(`[导入服务] ${verificationMessage}`);
+  }
+
+  await runOptionalHook(
+    onProgress,
+    100,
+    verificationPassed ? '导入完成，结果已校验' : '导入完成，但结果校验未通过',
+  );
 
   return {
-    total: successCount + failedCount,
+    total,
+    processedCount,
     successCount,
     failedCount,
+    missingCount,
+    verificationPassed,
     errors: errors.length > 0 ? errors : undefined,
   };
 }

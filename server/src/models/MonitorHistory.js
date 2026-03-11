@@ -347,6 +347,19 @@ function buildAbnormalDurationSummary(data, startTime, endTime) {
     });
 }
 
+function buildQueryTimeRangeText(startTime, endTime) {
+  const normalizedStart = String(startTime || '').trim();
+  const normalizedEnd = String(endTime || '').trim();
+  if (normalizedStart && normalizedEnd) {
+    return `${normalizedStart} ~ ${normalizedEnd}`;
+  }
+  return normalizedStart || normalizedEnd || '-';
+}
+
+function buildPeriodSummaryGroupKey(country = '', site = '', brand = '') {
+  return [country || '', site || '', brand || ''].join('|');
+}
+
 function createDurationMetricsAccumulator() {
   return {
     totalDurationHours: 0,
@@ -537,6 +550,12 @@ class MonitorHistory {
     void analyticsCacheService.deleteByPrefix('periodSummary:');
     void analyticsCacheService.deleteByPrefix('asinStatisticsByCountry:');
     void analyticsCacheService.deleteByPrefix('asinStatisticsByVariantGroup:');
+    analyticsCacheService.deleteByPrefix('statisticsByTime:');
+    analyticsCacheService.deleteByPrefix('allCountriesSummary:');
+    analyticsCacheService.deleteByPrefix('regionSummary:');
+    analyticsCacheService.deleteByPrefix('periodSummary:');
+    analyticsCacheService.deleteByPrefix('asinStatisticsByCountry:');
+    analyticsCacheService.deleteByPrefix('asinStatisticsByVariantGroup:');
   }
 
   // 查询监控历史列表
@@ -1263,9 +1282,10 @@ class MonitorHistory {
       country = '',
       site = '',
       brand = '',
+      withDimensions = false,
     } = params;
     const config = MonitorHistory.getDurationSourceConfig(sourceGranularity);
-    const useDimAgg = Boolean(site || brand);
+    const useDimAgg = withDimensions || Boolean(site || brand);
     const aggTable = useDimAgg
       ? 'monitor_history_agg_dim'
       : 'monitor_history_agg';
@@ -1409,6 +1429,137 @@ class MonitorHistory {
   }
 
   static async getVariantGroupDurationSourceRowsFromAgg(params = {}) {
+    const {
+      startTime = '',
+      endTime = '',
+      sourceGranularity = 'day',
+      country = '',
+    } = params;
+    const config = MonitorHistory.getDurationSourceConfig(sourceGranularity);
+    const aggTable = 'monitor_history_agg_variant_group';
+
+    const isCovered = await MonitorHistory.isAggTableCoveringRange(
+      aggTable,
+      sourceGranularity,
+      startTime,
+      endTime,
+    );
+    if (!isCovered) {
+      throw new Error(`聚合表覆盖不足，回退原始表: ${aggTable}`);
+    }
+
+    let whereClause = 'WHERE agg.granularity = ?';
+    const conditions = [sourceGranularity];
+
+    if (country) {
+      if (country === 'EU') {
+        whereClause += ` AND agg.country IN ('UK', 'DE', 'FR', 'IT', 'ES')`;
+      } else {
+        whereClause += ` AND agg.country = ?`;
+        conditions.push(country);
+      }
+    }
+
+    if (startTime) {
+      whereClause += ` AND agg.time_slot >= DATE_FORMAT(?, '${config.slotWhereFormat}')`;
+      conditions.push(startTime);
+    }
+
+    if (endTime) {
+      whereClause += ` AND agg.time_slot <= DATE_FORMAT(?, '${config.slotWhereFormat}')`;
+      conditions.push(endTime);
+    }
+
+    const sql = `
+      SELECT
+        DATE_FORMAT(agg.time_slot, '${config.aggSlotFormat}') as slot_period,
+        agg.country,
+        agg.variant_group_id,
+        agg.variant_group_name,
+        agg.asin_key,
+        agg.check_count as total_checks,
+        agg.broken_count,
+        agg.has_peak
+      FROM ${aggTable} agg
+      ${whereClause}
+      ORDER BY
+        agg.time_slot ASC,
+        agg.country ASC,
+        agg.variant_group_id ASC,
+        agg.asin_key ASC
+    `;
+
+    return await query(sql, conditions);
+  }
+
+  static async getVariantGroupDurationSourceRowsFromRaw(params = {}) {
+    const {
+      country = '',
+      startTime = '',
+      endTime = '',
+      sourceGranularity = 'day',
+    } = params;
+    const config = MonitorHistory.getDurationSourceConfig(sourceGranularity);
+    const isPeakCase = MonitorHistory.getPeakHourCase(
+      'mh.country',
+      'mh.check_time',
+    );
+
+    let whereClause = 'WHERE mh.variant_group_id IS NOT NULL';
+    const conditions = [];
+
+    if (country) {
+      if (country === 'EU') {
+        whereClause += ` AND mh.country IN ('UK', 'DE', 'FR', 'IT', 'ES')`;
+      } else {
+        whereClause += ` AND mh.country = ?`;
+        conditions.push(country);
+      }
+    }
+
+    if (startTime) {
+      whereClause += ` AND mh.check_time >= ?`;
+      conditions.push(startTime);
+    }
+
+    if (endTime) {
+      whereClause += ` AND mh.check_time <= ?`;
+      conditions.push(endTime);
+    }
+
+    whereClause += ` AND ${MonitorHistory.getAnalyticsAsinHistoryFilter(
+      'mh.check_type',
+      'mh.asin_id',
+      'mh.asin_code',
+    )}`;
+
+    const sql = `
+      SELECT
+        DATE_FORMAT(${config.rawSlotExpr}, '${config.rawSlotFormat}') as slot_period,
+        mh.country,
+        mh.variant_group_id,
+        COALESCE(mh.variant_group_name, vg.name) as variant_group_name,
+        COALESCE(NULLIF(mh.asin_code, ''), CONCAT('ID#', mh.asin_id)) as asin_key,
+        COUNT(*) as total_checks,
+        SUM(CASE WHEN mh.is_broken = 1 THEN 1 ELSE 0 END) as broken_count,
+        MAX(${isPeakCase}) as has_peak
+      FROM monitor_history mh
+      LEFT JOIN variant_groups vg ON vg.id = mh.variant_group_id
+      ${whereClause}
+      AND (mh.asin_id IS NOT NULL OR NULLIF(mh.asin_code, '') IS NOT NULL)
+      GROUP BY
+        ${config.rawSlotExpr},
+        mh.country,
+        mh.variant_group_id,
+        COALESCE(mh.variant_group_name, vg.name),
+        COALESCE(NULLIF(mh.asin_code, ''), CONCAT('ID#', mh.asin_id))
+      ORDER BY ${config.rawSlotExpr} ASC, mh.country ASC
+    `;
+
+    return await query(sql, conditions);
+  }
+
+  static async getStatisticsByTimeFromRaw(params = {}) {
     const {
       startTime = '',
       endTime = '',
@@ -2688,6 +2839,7 @@ class MonitorHistory {
     );
     const queryStartDate = parseDateTimeInput(startTime);
     const queryEndDate = parseDateTimeInput(endTime);
+    const queryTimeRange = buildQueryTimeRangeText(startTime, endTime);
     const safeCurrent = Math.max(1, Number(current) || 1);
     const safePageSize = Math.max(1, Number(pageSize) || 10);
     const offset = (safeCurrent - 1) * safePageSize;
@@ -2707,6 +2859,7 @@ class MonitorHistory {
           country,
           site,
           brand,
+          withDimensions: true,
         });
         logger.info('[统计查询] getPeriodSummary 使用聚合表');
         source = 'agg';
@@ -2731,26 +2884,76 @@ class MonitorHistory {
       source = 'raw';
     }
 
+    const timeSlotDetails = MonitorHistory.buildDurationRowsByGroup(
+      sourceRows,
+      {
+        sourceGranularity,
+        targetGranularity: timeSlotGranularity,
+        queryStartDate,
+        queryEndDate,
+        buildGroupKey: (targetPeriod, row) =>
+          [
+            targetPeriod,
+            row.country || '',
+            row.site || '',
+            row.brand || '',
+          ].join('|'),
+        buildGroupMeta: (targetPeriod, row) => ({
+          timeSlot: targetPeriod,
+          country: row.country || '',
+          site: row.site || '',
+          brand: row.brand || '',
+        }),
+      },
+    ).sort((a, b) => {
+      const left = `${a.country}|${a.site}|${a.brand}|${a.timeSlot}`;
+      const right = `${b.country}|${b.site}|${b.brand}|${b.timeSlot}`;
+      return left.localeCompare(right);
+    });
+
+    const timeSlotMap = new Map();
+    timeSlotDetails.forEach((item) => {
+      const groupKey = buildPeriodSummaryGroupKey(
+        item.country,
+        item.site,
+        item.brand,
+      );
+      if (!timeSlotMap.has(groupKey)) {
+        timeSlotMap.set(groupKey, []);
+      }
+      timeSlotMap.get(groupKey).push(item);
+    });
+
     const fullList = MonitorHistory.buildDurationRowsByGroup(sourceRows, {
       sourceGranularity,
-      targetGranularity: timeSlotGranularity,
+      targetGranularity: sourceGranularity,
       queryStartDate,
       queryEndDate,
-      buildGroupKey: (targetPeriod, row) =>
-        [targetPeriod, row.country || '', row.site || '', row.brand || ''].join(
-          '|',
-        ),
-      buildGroupMeta: (targetPeriod, row) => ({
-        timeSlot: targetPeriod,
+      buildGroupKey: (_, row) =>
+        buildPeriodSummaryGroupKey(row.country, row.site, row.brand),
+      buildGroupMeta: (_, row) => ({
+        timeRange: queryTimeRange,
         country: row.country || '',
         site: row.site || '',
         brand: row.brand || '',
       }),
-    }).sort((a, b) => {
-      const left = `${a.timeSlot}|${a.country}|${a.site}|${a.brand}`;
-      const right = `${b.timeSlot}|${b.country}|${b.site}|${b.brand}`;
-      return left.localeCompare(right);
-    });
+    })
+      .sort((a, b) => {
+        const left = `${a.country}|${a.site}|${a.brand}`;
+        const right = `${b.country}|${b.site}|${b.brand}`;
+        return left.localeCompare(right);
+      })
+      .map((item) => {
+        const groupKey = buildPeriodSummaryGroupKey(
+          item.country,
+          item.site,
+          item.brand,
+        );
+        return {
+          ...item,
+          timeSlotDetails: timeSlotMap.get(groupKey) || [],
+        };
+      });
     const total = fullList.length;
     const list = fullList.slice(offset, offset + safePageSize);
 
@@ -2789,11 +2992,14 @@ class MonitorHistory {
       endTime = '',
       includeMeta = false,
     } = params;
+    const { country = '', startTime = '', endTime = '' } = params;
     const cacheKey = `asinStatisticsByCountry:${ANALYTICS_CACHE_VERSION}:${country}:${startTime}:${endTime}`;
     const ttlMs = Number(process.env.ANALYTICS_ASIN_COUNTRY_TTL_MS) || 300000;
     const cached = await analyticsCacheService.get(cacheKey);
     if (cached !== null) {
       return resolveCachedAnalyticsResult(cached, includeMeta);
+      logger.debug(`[缓存命中] getASINStatisticsByCountry 缓存键: ${cacheKey}`);
+      return cached;
     }
 
     const sourceGranularity = MonitorHistory.getDurationSourceGranularity(
@@ -2875,6 +3081,11 @@ class MonitorHistory {
       source,
       generatedAt,
     });
+    await analyticsCacheService.set(cacheKey, result, ttlMs);
+    logger.debug(
+      `[缓存存储] getASINStatisticsByCountry 结果已缓存，键: ${cacheKey}，TTL: ${ttlMs}ms`,
+    );
+    return result;
   }
 
   // 按变体组统计ASIN时长（基于监控历史）
@@ -2895,6 +3106,17 @@ class MonitorHistory {
     }
 
     const safeLimit = Math.max(1, Math.min(Number(limit) || 10, 100));
+    const cacheKey = `asinStatisticsByVariantGroup:${ANALYTICS_CACHE_VERSION}:${country}:${startTime}:${endTime}:${safeLimit}`;
+    const ttlMs =
+      Number(process.env.ANALYTICS_ASIN_VARIANT_GROUP_TTL_MS) || 300000;
+    const cached = await analyticsCacheService.get(cacheKey);
+    if (cached !== null) {
+      logger.debug(
+        `[缓存命中] getASINStatisticsByVariantGroup 缓存键: ${cacheKey}`,
+      );
+      return cached;
+    }
+
     const sourceGranularity = MonitorHistory.getDurationSourceGranularity(
       'day',
       startTime,
@@ -2922,6 +3144,7 @@ class MonitorHistory {
         } else {
           sourceRows = null;
         }
+        logger.info('[统计查询] getASINStatisticsByVariantGroup 使用聚合表');
       } catch (error) {
         logger.warn(
           '[统计查询] getASINStatisticsByVariantGroup 聚合表读取失败，回退原始表',
@@ -2983,6 +3206,11 @@ class MonitorHistory {
       source,
       generatedAt,
     });
+    await analyticsCacheService.set(cacheKey, result, ttlMs);
+    logger.debug(
+      `[缓存存储] getASINStatisticsByVariantGroup 结果已缓存，键: ${cacheKey}，TTL: ${ttlMs}ms`,
+    );
+    return result;
   }
 
   // 获取异常时长统计
