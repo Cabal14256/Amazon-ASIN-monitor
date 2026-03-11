@@ -74,6 +74,104 @@ function parseDateTimeInput(value) {
   return Number.isNaN(parsed.getTime()) ? null : parsed;
 }
 
+function buildAnalyticsMeta({
+  source = 'raw',
+  cacheHit = false,
+  generatedAt = '',
+  lastUpdatedAt = '',
+} = {}) {
+  const normalizedSource = String(source || 'raw').trim() || 'raw';
+  const effectiveSource =
+    cacheHit && !normalizedSource.startsWith('cache')
+      ? `cache+${normalizedSource}`
+      : normalizedSource;
+  const normalizedUpdatedAt = lastUpdatedAt || generatedAt || null;
+
+  return {
+    source: effectiveSource,
+    cacheHit: Boolean(cacheHit),
+    cacheTime: cacheHit ? normalizedUpdatedAt : null,
+    dataFreshness: cacheHit ? 'cached' : 'fresh',
+    lastUpdatedAt: normalizedUpdatedAt,
+  };
+}
+
+function buildAnalyticsEnvelope(
+  data,
+  { source = 'raw', generatedAt = '' } = {},
+) {
+  return {
+    __analyticsEnvelope: true,
+    data,
+    meta: {
+      source,
+      generatedAt: generatedAt || formatDateToSqlText(new Date()),
+    },
+  };
+}
+
+function unpackAnalyticsEnvelope(payload) {
+  if (
+    payload &&
+    typeof payload === 'object' &&
+    payload.__analyticsEnvelope === true &&
+    'data' in payload
+  ) {
+    return payload;
+  }
+  return null;
+}
+
+function resolveCachedAnalyticsResult(cached, includeMeta = false) {
+  const envelope = unpackAnalyticsEnvelope(cached);
+  if (envelope) {
+    const data = envelope.data;
+    if (!includeMeta) {
+      return data;
+    }
+    return {
+      data,
+      meta: buildAnalyticsMeta({
+        source: envelope.meta?.source || 'cache',
+        cacheHit: true,
+        generatedAt: envelope.meta?.generatedAt || '',
+        lastUpdatedAt: envelope.meta?.lastUpdatedAt || '',
+      }),
+    };
+  }
+
+  if (!includeMeta) {
+    return cached;
+  }
+
+  return {
+    data: cached,
+    meta: buildAnalyticsMeta({
+      source: 'cache',
+      cacheHit: true,
+    }),
+  };
+}
+
+function finalizeAnalyticsResult(
+  data,
+  { includeMeta = false, source = 'raw', generatedAt = '' } = {},
+) {
+  if (!includeMeta) {
+    return data;
+  }
+
+  return {
+    data,
+    meta: buildAnalyticsMeta({
+      source,
+      cacheHit: false,
+      generatedAt,
+      lastUpdatedAt: generatedAt,
+    }),
+  };
+}
+
 function formatDateToDayText(date) {
   const yyyy = date.getFullYear();
   const mm = String(date.getMonth() + 1).padStart(2, '0');
@@ -446,6 +544,12 @@ class MonitorHistory {
     void cacheService.deleteByPrefixAsync('monitorHistoryCount:');
     cacheService.deleteByPrefix('statusChangesCount:');
     void cacheService.deleteByPrefixAsync('statusChangesCount:');
+    void analyticsCacheService.deleteByPrefix('statisticsByTime:');
+    void analyticsCacheService.deleteByPrefix('allCountriesSummary:');
+    void analyticsCacheService.deleteByPrefix('regionSummary:');
+    void analyticsCacheService.deleteByPrefix('periodSummary:');
+    void analyticsCacheService.deleteByPrefix('asinStatisticsByCountry:');
+    void analyticsCacheService.deleteByPrefix('asinStatisticsByVariantGroup:');
     analyticsCacheService.deleteByPrefix('statisticsByTime:');
     analyticsCacheService.deleteByPrefix('allCountriesSummary:');
     analyticsCacheService.deleteByPrefix('regionSummary:');
@@ -1457,16 +1561,144 @@ class MonitorHistory {
 
   static async getStatisticsByTimeFromRaw(params = {}) {
     const {
+      startTime = '',
+      endTime = '',
+      sourceGranularity = 'hour',
+      country = '',
+    } = params;
+    const config = MonitorHistory.getDurationSourceConfig(sourceGranularity);
+    const aggTable = 'monitor_history_agg_variant_group';
+
+    const isCovered = await MonitorHistory.isAggTableCoveringRange(
+      aggTable,
+      sourceGranularity,
+      startTime,
+      endTime,
+    );
+    if (!isCovered) {
+      throw new Error(`聚合表覆盖不足，回退原始表: ${aggTable}`);
+    }
+
+    let whereClause = 'WHERE agg.granularity = ?';
+    const conditions = [sourceGranularity];
+
+    if (country) {
+      if (country === 'EU') {
+        whereClause += ` AND agg.country IN ('UK', 'DE', 'FR', 'IT', 'ES')`;
+      } else {
+        whereClause += ` AND agg.country = ?`;
+        conditions.push(country);
+      }
+    }
+
+    if (startTime) {
+      whereClause += ` AND agg.time_slot >= DATE_FORMAT(?, '${config.slotWhereFormat}')`;
+      conditions.push(startTime);
+    }
+
+    if (endTime) {
+      whereClause += ` AND agg.time_slot <= DATE_FORMAT(?, '${config.slotWhereFormat}')`;
+      conditions.push(endTime);
+    }
+
+    const sql = `
+      SELECT
+        DATE_FORMAT(agg.time_slot, '${config.aggSlotFormat}') as slot_period,
+        agg.country,
+        agg.variant_group_id,
+        agg.variant_group_name,
+        agg.asin_key,
+        agg.check_count as total_checks,
+        agg.broken_count,
+        agg.has_peak
+      FROM ${aggTable} agg
+      ${whereClause}
+      ORDER BY
+        agg.time_slot ASC,
+        agg.country ASC,
+        agg.variant_group_id ASC,
+        agg.asin_key ASC
+    `;
+
+    return await query(sql, conditions);
+  }
+
+  static async getVariantGroupDurationSourceRowsFromRaw(params = {}) {
+    const {
+      startTime = '',
+      endTime = '',
+      sourceGranularity = 'hour',
+      country = '',
+    } = params;
+    const config = MonitorHistory.getDurationSourceConfig(sourceGranularity);
+    const isPeakCase = MonitorHistory.getPeakHourCase(
+      'mh.country',
+      'mh.check_time',
+    );
+
+    let whereClause = 'WHERE mh.variant_group_id IS NOT NULL';
+    const conditions = [];
+
+    if (country) {
+      if (country === 'EU') {
+        whereClause += ` AND mh.country IN ('UK', 'DE', 'FR', 'IT', 'ES')`;
+      } else {
+        whereClause += ` AND mh.country = ?`;
+        conditions.push(country);
+      }
+    }
+
+    if (startTime) {
+      whereClause += ` AND mh.check_time >= ?`;
+      conditions.push(startTime);
+    }
+
+    if (endTime) {
+      whereClause += ` AND mh.check_time <= ?`;
+      conditions.push(endTime);
+    }
+
+    whereClause += ` AND ${MonitorHistory.getAnalyticsAsinHistoryFilter(
+      'mh.check_type',
+      'mh.asin_id',
+      'mh.asin_code',
+    )}`;
+
+    const sql = `
+      SELECT
+        DATE_FORMAT(${config.rawSlotExpr}, '${config.rawSlotFormat}') as slot_period,
+        mh.country,
+        mh.variant_group_id,
+        COALESCE(mh.variant_group_name, vg.name) as variant_group_name,
+        COALESCE(NULLIF(mh.asin_code, ''), CONCAT('ID#', mh.asin_id)) as asin_key,
+        COUNT(*) as total_checks,
+        SUM(CASE WHEN mh.is_broken = 1 THEN 1 ELSE 0 END) as broken_count,
+        MAX(${isPeakCase}) as has_peak
+      FROM monitor_history mh
+      LEFT JOIN variant_groups vg ON vg.id = mh.variant_group_id
+      ${whereClause}
+      AND (mh.asin_id IS NOT NULL OR NULLIF(mh.asin_code, '') IS NOT NULL)
+      GROUP BY
+        ${config.rawSlotExpr},
+        mh.country,
+        mh.variant_group_id,
+        COALESCE(mh.variant_group_name, vg.name),
+        COALESCE(NULLIF(mh.asin_code, ''), CONCAT('ID#', mh.asin_id))
+      ORDER BY ${config.rawSlotExpr} ASC, mh.country ASC
+    `;
+
+    return await query(sql, conditions);
+  }
+
+  static async getStatisticsByTimeFromRaw(params = {}) {
+    const {
       country = '',
       startTime = '',
       endTime = '',
       groupBy = 'day',
     } = params;
-    const sourceGranularity = MonitorHistory.getDurationSourceGranularity(
-      groupBy,
-      startTime,
-      endTime,
-    );
+    const sourceGranularity =
+      MonitorHistory.getRequestedSourceGranularity(params);
     const queryStartDate = parseDateTimeInput(startTime);
     const queryEndDate = parseDateTimeInput(endTime);
     const sourceRows = await MonitorHistory.getDurationSourceRowsFromRaw({
@@ -1501,11 +1733,8 @@ class MonitorHistory {
       endTime = '',
       groupBy = 'day',
     } = params;
-    const sourceGranularity = MonitorHistory.getDurationSourceGranularity(
-      groupBy,
-      startTime,
-      endTime,
-    );
+    const sourceGranularity =
+      MonitorHistory.getRequestedSourceGranularity(params);
     const queryStartDate = parseDateTimeInput(startTime);
     const queryEndDate = parseDateTimeInput(endTime);
     const sourceRows = await MonitorHistory.getDurationSourceRowsFromAgg({
@@ -1540,23 +1769,24 @@ class MonitorHistory {
       startTime = '',
       endTime = '',
       groupBy = 'day',
+      includeMeta = false,
+      sourceGranularityOverride = '',
     } = params;
 
-    const cacheKey = `statisticsByTime:${ANALYTICS_CACHE_VERSION}:${country}:${startTime}:${endTime}:${groupBy}`;
+    const cacheKey = `statisticsByTime:${ANALYTICS_CACHE_VERSION}:${country}:${startTime}:${endTime}:${groupBy}:${
+      sourceGranularityOverride || 'auto'
+    }`;
     const ttlMs =
       Number(process.env.ANALYTICS_STATISTICS_BY_TIME_TTL_MS) || 300000;
     const cached = await analyticsCacheService.get(cacheKey);
     if (cached !== null) {
-      return cached;
+      return resolveCachedAnalyticsResult(cached, includeMeta);
     }
 
-    const config = MonitorHistory.getStatisticsByTimeGroupConfig(groupBy);
-    const sourceGranularity = MonitorHistory.getDurationSourceGranularity(
-      groupBy,
-      startTime,
-      endTime,
-    );
+    const sourceGranularity =
+      MonitorHistory.getRequestedSourceGranularity(params);
     let list = null;
+    let source = 'raw';
     const useAgg =
       process.env.ANALYTICS_AGG_ENABLED !== '0' &&
       MonitorHistory.canUseAggForRange(sourceGranularity, startTime, endTime);
@@ -1585,6 +1815,7 @@ class MonitorHistory {
             }
           } else {
             logger.info('[统计查询] getStatisticsByTime 使用聚合表');
+            source = 'agg';
           }
         }
       } catch (error) {
@@ -1598,10 +1829,45 @@ class MonitorHistory {
 
     if (list === null) {
       list = await MonitorHistory.getStatisticsByTimeFromRaw(params);
+      source = 'raw';
     }
 
-    await analyticsCacheService.set(cacheKey, list, ttlMs);
-    return list;
+    const generatedAt = formatDateToSqlText(new Date());
+    await analyticsCacheService.set(
+      cacheKey,
+      buildAnalyticsEnvelope(list, {
+        source,
+        generatedAt,
+      }),
+      ttlMs,
+    );
+    return finalizeAnalyticsResult(list, {
+      includeMeta,
+      source,
+      generatedAt,
+    });
+  }
+
+  static getRequestedSourceGranularity(params = {}) {
+    const {
+      groupBy = 'day',
+      startTime = '',
+      endTime = '',
+      sourceGranularityOverride = '',
+    } = params;
+
+    if (
+      sourceGranularityOverride === 'hour' ||
+      sourceGranularityOverride === 'day'
+    ) {
+      return sourceGranularityOverride;
+    }
+
+    return MonitorHistory.getDurationSourceGranularity(
+      groupBy,
+      startTime,
+      endTime,
+    );
   }
 
   // 按国家分组统计
@@ -2133,13 +2399,16 @@ class MonitorHistory {
       startTime = '',
       endTime = '',
       timeSlotGranularity = 'day',
+      includeMeta = false,
     } = params;
 
     // 生成缓存键
     const cacheKey = `allCountriesSummary:${ANALYTICS_CACHE_VERSION}:${startTime}:${endTime}:${timeSlotGranularity}`;
+    const ttlMs =
+      Number(process.env.ANALYTICS_ALL_COUNTRIES_SUMMARY_TTL_MS) || 300000;
     const cached = await analyticsCacheService.get(cacheKey);
     if (cached !== null) {
-      return cached;
+      return resolveCachedAnalyticsResult(cached, includeMeta);
     }
 
     const sourceGranularity = MonitorHistory.getDurationSourceGranularity(
@@ -2150,6 +2419,7 @@ class MonitorHistory {
     const queryStartDate = parseDateTimeInput(startTime);
     const queryEndDate = parseDateTimeInput(endTime);
     let sourceRows = null;
+    let source = 'raw';
 
     const useAgg =
       process.env.ANALYTICS_AGG_ENABLED !== '0' &&
@@ -2163,6 +2433,7 @@ class MonitorHistory {
           sourceGranularity,
         });
         logger.info('[统计查询] getAllCountriesSummary 使用聚合表');
+        source = 'agg';
       } catch (error) {
         logger.warn(
           '[统计查询] getAllCountriesSummary 聚合表读取失败，回退原始表',
@@ -2178,6 +2449,7 @@ class MonitorHistory {
         endTime,
         sourceGranularity,
       });
+      source = 'raw';
     }
 
     const [metrics = {}] = MonitorHistory.buildDurationRowsByGroup(sourceRows, {
@@ -2212,9 +2484,20 @@ class MonitorHistory {
       }),
     };
 
-    // 缓存结果5分钟
-    await analyticsCacheService.set(cacheKey, result, 5 * 60 * 1000);
-    return result;
+    const generatedAt = formatDateToSqlText(new Date());
+    await analyticsCacheService.set(
+      cacheKey,
+      buildAnalyticsEnvelope(result, {
+        source,
+        generatedAt,
+      }),
+      ttlMs,
+    );
+    return finalizeAnalyticsResult(result, {
+      includeMeta,
+      source,
+      generatedAt,
+    });
   }
 
   // 区域汇总统计（美国/欧洲）
@@ -2223,13 +2506,15 @@ class MonitorHistory {
       startTime = '',
       endTime = '',
       timeSlotGranularity = 'day',
+      includeMeta = false,
     } = params;
 
     // 生成缓存键
     const cacheKey = `regionSummary:${ANALYTICS_CACHE_VERSION}:${startTime}:${endTime}:${timeSlotGranularity}`;
+    const ttlMs = Number(process.env.ANALYTICS_REGION_SUMMARY_TTL_MS) || 300000;
     const cached = await analyticsCacheService.get(cacheKey);
     if (cached !== null) {
-      return cached;
+      return resolveCachedAnalyticsResult(cached, includeMeta);
     }
 
     const sourceGranularity = MonitorHistory.getDurationSourceGranularity(
@@ -2240,6 +2525,7 @@ class MonitorHistory {
     const queryStartDate = parseDateTimeInput(startTime);
     const queryEndDate = parseDateTimeInput(endTime);
     let sourceRows = null;
+    let source = 'raw';
 
     const useAgg =
       process.env.ANALYTICS_AGG_ENABLED !== '0' &&
@@ -2253,6 +2539,7 @@ class MonitorHistory {
           sourceGranularity,
         });
         logger.info('[统计查询] getRegionSummary 使用聚合表');
+        source = 'agg';
       } catch (error) {
         logger.warn(
           '[统计查询] getRegionSummary 聚合表读取失败，回退原始表',
@@ -2268,6 +2555,7 @@ class MonitorHistory {
         endTime,
         sourceGranularity,
       });
+      source = 'raw';
     }
 
     const regionRows = sourceRows.filter((row) =>
@@ -2316,9 +2604,20 @@ class MonitorHistory {
       ...(rowByRegion.get(regionCode) || {}),
     }));
 
-    // 缓存结果5分钟
-    await analyticsCacheService.set(cacheKey, normalizedResult, 5 * 60 * 1000);
-    return normalizedResult;
+    const generatedAt = formatDateToSqlText(new Date());
+    await analyticsCacheService.set(
+      cacheKey,
+      buildAnalyticsEnvelope(normalizedResult, {
+        source,
+        generatedAt,
+      }),
+      ttlMs,
+    );
+    return finalizeAnalyticsResult(normalizedResult, {
+      includeMeta,
+      source,
+      generatedAt,
+    });
   }
 
   // 周期汇总统计（聚合表版本，用于加速大范围查询）
@@ -2517,6 +2816,7 @@ class MonitorHistory {
       timeSlotGranularity = 'day',
       current = 1,
       pageSize = 10,
+      includeMeta = false,
     } = params;
 
     // 生成缓存键
@@ -2526,7 +2826,7 @@ class MonitorHistory {
     const cached = await analyticsCacheService.get(cacheKey);
     if (cached !== null) {
       logger.info(`[缓存命中] getPeriodSummary 缓存键: ${cacheKey}`);
-      return cached;
+      return resolveCachedAnalyticsResult(cached, includeMeta);
     }
     logger.info(
       `[缓存未命中] getPeriodSummary 缓存键: ${cacheKey}，将查询数据库`,
@@ -2544,6 +2844,7 @@ class MonitorHistory {
     const safePageSize = Math.max(1, Number(pageSize) || 10);
     const offset = (safeCurrent - 1) * safePageSize;
     let sourceRows = null;
+    let source = 'raw';
 
     const useAgg =
       process.env.ANALYTICS_AGG_ENABLED !== '0' &&
@@ -2561,6 +2862,7 @@ class MonitorHistory {
           withDimensions: true,
         });
         logger.info('[统计查询] getPeriodSummary 使用聚合表');
+        source = 'agg';
       } catch (error) {
         logger.warn(
           '[统计查询] getPeriodSummary 聚合表读取失败，回退原始表',
@@ -2579,6 +2881,7 @@ class MonitorHistory {
         site,
         brand,
       });
+      source = 'raw';
     }
 
     const timeSlotDetails = MonitorHistory.buildDurationRowsByGroup(
@@ -2660,26 +2963,41 @@ class MonitorHistory {
       current: safeCurrent,
       pageSize: safePageSize,
     };
+    const generatedAt = formatDateToSqlText(new Date());
 
     await analyticsCacheService.set(
       cacheKey,
-      finalResult,
+      buildAnalyticsEnvelope(finalResult, {
+        source,
+        generatedAt,
+      }),
       periodSummaryCacheTtl,
     );
     logger.info(
       `[缓存存储] getPeriodSummary 结果已缓存，键: ${cacheKey}，TTL: ${periodSummaryCacheTtl}ms`,
     );
 
-    return finalResult;
+    return finalizeAnalyticsResult(finalResult, {
+      includeMeta,
+      source,
+      generatedAt,
+    });
   }
 
   // 按国家统计ASIN时长（基于监控历史）
   static async getASINStatisticsByCountry(params = {}) {
+    const {
+      country = '',
+      startTime = '',
+      endTime = '',
+      includeMeta = false,
+    } = params;
     const { country = '', startTime = '', endTime = '' } = params;
     const cacheKey = `asinStatisticsByCountry:${ANALYTICS_CACHE_VERSION}:${country}:${startTime}:${endTime}`;
     const ttlMs = Number(process.env.ANALYTICS_ASIN_COUNTRY_TTL_MS) || 300000;
     const cached = await analyticsCacheService.get(cacheKey);
     if (cached !== null) {
+      return resolveCachedAnalyticsResult(cached, includeMeta);
       logger.debug(`[缓存命中] getASINStatisticsByCountry 缓存键: ${cacheKey}`);
       return cached;
     }
@@ -2693,6 +3011,7 @@ class MonitorHistory {
     const queryEndDate = parseDateTimeInput(endTime);
 
     let sourceRows = null;
+    let source = 'raw';
     const useAgg =
       process.env.ANALYTICS_AGG_ENABLED !== '0' &&
       MonitorHistory.canUseAggForRange(sourceGranularity, startTime, endTime);
@@ -2705,6 +3024,7 @@ class MonitorHistory {
           endTime,
           sourceGranularity,
         });
+        source = 'agg';
       } catch (error) {
         logger.warn(
           '[统计查询] getASINStatisticsByCountry 聚合表读取失败，回退原始表',
@@ -2721,6 +3041,7 @@ class MonitorHistory {
         endTime,
         sourceGranularity,
       });
+      source = 'raw';
     }
 
     const result = MonitorHistory.buildDurationRowsByGroup(sourceRows, {
@@ -2745,6 +3066,21 @@ class MonitorHistory {
         }
         return b.ratioAllTime - a.ratioAllTime;
       });
+
+    const generatedAt = formatDateToSqlText(new Date());
+    await analyticsCacheService.set(
+      cacheKey,
+      buildAnalyticsEnvelope(result, {
+        source,
+        generatedAt,
+      }),
+      ttlMs,
+    );
+    return finalizeAnalyticsResult(result, {
+      includeMeta,
+      source,
+      generatedAt,
+    });
     await analyticsCacheService.set(cacheKey, result, ttlMs);
     logger.debug(
       `[缓存存储] getASINStatisticsByCountry 结果已缓存，键: ${cacheKey}，TTL: ${ttlMs}ms`,
@@ -2754,7 +3090,21 @@ class MonitorHistory {
 
   // 按变体组统计ASIN时长（基于监控历史）
   static async getASINStatisticsByVariantGroup(params = {}) {
-    const { country = '', startTime = '', endTime = '', limit = 10 } = params;
+    const {
+      country = '',
+      startTime = '',
+      endTime = '',
+      limit = 10,
+      includeMeta = false,
+    } = params;
+    const cacheKey = `asinStatisticsByVariantGroup:${ANALYTICS_CACHE_VERSION}:${country}:${startTime}:${endTime}:${limit}`;
+    const ttlMs =
+      Number(process.env.ANALYTICS_ASIN_VARIANT_GROUP_TTL_MS) || 300000;
+    const cached = await analyticsCacheService.get(cacheKey);
+    if (cached !== null) {
+      return resolveCachedAnalyticsResult(cached, includeMeta);
+    }
+
     const safeLimit = Math.max(1, Math.min(Number(limit) || 10, 100));
     const cacheKey = `asinStatisticsByVariantGroup:${ANALYTICS_CACHE_VERSION}:${country}:${startTime}:${endTime}:${safeLimit}`;
     const ttlMs =
@@ -2775,6 +3125,7 @@ class MonitorHistory {
     const queryStartDate = parseDateTimeInput(startTime);
     const queryEndDate = parseDateTimeInput(endTime);
     let sourceRows = null;
+    let source = 'raw';
     const useAgg =
       process.env.ANALYTICS_AGG_ENABLED !== '0' &&
       MonitorHistory.canUseAggForRange(sourceGranularity, startTime, endTime);
@@ -2788,6 +3139,11 @@ class MonitorHistory {
             endTime,
             sourceGranularity,
           });
+        if (Array.isArray(sourceRows) && sourceRows.length > 0) {
+          source = 'agg';
+        } else {
+          sourceRows = null;
+        }
         logger.info('[统计查询] getASINStatisticsByVariantGroup 使用聚合表');
       } catch (error) {
         logger.warn(
@@ -2806,6 +3162,7 @@ class MonitorHistory {
           endTime,
           sourceGranularity,
         });
+      source = 'raw';
     }
 
     const result = MonitorHistory.buildDurationRowsByGroup(sourceRows, {
@@ -2834,6 +3191,21 @@ class MonitorHistory {
         return b.ratioAllTime - a.ratioAllTime;
       })
       .slice(0, safeLimit);
+
+    const generatedAt = formatDateToSqlText(new Date());
+    await analyticsCacheService.set(
+      cacheKey,
+      buildAnalyticsEnvelope(result, {
+        source,
+        generatedAt,
+      }),
+      ttlMs,
+    );
+    return finalizeAnalyticsResult(result, {
+      includeMeta,
+      source,
+      generatedAt,
+    });
     await analyticsCacheService.set(cacheKey, result, ttlMs);
     logger.debug(
       `[缓存存储] getASINStatisticsByVariantGroup 结果已缓存，键: ${cacheKey}，TTL: ${ttlMs}ms`,

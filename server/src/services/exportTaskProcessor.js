@@ -1314,6 +1314,7 @@ async function processAnalyticsMonthlyBreakdownExport(
     startTime: effectiveStartTime,
     endTime: effectiveEndTime,
     groupBy: 'day',
+    sourceGranularityOverride: 'day',
   });
 
   updateProgress(job, taskId, 55, '正在处理月度数据...', userId);

@@ -166,6 +166,9 @@ CREATE TABLE IF NOT EXISTS `monitor_history_agg_variant_group` (
   `last_check_time` DATETIME NOT NULL COMMENT '该时间槽内最晚检查时间',
   `updated_at` DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT '更新时间',
   PRIMARY KEY (`granularity`, `time_slot`, `country`, `variant_group_id`, `asin_key`),
+  INDEX `idx_agg_variant_group_slot` (`time_slot`),
+  INDEX `idx_agg_variant_group_country_slot` (`country`, `time_slot`),
+  INDEX `idx_agg_variant_group_lookup` (`granularity`, `country`, `variant_group_id`, `time_slot`)
   INDEX `idx_agg_variant_group_time_slot` (`time_slot`),
   INDEX `idx_agg_variant_group_country_time_slot` (`country`, `time_slot`),
   INDEX `idx_agg_variant_group_group_slot` (`variant_group_id`, `time_slot`),

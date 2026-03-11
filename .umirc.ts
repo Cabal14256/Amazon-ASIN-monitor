@@ -95,6 +95,13 @@ export default defineConfig({
       icon: 'SettingOutlined',
     },
     {
+      name: '运维观测',
+      path: '/ops',
+      component: './Ops',
+      access: 'canReadSettings',
+      icon: 'ToolOutlined',
+    },
+    {
       name: '用户与权限',
       path: '/user-management',
       component: './UserManagement',
