@@ -909,6 +909,13 @@ const AnalyticsPageContent: React.FC<unknown> = () => {
             pageSize: normalizedData.pageSize || periodSummary.pageSize,
           };
         }
+        if (periodDataResult?.status === 'fulfilled') {
+          periodStats = normalizePeriodSummaryResponse(
+            periodDataResult.value,
+            periodSummary.current,
+            periodSummary.pageSize,
+          );
+        }
         setPeriodSummary(periodStats);
       } catch (error: any) {
         console.error('加载统计数据失败:', error);
