@@ -5,7 +5,6 @@ const logger = require('../utils/logger');
 const MonitorHistory = require('./MonitorHistory');
 const {
   buildAsinEffectiveBrokenExpr,
-  buildEffectiveStatus,
   buildVariantGroupEffectiveBrokenExpr,
   decorateAsinStatus,
   decorateVariantGroupStatus,
@@ -95,6 +94,10 @@ class VariantGroup {
     }:pageSize:${pageSize}`;
     const groupEffectiveBrokenExpr = buildVariantGroupEffectiveBrokenExpr('vg');
     const asinEffectiveBrokenExpr = buildAsinEffectiveBrokenExpr('a');
+    const asinEffectiveBrokenExprWithGroup = buildAsinEffectiveBrokenExpr(
+      'a',
+      'vg',
+    );
     if (shouldUseCache) {
       const cachedValue = await cacheService.getAsync(cacheKey);
       if (cachedValue) {
@@ -206,8 +209,12 @@ class VariantGroup {
     if (variantStatus) {
       const isBroken = variantStatus === 'BROKEN' ? 1 : 0;
       totalASINsSql += isBroken
-        ? ` AND ${asinEffectiveBrokenExpr}`
-        : ` AND NOT ${asinEffectiveBrokenExpr}`;
+        ? ` AND ${
+            keyword ? asinEffectiveBrokenExprWithGroup : asinEffectiveBrokenExpr
+          }`
+        : ` AND NOT ${
+            keyword ? asinEffectiveBrokenExprWithGroup : asinEffectiveBrokenExpr
+          }`;
     }
 
     const totalASINsResult = await query(totalASINsSql, totalASINsValues);
@@ -259,7 +266,12 @@ class VariantGroup {
         logger.debug(`变体组 ${group.id} 查询到的ASIN数量:`, asins.length);
 
         const children = asins.map((asin) => {
-          const normalized = decorateAsinStatus(asin);
+          const normalized = decorateAsinStatus(asin, {
+            parentManualBroken: group.manual_broken,
+            parentManualBrokenReason: group.manual_broken_reason,
+            parentManualBrokenUpdatedAt: group.manual_broken_updated_at,
+            parentManualBrokenUpdatedBy: group.manual_broken_updated_by,
+          });
           return {
             id: normalized.id,
             asin: normalized.asin,
@@ -274,9 +286,20 @@ class VariantGroup {
             autoIsBroken: normalized.autoIsBroken,
             autoVariantStatus: normalized.autoVariantStatus,
             manualBroken: normalized.manualBroken,
+            manualBrokenScope: normalized.manualBrokenScope,
             manualBrokenReason: normalized.manualBrokenReason,
             manualBrokenUpdatedAt: normalized.manualBrokenUpdatedAt,
             manualBrokenUpdatedBy: normalized.manualBrokenUpdatedBy,
+            selfManualBroken: normalized.selfManualBroken,
+            selfManualBrokenReason: normalized.selfManualBrokenReason,
+            selfManualBrokenUpdatedAt: normalized.selfManualBrokenUpdatedAt,
+            selfManualBrokenUpdatedBy: normalized.selfManualBrokenUpdatedBy,
+            inheritedManualBroken: normalized.inheritedManualBroken,
+            inheritedManualBrokenReason: normalized.inheritedManualBrokenReason,
+            inheritedManualBrokenUpdatedAt:
+              normalized.inheritedManualBrokenUpdatedAt,
+            inheritedManualBrokenUpdatedBy:
+              normalized.inheritedManualBrokenUpdatedBy,
             statusSource: normalized.statusSource,
             createTime: normalized.create_time,
             updateTime: normalized.update_time,
@@ -396,7 +419,12 @@ class VariantGroup {
         [id],
       );
       const children = asins.map((asin) => {
-        const normalized = decorateAsinStatus(asin);
+        const normalized = decorateAsinStatus(asin, {
+          parentManualBroken: group.manual_broken,
+          parentManualBrokenReason: group.manual_broken_reason,
+          parentManualBrokenUpdatedAt: group.manual_broken_updated_at,
+          parentManualBrokenUpdatedBy: group.manual_broken_updated_by,
+        });
         return {
           id: normalized.id,
           asin: normalized.asin,
@@ -411,9 +439,20 @@ class VariantGroup {
           autoIsBroken: normalized.autoIsBroken,
           autoVariantStatus: normalized.autoVariantStatus,
           manualBroken: normalized.manualBroken,
+          manualBrokenScope: normalized.manualBrokenScope,
           manualBrokenReason: normalized.manualBrokenReason,
           manualBrokenUpdatedAt: normalized.manualBrokenUpdatedAt,
           manualBrokenUpdatedBy: normalized.manualBrokenUpdatedBy,
+          selfManualBroken: normalized.selfManualBroken,
+          selfManualBrokenReason: normalized.selfManualBrokenReason,
+          selfManualBrokenUpdatedAt: normalized.selfManualBrokenUpdatedAt,
+          selfManualBrokenUpdatedBy: normalized.selfManualBrokenUpdatedBy,
+          inheritedManualBroken: normalized.inheritedManualBroken,
+          inheritedManualBrokenReason: normalized.inheritedManualBrokenReason,
+          inheritedManualBrokenUpdatedAt:
+            normalized.inheritedManualBrokenUpdatedAt,
+          inheritedManualBrokenUpdatedBy:
+            normalized.inheritedManualBrokenUpdatedBy,
           statusSource: normalized.statusSource,
           createTime: normalized.create_time,
           updateTime: normalized.update_time,
@@ -495,7 +534,12 @@ class VariantGroup {
     for (const group of groups) {
       const groupAsins = asinsByGroupId[group.id] || [];
       const children = groupAsins.map((asin) => {
-        const normalized = decorateAsinStatus(asin);
+        const normalized = decorateAsinStatus(asin, {
+          parentManualBroken: group.manual_broken,
+          parentManualBrokenReason: group.manual_broken_reason,
+          parentManualBrokenUpdatedAt: group.manual_broken_updated_at,
+          parentManualBrokenUpdatedBy: group.manual_broken_updated_by,
+        });
         return {
           id: normalized.id,
           asin: normalized.asin,
@@ -510,9 +554,20 @@ class VariantGroup {
           autoIsBroken: normalized.autoIsBroken,
           autoVariantStatus: normalized.autoVariantStatus,
           manualBroken: normalized.manualBroken,
+          manualBrokenScope: normalized.manualBrokenScope,
           manualBrokenReason: normalized.manualBrokenReason,
           manualBrokenUpdatedAt: normalized.manualBrokenUpdatedAt,
           manualBrokenUpdatedBy: normalized.manualBrokenUpdatedBy,
+          selfManualBroken: normalized.selfManualBroken,
+          selfManualBrokenReason: normalized.selfManualBrokenReason,
+          selfManualBrokenUpdatedAt: normalized.selfManualBrokenUpdatedAt,
+          selfManualBrokenUpdatedBy: normalized.selfManualBrokenUpdatedBy,
+          inheritedManualBroken: normalized.inheritedManualBroken,
+          inheritedManualBrokenReason: normalized.inheritedManualBrokenReason,
+          inheritedManualBrokenUpdatedAt:
+            normalized.inheritedManualBrokenUpdatedAt,
+          inheritedManualBrokenUpdatedBy:
+            normalized.inheritedManualBrokenUpdatedBy,
           statusSource: normalized.statusSource,
           createTime: normalized.create_time,
           updateTime: normalized.update_time,
@@ -674,20 +729,17 @@ class VariantGroup {
 
     this.clearCache();
 
-    const hasManualBrokenChild = Array.isArray(existing.children)
-      ? existing.children.some((child) => Number(child.manualBroken) === 1)
-      : false;
-    const updated = {
-      ...existing,
-      ...buildEffectiveStatus({
-        autoBroken: existing.autoIsBroken || 0,
-        manualBroken: markedBroken || hasManualBrokenChild ? 1 : 0,
-      }),
-      manualBroken: markedBroken ? 1 : 0,
-      manualBrokenReason: normalizedReason,
-      manualBrokenUpdatedAt: markedBroken ? operationTime : null,
-      manualBrokenUpdatedBy: normalizedUpdatedBy,
-    };
+    const updated = decorateVariantGroupStatus(
+      {
+        ...existing,
+        is_broken: existing.autoIsBroken || 0,
+        manual_broken: markedBroken ? 1 : 0,
+        manual_broken_reason: normalizedReason,
+        manual_broken_updated_at: markedBroken ? operationTime : null,
+        manual_broken_updated_by: normalizedUpdatedBy,
+      },
+      existing.children || [],
+    );
 
     await MonitorHistory.create({
       variantGroupId: existing.id,

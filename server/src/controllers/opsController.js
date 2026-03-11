@@ -95,16 +95,16 @@ exports.refreshAnalyticsAgg = async (req, res) => {
 
     let result;
     if (granularity) {
-      result = await analyticsAggService.refreshMonitorHistoryAgg(
+      result = await analyticsAggService.refreshAnalyticsAggBundle(
         granularity,
         options,
       );
     } else if (startTime || endTime) {
-      const hourResult = await analyticsAggService.refreshMonitorHistoryAgg(
+      const hourResult = await analyticsAggService.refreshAnalyticsAggBundle(
         'hour',
         options,
       );
-      const dayResult = await analyticsAggService.refreshMonitorHistoryAgg(
+      const dayResult = await analyticsAggService.refreshAnalyticsAggBundle(
         'day',
         options,
       );
