@@ -40,6 +40,7 @@ const {
   getAllCountriesSummary,
   getRegionSummary,
   getPeriodSummary,
+  getPeriodSummaryTimeSlotDetails,
   getASINStatisticsByCountry,
   getASINStatisticsByVariantGroup,
 } = services.MonitorController;
@@ -323,6 +324,8 @@ const AnalyticsPageContent: React.FC<unknown> = () => {
   const [progressText, setProgressText] = useState('');
   const progressStartRef = useRef<number | null>(null);
   const progressTimerRef = useRef<number | null>(null);
+  const retryTimerRef = useRef<number | null>(null);
+  const activeLoadRequestRef = useRef(0);
   const completedCountRef = useRef(0);
   const totalPromisesRef = useRef(0);
   const runningLabelsRef = useRef<string[]>([]);
@@ -385,6 +388,14 @@ const AnalyticsPageContent: React.FC<unknown> = () => {
     current: 1,
     pageSize: 10,
   });
+  const [periodSummaryDetails, setPeriodSummaryDetails] = useState<
+    Record<string, API.PeriodSummaryTimeSlotDetail[]>
+  >({});
+  const [periodSummaryDetailsLoading, setPeriodSummaryDetailsLoading] =
+    useState<Record<string, boolean>>({});
+  const [periodSummaryDetailsError, setPeriodSummaryDetailsError] = useState<
+    Record<string, string>
+  >({});
   // 周期汇总表格筛选条件
   const [periodFilter, setPeriodFilter] = useState<{
     country?: string;
@@ -393,6 +404,18 @@ const AnalyticsPageContent: React.FC<unknown> = () => {
   }>({});
   const [peakHoursMarkAreas, setPeakHoursMarkAreas] = useState<PeakMarkArea[]>(
     [],
+  );
+  const getPeriodSummaryDetailKey = useCallback(
+    (record: Pick<API.PeriodSummary, 'country' | 'site' | 'brand'>) =>
+      [
+        record.country || '',
+        record.site || '',
+        record.brand || '',
+        dateRange[0].format('YYYY-MM-DD HH:mm:ss'),
+        dateRange[1].format('YYYY-MM-DD HH:mm:ss'),
+        periodTimeSlot,
+      ].join('|'),
+    [dateRange, periodTimeSlot],
   );
 
   const loadPeriodSummaryTable = useCallback(
@@ -412,6 +435,9 @@ const AnalyticsPageContent: React.FC<unknown> = () => {
         current,
         pageSize,
       });
+      setPeriodSummaryDetails({});
+      setPeriodSummaryDetailsLoading({});
+      setPeriodSummaryDetailsError({});
       setPeriodSummary(
         normalizePeriodSummaryResponse(result, current, pageSize),
       );
@@ -425,9 +451,72 @@ const AnalyticsPageContent: React.FC<unknown> = () => {
     ],
   );
 
+  const loadPeriodSummaryDetails = useCallback(
+    async (record: API.PeriodSummary) => {
+      const detailKey = getPeriodSummaryDetailKey(record);
+      if (periodSummaryDetailsLoading[detailKey]) {
+        return;
+      }
+      if (periodSummaryDetails[detailKey]) {
+        return;
+      }
+
+      setPeriodSummaryDetailsLoading((prev) => ({
+        ...prev,
+        [detailKey]: true,
+      }));
+      setPeriodSummaryDetailsError((prev) => ({
+        ...prev,
+        [detailKey]: '',
+      }));
+
+      try {
+        const startTime = dateRange[0].format('YYYY-MM-DD HH:mm:ss');
+        const endTime = dateRange[1].format('YYYY-MM-DD HH:mm:ss');
+        const result = await getPeriodSummaryTimeSlotDetails({
+          country: record.country,
+          site: record.site,
+          brand: record.brand,
+          startTime,
+          endTime,
+          timeSlotGranularity: periodTimeSlot,
+        });
+        const payload = unwrapAnalyticsResponse<
+          API.PeriodSummaryTimeSlotDetail[]
+        >(result, []);
+        setPeriodSummaryDetails((prev) => ({
+          ...prev,
+          [detailKey]: Array.isArray(payload.data) ? payload.data : [],
+        }));
+      } catch (error) {
+        setPeriodSummaryDetailsError((prev) => ({
+          ...prev,
+          [detailKey]: '加载时间槽明细失败',
+        }));
+      } finally {
+        setPeriodSummaryDetailsLoading((prev) => ({
+          ...prev,
+          [detailKey]: false,
+        }));
+      }
+    },
+    [
+      dateRange,
+      getPeriodSummaryDetailKey,
+      periodSummaryDetails,
+      periodSummaryDetailsLoading,
+      periodTimeSlot,
+    ],
+  );
+
   // 加载所有统计数据（使用useCallback优化，支持重试）
   const loadStatistics = useCallback(
     async (retryCount = 0) => {
+      const currentLoadRequestId = activeLoadRequestRef.current + 1;
+      activeLoadRequestRef.current = currentLoadRequestId;
+      const isStaleRequest = () =>
+        activeLoadRequestRef.current !== currentLoadRequestId;
+
       // 检查日期范围，如果超过30天，提示用户
       const daysDiff = dateRange[1].diff(dateRange[0], 'day');
       if (daysDiff > 30) {
@@ -436,9 +525,17 @@ const AnalyticsPageContent: React.FC<unknown> = () => {
         );
       }
 
+      if (retryTimerRef.current) {
+        window.clearTimeout(retryTimerRef.current);
+        retryTimerRef.current = null;
+      }
+
       setLoading(true);
       setProgress(0);
       setProgressText('');
+      setPeriodSummaryDetails({});
+      setPeriodSummaryDetailsLoading({});
+      setPeriodSummaryDetailsError({});
       progressStartRef.current = Date.now();
       completedCountRef.current = 0;
       totalPromisesRef.current = 0;
@@ -551,6 +648,9 @@ const AnalyticsPageContent: React.FC<unknown> = () => {
         };
 
         const updateProgressText = () => {
+          if (isStaleRequest()) {
+            return;
+          }
           setProgressText(`${getStatusText()}\n${getTimeMeta()}`);
         };
 
@@ -656,6 +756,9 @@ const AnalyticsPageContent: React.FC<unknown> = () => {
           taskStartTimesRef.current[label] = Date.now();
           return run()
             .then((result) => {
+              if (isStaleRequest()) {
+                return result;
+              }
               completedCount++;
               const newProgress = Math.round(
                 (completedCount / totalPromises) * 100,
@@ -694,6 +797,9 @@ const AnalyticsPageContent: React.FC<unknown> = () => {
               return result;
             })
             .catch((error) => {
+              if (isStaleRequest()) {
+                throw error;
+              }
               completedCount++;
               const newProgress = Math.round(
                 (completedCount / totalPromises) * 100,
@@ -723,7 +829,7 @@ const AnalyticsPageContent: React.FC<unknown> = () => {
         };
 
         // 限制并发，避免一次性压垮后端统计查询
-        const maxConcurrency = 3;
+        const maxConcurrency = daysDiff > 90 ? 1 : daysDiff > 30 ? 2 : 3;
         const results: PromiseSettledResult<any>[] = new Array(tasks.length);
         let taskCursor = 0;
 
@@ -748,6 +854,10 @@ const AnalyticsPageContent: React.FC<unknown> = () => {
         );
 
         await Promise.all(workers);
+
+        if (isStaleRequest()) {
+          return;
+        }
 
         // 检查是否有失败的请求
         const failedCount = results.filter(
@@ -783,8 +893,9 @@ const AnalyticsPageContent: React.FC<unknown> = () => {
                 retryCount + 1
               }/${maxRetries})...`,
             );
-            setTimeout(() => {
-              loadStatistics(retryCount + 1);
+            retryTimerRef.current = window.setTimeout(() => {
+              retryTimerRef.current = null;
+              void loadStatistics(retryCount + 1);
             }, delay);
             return;
           } else if (failedCount === results.length) {
@@ -826,15 +937,74 @@ const AnalyticsPageContent: React.FC<unknown> = () => {
         const peakData =
           peakDataResult?.status === 'fulfilled' ? peakDataResult.value : null;
 
-        const { data: timeStats } = unwrapAnalyticsResponse<
-          API.TimeStatistics[]
-        >(timeData, []);
-        const { data: countryStats } = unwrapAnalyticsResponse<
-          API.CountryStatistics[]
-        >(countryData, []);
-        const { data: variantGroupStats } = unwrapAnalyticsResponse<
+        const timePayload = unwrapAnalyticsResponse<API.TimeStatistics[]>(
+          timeData,
+          [],
+        );
+        const countryPayload = unwrapAnalyticsResponse<API.CountryStatistics[]>(
+          countryData,
+          [],
+        );
+        const variantGroupPayload = unwrapAnalyticsResponse<
           API.VariantGroupStatistics[]
         >(variantGroupData, []);
+        const allCountriesPayload =
+          allCountriesDataResult?.status === 'fulfilled'
+            ? unwrapAnalyticsResponse<API.AllCountriesSummary | null>(
+                allCountriesDataResult.value,
+                null,
+              )
+            : { data: null, meta: undefined };
+        const regionPayload =
+          regionDataResult?.status === 'fulfilled'
+            ? unwrapAnalyticsResponse<API.RegionSummary[]>(
+                regionDataResult.value,
+                [],
+              )
+            : { data: [], meta: undefined };
+        const periodPayload =
+          periodDataResult?.status === 'fulfilled'
+            ? unwrapAnalyticsResponse<{
+                list?: API.PeriodSummary[];
+                total?: number;
+                current?: number;
+                pageSize?: number;
+              }>(periodDataResult.value, {
+                list: [],
+                total: 0,
+                current: periodSummary.current,
+                pageSize: periodSummary.pageSize,
+              })
+            : {
+                data: {
+                  list: [],
+                  total: 0,
+                  current: periodSummary.current,
+                  pageSize: periodSummary.pageSize,
+                },
+                meta: undefined,
+              };
+        const busyFallbackLabels = [
+          { label: '时间趋势统计', meta: timePayload.meta },
+          { label: '全部国家汇总', meta: allCountriesPayload.meta },
+          { label: '区域汇总', meta: regionPayload.meta },
+          { label: '周期汇总', meta: periodPayload.meta },
+        ]
+          .filter((item) => item.meta?.busyFallback)
+          .map((item) => item.label);
+
+        if (isStaleRequest()) {
+          return;
+        }
+
+        if (busyFallbackLabels.length > 0) {
+          message.warning(
+            `部分统计结果来自相同查询条件的缓存快照：${busyFallbackLabels.join(
+              '、',
+            )}`,
+          );
+        }
+
         const overallStats =
           overallData &&
           typeof overallData === 'object' &&
@@ -842,10 +1012,10 @@ const AnalyticsPageContent: React.FC<unknown> = () => {
             ? overallData
             : (overallData as any)?.data || {};
 
-        setTimeStatistics(timeStats as API.TimeStatistics[]);
-        setCountryStatistics(countryStats as API.CountryStatistics[]);
+        setTimeStatistics(timePayload.data as API.TimeStatistics[]);
+        setCountryStatistics(countryPayload.data as API.CountryStatistics[]);
         setVariantGroupStatistics(
-          variantGroupStats as API.VariantGroupStatistics[],
+          variantGroupPayload.data as API.VariantGroupStatistics[],
         );
         setOverallStatistics(overallStats);
 
@@ -862,25 +1032,12 @@ const AnalyticsPageContent: React.FC<unknown> = () => {
 
         // 处理汇总表格数据
         // 确保正确处理返回数据，包括 success 包装的情况
-        let allCountriesStats = null;
-        if (allCountriesDataResult?.status === 'fulfilled') {
-          const payload =
-            unwrapAnalyticsResponse<API.AllCountriesSummary | null>(
-              allCountriesDataResult.value,
-              null,
-            );
-          allCountriesStats = payload.data;
-        }
-        setAllCountriesSummary(allCountriesStats);
+        setAllCountriesSummary(allCountriesPayload.data);
 
         let regionStats: API.RegionSummary[] = [];
-        if (regionDataResult?.status === 'fulfilled') {
-          const payload = unwrapAnalyticsResponse<API.RegionSummary[]>(
-            regionDataResult.value,
-            [],
-          );
-          regionStats = Array.isArray(payload.data) ? payload.data : [];
-        }
+        regionStats = Array.isArray(regionPayload.data)
+          ? regionPayload.data
+          : [];
         setRegionSummary(regionStats);
 
         let periodStats: {
@@ -895,13 +1052,7 @@ const AnalyticsPageContent: React.FC<unknown> = () => {
           pageSize: periodSummary.pageSize,
         };
         if (periodDataResult?.status === 'fulfilled') {
-          const payload = unwrapAnalyticsResponse<{
-            list?: API.PeriodSummary[];
-            total?: number;
-            current?: number;
-            pageSize?: number;
-          }>(periodDataResult.value, periodStats);
-          const normalizedData = payload.data || {};
+          const normalizedData = periodPayload.data || {};
           periodStats = {
             list: normalizedData.list || [],
             total: normalizedData.total || 0,
@@ -909,8 +1060,18 @@ const AnalyticsPageContent: React.FC<unknown> = () => {
             pageSize: normalizedData.pageSize || periodSummary.pageSize,
           };
         }
+        if (periodDataResult?.status === 'fulfilled') {
+          periodStats = normalizePeriodSummaryResponse(
+            periodDataResult.value,
+            periodSummary.current,
+            periodSummary.pageSize,
+          );
+        }
         setPeriodSummary(periodStats);
       } catch (error: any) {
+        if (isStaleRequest()) {
+          return;
+        }
         console.error('加载统计数据失败:', error);
 
         // 如果是网络错误或超时，且还有重试次数，则重试
@@ -928,8 +1089,9 @@ const AnalyticsPageContent: React.FC<unknown> = () => {
               retryCount + 1
             }/${maxRetries})...`,
           );
-          setTimeout(() => {
-            loadStatistics(retryCount + 1);
+          retryTimerRef.current = window.setTimeout(() => {
+            retryTimerRef.current = null;
+            void loadStatistics(retryCount + 1);
           }, delay);
           return;
         }
@@ -938,13 +1100,15 @@ const AnalyticsPageContent: React.FC<unknown> = () => {
           `加载统计数据失败${retryCount > 0 ? '（已重试）' : ''}，请稍后重试`,
         );
       } finally {
-        setLoading(false);
-        setProgress(0);
-        setProgressText('');
-        progressStartRef.current = null;
-        if (progressTimerRef.current) {
-          window.clearInterval(progressTimerRef.current);
-          progressTimerRef.current = null;
+        if (!isStaleRequest()) {
+          setLoading(false);
+          setProgress(0);
+          setProgressText('');
+          progressStartRef.current = null;
+          if (progressTimerRef.current) {
+            window.clearInterval(progressTimerRef.current);
+            progressTimerRef.current = null;
+          }
         }
       }
     },
@@ -973,6 +1137,10 @@ const AnalyticsPageContent: React.FC<unknown> = () => {
       if (progressTimerRef.current) {
         window.clearInterval(progressTimerRef.current);
         progressTimerRef.current = null;
+      }
+      if (retryTimerRef.current) {
+        window.clearTimeout(retryTimerRef.current);
+        retryTimerRef.current = null;
       }
     };
   }, []);
@@ -1808,13 +1976,19 @@ const AnalyticsPageContent: React.FC<unknown> = () => {
     <Table
       size="small"
       pagination={false}
-      dataSource={record.timeSlotDetails || []}
+      loading={periodSummaryDetailsLoading[getPeriodSummaryDetailKey(record)]}
+      dataSource={periodSummaryDetails[getPeriodSummaryDetailKey(record)] || []}
       rowKey={(detail, index) =>
         `${record.country || ''}_${record.site || ''}_${record.brand || ''}_${
           detail.timeSlot || index
         }`
       }
       columns={periodTimeSlotColumns}
+      locale={{
+        emptyText:
+          periodSummaryDetailsError[getPeriodSummaryDetailKey(record)] ||
+          '暂无时间槽明细',
+      }}
       scroll={{ x: 1100 }}
     />
   );
@@ -2382,8 +2556,12 @@ const AnalyticsPageContent: React.FC<unknown> = () => {
                 ]}
                 expandable={{
                   expandedRowRender: renderPeriodTimeSlotDetails,
-                  rowExpandable: (record) =>
-                    Boolean(record.timeSlotDetails?.length),
+                  onExpand: (expanded, record) => {
+                    if (expanded) {
+                      void loadPeriodSummaryDetails(record);
+                    }
+                  },
+                  rowExpandable: (record) => Boolean(record.hasTimeSlotDetails),
                 }}
                 scroll={{ x: 1400 }}
               />

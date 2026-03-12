@@ -88,7 +88,9 @@ function parseArgs(argv) {
 }
 
 function isValidGranularity(value) {
-  return value === 'hour' || value === 'day' || value === 'both';
+  return (
+    value === 'hour' || value === 'day' || value === 'month' || value === 'both'
+  );
 }
 
 function buildGranularityList(value) {
@@ -98,7 +100,10 @@ function buildGranularityList(value) {
   if (value === 'day') {
     return ['day'];
   }
-  return ['hour', 'day'];
+  if (value === 'month') {
+    return ['month'];
+  }
+  return ['hour', 'day', 'month'];
 }
 
 function buildBackupSuffix() {
@@ -124,7 +129,7 @@ function usage() {
     '  --backup               清空前备份当前聚合表到 *_bak_YYYYMMDD_HHMMSS',
     '  --skip-dim             跳过 monitor_history_agg_dim',
     '  --skip-variant-group   跳过 monitor_history_agg_variant_group',
-    '  --granularity=...      hour/day/both，默认 both',
+    '  --granularity=...      hour/day/month/both，默认 both',
     '  --start-time=...       指定窗口开始时间（与 end-time 成对使用）',
     '  --end-time=...         指定窗口结束时间（与 start-time 成对使用）',
     '  --allow-partial        允许 truncate + 自定义时间窗口（危险）',
@@ -261,6 +266,7 @@ async function main() {
     base: {},
     dim: {},
     variantGroup: {},
+    statusInterval: null,
     verify: {},
     audit: {},
   };
@@ -275,17 +281,6 @@ async function main() {
         `INSERT INTO \`${aggBakTable}\` SELECT * FROM monitor_history_agg`,
       );
       logger.info(`[Agg Rebuild] monitor_history_agg 已备份到 ${aggBakTable}`);
-
-      const aggVariantGroupBakTable = `monitor_history_agg_variant_group_bak_${suffix}`;
-      await query(
-        `CREATE TABLE \`${aggVariantGroupBakTable}\` LIKE monitor_history_agg_variant_group`,
-      );
-      await query(
-        `INSERT INTO \`${aggVariantGroupBakTable}\` SELECT * FROM monitor_history_agg_variant_group`,
-      );
-      logger.info(
-        `[Agg Rebuild] monitor_history_agg_variant_group 已备份到 ${aggVariantGroupBakTable}`,
-      );
 
       if (includeDim) {
         const aggDimBakTable = `monitor_history_agg_dim_bak_${suffix}`;
@@ -312,6 +307,17 @@ async function main() {
           `[Agg Rebuild] monitor_history_agg_variant_group 已备份到 ${aggVariantGroupBakTable}`,
         );
       }
+
+      const statusIntervalBakTable = `monitor_history_status_interval_bak_${suffix}`;
+      await query(
+        `CREATE TABLE \`${statusIntervalBakTable}\` LIKE monitor_history_status_interval`,
+      );
+      await query(
+        `INSERT INTO \`${statusIntervalBakTable}\` SELECT * FROM monitor_history_status_interval`,
+      );
+      logger.info(
+        `[Agg Rebuild] monitor_history_status_interval 已备份到 ${statusIntervalBakTable}`,
+      );
     }
 
     if (args.truncate) {
@@ -321,7 +327,10 @@ async function main() {
       if (includeDim) {
         await query('TRUNCATE TABLE monitor_history_agg_dim');
       }
-      await query('TRUNCATE TABLE monitor_history_agg_variant_group');
+      await query('TRUNCATE TABLE monitor_history_status_interval');
+      await query(
+        "DELETE FROM analytics_refresh_watermark WHERE processor_name = 'monitor_history_status_interval'",
+      );
       await query('TRUNCATE TABLE monitor_history_agg');
       logger.info('[Agg Rebuild] 聚合表清空完成');
     }
@@ -329,11 +338,6 @@ async function main() {
     for (const granularity of granularityList) {
       results.base[granularity] =
         await analyticsAggService.refreshMonitorHistoryAgg(
-          granularity,
-          options,
-        );
-      results.variantGroup[granularity] =
-        await analyticsAggService.refreshMonitorHistoryAggVariantGroup(
           granularity,
           options,
         );
@@ -358,6 +362,9 @@ async function main() {
           );
       }
     }
+
+    results.statusInterval =
+      await analyticsAggService.refreshMonitorHistoryStatusIntervals();
 
     const verifyBase = await query(
       `SELECT
@@ -398,17 +405,16 @@ async function main() {
       );
       results.verify.variantGroup = verifyVariantGroup;
     }
-    const verifyVariantGroup = await query(
+
+    const verifyStatusInterval = await query(
       `SELECT
-         granularity,
          COUNT(*) as row_count,
-         DATE_FORMAT(MIN(time_slot), '%Y-%m-%d %H:%i:%s') as min_slot,
-         DATE_FORMAT(MAX(time_slot), '%Y-%m-%d %H:%i:%s') as max_slot
-       FROM monitor_history_agg_variant_group
-       GROUP BY granularity
-       ORDER BY granularity ASC`,
+         SUM(CASE WHEN interval_end IS NULL THEN 1 ELSE 0 END) as open_row_count,
+         DATE_FORMAT(MIN(interval_start), '%Y-%m-%d %H:%i:%s') as min_start,
+         DATE_FORMAT(MAX(COALESCE(interval_end, interval_start)), '%Y-%m-%d %H:%i:%s') as max_end
+       FROM monitor_history_status_interval`,
     );
-    results.verify.variantGroup = verifyVariantGroup;
+    results.verify.statusInterval = verifyStatusInterval?.[0] || {};
 
     results.audit.asinTypeDistribution = await query(
       `SELECT
