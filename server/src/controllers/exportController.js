@@ -6,7 +6,6 @@ const CompetitorVariantGroup = require('../models/CompetitorVariantGroup');
 const CompetitorMonitorHistory = require('../models/CompetitorMonitorHistory');
 const { getUTC8String } = require('../utils/dateTime');
 const logger = require('../utils/logger');
-const analyticsViewService = require('../services/analyticsViewService');
 
 /**
  * 检查响应是否仍然有效（未被关闭）
@@ -1645,139 +1644,6 @@ async function exportCompetitorMonitorHistory(req, res) {
   }
 }
 
-/**
- * 导出月度异常时长统计（按天）
- */
-async function exportAnalyticsMonthlyBreakdown(req, res) {
-  try {
-    const requestParams = req.method === 'POST' ? req.body || {} : req.query;
-    const {
-      country = '',
-      month = '',
-      startTime: startTimeParam = '',
-      endTime: endTimeParam = '',
-    } = requestParams;
-    const isProgressMode = String(requestParams.useProgress) === 'true';
-
-    if (isProgressMode) {
-      res.setHeader('Content-Type', 'text/event-stream');
-      res.setHeader('Cache-Control', 'no-cache');
-      res.setHeader('Connection', 'keep-alive');
-      res.setHeader('X-Accel-Buffering', 'no');
-    }
-
-    const now = new Date();
-    const fallbackMonth = `${now.getFullYear()}-${String(
-      now.getMonth() + 1,
-    ).padStart(2, '0')}`;
-    const monthTokenCandidate = month || String(startTimeParam).slice(0, 7);
-    const monthToken = /^\d{4}-\d{2}$/.test(monthTokenCandidate)
-      ? monthTokenCandidate
-      : fallbackMonth;
-
-    const [yearText, monthText] = monthToken.split('-');
-    const year = Number(yearText) || now.getFullYear();
-    const monthNumber = Number(monthText) || now.getMonth() + 1;
-    const safeMonthNumber = Math.min(12, Math.max(1, monthNumber));
-    const daysInMonth = new Date(year, safeMonthNumber, 0).getDate();
-
-    const normalizedMonthToken = `${year}-${String(safeMonthNumber).padStart(
-      2,
-      '0',
-    )}`;
-    const effectiveStartTime =
-      startTimeParam || `${normalizedMonthToken}-01 00:00:00`;
-    const effectiveEndTime =
-      endTimeParam ||
-      `${normalizedMonthToken}-${String(daysInMonth).padStart(
-        2,
-        '0',
-      )} 23:59:59`;
-
-    if (isProgressMode) {
-      sendProgress(res, 10, '正在查询月度数据...', 'querying');
-    }
-
-    const statistics = await MonitorHistory.getStatisticsByTime({
-      country: country || '',
-      startTime: effectiveStartTime,
-      endTime: effectiveEndTime,
-      groupBy: 'day',
-      sourceGranularityOverride: 'day',
-    });
-
-    if (isProgressMode) {
-      sendProgress(res, 55, '正在处理月度数据...', 'processing');
-    }
-
-    const breakdown = analyticsViewService.buildMonthlyBreakdownRows(
-      statistics,
-      normalizedMonthToken,
-    );
-
-    const excelData = [];
-    excelData.push([
-      `${safeMonthNumber}月日期`,
-      '异常时长（小时）',
-      '总监控时长（小时）',
-      '异常时长占比',
-    ]);
-
-    breakdown.rows.forEach((row) => {
-      excelData.push([
-        row.day,
-        Number(row.abnormalDurationHours.toFixed(2)),
-        Number(row.totalDurationHours.toFixed(2)),
-        `${row.abnormalDurationRate.toFixed(2)}%`,
-      ]);
-    });
-
-    excelData.push([
-      '总体异常时长占比',
-      Number(breakdown.summary.abnormalDurationTotal.toFixed(2)),
-      Number(breakdown.summary.totalDurationTotal.toFixed(2)),
-      `${breakdown.summary.averageRatio.toFixed(2)}%`,
-    ]);
-
-    if (isProgressMode) {
-      sendProgress(res, 90, '正在生成Excel文件...', 'generating');
-    }
-
-    const workbook = buildWorkbookFromAoa(
-      excelData,
-      '月度异常时长统计',
-      [12, 12, 14, 12],
-    );
-    const excelBuffer = await workbook.xlsx.writeBuffer();
-    const filename = `月度异常时长统计_${normalizedMonthToken}.xlsx`;
-
-    if (isProgressMode) {
-      sendProgress(res, 95, '准备下载文件...', 'generating');
-      sendComplete(res, excelBuffer, filename);
-    } else {
-      res.setHeader(
-        'Content-Type',
-        'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
-      );
-      res.setHeader(
-        'Content-Disposition',
-        `attachment; filename="${encodeURIComponent(filename)}"`,
-      );
-      res.send(excelBuffer);
-    }
-  } catch (error) {
-    logger.error('导出月度异常时长统计失败:', error);
-    if (req.query.useProgress === 'true') {
-      sendError(res, '导出月度异常时长统计失败');
-    } else {
-      res.status(500).json({
-        success: false,
-        errorMessage: '导出月度异常时长统计失败',
-      });
-    }
-  }
-}
-
 const { v4: uuidv4 } = require('uuid');
 const exportTaskQueue = require('../services/exportTaskQueue');
 
@@ -2055,7 +1921,6 @@ async function exportParentAsinQuery(req, res) {
 module.exports = {
   exportASINData,
   exportMonitorHistory,
-  exportAnalyticsMonthlyBreakdown,
   exportVariantGroupData,
   exportCompetitorASINData,
   exportCompetitorVariantGroupData,

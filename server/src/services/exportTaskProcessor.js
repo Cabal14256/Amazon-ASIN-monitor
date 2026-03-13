@@ -8,7 +8,7 @@ const CompetitorVariantGroup = require('../models/CompetitorVariantGroup');
 const CompetitorMonitorHistory = require('../models/CompetitorMonitorHistory');
 const { getUTC8String } = require('../utils/dateTime');
 const logger = require('../utils/logger');
-const analyticsViewService = require('./analyticsViewService');
+const analyticsExportService = require('./analyticsExportService');
 const websocketService = require('./websocketService');
 const taskRegistryService = require('./taskRegistryService');
 const { buildFileTaskResult } = require('./taskResultService');
@@ -1280,99 +1280,23 @@ async function processAnalyticsMonthlyBreakdownExport(
   params,
   userId,
 ) {
-  const {
-    country = '',
-    month = '',
-    startTime = '',
-    endTime = '',
-  } = params || {};
-
-  const now = new Date();
-  const fallbackMonth = `${now.getFullYear()}-${String(
-    now.getMonth() + 1,
-  ).padStart(2, '0')}`;
-  const monthTokenCandidate = month || String(startTime).slice(0, 7);
-  const monthToken = /^\d{4}-\d{2}$/.test(monthTokenCandidate)
-    ? monthTokenCandidate
-    : fallbackMonth;
-
-  const [yearText, monthText] = monthToken.split('-');
-  const year = Number(yearText) || now.getFullYear();
-  const monthNumber = Number(monthText) || now.getMonth() + 1;
-  const safeMonthNumber = Math.min(12, Math.max(1, monthNumber));
-  const daysInMonth = new Date(year, safeMonthNumber, 0).getDate();
-  const normalizedMonthToken = `${year}-${String(safeMonthNumber).padStart(
-    2,
-    '0',
-  )}`;
-
-  const effectiveStartTime = startTime || `${normalizedMonthToken}-01 00:00:00`;
-  const effectiveEndTime =
-    endTime ||
-    `${normalizedMonthToken}-${String(daysInMonth).padStart(2, '0')} 23:59:59`;
-
   updateProgress(job, taskId, 10, '正在查询月度数据...', userId);
-
-  const statistics = await MonitorHistory.getStatisticsByTime({
-    country,
-    startTime: effectiveStartTime,
-    endTime: effectiveEndTime,
-    groupBy: 'day',
-    sourceGranularityOverride: 'day',
-  });
+  const exportData =
+    await analyticsExportService.buildMonthlyBreakdownExportData(params || {});
+  await throwIfTaskCancelled(taskId, '导出任务已取消（查询完成后）');
 
   updateProgress(job, taskId, 55, '正在处理月度数据...', userId);
-
-  const breakdown = analyticsViewService.buildMonthlyBreakdownRows(
-    statistics,
-    normalizedMonthToken,
-  );
-  const excelData = [
-    ['日期', '异常时长（小时）', '总监控时长（小时）', '异常时长占比'],
-  ];
-
-  for (let day = 1; day <= daysInMonth; day += 1) {
-    if ((day - 1) % 7 === 0) {
-      await throwIfTaskCancelled(
-        taskId,
-        `导出任务已取消（已处理 ${day - 1}/${daysInMonth} 天数据）`,
-      );
-    }
-    const row = breakdown.rows[day - 1] || {
-      day,
-      abnormalDurationHours: 0,
-      totalDurationHours: 0,
-      abnormalDurationRate: 0,
-    };
-
-    excelData.push([
-      row.day,
-      Number(row.abnormalDurationHours.toFixed(2)),
-      Number(row.totalDurationHours.toFixed(2)),
-      `${row.abnormalDurationRate.toFixed(2)}%`,
-    ]);
-  }
-
-  excelData.push([
-    '总体异常时长占比',
-    Number(breakdown.summary.abnormalDurationTotal.toFixed(2)),
-    Number(breakdown.summary.totalDurationTotal.toFixed(2)),
-    `${breakdown.summary.averageRatio.toFixed(2)}%`,
-  ]);
-
   updateProgress(job, taskId, 90, '正在生成Excel文件...', userId);
-
-  const filename = `月度异常时长统计_${normalizedMonthToken}.xlsx`;
   const filepath = path.join(EXPORT_DIR, `${taskId}.xlsx`);
 
   await writeAoaWorkbookToFile({
-    excelData,
-    sheetName: '月度异常时长统计',
-    columnWidths: [12, 12, 14, 12],
+    excelData: exportData.excelData,
+    sheetName: exportData.sheetName,
+    columnWidths: exportData.columnWidths,
     filepath,
   });
 
-  return { filename, filepath };
+  return { filename: exportData.filename, filepath };
 }
 
 async function processParentAsinQueryExport(job, taskId, params, userId) {

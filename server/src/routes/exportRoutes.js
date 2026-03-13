@@ -40,20 +40,6 @@ router.get(
   exportController.exportMonitorHistory,
 );
 
-// 导出月度被拆统计（需要数据分析查看权限）
-router.get(
-  '/export/analytics-monthly-breakdown',
-  checkPermission('analytics:read'),
-  exportController.exportAnalyticsMonthlyBreakdown,
-);
-
-// 兼容 POST 调用的月度被拆统计导出（需要数据分析查看权限）
-router.post(
-  '/export/analytics-monthly-breakdown',
-  checkPermission('analytics:read'),
-  exportController.exportAnalyticsMonthlyBreakdown,
-);
-
 // 导出竞品监控历史（需要监控查看权限）
 router.get(
   '/export/competitor-monitor-history',
