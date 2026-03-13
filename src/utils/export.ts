@@ -209,8 +209,6 @@ const EXPORT_TYPE_MAP: Record<string, string> = {
   '/api/v1/export/competitor-variant-group': 'competitor-variant-group',
   '/v1/export/competitor-monitor-history': 'competitor-monitor-history',
   '/api/v1/export/competitor-monitor-history': 'competitor-monitor-history',
-  '/v1/export/analytics-monthly-breakdown': 'analytics-monthly-breakdown',
-  '/api/v1/export/analytics-monthly-breakdown': 'analytics-monthly-breakdown',
   '/v1/export/parent-asin-query': 'parent-asin-query',
   '/api/v1/export/parent-asin-query': 'parent-asin-query',
 };
