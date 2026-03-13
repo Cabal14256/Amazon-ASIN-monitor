@@ -111,7 +111,46 @@ async function getPeriodSummary(params = {}) {
     source = 'raw';
   }
 
-  const timeSlotDetails = buildDurationRowsByGroup(sourceRows, {
+  const fullList = buildDurationRowsByGroup(sourceRows, {
+    sourceGranularity,
+    targetGranularity: sourceGranularity,
+    queryStartDate,
+    queryEndDate,
+    buildGroupKey: (_, row) =>
+      buildPeriodSummaryGroupKey(row.country, row.site, row.brand),
+    buildGroupMeta: (_, row) => ({
+      timeRange: queryTimeRange,
+      country: row.country || '',
+      site: row.site || '',
+      brand: row.brand || '',
+    }),
+  })
+    .sort((a, b) => {
+      const left = `${a.country}|${a.site}|${a.brand}`;
+      const right = `${b.country}|${b.site}|${b.brand}`;
+      return left.localeCompare(right);
+    })
+    .map((item) => ({
+      ...item,
+      timeSlotDetails: [],
+    }));
+
+  const total = fullList.length;
+  const list = fullList.slice(offset, offset + safePageSize);
+  const pageGroupKeys = new Set(
+    list.map((item) =>
+      buildPeriodSummaryGroupKey(item.country, item.site, item.brand),
+    ),
+  );
+
+  const pagedSourceRows = sourceRows.filter((row) =>
+    pageGroupKeys.has(
+      buildPeriodSummaryGroupKey(row.country, row.site, row.brand),
+    ),
+  );
+
+  // 只为当前页分组构建 timeSlotDetails，避免全量详情计算导致大范围查询超时。
+  const timeSlotDetails = buildDurationRowsByGroup(pagedSourceRows, {
     sourceGranularity,
     targetGranularity: timeSlotGranularity,
     queryStartDate,
@@ -145,41 +184,15 @@ async function getPeriodSummary(params = {}) {
     timeSlotMap.get(groupKey).push(item);
   });
 
-  const fullList = buildDurationRowsByGroup(sourceRows, {
-    sourceGranularity,
-    targetGranularity: sourceGranularity,
-    queryStartDate,
-    queryEndDate,
-    buildGroupKey: (_, row) =>
-      buildPeriodSummaryGroupKey(row.country, row.site, row.brand),
-    buildGroupMeta: (_, row) => ({
-      timeRange: queryTimeRange,
-      country: row.country || '',
-      site: row.site || '',
-      brand: row.brand || '',
-    }),
-  })
-    .sort((a, b) => {
-      const left = `${a.country}|${a.site}|${a.brand}`;
-      const right = `${b.country}|${b.site}|${b.brand}`;
-      return left.localeCompare(right);
-    })
-    .map((item) => {
-      const groupKey = buildPeriodSummaryGroupKey(
-        item.country,
-        item.site,
-        item.brand,
-      );
-      return {
-        ...item,
-        timeSlotDetails: timeSlotMap.get(groupKey) || [],
-      };
-    });
-
-  const total = fullList.length;
-  const list = fullList.slice(offset, offset + safePageSize);
+  const pagedList = list.map((item) => ({
+    ...item,
+    timeSlotDetails:
+      timeSlotMap.get(
+        buildPeriodSummaryGroupKey(item.country, item.site, item.brand),
+      ) || [],
+  }));
   const finalResult = {
-    list,
+    list: pagedList,
     total,
     current: safeCurrent,
     pageSize: safePageSize,
