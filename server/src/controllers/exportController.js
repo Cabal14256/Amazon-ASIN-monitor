@@ -4,9 +4,9 @@ const ASIN = require('../models/ASIN');
 const MonitorHistory = require('../models/MonitorHistory');
 const CompetitorVariantGroup = require('../models/CompetitorVariantGroup');
 const CompetitorMonitorHistory = require('../models/CompetitorMonitorHistory');
+const analyticsService = require('../services/analyticsService');
 const { getUTC8String } = require('../utils/dateTime');
 const logger = require('../utils/logger');
-const analyticsViewService = require('../services/analyticsViewService');
 
 /**
  * 检查响应是否仍然有效（未被关闭）
@@ -1698,22 +1698,16 @@ async function exportAnalyticsMonthlyBreakdown(req, res) {
       sendProgress(res, 10, '正在查询月度数据...', 'querying');
     }
 
-    const statistics = await MonitorHistory.getStatisticsByTime({
+    const { data: breakdown } = await analyticsService.getMonthlyBreakdown({
       country: country || '',
+      month: normalizedMonthToken,
       startTime: effectiveStartTime,
       endTime: effectiveEndTime,
-      groupBy: 'day',
-      sourceGranularityOverride: 'day',
     });
 
     if (isProgressMode) {
       sendProgress(res, 55, '正在处理月度数据...', 'processing');
     }
-
-    const breakdown = analyticsViewService.buildMonthlyBreakdownRows(
-      statistics,
-      normalizedMonthToken,
-    );
 
     const excelData = [];
     excelData.push([

@@ -1,3 +1,4 @@
+import analyticsServices from '@/services/analytics';
 import services from '@/services/asin';
 import { formatBeijingNow, toBeijingDayjs } from '@/utils/beijingTime';
 import { debugLog } from '@/utils/debug';
@@ -16,12 +17,10 @@ import type { TableProps } from 'antd';
 import { Button, Card, Dropdown, message, Space, Table, Tag } from 'antd';
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 
-const {
-  queryMonitorHistory,
-  getMonitorStatistics,
-  getPeakHoursStatistics,
-  getAbnormalDurationStatistics,
-} = services.MonitorController;
+const { queryMonitorHistory, getAbnormalDurationStatistics } =
+  services.MonitorController;
+const { getMonitorHistoryPeakHours, getMonitorHistorySummary } =
+  analyticsServices.AnalyticsController;
 
 // 国家选项映射
 const countryMap: Record<
@@ -341,21 +340,17 @@ const MonitorHistoryPage: React.FC<unknown> = () => {
       } else if (type === 'asin' && id) {
         params.asinId = id;
       }
-      const { data } = await getMonitorStatistics(params);
+      const { data } = await getMonitorHistorySummary(params);
       setStatistics(data || {});
 
       // 如果有国家筛选，加载高峰期统计
       const countryToUse = country || selectedCountry;
       if (countryToUse) {
         try {
-          const peakData = await getPeakHoursStatistics({
+          const { data: peakStats } = await getMonitorHistoryPeakHours({
             country: countryToUse,
           });
-          const peakStats =
-            peakData && typeof peakData === 'object' && !('success' in peakData)
-              ? peakData
-              : (peakData as any)?.data || {};
-          setPeakHoursStatistics(peakStats);
+          setPeakHoursStatistics(peakStats || {});
         } catch (error) {
           console.error('加载高峰期统计失败:', error);
         }

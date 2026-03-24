@@ -171,12 +171,32 @@ function normalizeAsinType(value) {
 }
 
 async function parseWorkbook(file) {
-  const ext = path.extname(file.originalname || '').toLowerCase();
+  // 确保 file 对象存在且有 originalname 属性
+  if (!file || typeof file !== 'object') {
+    const error = new Error('无效的文件对象');
+    error.statusCode = 400;
+    throw error;
+  }
+
+  const originalname = file.originalname || file.name || '';
+  if (!originalname) {
+    const error = new Error('文件名不能为空');
+    error.statusCode = 400;
+    throw error;
+  }
+
+  const ext = path.extname(originalname).toLowerCase();
   const workbook = new ExcelJS.Workbook();
   let fileBuffer = file.buffer;
 
   if (!Buffer.isBuffer(fileBuffer)) {
     fileBuffer = Buffer.from(fileBuffer || []);
+  }
+
+  if (!fileBuffer || fileBuffer.length === 0) {
+    const error = new Error('文件内容不能为空');
+    error.statusCode = 400;
+    throw error;
   }
 
   if (ext === '.csv') {
@@ -205,10 +225,12 @@ async function parseWorkbook(file) {
     }
     const stream = Readable.from(csvBuffer);
     await workbook.csv.read(stream);
-  } else if (ext === '.xlsx') {
+  } else if (ext === '.xlsx' || ext === '.xls') {
     await workbook.xlsx.load(fileBuffer);
   } else {
-    const error = new Error('仅支持 .xlsx 或 .csv 格式');
+    const error = new Error(
+      `不支持的文件格式: ${ext || '未知'}，仅支持 .xlsx, .xls 或 .csv 格式`,
+    );
     error.statusCode = 400;
     throw error;
   }

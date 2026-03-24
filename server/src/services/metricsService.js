@@ -83,6 +83,35 @@ const cacheMisses = new client.Counter({
   registers: [register],
 });
 
+const analyticsBusyFallbacks = new client.Counter({
+  name: 'amazon_asin_monitor_analytics_busy_fallback_total',
+  help: '数据分析繁忙降级到最近缓存的次数',
+  labelNames: ['cache_key_prefix'],
+  registers: [register],
+});
+
+const analyticsQueryTimeouts = new client.Counter({
+  name: 'amazon_asin_monitor_analytics_query_timeouts_total',
+  help: '数据分析查询超时次数',
+  labelNames: ['query_name'],
+  registers: [register],
+});
+
+const analyticsResponses = new client.Counter({
+  name: 'amazon_asin_monitor_analytics_responses_total',
+  help: '数据分析接口响应次数',
+  labelNames: ['endpoint', 'status'],
+  registers: [register],
+});
+
+const analyticsAggRefreshDuration = new client.Histogram({
+  name: 'amazon_asin_monitor_analytics_agg_refresh_duration_seconds',
+  help: '数据分析聚合刷新耗时（秒）',
+  labelNames: ['table', 'granularity', 'status'],
+  registers: [register],
+  buckets: [0.1, 0.5, 1, 2, 5, 10, 30, 60, 120, 300],
+});
+
 function recordHttpRequest({ method, route, status, durationSec }) {
   httpRequestCounter.labels(method, route, String(status)).inc();
   httpRequestDuration
@@ -131,6 +160,29 @@ function recordCacheMiss(prefix) {
   cacheMisses.labels(prefix).inc();
 }
 
+function recordAnalyticsBusyFallback(prefix) {
+  analyticsBusyFallbacks.labels(prefix).inc();
+}
+
+function recordAnalyticsQueryTimeout(queryName) {
+  analyticsQueryTimeouts.labels(queryName).inc();
+}
+
+function recordAnalyticsResponse({ endpoint, status }) {
+  analyticsResponses.labels(endpoint, String(status)).inc();
+}
+
+function recordAnalyticsAggRefresh({
+  table,
+  granularity,
+  status = 'success',
+  durationSec,
+}) {
+  analyticsAggRefreshDuration
+    .labels(table, granularity, status)
+    .observe(durationSec);
+}
+
 module.exports = {
   register,
   recordHttpRequest,
@@ -139,4 +191,8 @@ module.exports = {
   recordDbQuery,
   recordCacheHit,
   recordCacheMiss,
+  recordAnalyticsAggRefresh,
+  recordAnalyticsBusyFallback,
+  recordAnalyticsQueryTimeout,
+  recordAnalyticsResponse,
 };

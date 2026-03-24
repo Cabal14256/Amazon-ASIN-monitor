@@ -26,17 +26,23 @@ function compactSql(sql) {
   return String(sql).replace(/\s+/g, ' ').trim().slice(0, 240);
 }
 
-async function executeWithRunner(runner, sql, params = []) {
+async function executeWithRunner(runner, sql, params = [], options = {}) {
   const start = Date.now();
+  const timeoutMs =
+    Number(options.timeoutMs) > 0
+      ? Number(options.timeoutMs)
+      : QUERY_TIMEOUT_MS;
   const [results] = await runner.query({
     sql,
     values: params,
-    timeout: QUERY_TIMEOUT_MS,
+    timeout: timeoutMs,
   });
   const duration = Date.now() - start;
   if (duration >= SLOW_QUERY_MS) {
     logger.warn(
-      `[慢查询] 耗时${duration}ms, 参数数量=${params.length}, SQL=${compactSql(sql)}`,
+      `[慢查询] 耗时${duration}ms, 参数数量=${params.length}, SQL=${compactSql(
+        sql,
+      )}`,
     );
   }
   return results;
@@ -60,9 +66,9 @@ async function testConnection() {
 }
 
 // 执行查询的辅助函数
-async function query(sql, params = []) {
+async function query(sql, params = [], options = {}) {
   try {
-    return await executeWithRunner(pool, sql, params);
+    return await executeWithRunner(pool, sql, params, options);
   } catch (error) {
     logger.error('数据库查询错误:', error);
     throw error;
@@ -74,9 +80,9 @@ async function getConnection() {
 }
 
 function createQueryExecutor(connection) {
-  return async (sql, params = []) => {
+  return async (sql, params = [], options = {}) => {
     try {
-      return await executeWithRunner(connection, sql, params);
+      return await executeWithRunner(connection, sql, params, options);
     } catch (error) {
       logger.error('数据库事务查询错误:', {
         message: error.message,

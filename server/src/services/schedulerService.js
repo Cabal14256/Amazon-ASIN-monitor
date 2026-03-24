@@ -27,7 +27,7 @@ const TOTAL_BATCHES = Number(process.env.MONITOR_BATCH_COUNT) || 1; // 默认不
 // EU国家检查顺序：UK, DE, FR, ES, IT
 const EU_COUNTRIES_ORDER = ['UK', 'DE', 'FR', 'ES', 'IT'];
 const ANALYTICS_CRON_EXPRESSION =
-  process.env.ANALYTICS_AGG_CRON_EXPRESSION || '*/10 * * * *';
+  process.env.ANALYTICS_AGG_CRON_EXPRESSION || '5 * * * *';
 const BEIJING_TIMEZONE = process.env.TZ || 'Asia/Shanghai';
 const CRON_TIMEZONE_OPTIONS = { timezone: BEIJING_TIMEZONE };
 
@@ -302,12 +302,7 @@ function initScheduler() {
 
   // 数据分析聚合刷新（默认开启，可通过 ANALYTICS_AGG_ENABLED=0 关闭）
   if (process.env.ANALYTICS_AGG_ENABLED !== '0') {
-    // 启动时先执行一次（异步，不阻塞启动）
-    runAnalyticsAgg('startup').catch((error) => {
-      logger.error('❌ 初始化数据分析聚合失败:', error.message);
-    });
-
-    // 每小时第5分钟刷新一次最近聚合数据
+    // 按固定窗口刷新最近聚合数据，不在服务启动时触发重型补算。
     cron.schedule(
       ANALYTICS_CRON_EXPRESSION,
       () => {
@@ -317,7 +312,9 @@ function initScheduler() {
       },
       CRON_TIMEZONE_OPTIONS,
     );
-    logger.info('📊 数据分析聚合刷新已启用（每小时第5分钟）');
+    logger.info(
+      `📊 数据分析聚合刷新已启用（cron=${ANALYTICS_CRON_EXPRESSION}）`,
+    );
   } else {
     logger.info('📊 数据分析聚合刷新已禁用（ANALYTICS_AGG_ENABLED=0）');
   }

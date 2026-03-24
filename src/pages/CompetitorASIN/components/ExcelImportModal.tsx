@@ -20,7 +20,6 @@ import {
   Input,
   Modal,
   Progress,
-  Select,
   Space,
   Table,
   Tabs,
@@ -578,20 +577,14 @@ const ExcelImportModal: React.FC<ExcelImportModalProps> = (props) => {
       dataIndex: 'asinType',
       width: 140,
       render: (_, record) => (
-        <Select
-          className="online-cell-select"
-          value={record.asinType || undefined}
-          placeholder="可选"
-          options={[
-            { value: '1', label: '1 主链' },
-            { value: '2', label: '2 副评' },
-          ]}
+        <Input
+          className="online-cell-input"
+          value={record.asinType}
+          placeholder="1或2"
           onFocus={() => setActiveCell({ rowId: record.id, field: 'asinType' })}
-          onChange={(value) =>
-            updateOnlineCell(record.id, 'asinType', value || '')
+          onChange={(e) =>
+            updateOnlineCell(record.id, 'asinType', e.target.value)
           }
-          allowClear
-          style={{ width: '100%' }}
         />
       ),
     },
