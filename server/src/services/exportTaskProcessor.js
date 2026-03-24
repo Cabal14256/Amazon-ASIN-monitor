@@ -6,9 +6,9 @@ const VariantGroup = require('../models/VariantGroup');
 const MonitorHistory = require('../models/MonitorHistory');
 const CompetitorVariantGroup = require('../models/CompetitorVariantGroup');
 const CompetitorMonitorHistory = require('../models/CompetitorMonitorHistory');
+const analyticsService = require('./analyticsService');
 const { getUTC8String } = require('../utils/dateTime');
 const logger = require('../utils/logger');
-const analyticsViewService = require('./analyticsViewService');
 const websocketService = require('./websocketService');
 const taskRegistryService = require('./taskRegistryService');
 const { buildFileTaskResult } = require('./taskResultService');
@@ -1313,20 +1313,14 @@ async function processAnalyticsMonthlyBreakdownExport(
 
   updateProgress(job, taskId, 10, '正在查询月度数据...', userId);
 
-  const statistics = await MonitorHistory.getStatisticsByTime({
+  const { data: breakdown } = await analyticsService.getMonthlyBreakdown({
     country,
+    month: normalizedMonthToken,
     startTime: effectiveStartTime,
     endTime: effectiveEndTime,
-    groupBy: 'day',
-    sourceGranularityOverride: 'day',
   });
 
   updateProgress(job, taskId, 55, '正在处理月度数据...', userId);
-
-  const breakdown = analyticsViewService.buildMonthlyBreakdownRows(
-    statistics,
-    normalizedMonthToken,
-  );
   const excelData = [
     ['日期', '异常时长（小时）', '总监控时长（小时）', '异常时长占比'],
   ];

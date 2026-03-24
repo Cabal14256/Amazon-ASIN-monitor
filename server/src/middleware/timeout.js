@@ -1,4 +1,13 @@
 const logger = require('../utils/logger');
+const metricsService = require('../services/metricsService');
+const { cancelRequestContext } = require('../utils/requestContext');
+
+const REQUEST_TIMEOUT_APPLIED = Symbol('requestTimeoutApplied');
+
+function getRequestEndpoint(req) {
+  const originalUrl = req.originalUrl || req.url || '';
+  return String(originalUrl).split('?')[0];
+}
 
 /**
  * 请求超时中间件
@@ -7,12 +16,33 @@ const logger = require('../utils/logger');
  */
 function timeoutMiddleware(timeout = 30000) {
   return (req, res, next) => {
+    if (req[REQUEST_TIMEOUT_APPLIED]) {
+      logger.debug('[Timeout] duplicate timeout middleware skipped', {
+        existingTimeoutMs: req[REQUEST_TIMEOUT_APPLIED],
+        requestEndpoint: getRequestEndpoint(req),
+        skippedTimeoutMs: timeout,
+      });
+      next();
+      return;
+    }
+
+    req[REQUEST_TIMEOUT_APPLIED] = timeout;
+    const requestEndpoint = getRequestEndpoint(req);
     const timer = setTimeout(() => {
+      cancelRequestContext(req.requestContext, 'timeout');
       // 检查响应是否已经发送或连接已关闭
       if (!res.headersSent && !res.destroyed && res.writable) {
-        logger.warn(
-          `请求超时: ${req.method} ${req.url} (超时时间: ${timeout}ms)`,
-        );
+        logger.warn('请求超时', {
+          method: req.method,
+          requestEndpoint,
+          timeoutMs: timeout,
+        });
+        if (requestEndpoint.startsWith('/api/v1/analytics')) {
+          metricsService.recordAnalyticsResponse({
+            endpoint: requestEndpoint,
+            status: 504,
+          });
+        }
 
         // 检查是否是SSE响应
         const contentType = res.getHeader('Content-Type');
@@ -27,7 +57,10 @@ function timeoutMiddleware(timeout = 30000) {
             );
             res.end();
           } catch (e) {
-            logger.error('SSE超时响应发送失败:', e);
+            logger.error('SSE超时响应发送失败', {
+              message: e?.message || String(e),
+              requestEndpoint,
+            });
             try {
               res.end();
             } catch (e2) {
@@ -43,7 +76,10 @@ function timeoutMiddleware(timeout = 30000) {
               errorCode: 504,
             });
           } catch (e) {
-            logger.error('超时响应发送失败:', e);
+            logger.error('超时响应发送失败', {
+              message: e?.message || String(e),
+              requestEndpoint,
+            });
             try {
               res.end();
             } catch (e2) {
@@ -59,6 +95,9 @@ function timeoutMiddleware(timeout = 30000) {
       if (timer) clearTimeout(timer);
     });
     res.on('close', () => {
+      if (!res.writableEnded) {
+        cancelRequestContext(req.requestContext, 'connection_closed');
+      }
       if (timer) clearTimeout(timer);
     });
 

@@ -12,6 +12,8 @@ const {
 const logger = require('../utils/logger');
 
 const ANALYTICS_CACHE_PREFIXES = [
+  'overallStatistics:',
+  'peakHoursStatistics:',
   'statisticsByTime:',
   'allCountriesSummary:',
   'regionSummary:',

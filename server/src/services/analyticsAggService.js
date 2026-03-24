@@ -1,9 +1,18 @@
 const { query } = require('../config/database');
+const metricsService = require('./metricsService');
 const logger = require('../utils/logger');
+const {
+  alignTimeToSlotText,
+  formatDateToSqlText,
+} = require('./analyticsQuery/shared/timeUtils');
 
 const AGG_ENABLED = process.env.ANALYTICS_AGG_ENABLED !== '0';
 const BACKFILL_HOURS = Number(process.env.ANALYTICS_AGG_BACKFILL_HOURS) || 48;
 const BACKFILL_DAYS = Number(process.env.ANALYTICS_AGG_BACKFILL_DAYS) || 30;
+const REFRESH_HOURS_WINDOW =
+  Number(process.env.ANALYTICS_AGG_REFRESH_HOURS_WINDOW) || 72;
+const REFRESH_DAYS_WINDOW =
+  Number(process.env.ANALYTICS_AGG_REFRESH_DAYS_WINDOW) || 35;
 const REFRESH_DIM_AGG = process.env.ANALYTICS_AGG_REFRESH_DIM !== '0';
 const REFRESH_VARIANT_GROUP_AGG =
   process.env.ANALYTICS_AGG_REFRESH_VARIANT_GROUP !== '0';
@@ -18,8 +27,24 @@ function getSlotExpr(granularity) {
 
 function getBackfillInterval(granularity) {
   return granularity === 'hour'
-    ? `${BACKFILL_HOURS} HOUR`
-    : `${BACKFILL_DAYS} DAY`;
+    ? `${REFRESH_HOURS_WINDOW} HOUR`
+    : `${REFRESH_DAYS_WINDOW} DAY`;
+}
+
+function buildDefaultRangeBound(granularity, boundary) {
+  if (boundary === 'end') {
+    return alignTimeToSlotText(formatDateToSqlText(new Date()), granularity);
+  }
+
+  const now = new Date();
+  const shifted = new Date(now);
+  if (granularity === 'hour') {
+    shifted.setHours(shifted.getHours() - REFRESH_HOURS_WINDOW);
+  } else {
+    shifted.setDate(shifted.getDate() - REFRESH_DAYS_WINDOW);
+    shifted.setHours(0, 0, 0, 0);
+  }
+  return alignTimeToSlotText(formatDateToSqlText(shifted), granularity);
 }
 
 function buildPeakHourCase(countryField, timeField) {
@@ -41,25 +66,39 @@ function buildPeakHourCase(countryField, timeField) {
 
 function buildWhereClause(granularity, options = {}) {
   const conditions = [];
+  const slotExpr = getSlotExpr(granularity);
   let whereClause = `WHERE ${ANALYTICS_ASIN_HISTORY_FILTER}`;
 
   if (options.startTime) {
-    whereClause += ' AND mh.check_time >= ?';
-    conditions.push(options.startTime);
+    whereClause += ` AND ${slotExpr} >= ?`;
+    conditions.push(
+      alignTimeToSlotText(options.startTime, granularity) || options.startTime,
+    );
   } else {
-    whereClause += ` AND mh.check_time >= DATE_SUB(NOW(), INTERVAL ${getBackfillInterval(
-      granularity,
-    )})`;
+    whereClause += ` AND ${slotExpr} >= ?`;
+    conditions.push(buildDefaultRangeBound(granularity, 'start'));
   }
 
   if (options.endTime) {
-    whereClause += ' AND mh.check_time <= ?';
-    conditions.push(options.endTime);
+    whereClause += ` AND ${slotExpr} <= ?`;
+    conditions.push(
+      alignTimeToSlotText(options.endTime, granularity) || options.endTime,
+    );
   } else {
-    whereClause += ' AND mh.check_time <= NOW()';
+    whereClause += ` AND ${slotExpr} <= ?`;
+    conditions.push(buildDefaultRangeBound(granularity, 'end'));
   }
 
   return { whereClause, conditions };
+}
+
+function recordAggRefreshMetric(table, granularity, status, durationMs) {
+  metricsService.recordAnalyticsAggRefresh({
+    table,
+    granularity,
+    status,
+    durationSec: Math.max(0, durationMs) / 1000,
+  });
 }
 
 async function refreshMonitorHistoryAgg(granularity, options = {}) {
@@ -108,14 +147,31 @@ async function refreshMonitorHistoryAgg(granularity, options = {}) {
   `;
 
   const start = Date.now();
-  const result = await query(sql, [granularity, ...conditions]);
-  const duration = Date.now() - start;
-  logger.info(
-    `[聚合刷新] table=monitor_history_agg, granularity=${granularity}, duration=${duration}ms, affectedRows=${
-      result?.affectedRows || 0
-    }`,
-  );
-  return { success: true, duration, affectedRows: result?.affectedRows || 0 };
+  try {
+    const result = await query(sql, [granularity, ...conditions]);
+    const duration = Date.now() - start;
+    logger.info(
+      `[聚合刷新] table=monitor_history_agg, granularity=${granularity}, duration=${duration}ms, affectedRows=${
+        result?.affectedRows || 0
+      }`,
+    );
+    recordAggRefreshMetric(
+      'monitor_history_agg',
+      granularity,
+      'success',
+      duration,
+    );
+    return { success: true, duration, affectedRows: result?.affectedRows || 0 };
+  } catch (error) {
+    const duration = Date.now() - start;
+    recordAggRefreshMetric(
+      'monitor_history_agg',
+      granularity,
+      'error',
+      duration,
+    );
+    throw error;
+  }
 }
 
 async function refreshMonitorHistoryAggDim(granularity, options = {}) {
@@ -173,14 +229,31 @@ async function refreshMonitorHistoryAggDim(granularity, options = {}) {
   `;
 
   const start = Date.now();
-  const result = await query(sql, [granularity, ...conditions]);
-  const duration = Date.now() - start;
-  logger.info(
-    `[聚合刷新] table=monitor_history_agg_dim, granularity=${granularity}, duration=${duration}ms, affectedRows=${
-      result?.affectedRows || 0
-    }`,
-  );
-  return { success: true, duration, affectedRows: result?.affectedRows || 0 };
+  try {
+    const result = await query(sql, [granularity, ...conditions]);
+    const duration = Date.now() - start;
+    logger.info(
+      `[聚合刷新] table=monitor_history_agg_dim, granularity=${granularity}, duration=${duration}ms, affectedRows=${
+        result?.affectedRows || 0
+      }`,
+    );
+    recordAggRefreshMetric(
+      'monitor_history_agg_dim',
+      granularity,
+      'success',
+      duration,
+    );
+    return { success: true, duration, affectedRows: result?.affectedRows || 0 };
+  } catch (error) {
+    const duration = Date.now() - start;
+    recordAggRefreshMetric(
+      'monitor_history_agg_dim',
+      granularity,
+      'error',
+      duration,
+    );
+    throw error;
+  }
 }
 
 async function refreshMonitorHistoryAggVariantGroup(granularity, options = {}) {
@@ -240,14 +313,31 @@ async function refreshMonitorHistoryAggVariantGroup(granularity, options = {}) {
   `;
 
   const start = Date.now();
-  const result = await query(sql, [granularity, ...conditions]);
-  const duration = Date.now() - start;
-  logger.info(
-    `[聚合刷新] table=monitor_history_agg_variant_group, granularity=${granularity}, duration=${duration}ms, affectedRows=${
-      result?.affectedRows || 0
-    }`,
-  );
-  return { success: true, duration, affectedRows: result?.affectedRows || 0 };
+  try {
+    const result = await query(sql, [granularity, ...conditions]);
+    const duration = Date.now() - start;
+    logger.info(
+      `[聚合刷新] table=monitor_history_agg_variant_group, granularity=${granularity}, duration=${duration}ms, affectedRows=${
+        result?.affectedRows || 0
+      }`,
+    );
+    recordAggRefreshMetric(
+      'monitor_history_agg_variant_group',
+      granularity,
+      'success',
+      duration,
+    );
+    return { success: true, duration, affectedRows: result?.affectedRows || 0 };
+  } catch (error) {
+    const duration = Date.now() - start;
+    recordAggRefreshMetric(
+      'monitor_history_agg_variant_group',
+      granularity,
+      'error',
+      duration,
+    );
+    throw error;
+  }
 }
 
 async function refreshAnalyticsAggBundle(granularity, options = {}) {
@@ -331,6 +421,8 @@ function getAggStatus() {
     refreshVariantGroupAgg: REFRESH_VARIANT_GROUP_AGG,
     backfillHours: BACKFILL_HOURS,
     backfillDays: BACKFILL_DAYS,
+    refreshHoursWindow: REFRESH_HOURS_WINDOW,
+    refreshDaysWindow: REFRESH_DAYS_WINDOW,
     isRefreshing,
   };
 }
