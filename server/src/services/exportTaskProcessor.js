@@ -1162,12 +1162,17 @@ async function processCompetitorMonitorHistoryExport(
     checkType,
     variantGroupId,
     asinId,
+    asin,
+    variantGroupName,
+    parentAsin,
     startTime,
     endTime,
     isBroken,
   } = params;
 
   updateProgress(job, taskId, 10, '正在查询数据...', userId);
+
+  const effectiveEndTime = endTime || getUTC8String('YYYY-MM-DD HH:mm:ss');
 
   const allHistory = await fetchAllData(
     (params) => CompetitorMonitorHistory.findAll(params),
@@ -1176,8 +1181,11 @@ async function processCompetitorMonitorHistoryExport(
       checkType: checkType || '',
       variantGroupId: variantGroupId || '',
       asinId: asinId || '',
+      asin: asin || '',
+      variantGroupName: variantGroupName || '',
+      parentAsin: parentAsin || '',
       startTime: startTime || '',
-      endTime: endTime || '',
+      endTime: effectiveEndTime,
       isBroken: isBroken || '',
     },
     10000,
@@ -1215,18 +1223,9 @@ async function processCompetitorMonitorHistoryExport(
         `导出任务已取消（已处理 ${processedItems}/${totalItems} 条记录）`,
       );
     }
-    let checkResult = '';
-    if (history.checkResult) {
-      try {
-        const parsed =
-          typeof history.checkResult === 'string'
-            ? JSON.parse(history.checkResult)
-            : history.checkResult;
-        checkResult = JSON.stringify(parsed, null, 2);
-      } catch (e) {
-        checkResult = history.checkResult;
-      }
-    }
+    const checkResult = formatCheckResult(
+      history.checkResult || history.check_result,
+    );
 
     const checkTimeStr = formatCheckTime(
       history.check_time || history.checkTime,

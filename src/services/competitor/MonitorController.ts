@@ -12,6 +12,10 @@ export async function queryCompetitorMonitorHistory(
     asinId?: string;
     /** ASIN编码（字符串） */
     asin?: string;
+    /** 变体组名称 */
+    variantGroupName?: string;
+    /** 父变体ASIN */
+    parentAsin?: string;
     /** 国家筛选 */
     country?: string;
     /** 检查类型 */

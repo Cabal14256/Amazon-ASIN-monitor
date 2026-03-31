@@ -218,7 +218,6 @@ const TaskCenterPage: React.FC = () => {
   }, [loadTasks]);
 
   useEffect(() => {
-    wsClient.connect();
     const unsubscribe = wsClient.onMessage((msg) => {
       if (
         msg.type === 'task_progress' ||
