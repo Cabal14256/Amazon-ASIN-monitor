@@ -8,6 +8,9 @@ server/node_modules/
 .env.*.local
 server/.env
 server/.env.local
+server/.env.*
+!server/.env.example
+nginx.conf
 
 # Umi 构建产物
 /.umirc.local.ts
