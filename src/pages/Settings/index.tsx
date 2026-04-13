@@ -29,6 +29,106 @@ import React, { useCallback, useEffect, useState } from 'react';
 const { getSPAPIConfigs, updateSPAPIConfig } = services.SPAPIConfigController;
 const { getFeishuConfigs, upsertFeishuConfig } = services.FeishuController;
 
+const BOOLEAN_CONFIG_KEYS = new Set([
+  'SP_API_USE_AWS_SIGNATURE',
+  'COMPETITOR_MONITOR_ENABLED',
+  'ENABLE_HTML_SCRAPER_FALLBACK',
+  'ENABLE_LEGACY_CLIENT_FALLBACK',
+]);
+
+const NUMBER_CONFIG_KEYS = new Set([
+  'MONITOR_US_SCHEDULE_MINUTES',
+  'MONITOR_EU_SCHEDULE_MINUTES',
+]);
+
+const SP_API_US_CONFIG_KEYS = [
+  'SP_API_US_LWA_CLIENT_ID',
+  'SP_API_US_LWA_CLIENT_SECRET',
+  'SP_API_US_REFRESH_TOKEN',
+];
+
+const SP_API_EU_CONFIG_KEYS = [
+  'SP_API_EU_LWA_CLIENT_ID',
+  'SP_API_EU_LWA_CLIENT_SECRET',
+  'SP_API_EU_REFRESH_TOKEN',
+];
+
+const SP_API_AWS_CONFIG_KEYS = [
+  'SP_API_ACCESS_KEY_ID',
+  'SP_API_SECRET_ACCESS_KEY',
+  'SP_API_ROLE_ARN',
+];
+
+const SP_API_MODE_CONFIG_KEYS = ['SP_API_USE_AWS_SIGNATURE'];
+
+const SP_API_FALLBACK_CONFIG_KEYS = [
+  'ENABLE_LEGACY_CLIENT_FALLBACK',
+  'ENABLE_HTML_SCRAPER_FALLBACK',
+];
+
+const ALL_SP_API_CONFIG_KEYS = [
+  ...SP_API_US_CONFIG_KEYS,
+  ...SP_API_EU_CONFIG_KEYS,
+  ...SP_API_AWS_CONFIG_KEYS,
+  ...SP_API_MODE_CONFIG_KEYS,
+  ...SP_API_FALLBACK_CONFIG_KEYS,
+];
+
+const MONITOR_FEATURE_CONFIG_KEYS = ['COMPETITOR_MONITOR_ENABLED'];
+
+const MONITOR_SCHEDULE_CONFIG_KEYS = [
+  'MONITOR_US_SCHEDULE_MINUTES',
+  'MONITOR_EU_SCHEDULE_MINUTES',
+];
+
+const ALL_MONITOR_CONFIG_KEYS = [
+  ...MONITOR_FEATURE_CONFIG_KEYS,
+  ...MONITOR_SCHEDULE_CONFIG_KEYS,
+];
+
+function buildSpApiFormValues(configs: API.SPAPIConfig[]) {
+  const formValues: Record<string, any> = {};
+
+  configs.forEach((config: API.SPAPIConfig) => {
+    if (!config.configKey) {
+      return;
+    }
+
+    if (BOOLEAN_CONFIG_KEYS.has(config.configKey)) {
+      formValues[config.configKey] =
+        config.configValue === 'true' ||
+        config.configValue === true ||
+        config.configValue === '1' ||
+        config.configValue === 1;
+      return;
+    }
+
+    if (NUMBER_CONFIG_KEYS.has(config.configKey)) {
+      formValues[config.configKey] =
+        config.configValue !== undefined && config.configValue !== null
+          ? Number.parseInt(String(config.configValue), 10)
+          : '';
+      return;
+    }
+
+    formValues[config.configKey] = config.configValue || '';
+  });
+
+  return formValues;
+}
+
+function pickConfigValues(
+  formValues: Record<string, any>,
+  configKeys: string[],
+) {
+  return configKeys.reduce<Record<string, any>>((acc, key) => {
+    if (Object.prototype.hasOwnProperty.call(formValues, key)) {
+      acc[key] = formValues[key];
+    }
+    return acc;
+  }, {});
+}
+
 const SettingsPage: React.FC<unknown> = () => {
   const message = useMessage();
   const [spApiConfigs, setSpApiConfigs] = useState<API.SPAPIConfig[]>([]);
@@ -36,8 +136,8 @@ const SettingsPage: React.FC<unknown> = () => {
   const [loading, setLoading] = useState(false);
   const [activeTab, setActiveTab] = useState<string>('sp-api');
   const [spApiForm] = ProForm.useForm();
-  const [feishuUSForm] = ProForm.useForm();
-  const [feishuEUForm] = ProForm.useForm();
+  const [monitorForm] = ProForm.useForm();
+  const [feishuForm] = ProForm.useForm();
   const [backups, setBackups] = useState<API.BackupInfo[]>([]);
   const [backupLoading, setBackupLoading] = useState(false);
   const [restoreModalVisible, setRestoreModalVisible] = useState(false);
@@ -45,6 +145,49 @@ const SettingsPage: React.FC<unknown> = () => {
   const [backupForm] = ProForm.useForm();
   const [backupConfigLoading, setBackupConfigLoading] = useState(false);
   const [backupConfigForm] = ProForm.useForm();
+
+  const applySpApiConfigValues = useCallback(
+    (configs: API.SPAPIConfig[]) => {
+      const formValues = buildSpApiFormValues(configs);
+      spApiForm.setFieldsValue(
+        pickConfigValues(formValues, ALL_SP_API_CONFIG_KEYS),
+      );
+    },
+    [spApiForm],
+  );
+
+  const applyMonitorConfigValues = useCallback(
+    (configs: API.SPAPIConfig[]) => {
+      const formValues = buildSpApiFormValues(configs);
+      monitorForm.setFieldsValue(
+        pickConfigValues(formValues, ALL_MONITOR_CONFIG_KEYS),
+      );
+    },
+    [monitorForm],
+  );
+
+  const applyFeishuConfigValues = useCallback(
+    (configs: API.FeishuConfig[]) => {
+      const usConfig = configs.find(
+        (c: API.FeishuConfig) => c.country === 'US',
+      );
+      const euConfig = configs.find(
+        (c: API.FeishuConfig) => c.country === 'EU',
+      );
+
+      feishuForm.setFieldsValue({
+        US: {
+          webhookUrl: usConfig?.webhookUrl || '',
+          enabled: usConfig?.enabled === 1,
+        },
+        EU: {
+          webhookUrl: euConfig?.webhookUrl || '',
+          enabled: euConfig?.enabled === 1,
+        },
+      });
+    },
+    [feishuForm],
+  );
 
   // 加载配置
   const loadConfigs = async () => {
@@ -77,66 +220,13 @@ const SettingsPage: React.FC<unknown> = () => {
       setSpApiConfigs(spApiData);
       setFeishuConfigs(feishuData);
 
-      // 设置SP-API表单值
-      const spApiFormValues: any = {};
-      spApiData.forEach((config: API.SPAPIConfig) => {
-        if (!config.configKey) {
-          return;
-        }
-
-        let value: any;
-        if (
-          config.configKey === 'SP_API_USE_AWS_SIGNATURE' ||
-          config.configKey === 'COMPETITOR_MONITOR_ENABLED' ||
-          config.configKey === 'ENABLE_HTML_SCRAPER_FALLBACK' ||
-          config.configKey === 'ENABLE_LEGACY_CLIENT_FALLBACK'
-        ) {
-          // 布尔值字段：转换为布尔类型
-          value =
-            config.configValue === 'true' ||
-            config.configValue === true ||
-            config.configValue === '1' ||
-            config.configValue === 1;
-        } else if (
-          config.configKey === 'MONITOR_US_SCHEDULE_MINUTES' ||
-          config.configKey === 'MONITOR_EU_SCHEDULE_MINUTES'
-        ) {
-          value =
-            config.configValue !== undefined && config.configValue !== null
-              ? Number.parseInt(String(config.configValue), 10)
-              : '';
-        } else {
-          value = config.configValue || '';
-        }
-
-        spApiFormValues[config.configKey] = value;
-      });
-      // 设置SP-API表单值（无论当前tab是什么，都设置，以便切换tab时能显示）
-      setTimeout(() => {
-        spApiForm.setFieldsValue(spApiFormValues);
-      }, 0);
-
-      // 设置飞书表单值
-      const usConfig = feishuData.find(
-        (c: API.FeishuConfig) => c.country === 'US',
-      );
-      const euConfig = feishuData.find(
-        (c: API.FeishuConfig) => c.country === 'EU',
-      );
-
-      // 设置飞书表单值（无论当前tab是什么，都设置，以便切换tab时能显示）
-      setTimeout(() => {
-        const usValues = {
-          webhookUrl: usConfig?.webhookUrl || '',
-          enabled: usConfig?.enabled === 1,
-        };
-        const euValues = {
-          webhookUrl: euConfig?.webhookUrl || '',
-          enabled: euConfig?.enabled === 1,
-        };
-        feishuUSForm.setFieldsValue(usValues);
-        feishuEUForm.setFieldsValue(euValues);
-      }, 0);
+      if (activeTab === 'sp-api') {
+        applySpApiConfigValues(spApiData);
+      } else if (activeTab === 'monitor') {
+        applyMonitorConfigValues(spApiData);
+      } else if (activeTab === 'feishu') {
+        applyFeishuConfigValues(feishuData);
+      }
     } catch (error) {
       console.error('加载配置失败:', error);
       message.error('加载配置失败');
@@ -347,7 +437,7 @@ const SettingsPage: React.FC<unknown> = () => {
     MONITOR_EU_SCHEDULE_MINUTES: 'EU 区域定时监控间隔（分钟）',
   };
 
-  // 保存指定配置组的配置项
+  // 保存当前页面配置项
   const saveConfigGroup = useCallback(
     async (configKeys: string[], formValues: any) => {
       try {
@@ -378,15 +468,34 @@ const SettingsPage: React.FC<unknown> = () => {
     [message],
   );
 
+  const handleResetSpApiConfig = useCallback(() => {
+    applySpApiConfigValues(spApiConfigs);
+  }, [applySpApiConfigValues, spApiConfigs]);
+
+  const handleResetMonitorConfig = useCallback(() => {
+    applyMonitorConfigValues(spApiConfigs);
+  }, [applyMonitorConfigValues, spApiConfigs]);
+
+  const handleResetFeishuConfig = useCallback(() => {
+    applyFeishuConfigValues(feishuConfigs);
+  }, [applyFeishuConfigValues, feishuConfigs]);
+
   // 保存飞书配置
-  const handleSaveFeishuConfig = async (region: 'US' | 'EU', values: any) => {
+  const handleSaveFeishuConfig = async (values: any) => {
     try {
-      await upsertFeishuConfig({
-        country: region,
-        webhookUrl: values.webhookUrl,
-        enabled: values.enabled,
-      });
-      message.success(`${region}区域飞书配置已保存`);
+      await Promise.all([
+        upsertFeishuConfig({
+          country: 'US',
+          webhookUrl: values?.US?.webhookUrl,
+          enabled: values?.US?.enabled,
+        }),
+        upsertFeishuConfig({
+          country: 'EU',
+          webhookUrl: values?.EU?.webhookUrl,
+          enabled: values?.EU?.enabled,
+        }),
+      ]);
+      message.success('飞书配置已保存');
       await loadConfigs();
     } catch (error: any) {
       message.error(error?.errorMessage || '保存失败');
@@ -398,29 +507,26 @@ const SettingsPage: React.FC<unknown> = () => {
       key: 'sp-api',
       label: 'SP-API配置',
       children: (
-        <Space direction="vertical" size="large" style={{ width: '100%' }}>
-          <Card title="US区域 LWA 配置">
-            <ProForm
-              form={spApiForm}
-              autoFocusFirstInput={false}
-              onFinish={async (values) => {
-                await saveConfigGroup(
-                  [
-                    'SP_API_US_LWA_CLIENT_ID',
-                    'SP_API_US_LWA_CLIENT_SECRET',
-                    'SP_API_US_REFRESH_TOKEN',
-                  ],
-                  values,
-                );
-              }}
-              submitter={{
-                resetButtonProps: {
-                  onClick: () => {
-                    loadConfigs();
-                  },
-                },
-              }}
-            >
+        <ProForm
+          form={spApiForm}
+          autoFocusFirstInput={false}
+          layout="vertical"
+          onFinish={async (values) => {
+            await saveConfigGroup(ALL_SP_API_CONFIG_KEYS, values);
+          }}
+          submitter={{
+            searchConfig: {
+              submitText: '提交',
+              resetText: '重置',
+            },
+            resetButtonProps: {
+              htmlType: 'button',
+              onClick: handleResetSpApiConfig,
+            },
+          }}
+        >
+          <Space direction="vertical" size="large" style={{ width: '100%' }}>
+            <Card title="US区域 LWA 配置">
               <ProFormText
                 name="SP_API_US_LWA_CLIENT_ID"
                 label="LWA Client ID"
@@ -448,31 +554,9 @@ const SettingsPage: React.FC<unknown> = () => {
                   style: { width: '100%' },
                 }}
               />
-            </ProForm>
-          </Card>
+            </Card>
 
-          <Card title="EU区域 LWA 配置">
-            <ProForm
-              form={spApiForm}
-              autoFocusFirstInput={false}
-              onFinish={async (values) => {
-                await saveConfigGroup(
-                  [
-                    'SP_API_EU_LWA_CLIENT_ID',
-                    'SP_API_EU_LWA_CLIENT_SECRET',
-                    'SP_API_EU_REFRESH_TOKEN',
-                  ],
-                  values,
-                );
-              }}
-              submitter={{
-                resetButtonProps: {
-                  onClick: () => {
-                    loadConfigs();
-                  },
-                },
-              }}
-            >
+            <Card title="EU区域 LWA 配置">
               <ProFormText
                 name="SP_API_EU_LWA_CLIENT_ID"
                 label="LWA Client ID"
@@ -500,31 +584,9 @@ const SettingsPage: React.FC<unknown> = () => {
                   style: { width: '100%' },
                 }}
               />
-            </ProForm>
-          </Card>
+            </Card>
 
-          <Card title="共享 AWS IAM 配置">
-            <ProForm
-              form={spApiForm}
-              autoFocusFirstInput={false}
-              onFinish={async (values) => {
-                await saveConfigGroup(
-                  [
-                    'SP_API_ACCESS_KEY_ID',
-                    'SP_API_SECRET_ACCESS_KEY',
-                    'SP_API_ROLE_ARN',
-                  ],
-                  values,
-                );
-              }}
-              submitter={{
-                resetButtonProps: {
-                  onClick: () => {
-                    loadConfigs();
-                  },
-                },
-              }}
-            >
+            <Card title="共享 AWS IAM 配置">
               <ProFormText
                 name="SP_API_ACCESS_KEY_ID"
                 label="AWS Access Key ID"
@@ -556,24 +618,9 @@ const SettingsPage: React.FC<unknown> = () => {
                   style: { width: '100%' },
                 }}
               />
-            </ProForm>
-          </Card>
+            </Card>
 
-          <Card title="SP-API 调用模式">
-            <ProForm
-              form={spApiForm}
-              autoFocusFirstInput={false}
-              onFinish={async (values) => {
-                await saveConfigGroup(['SP_API_USE_AWS_SIGNATURE'], values);
-              }}
-              submitter={{
-                resetButtonProps: {
-                  onClick: () => {
-                    loadConfigs();
-                  },
-                },
-              }}
-            >
+            <Card title="SP-API 调用模式">
               <ProFormSwitch
                 name="SP_API_USE_AWS_SIGNATURE"
                 label="启用 AWS 签名"
@@ -581,30 +628,9 @@ const SettingsPage: React.FC<unknown> = () => {
                 unCheckedChildren="简化模式"
                 extra="简化模式：无需 AWS 签名，仅使用 Access Token。标准模式：需要完整的 AWS 签名（需要 Access Key 和 Secret Key）。"
               />
-            </ProForm>
-          </Card>
+            </Card>
 
-          <Card title="降级策略">
-            <ProForm
-              form={spApiForm}
-              autoFocusFirstInput={false}
-              onFinish={async (values) => {
-                await saveConfigGroup(
-                  [
-                    'ENABLE_LEGACY_CLIENT_FALLBACK',
-                    'ENABLE_HTML_SCRAPER_FALLBACK',
-                  ],
-                  values,
-                );
-              }}
-              submitter={{
-                resetButtonProps: {
-                  onClick: () => {
-                    loadConfigs();
-                  },
-                },
-              }}
-            >
+            <Card title="降级策略">
               <ProFormSwitch
                 name="ENABLE_LEGACY_CLIENT_FALLBACK"
                 label="启用旧客户端备用"
@@ -627,9 +653,9 @@ const SettingsPage: React.FC<unknown> = () => {
                   />
                 }
               />
-            </ProForm>
-          </Card>
-        </Space>
+            </Card>
+          </Space>
+        </ProForm>
       ),
     },
 
@@ -637,22 +663,26 @@ const SettingsPage: React.FC<unknown> = () => {
       key: 'monitor',
       label: '监控设置',
       children: (
-        <Space direction="vertical" size="large" style={{ width: '100%' }}>
-          <Card title="监控功能开关">
-            <ProForm
-              form={spApiForm}
-              autoFocusFirstInput={false}
-              onFinish={async (values) => {
-                await saveConfigGroup(['COMPETITOR_MONITOR_ENABLED'], values);
-              }}
-              submitter={{
-                resetButtonProps: {
-                  onClick: () => {
-                    loadConfigs();
-                  },
-                },
-              }}
-            >
+        <ProForm
+          form={monitorForm}
+          autoFocusFirstInput={false}
+          layout="vertical"
+          onFinish={async (values) => {
+            await saveConfigGroup(ALL_MONITOR_CONFIG_KEYS, values);
+          }}
+          submitter={{
+            searchConfig: {
+              submitText: '提交',
+              resetText: '重置',
+            },
+            resetButtonProps: {
+              htmlType: 'button',
+              onClick: handleResetMonitorConfig,
+            },
+          }}
+        >
+          <Space direction="vertical" size="large" style={{ width: '100%' }}>
+            <Card title="监控功能开关">
               <ProFormSwitch
                 name="COMPETITOR_MONITOR_ENABLED"
                 label="启用竞品监控"
@@ -660,37 +690,16 @@ const SettingsPage: React.FC<unknown> = () => {
                 unCheckedChildren="禁用"
                 extra="关闭后将跳过竞品定时监控与手动触发任务。"
               />
-            </ProForm>
-          </Card>
+            </Card>
 
-          <Card title="定时监控频率">
-            <Alert
-              message="频率说明"
-              description="调整监控频率会同时影响标准监控和竞品监控任务，请结合配额与业务需求设置。"
-              type="info"
-              showIcon
-              style={{ marginBottom: 16 }}
-            />
-            <ProForm
-              form={spApiForm}
-              autoFocusFirstInput={false}
-              onFinish={async (values) => {
-                await saveConfigGroup(
-                  [
-                    'MONITOR_US_SCHEDULE_MINUTES',
-                    'MONITOR_EU_SCHEDULE_MINUTES',
-                  ],
-                  values,
-                );
-              }}
-              submitter={{
-                resetButtonProps: {
-                  onClick: () => {
-                    loadConfigs();
-                  },
-                },
-              }}
-            >
+            <Card title="定时监控频率">
+              <Alert
+                message="频率说明"
+                description="调整监控频率会同时影响标准监控和竞品监控任务，请结合配额与业务需求设置。"
+                type="info"
+                showIcon
+                style={{ marginBottom: 16 }}
+              />
               <ProFormSelect
                 name="MONITOR_US_SCHEDULE_MINUTES"
                 label="US 区域监控间隔（分钟）"
@@ -719,30 +728,34 @@ const SettingsPage: React.FC<unknown> = () => {
                   style: { width: '100%' },
                 }}
               />
-            </ProForm>
-          </Card>
-        </Space>
+            </Card>
+          </Space>
+        </ProForm>
       ),
     },
     {
       key: 'feishu',
       label: '飞书配置',
       children: (
-        <Space direction="vertical" size="large" style={{ width: '100%' }}>
-          <Card title="US区域配置">
-            <ProForm
-              form={feishuUSForm}
-              onFinish={(values) => handleSaveFeishuConfig('US', values)}
-              submitter={{
-                resetButtonProps: {
-                  onClick: () => {
-                    loadConfigs();
-                  },
-                },
-              }}
-            >
+        <ProForm
+          form={feishuForm}
+          layout="vertical"
+          onFinish={handleSaveFeishuConfig}
+          submitter={{
+            searchConfig: {
+              submitText: '提交',
+              resetText: '重置',
+            },
+            resetButtonProps: {
+              htmlType: 'button',
+              onClick: handleResetFeishuConfig,
+            },
+          }}
+        >
+          <Space direction="vertical" size="large" style={{ width: '100%' }}>
+            <Card title="US区域配置">
               <ProFormText
-                name="webhookUrl"
+                name={['US', 'webhookUrl']}
                 label="Webhook URL"
                 placeholder="请输入飞书Webhook URL"
                 rules={[
@@ -754,28 +767,16 @@ const SettingsPage: React.FC<unknown> = () => {
                 }}
               />
               <ProFormSwitch
-                name="enabled"
+                name={['US', 'enabled']}
                 label="启用状态"
                 checkedChildren="启用"
                 unCheckedChildren="禁用"
               />
-            </ProForm>
-          </Card>
+            </Card>
 
-          <Card title="EU区域配置（包括UK、DE、FR、IT、ES）">
-            <ProForm
-              form={feishuEUForm}
-              onFinish={(values) => handleSaveFeishuConfig('EU', values)}
-              submitter={{
-                resetButtonProps: {
-                  onClick: () => {
-                    loadConfigs();
-                  },
-                },
-              }}
-            >
+            <Card title="EU区域配置（包括UK、DE、FR、IT、ES）">
               <ProFormText
-                name="webhookUrl"
+                name={['EU', 'webhookUrl']}
                 label="Webhook URL"
                 placeholder="请输入飞书Webhook URL"
                 rules={[
@@ -787,14 +788,14 @@ const SettingsPage: React.FC<unknown> = () => {
                 }}
               />
               <ProFormSwitch
-                name="enabled"
+                name={['EU', 'enabled']}
                 label="启用状态"
                 checkedChildren="启用"
                 unCheckedChildren="禁用"
               />
-            </ProForm>
-          </Card>
-        </Space>
+            </Card>
+          </Space>
+        </ProForm>
       ),
     },
     {
@@ -1068,53 +1069,15 @@ const SettingsPage: React.FC<unknown> = () => {
         destroyInactiveTabPane
         onChange={(key) => {
           setActiveTab(key);
-          // Tab 切换时设置表单值
-          if (key === 'sp-api' && spApiConfigs.length > 0) {
-            const spApiFormValues: any = {};
-            spApiConfigs.forEach((config: API.SPAPIConfig) => {
-              if (!config.configKey) {
-                return;
-              }
-
-              let value: any;
-              if (
-                config.configKey === 'SP_API_USE_AWS_SIGNATURE' ||
-                config.configKey === 'ENABLE_HTML_SCRAPER_FALLBACK' ||
-                config.configKey === 'ENABLE_LEGACY_CLIENT_FALLBACK'
-              ) {
-                // 布尔值字段：转换为布尔类型
-                value =
-                  config.configValue === 'true' ||
-                  config.configValue === true ||
-                  config.configValue === '1' ||
-                  config.configValue === 1;
-              } else {
-                value = config.configValue || '';
-              }
-
-              spApiFormValues[config.configKey] = value;
-            });
-            setTimeout(() => {
-              spApiForm.setFieldsValue(spApiFormValues);
-            }, 0);
-          } else if (key === 'feishu' && feishuConfigs.length > 0) {
-            const usConfig = feishuConfigs.find(
-              (c: API.FeishuConfig) => c.country === 'US',
-            );
-            const euConfig = feishuConfigs.find(
-              (c: API.FeishuConfig) => c.country === 'EU',
-            );
-            setTimeout(() => {
-              feishuUSForm.setFieldsValue({
-                webhookUrl: usConfig?.webhookUrl || '',
-                enabled: usConfig?.enabled === 1,
-              });
-              feishuEUForm.setFieldsValue({
-                webhookUrl: euConfig?.webhookUrl || '',
-                enabled: euConfig?.enabled === 1,
-              });
-            }, 0);
-          }
+          setTimeout(() => {
+            if (key === 'sp-api' && spApiConfigs.length > 0) {
+              applySpApiConfigValues(spApiConfigs);
+            } else if (key === 'monitor' && spApiConfigs.length > 0) {
+              applyMonitorConfigValues(spApiConfigs);
+            } else if (key === 'feishu' && feishuConfigs.length > 0) {
+              applyFeishuConfigValues(feishuConfigs);
+            }
+          }, 0);
         }}
       />
     </PageContainer>

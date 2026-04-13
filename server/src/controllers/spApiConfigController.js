@@ -17,6 +17,13 @@ const errorStatsService = require('../services/errorStatsService');
 const riskControlService = require('../services/riskControlService');
 const logger = require('../utils/logger');
 
+function normalizeConfigInput(value) {
+  if (value === undefined || value === null) {
+    return '';
+  }
+  return typeof value === 'string' ? value.trim() : String(value).trim();
+}
+
 // 获取所有SP-API配置
 exports.getSPAPIConfigs = async (req, res) => {
   try {
@@ -76,8 +83,13 @@ exports.updateSPAPIConfig = async (req, res) => {
       });
     }
 
+    const normalizedConfigs = configs.map((config) => ({
+      ...config,
+      configValue: normalizeConfigInput(config.configValue),
+    }));
+
     // 批量更新配置
-    const results = await SPAPIConfig.batchUpdate(configs);
+    const results = await SPAPIConfig.batchUpdate(normalizedConfigs);
 
     // 重新加载SP-API配置
     try {
