@@ -50,6 +50,8 @@ const GLOBAL_AWS_FIELD_SPECS = {
   roleArn: 'ROLE_ARN',
 };
 
+const PLACEHOLDER_PATTERNS = [/^your_/i, /^example/i, /placeholder/i];
+
 // 初始化配置（先从环境变量读取）
 let SP_API_CONFIG = {
   regionConfigs: {
@@ -69,6 +71,71 @@ const ACCESS_TOKEN_CACHE = {
   EU: null,
 };
 
+let configLoadPromise = null;
+
+function normalizeConfigValue(value) {
+  if (value === undefined || value === null) {
+    return '';
+  }
+  return typeof value === 'string' ? value.trim() : String(value).trim();
+}
+
+function isPlaceholderLikeValue(value) {
+  const normalizedValue = normalizeConfigValue(value);
+  if (!normalizedValue) {
+    return false;
+  }
+  return PLACEHOLDER_PATTERNS.some((pattern) => pattern.test(normalizedValue));
+}
+
+function getRegionCredentialDiagnostics(regionConfig) {
+  return {
+    clientIdChars: regionConfig?.lwaClientId?.length || 0,
+    clientCredentialChars: regionConfig?.lwaClientSecret?.length || 0,
+    refreshChars: regionConfig?.refreshToken?.length || 0,
+    clientIdTemplateLike: isPlaceholderLikeValue(regionConfig?.lwaClientId),
+    clientCredentialTemplateLike: isPlaceholderLikeValue(
+      regionConfig?.lwaClientSecret,
+    ),
+    refreshTemplateLike: isPlaceholderLikeValue(regionConfig?.refreshToken),
+  };
+}
+
+function parseLwaResponseBody(body) {
+  if (!body) {
+    return null;
+  }
+  if (typeof body === 'object') {
+    return body;
+  }
+  try {
+    return JSON.parse(body);
+  } catch (error) {
+    return null;
+  }
+}
+
+function shouldReloadConfigForTokenError(error) {
+  if (!error) {
+    return false;
+  }
+  if (error.statusCode === 401) {
+    return true;
+  }
+  const parsedBody = parseLwaResponseBody(error.responseBody);
+  return (
+    error.statusCode === 400 &&
+    ['invalid_client', 'invalid_grant'].includes(parsedBody?.error)
+  );
+}
+
+async function ensureSPAPIConfigLoaded() {
+  if (!configLoadPromise) {
+    configLoadPromise = loadConfigFromDatabase();
+  }
+  await configLoadPromise;
+}
+
 function buildRegionConfig(region) {
   const suffix = REGION_SETTINGS[region]?.envSuffix || region;
   const fallbackPrefix = 'SP_API_';
@@ -76,7 +143,9 @@ function buildRegionConfig(region) {
   for (const [fieldKey, fieldSuffix] of Object.entries(REGION_FIELD_SPECS)) {
     const envKey = `SP_API_${suffix}_${fieldSuffix}`;
     const fallbackEnvKey = `${fallbackPrefix}${fieldSuffix}`;
-    result[fieldKey] = process.env[envKey] || process.env[fallbackEnvKey] || '';
+    result[fieldKey] = normalizeConfigValue(
+      process.env[envKey] || process.env[fallbackEnvKey] || '',
+    );
   }
   result.accessKeyId = '';
   result.secretAccessKey = '';
@@ -91,7 +160,7 @@ function buildGlobalAWSConfig() {
     GLOBAL_AWS_FIELD_SPECS,
   )) {
     const envKey = `${fallbackPrefix}${fieldSuffix}`;
-    result[fieldKey] = process.env[envKey] || '';
+    result[fieldKey] = normalizeConfigValue(process.env[envKey] || '');
   }
   return result;
 }
@@ -148,7 +217,7 @@ async function loadConfigFromDatabase() {
     const configMap = {};
     configs.forEach((item) => {
       if (item.config_key) {
-        configMap[item.config_key] = item.config_value;
+        configMap[item.config_key] = normalizeConfigValue(item.config_value);
       }
     });
 
@@ -171,11 +240,12 @@ async function loadConfigFromDatabase() {
       )) {
         const regionKey = `SP_API_${REGION_SETTINGS[region].envSuffix}_${fieldSuffix}`;
         const fallbackKey = `SP_API_${fieldSuffix}`;
-        const value =
+        const value = normalizeConfigValue(
           configMap[regionKey] ||
-          configMap[fallbackKey] ||
-          regionConfig[fieldKey];
-        if (value) {
+            configMap[fallbackKey] ||
+            regionConfig[fieldKey],
+        );
+        if (value !== '') {
           regionConfig[fieldKey] = value;
         }
       }
@@ -185,12 +255,13 @@ async function loadConfigFromDatabase() {
       )) {
         const regionKey = `SP_API_${REGION_SETTINGS[region].envSuffix}_${fieldSuffix}`;
         const fallbackKey = `SP_API_${fieldSuffix}`;
-        const value =
+        const value = normalizeConfigValue(
           configMap[regionKey] ||
-          configMap[fallbackKey] ||
-          SP_API_CONFIG.aws[fieldKey] ||
-          '';
-        if (value) {
+            configMap[fallbackKey] ||
+            SP_API_CONFIG.aws[fieldKey] ||
+            '',
+        );
+        if (value !== '') {
           regionConfig[fieldKey] = value;
         }
       }
@@ -207,35 +278,15 @@ async function loadConfigFromDatabase() {
 
 // 重新加载配置
 async function reloadSPAPIConfig() {
-  await loadConfigFromDatabase();
+  configLoadPromise = loadConfigFromDatabase();
+  await configLoadPromise;
 }
 
 // 初始化时加载配置
-loadConfigFromDatabase();
+configLoadPromise = loadConfigFromDatabase();
 
 // 获取访问令牌 (Access Token)
-async function getAccessToken(region) {
-  const normalizedRegion = normalizeRegion(region);
-  const regionConfig = SP_API_CONFIG.regionConfigs[normalizedRegion];
-  if (!regionConfig) {
-    throw new Error(`无效的SP-API区域配置: ${region}`);
-  }
-
-  if (
-    !regionConfig.lwaClientId ||
-    !regionConfig.lwaClientSecret ||
-    !regionConfig.refreshToken
-  ) {
-    throw new Error(
-      `SP-API ${normalizedRegion}区域的LWA配置不完整，请检查配置`,
-    );
-  }
-
-  const cached = ACCESS_TOKEN_CACHE[normalizedRegion];
-  if (cached && cached.expiresAt && Date.now() < cached.expiresAt) {
-    return cached.token;
-  }
-
+async function requestAccessTokenOnce(normalizedRegion, regionConfig) {
   const postData = new URLSearchParams({
     grant_type: 'refresh_token',
     refresh_token: regionConfig.refreshToken,
@@ -278,22 +329,28 @@ async function getAccessToken(region) {
               );
               resolve(response.access_token);
             } else {
-              reject(
-                new Error(
-                  `获取访问令牌失败: 响应中缺少 access_token - ${JSON.stringify(
-                    response,
-                  )}`,
-                ),
+              const error = new Error(
+                `获取访问令牌失败: 响应中缺少 access_token - ${data}`,
               );
+              error.statusCode = res.statusCode;
+              error.responseBody = data;
+              reject(error);
             }
           } catch (e) {
-            reject(new Error(`解析访问令牌响应失败: ${e.message} - ${data}`));
+            const error = new Error(
+              `解析访问令牌响应失败: ${e.message} - ${data}`,
+            );
+            error.statusCode = res.statusCode;
+            error.responseBody = data;
+            reject(error);
           }
         } else {
-          logger.error(
-            `[getAccessToken] 获取访问令牌失败: ${res.statusCode} - ${data}`,
+          const error = new Error(
+            `获取访问令牌失败: ${res.statusCode} - ${data}`,
           );
-          reject(new Error(`获取访问令牌失败: ${res.statusCode} - ${data}`));
+          error.statusCode = res.statusCode;
+          error.responseBody = data;
+          reject(error);
         }
       });
     });
@@ -305,6 +362,58 @@ async function getAccessToken(region) {
     req.write(postData);
     req.end();
   });
+}
+
+async function getAccessToken(region, attempt = 0) {
+  await ensureSPAPIConfigLoaded();
+  const normalizedRegion = normalizeRegion(region);
+  const regionConfig = SP_API_CONFIG.regionConfigs[normalizedRegion];
+  if (!regionConfig) {
+    throw new Error(`无效的SP-API区域配置: ${region}`);
+  }
+
+  if (
+    !regionConfig.lwaClientId ||
+    !regionConfig.lwaClientSecret ||
+    !regionConfig.refreshToken
+  ) {
+    throw new Error(
+      `SP-API ${normalizedRegion}区域的LWA配置不完整，请检查配置`,
+    );
+  }
+
+  const cached = ACCESS_TOKEN_CACHE[normalizedRegion];
+  if (cached && cached.expiresAt && Date.now() < cached.expiresAt) {
+    return cached.token;
+  }
+
+  try {
+    return await requestAccessTokenOnce(normalizedRegion, regionConfig);
+  } catch (error) {
+    const parsedBody = parseLwaResponseBody(error.responseBody);
+    if (attempt < 1 && shouldReloadConfigForTokenError(error)) {
+      logger.warn(
+        `[getAccessToken] ${normalizedRegion} 令牌获取失败，准备重载SP-API配置后重试`,
+        {
+          statusCode: error.statusCode || null,
+          error: parsedBody?.error || null,
+          errorDescription: parsedBody?.error_description || null,
+          diagnostics: getRegionCredentialDiagnostics(regionConfig),
+        },
+      );
+      clearAccessTokenCache();
+      await reloadSPAPIConfig();
+      return getAccessToken(normalizedRegion, attempt + 1);
+    }
+
+    logger.error(`[getAccessToken] 获取访问令牌失败`, {
+      statusCode: error.statusCode || null,
+      error: parsedBody?.error || null,
+      errorDescription: parsedBody?.error_description || error.message,
+      diagnostics: getRegionCredentialDiagnostics(regionConfig),
+    });
+    throw error;
+  }
 }
 
 // AWS签名V4
@@ -389,17 +498,19 @@ function clearAccessTokenCache() {
 }
 
 function normalizeRegion(region) {
-  if (!region) {
+  const normalized = normalizeConfigValue(region).toUpperCase();
+  if (!normalized) {
     return 'US';
   }
-  return REGION_SETTINGS[region] ? region : 'US';
+  return REGION_SETTINGS[normalized] ? normalized : 'US';
 }
 
 function getRegionByCountry(country) {
-  if (!country) {
+  const normalized = normalizeConfigValue(country).toUpperCase();
+  if (!normalized) {
     return 'US';
   }
-  return COUNTRY_REGION_MAP[country] || 'US';
+  return COUNTRY_REGION_MAP[normalized] || 'US';
 }
 
 function getMarketplaceId(country) {
