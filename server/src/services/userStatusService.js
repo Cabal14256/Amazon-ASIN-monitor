@@ -7,6 +7,7 @@ const { query, withTransaction } = require('../config/database');
 const UserStatusHistory = require('../models/UserStatusHistory');
 const Session = require('../models/Session');
 const permissionCacheService = require('./permissionCacheService');
+const websocketService = require('./websocketService');
 const {
   USER_STATUS,
   normalizeUserStatus,
@@ -111,6 +112,11 @@ async function changeStatus(
   );
 
   await permissionCacheService.clearUserCache(userId);
+  if (result.changed && result.newStatus !== USER_STATUS.ACTIVE) {
+    websocketService.disconnectUserSessions(userId, {
+      reason: '账户状态已变更',
+    });
+  }
   return result;
 }
 

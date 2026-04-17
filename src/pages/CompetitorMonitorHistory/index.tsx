@@ -97,6 +97,9 @@ const CompetitorMonitorHistoryPage: React.FC<unknown> = () => {
       title: '变体组',
       dataIndex: 'variantGroupName',
       width: 200,
+      fieldProps: {
+        placeholder: '请输入变体组名称',
+      },
       renderText: (text) => text || '-',
     },
     {
@@ -114,6 +117,9 @@ const CompetitorMonitorHistoryPage: React.FC<unknown> = () => {
       dataIndex: 'parentAsin',
       width: 250,
       hideInTable: type === 'group',
+      fieldProps: {
+        placeholder: '请输入父变体ASIN',
+      },
       renderText: (text) => text || '-',
     },
     {
@@ -206,9 +212,15 @@ const CompetitorMonitorHistoryPage: React.FC<unknown> = () => {
           if (params.isBroken !== undefined && params.isBroken !== '') {
             requestParams.isBroken = params.isBroken;
           }
+          if (params.variantGroupName) {
+            requestParams.variantGroupName = params.variantGroupName;
+          }
           // 处理ASIN搜索
           if (params.asin) {
             requestParams.asin = params.asin;
+          }
+          if (params.parentAsin) {
+            requestParams.parentAsin = params.parentAsin;
           }
 
           // 如果URL中有参数，添加到请求中
@@ -218,9 +230,40 @@ const CompetitorMonitorHistoryPage: React.FC<unknown> = () => {
             requestParams.asinId = id;
           }
 
-          const exportParams = { ...requestParams };
-          delete exportParams.current;
-          delete exportParams.pageSize;
+          const exportParams: Record<string, any> = {};
+          if (requestParams.startTime) {
+            exportParams.startTime = requestParams.startTime;
+          }
+          if (requestParams.endTime) {
+            exportParams.endTime = requestParams.endTime;
+          }
+          if (requestParams.country) {
+            exportParams.country = requestParams.country;
+          }
+          if (requestParams.checkType) {
+            exportParams.checkType = requestParams.checkType;
+          }
+          if (
+            requestParams.isBroken !== undefined &&
+            requestParams.isBroken !== ''
+          ) {
+            exportParams.isBroken = requestParams.isBroken;
+          }
+          if (requestParams.variantGroupName) {
+            exportParams.variantGroupName = requestParams.variantGroupName;
+          }
+          if (requestParams.asin) {
+            exportParams.asin = requestParams.asin;
+          }
+          if (requestParams.parentAsin) {
+            exportParams.parentAsin = requestParams.parentAsin;
+          }
+          if (requestParams.variantGroupId) {
+            exportParams.variantGroupId = requestParams.variantGroupId;
+          }
+          if (requestParams.asinId) {
+            exportParams.asinId = requestParams.asinId;
+          }
           currentQueryParamsRef.current = exportParams;
 
           // 处理排序

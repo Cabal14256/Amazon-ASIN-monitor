@@ -4,10 +4,29 @@ const User = require('../models/User');
 const Session = require('../models/Session');
 const logger = require('../utils/logger');
 const { clearAuthCookies, readAuthToken } = require('../utils/authCookie');
+const websocketService = require('../services/websocketService');
 const {
   isUserActive,
   getUserStatusErrorMessage,
 } = require('../utils/userStatus');
+const {
+  PASSWORD_CHANGE_REQUIRED_MESSAGE,
+  isPasswordChangeRequired,
+} = require('../utils/passwordPolicy');
+
+const PASSWORD_CHANGE_ALLOWED_ROUTES = new Set([
+  'GET /auth/current-user',
+  'POST /auth/logout',
+  'GET /auth/sessions',
+  'POST /auth/sessions/revoke',
+  'POST /auth/change-password',
+]);
+
+function canAccessWithPendingPasswordChange(req) {
+  return PASSWORD_CHANGE_ALLOWED_ROUTES.has(
+    `${req.method.toUpperCase()} ${req.path}`,
+  );
+}
 
 /**
  * 验证Token中间件
@@ -28,6 +47,9 @@ async function authenticateToken(req, res, next) {
     const sessionId = decoded.sessionId;
     const session = sessionId ? await Session.findById(sessionId) : null;
     if (!session) {
+      if (sessionId) {
+        websocketService.disconnectSession(sessionId, '会话不存在或已过期');
+      }
       clearAuthCookies(res, req);
       return res.status(401).json({
         success: false,
@@ -36,6 +58,7 @@ async function authenticateToken(req, res, next) {
       });
     }
     if (session.user_id !== decoded.userId || session.status !== 'ACTIVE') {
+      websocketService.disconnectSession(sessionId, '会话已失效');
       clearAuthCookies(res, req);
       return res.status(403).json({
         success: false,
@@ -46,6 +69,7 @@ async function authenticateToken(req, res, next) {
 
     if (Session.isExpired(session)) {
       await Session.markExpired(sessionId);
+      websocketService.disconnectSession(sessionId, '会话已过期');
       clearAuthCookies(res, req);
       return res.status(401).json({
         success: false,
@@ -58,6 +82,7 @@ async function authenticateToken(req, res, next) {
     const user = await User.findByIdWithPassword(decoded.userId);
 
     if (!user) {
+      websocketService.disconnectSession(sessionId, '用户不存在');
       clearAuthCookies(res, req);
       return res.status(401).json({
         success: false,
@@ -67,10 +92,30 @@ async function authenticateToken(req, res, next) {
     }
 
     if (!isUserActive(user.status, user.locked_until)) {
+      const errorMessage = getUserStatusErrorMessage(
+        user.status,
+        user.locked_until,
+      );
+      websocketService.disconnectSession(sessionId, errorMessage);
       clearAuthCookies(res, req);
       return res.status(403).json({
         success: false,
-        errorMessage: getUserStatusErrorMessage(user.status, user.locked_until),
+        errorMessage,
+        errorCode: 403,
+      });
+    }
+
+    if (
+      isPasswordChangeRequired(user, session) &&
+      !canAccessWithPendingPasswordChange(req)
+    ) {
+      websocketService.disconnectSession(
+        sessionId,
+        PASSWORD_CHANGE_REQUIRED_MESSAGE,
+      );
+      return res.status(403).json({
+        success: false,
+        errorMessage: PASSWORD_CHANGE_REQUIRED_MESSAGE,
         errorCode: 403,
       });
     }

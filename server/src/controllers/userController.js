@@ -6,6 +6,7 @@ const logger = require('../utils/logger');
 const permissionCacheService = require('../services/permissionCacheService');
 const passwordHistoryService = require('../services/passwordHistoryService');
 const userStatusService = require('../services/userStatusService');
+const websocketService = require('../services/websocketService');
 const { validatePassword } = require('../utils/passwordValidator');
 const { USER_STATUS, normalizeUserStatus } = require('../utils/userStatus');
 
@@ -51,20 +52,13 @@ async function ensureAdminGuard({
   const currentStatus = normalizeUserStatus(currentUser.status);
   const targetStatus = normalizeUserStatus(nextStatus);
 
-  if (
-    operatorUserId === targetUserId &&
-    currentHasAdmin &&
-    !nextHasAdmin
-  ) {
+  if (operatorUserId === targetUserId && currentHasAdmin && !nextHasAdmin) {
     const error = new Error('不能移除自己当前账户的管理员角色');
     error.statusCode = 400;
     throw error;
   }
 
-  if (
-    operatorUserId === targetUserId &&
-    targetStatus !== USER_STATUS.ACTIVE
-  ) {
+  if (operatorUserId === targetUserId && targetStatus !== USER_STATUS.ACTIVE) {
     const error = new Error('不能禁用、锁定或停用自己的账户');
     error.statusCode = 400;
     throw error;
@@ -288,74 +282,94 @@ exports.updateUser = async (req, res) => {
     const { userId } = req.params;
     const { real_name, status, roleIds, statusReason } = req.body;
 
-    const updatedUser = await withTransaction(async ({ query: transactionQuery }) => {
-      const user = await User.findById(userId, {
-        queryExecutor: transactionQuery,
-      });
-      if (!user) {
-        const error = new Error('用户不存在');
-        error.statusCode = 404;
-        throw error;
-      }
-
-      const nextRoles =
-        roleIds !== undefined
-          ? await getValidatedRoles(roleIds, transactionQuery)
-          : await User.getUserRoles(userId, {
-              queryExecutor: transactionQuery,
-            });
-
-      if (roleIds !== undefined && nextRoles.length === 0) {
-        const error = new Error('请至少保留一个角色');
-        error.statusCode = 400;
-        throw error;
-      }
-
-      const nextStatus =
-        status !== undefined ? normalizeUserStatus(status) : user.status;
-
-      await ensureAdminGuard({
-        targetUserId: userId,
-        currentUser: user,
-        nextStatus,
-        nextRoles,
-        operatorUserId: req.userId,
-        queryExecutor: transactionQuery,
-      });
-
-      const updateData = {};
-      if (real_name !== undefined) updateData.real_name = real_name;
-
-      if (Object.keys(updateData).length > 0) {
-        await User.update(userId, updateData, {
+    const { updatedUser, statusChangeResult } = await withTransaction(
+      async ({ query: transactionQuery }) => {
+        const user = await User.findById(userId, {
           queryExecutor: transactionQuery,
         });
-      }
+        if (!user) {
+          const error = new Error('用户不存在');
+          error.statusCode = 404;
+          throw error;
+        }
 
-      if (status !== undefined && normalizeUserStatus(user.status) !== nextStatus) {
-        await userStatusService.changeStatus(
-          userId,
+        const nextRoles =
+          roleIds !== undefined
+            ? await getValidatedRoles(roleIds, transactionQuery)
+            : await User.getUserRoles(userId, {
+                queryExecutor: transactionQuery,
+              });
+
+        if (roleIds !== undefined && nextRoles.length === 0) {
+          const error = new Error('请至少保留一个角色');
+          error.statusCode = 400;
+          throw error;
+        }
+
+        const nextStatus =
+          status !== undefined ? normalizeUserStatus(status) : user.status;
+
+        await ensureAdminGuard({
+          targetUserId: userId,
+          currentUser: user,
           nextStatus,
-          statusReason || null,
-          req.userId,
-          {
-            queryExecutor: transactionQuery,
-          },
-        );
-      }
-
-      if (roleIds !== undefined) {
-        await User.updateRoles(userId, roleIds, {
+          nextRoles,
+          operatorUserId: req.userId,
           queryExecutor: transactionQuery,
         });
-      }
 
-      return User.findById(userId, {
-        queryExecutor: transactionQuery,
-      });
-    });
+        const updateData = {};
+        if (real_name !== undefined) updateData.real_name = real_name;
+
+        if (Object.keys(updateData).length > 0) {
+          await User.update(userId, updateData, {
+            queryExecutor: transactionQuery,
+          });
+        }
+
+        let statusChangeResult = {
+          changed: false,
+          newStatus: normalizeUserStatus(user.status),
+        };
+        if (
+          status !== undefined &&
+          normalizeUserStatus(user.status) !== nextStatus
+        ) {
+          statusChangeResult = await userStatusService.changeStatus(
+            userId,
+            nextStatus,
+            statusReason || null,
+            req.userId,
+            {
+              queryExecutor: transactionQuery,
+            },
+          );
+        }
+
+        if (roleIds !== undefined) {
+          await User.updateRoles(userId, roleIds, {
+            queryExecutor: transactionQuery,
+          });
+        }
+
+        return {
+          updatedUser: await User.findById(userId, {
+            queryExecutor: transactionQuery,
+          }),
+          statusChangeResult,
+        };
+      },
+    );
 
     await permissionCacheService.clearUserCache(userId);
+    if (
+      statusChangeResult?.changed &&
+      statusChangeResult.newStatus !== USER_STATUS.ACTIVE
+    ) {
+      websocketService.disconnectUserSessions(userId, {
+        reason: '账户状态已变更',
+      });
+    }
     const roles = await User.getUserRoles(userId);
 
     res.json({
@@ -432,6 +446,9 @@ exports.deleteUser = async (req, res) => {
     });
 
     await permissionCacheService.clearUserCache(userId);
+    websocketService.disconnectUserSessions(userId, {
+      reason: '账户已删除',
+    });
 
     res.json({
       success: true,
@@ -540,6 +557,12 @@ exports.updateUserPassword = async (req, res) => {
         });
       }
     });
+
+    if (revokeAllSessions) {
+      websocketService.disconnectUserSessions(userId, {
+        reason: '密码已被重置，请重新登录',
+      });
+    }
 
     res.json({
       success: true,

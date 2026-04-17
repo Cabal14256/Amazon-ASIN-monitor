@@ -128,8 +128,6 @@ const HomePage: React.FC = () => {
     startRefresh();
     document.addEventListener('visibilitychange', handleVisibility);
 
-    // 连接WebSocket
-    wsClient.connect();
     setWsConnected(wsClient.isConnected());
 
     // 监听WebSocket消息

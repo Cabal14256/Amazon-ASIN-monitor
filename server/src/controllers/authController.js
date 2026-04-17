@@ -5,10 +5,12 @@ const AuditLog = require('../models/AuditLog');
 const { expiresIn, rememberExpiresIn } = require('../config/jwt');
 const { withTransaction } = require('../config/database');
 const logger = require('../utils/logger');
+const websocketService = require('../services/websocketService');
 const loginAttemptService = require('../services/loginAttemptService');
 const passwordHistoryService = require('../services/passwordHistoryService');
 const { setAuthCookies, clearAuthCookies } = require('../utils/authCookie');
 const { validatePassword } = require('../utils/passwordValidator');
+const { isPasswordExpired } = require('../utils/passwordPolicy');
 const {
   getUserStatusErrorMessage,
   isUserActive,
@@ -46,17 +48,6 @@ function buildPasswordExpiresAt(days = DEFAULT_PASSWORD_EXPIRE_DAYS) {
   return expiresAt;
 }
 
-function isPasswordExpired(user) {
-  if (!user?.password_expires_at) {
-    return false;
-  }
-  const expiresAt = new Date(user.password_expires_at);
-  if (Number.isNaN(expiresAt.getTime())) {
-    return false;
-  }
-  return expiresAt <= new Date();
-}
-
 function getAuthResponseData(user, permissions, roles, sessionId, extra = {}) {
   const { password: _, ...userInfo } = user;
   return {
@@ -71,7 +62,9 @@ function getAuthResponseData(user, permissions, roles, sessionId, extra = {}) {
 }
 
 function createClientIp(req) {
-  return req.ip || req.headers['x-forwarded-for'] || req.connection.remoteAddress;
+  return (
+    req.ip || req.headers['x-forwarded-for'] || req.connection.remoteAddress
+  );
 }
 
 async function recordLoginAudit({
@@ -199,6 +192,7 @@ exports.login = async (req, res) => {
     const token = User.generateToken(user.id, sessionId, tokenExpiresIn);
     const expiresAtMs = durationToMs(tokenExpiresIn);
     const expiresAt = expiresAtMs ? new Date(Date.now() + expiresAtMs) : null;
+    const cookieMaxAge = rememberMe ? expiresAtMs : null;
     const passwordExpired = isPasswordExpired(user);
 
     if (passwordExpired && !user.force_password_change) {
@@ -232,7 +226,7 @@ exports.login = async (req, res) => {
       responseStatus: 200,
     });
 
-    setAuthCookies(res, req, token, expiresAtMs);
+    setAuthCookies(res, req, token, cookieMaxAge);
 
     res.json({
       success: true,
@@ -287,7 +281,9 @@ exports.getCurrentUser = async (req, res) => {
         permissions,
         roles: roles.map((r) => r.code),
         sessionId: req.sessionId,
-        mustChangePassword: Boolean(user.force_password_change || passwordExpired),
+        mustChangePassword: Boolean(
+          user.force_password_change || passwordExpired,
+        ),
         passwordExpired,
       },
       errorCode: 0,
@@ -311,6 +307,7 @@ exports.logout = async (req, res) => {
   try {
     if (req.sessionId) {
       await Session.revoke(req.sessionId, req.userId);
+      websocketService.disconnectSession(req.sessionId, '会话已登出');
     }
     clearAuthCookies(res, req);
     res.json({
@@ -368,6 +365,7 @@ exports.revokeSession = async (req, res) => {
         errorCode: 404,
       });
     }
+    websocketService.disconnectSession(sessionId, '会话已被移除');
     res.json({
       success: true,
       message: '已踢出会话',
@@ -387,11 +385,7 @@ exports.revokeSession = async (req, res) => {
 
 exports.changePassword = async (req, res) => {
   try {
-    const {
-      oldPassword,
-      newPassword,
-      revokeOtherSessions = true,
-    } = req.body;
+    const { oldPassword, newPassword, revokeOtherSessions = true } = req.body;
     const userId = req.userId;
 
     if (!oldPassword || !newPassword) {
@@ -472,9 +466,18 @@ exports.changePassword = async (req, res) => {
       }
     });
 
+    if (revokeOtherSessions) {
+      websocketService.disconnectUserSessions(userId, {
+        excludeSessionId: req.sessionId,
+        reason: '密码已修改，请重新登录',
+      });
+    }
+
     res.json({
       success: true,
-      message: revokeOtherSessions ? '密码修改成功，其他会话已下线' : '密码修改成功',
+      message: revokeOtherSessions
+        ? '密码修改成功，其他会话已下线'
+        : '密码修改成功',
       errorCode: 0,
     });
   } catch (error) {

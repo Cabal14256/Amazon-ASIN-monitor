@@ -68,6 +68,8 @@ class CompetitorMonitorHistory {
       variantGroupId = '',
       asinId = '',
       asin = '',
+      variantGroupName = '',
+      parentAsin = '',
       country = '',
       checkType = '',
       isBroken = '',
@@ -113,6 +115,16 @@ class CompetitorMonitorHistory {
       conditions.push(`%${asin}%`);
     }
 
+    if (variantGroupName) {
+      sql += ` AND vg.name LIKE ?`;
+      conditions.push(`%${variantGroupName}%`);
+    }
+
+    if (parentAsin) {
+      sql += ` AND (parent_asin.parent_asin LIKE ? OR mh.check_result LIKE ?)`;
+      conditions.push(`%${parentAsin}%`, `%${parentAsin}%`);
+    }
+
     if (country) {
       sql += ` AND mh.country = ?`;
       conditions.push(country);
@@ -140,9 +152,11 @@ class CompetitorMonitorHistory {
 
     const countKey = `${COUNT_CACHE_PREFIX}${variantGroupId || 'ALL'}:${
       asinId || 'ALL'
-    }:${asin || 'ALL'}:${country || 'ALL'}:${checkType || 'ALL'}:${
-      isBroken || 'ALL'
-    }:${startTime || 'ALL'}:${endTime || 'ALL'}`;
+    }:${asin || 'ALL'}:${variantGroupName || 'ALL'}:${parentAsin || 'ALL'}:${
+      country || 'ALL'
+    }:${checkType || 'ALL'}:${isBroken || 'ALL'}:${startTime || 'ALL'}:${
+      endTime || 'ALL'
+    }`;
     let total = await cacheService.getAsync(countKey);
     if (total === null) {
       const countSql = sql.replace(
@@ -170,6 +184,7 @@ class CompetitorMonitorHistory {
         ...item,
         checkTime: item.check_time,
         checkType: item.check_type,
+        checkResult: item.check_result,
         isBroken: item.is_broken,
         notificationSent: item.notification_sent,
         variantGroupName: item.variant_group_name,
@@ -218,6 +233,7 @@ class CompetitorMonitorHistory {
         ...history,
         checkTime: history.check_time,
         checkType: history.check_type,
+        checkResult: history.check_result,
         isBroken: history.is_broken,
         notificationSent: history.notification_sent,
         variantGroupName: history.variant_group_name,

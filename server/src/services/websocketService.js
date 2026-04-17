@@ -10,12 +10,44 @@ const {
   isUserActive,
   getUserStatusErrorMessage,
 } = require('../utils/userStatus');
+const {
+  PASSWORD_CHANGE_REQUIRED_MESSAGE,
+  isPasswordChangeRequired,
+} = require('../utils/passwordPolicy');
 
 function normalizeUserId(userId) {
   if (!userId) {
     return null;
   }
   return String(userId);
+}
+
+function normalizeHeaderValue(value) {
+  if (Array.isArray(value)) {
+    return value.join(', ').trim();
+  }
+  return typeof value === 'string' ? value.trim() : '';
+}
+
+function getRequestIpContext(req) {
+  const forwardedFor = normalizeHeaderValue(req.headers['x-forwarded-for']);
+  const realIp = normalizeHeaderValue(req.headers['x-real-ip']);
+  const clientIp =
+    forwardedFor
+      .split(',')
+      .map((item) => item.trim())
+      .filter(Boolean)[0] ||
+    realIp ||
+    req.ip ||
+    req.socket?.remoteAddress ||
+    null;
+
+  return {
+    ip: clientIp || null,
+    forwardedFor: forwardedFor || null,
+    realIp: realIp || null,
+    proxyIp: req.socket?.remoteAddress || null,
+  };
 }
 
 async function authenticateConnection(req) {
@@ -77,6 +109,14 @@ async function authenticateConnection(req) {
       };
     }
 
+    if (isPasswordChangeRequired(user, session)) {
+      return {
+        success: false,
+        code: 4403,
+        reason: PASSWORD_CHANGE_REQUIRED_MESSAGE,
+      };
+    }
+
     return {
       success: true,
       userId: normalizeUserId(user.id),
@@ -99,19 +139,99 @@ class WebSocketService {
     this.wss = null;
     this.clients = new Set();
     this.clientUsers = new Map();
+    this.clientSessions = new Map();
   }
 
   removeClient(ws) {
     this.clients.delete(ws);
     this.clientUsers.delete(ws);
+    this.clientSessions.delete(ws);
+  }
+
+  closeClient(ws, code = 4403, reason = '会话已失效') {
+    if (!ws) {
+      return false;
+    }
+
+    if (
+      ws.readyState !== WebSocket.OPEN &&
+      ws.readyState !== WebSocket.CONNECTING
+    ) {
+      this.removeClient(ws);
+      return false;
+    }
+
+    try {
+      ws.close(code, reason);
+      return true;
+    } catch (error) {
+      logger.warn('[WebSocket] 关闭客户端连接失败', {
+        message: error.message,
+        userId: this.clientUsers.get(ws) || null,
+        sessionId: this.clientSessions.get(ws) || null,
+      });
+      this.removeClient(ws);
+      return false;
+    }
+  }
+
+  disconnectSession(sessionId, reason = '会话已失效') {
+    if (!sessionId) {
+      return 0;
+    }
+
+    let disconnectedCount = 0;
+    Array.from(this.clientSessions.entries()).forEach(
+      ([client, clientSessionId]) => {
+        if (clientSessionId !== sessionId) {
+          return;
+        }
+
+        if (this.closeClient(client, 4403, reason)) {
+          disconnectedCount += 1;
+        }
+      },
+    );
+
+    return disconnectedCount;
+  }
+
+  disconnectUserSessions(userId, options = {}) {
+    const targetUserId = normalizeUserId(userId);
+    if (!targetUserId) {
+      return 0;
+    }
+
+    const { excludeSessionId = null, reason = '会话已失效' } = options;
+    let disconnectedCount = 0;
+
+    Array.from(this.clientUsers.entries()).forEach(([client, clientUserId]) => {
+      if (clientUserId !== targetUserId) {
+        return;
+      }
+
+      if (
+        excludeSessionId &&
+        this.clientSessions.get(client) === excludeSessionId
+      ) {
+        return;
+      }
+
+      if (this.closeClient(client, 4403, reason)) {
+        disconnectedCount += 1;
+      }
+    });
+
+    return disconnectedCount;
   }
 
   async handleConnection(ws, req) {
     const authResult = await authenticateConnection(req);
     if (!authResult.success) {
+      const ipContext = getRequestIpContext(req);
       logger.warn('[WebSocket] 已拒绝未授权连接', {
         reason: authResult.reason,
-        ip: req.socket?.remoteAddress || null,
+        ...ipContext,
       });
       ws.close(authResult.code, authResult.reason);
       return;
@@ -120,6 +240,7 @@ class WebSocketService {
     const userId = normalizeUserId(authResult.userId);
     this.clients.add(ws);
     this.clientUsers.set(ws, userId);
+    this.clientSessions.set(ws, authResult.sessionId || null);
 
     logger.info('[WebSocket] 新客户端连接', {
       userId,

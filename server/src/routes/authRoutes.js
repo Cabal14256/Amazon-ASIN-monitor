@@ -2,6 +2,7 @@ const express = require('express');
 const router = express.Router();
 const authController = require('../controllers/authController');
 const { authenticateToken } = require('../middleware/auth');
+const auditLogMiddleware = require('../middleware/auditLog');
 
 // 用户登录（不需要认证）
 router.post('/auth/login', authController.login);
@@ -14,13 +15,19 @@ router.get(
 );
 
 // 用户登出（需要认证）
-router.post('/auth/logout', authenticateToken, authController.logout);
+router.post(
+  '/auth/logout',
+  authenticateToken,
+  auditLogMiddleware,
+  authController.logout,
+);
 
 // 会话管理（需要认证）
 router.get('/auth/sessions', authenticateToken, authController.listSessions);
 router.post(
   '/auth/sessions/revoke',
   authenticateToken,
+  auditLogMiddleware,
   authController.revokeSession,
 );
 
@@ -28,10 +35,16 @@ router.post(
 router.post(
   '/auth/change-password',
   authenticateToken,
+  auditLogMiddleware,
   authController.changePassword,
 );
 
 // 更新当前用户信息（需要认证）
-router.put('/auth/profile', authenticateToken, authController.updateProfile);
+router.put(
+  '/auth/profile',
+  authenticateToken,
+  auditLogMiddleware,
+  authController.updateProfile,
+);
 
 module.exports = router;

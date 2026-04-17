@@ -23,6 +23,26 @@ import {
 } from 'antd';
 import React, { useEffect, useRef } from 'react';
 
+function getRoleDisplayName(roleCodes?: string[]) {
+  if (!roleCodes || roleCodes.length === 0) {
+    return '未分配角色';
+  }
+
+  if (roleCodes.includes('ADMIN')) {
+    return '管理员';
+  }
+
+  if (roleCodes.includes('EDITOR')) {
+    return '编辑用户';
+  }
+
+  if (roleCodes.includes('READONLY')) {
+    return '只读用户';
+  }
+
+  return roleCodes.join(', ');
+}
+
 // 全局初始化数据配置，用于 Layout 用户信息和权限初始化
 // 更多信息见文档：https://umijs.org/docs/api/runtime-config#getinitialstate
 export async function getInitialState(): Promise<{
@@ -373,7 +393,21 @@ export const layout = ({ initialState, setInitialState }: any) => {
         }, []);
 
         useEffect(() => {
-          wsClient.connect();
+          const hasConfirmedUser = Boolean(initialState?.currentUser?.id);
+          const forcePasswordChange = Boolean(
+            initialState?.currentUser?.force_password_change,
+          );
+          const canUseRealtime = hasConfirmedUser && !forcePasswordChange;
+          wsClient.setAuthReady(canUseRealtime);
+          if (canUseRealtime) {
+            wsClient.connect();
+          }
+        }, [
+          initialState?.currentUser?.force_password_change,
+          initialState?.currentUser?.id,
+        ]);
+
+        useEffect(() => {
           const unsubscribe = wsClient.onMessage((payload) => {
             if (
               !payload ||
@@ -439,13 +473,13 @@ export const layout = ({ initialState, setInitialState }: any) => {
       }
 
       const currentUser = initialState?.currentUser;
+      const roleName = getRoleDisplayName(initialState?.roles);
       if (!currentUser) {
         return null;
       }
 
       const displayName =
         currentUser.real_name || currentUser.username || '用户';
-      const roleName = currentUser.role_name || '系统管理员';
 
       return (
         <div style={{ padding: '16px', textAlign: 'center' }}>
@@ -471,13 +505,13 @@ export const layout = ({ initialState, setInitialState }: any) => {
       }
 
       const currentUser = initialState?.currentUser;
+      const roleName = getRoleDisplayName(initialState?.roles);
       if (!currentUser) {
         return null;
       }
 
       const displayName =
         currentUser.real_name || currentUser.username || '用户';
-      const roleName = currentUser.role_name || '系统管理员';
 
       return (
         <div style={{ padding: '8px 16px' }}>
@@ -532,11 +566,13 @@ export const layout = ({ initialState, setInitialState }: any) => {
             error,
           });
         } finally {
+          wsClient.disconnect();
           clearToken();
           await setInitialState({
             currentUser: undefined,
             permissions: [],
             roles: [],
+            sessionId: undefined,
           });
           history.push('/login');
         }

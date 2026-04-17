@@ -1484,6 +1484,8 @@ async function exportCompetitorMonitorHistory(req, res) {
       variantGroupId,
       asinId,
       asin,
+      variantGroupName,
+      parentAsin,
       startTime,
       endTime,
       isBroken,
@@ -1501,6 +1503,8 @@ async function exportCompetitorMonitorHistory(req, res) {
 
     sendProgress(res, 10, '正在查询数据...', 'querying');
 
+    const effectiveEndTime = endTime || getUTC8String('YYYY-MM-DD HH:mm:ss');
+
     // 获取所有竞品监控历史数据（根据筛选条件，分页循环查询）
     const allHistory = await fetchAllData(
       (params) => CompetitorMonitorHistory.findAll(params),
@@ -1510,8 +1514,10 @@ async function exportCompetitorMonitorHistory(req, res) {
         variantGroupId: variantGroupId || '',
         asinId: asinId || '',
         asin: asin || '',
+        variantGroupName: variantGroupName || '',
+        parentAsin: parentAsin || '',
         startTime: startTime || '',
-        endTime: endTime || '',
+        endTime: effectiveEndTime,
         isBroken: isBroken || '',
       },
       10000,
@@ -1543,18 +1549,9 @@ async function exportCompetitorMonitorHistory(req, res) {
     const totalItems = allHistory.length;
     let processedItems = 0;
     for (const history of allHistory) {
-      let checkResult = '';
-      if (history.checkResult) {
-        try {
-          const parsed =
-            typeof history.checkResult === 'string'
-              ? JSON.parse(history.checkResult)
-              : history.checkResult;
-          checkResult = JSON.stringify(parsed, null, 2);
-        } catch (e) {
-          checkResult = history.checkResult;
-        }
-      }
+      const checkResult = formatCheckResult(
+        history.checkResult || history.check_result,
+      );
 
       // 格式化检查时间
       let checkTimeStr = '';

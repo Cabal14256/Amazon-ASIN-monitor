@@ -53,8 +53,10 @@ class WebSocketClient {
   private reconnectAttempts = 0;
   private maxReconnectAttempts = 5;
   private reconnectDelay = 1000;
+  private reconnectTimer: NodeJS.Timeout | null = null;
   private messageHandlers: Set<MessageHandler> = new Set();
   private pingInterval: NodeJS.Timeout | null = null;
+  private authReady = false;
 
   constructor(url: string) {
     // 将 http:// 或 https:// 转换为 ws:// 或 wss://
@@ -62,9 +64,18 @@ class WebSocketClient {
   }
 
   connect() {
-    if (this.ws?.readyState === WebSocket.OPEN) {
+    if (!this.authReady) {
       return;
     }
+
+    if (
+      this.ws?.readyState === WebSocket.OPEN ||
+      this.ws?.readyState === WebSocket.CONNECTING
+    ) {
+      return;
+    }
+
+    this.clearReconnectTimer();
 
     try {
       this.ws = new WebSocket(this.url);
@@ -88,9 +99,18 @@ class WebSocketClient {
         debugError('[WebSocket] 连接错误:', error);
       };
 
-      this.ws.onclose = () => {
-        debugLog('[WebSocket] 连接关闭');
+      this.ws.onclose = (event) => {
+        debugLog('[WebSocket] 连接关闭', {
+          code: event.code,
+          reason: event.reason,
+        });
         this.stopPing();
+        this.ws = null;
+        if (event.code === 4401 || event.code === 4403) {
+          this.authReady = false;
+          this.clearReconnectTimer();
+          return;
+        }
         this.attemptReconnect();
       };
     } catch (error) {
@@ -99,7 +119,33 @@ class WebSocketClient {
     }
   }
 
+  setAuthReady(authReady: boolean) {
+    if (this.authReady === authReady) {
+      return;
+    }
+
+    this.authReady = authReady;
+    this.reconnectAttempts = 0;
+
+    if (authReady) {
+      return;
+    }
+
+    this.clearReconnectTimer();
+    this.stopPing();
+
+    const socket = this.ws;
+    this.ws = null;
+    if (
+      socket?.readyState === WebSocket.OPEN ||
+      socket?.readyState === WebSocket.CONNECTING
+    ) {
+      socket.close();
+    }
+  }
+
   disconnect() {
+    this.setAuthReady(false);
     this.stopPing();
     if (this.ws) {
       this.ws.close();
@@ -137,8 +183,16 @@ class WebSocketClient {
   }
 
   private attemptReconnect() {
+    if (!this.authReady) {
+      return;
+    }
+
     if (this.reconnectAttempts >= this.maxReconnectAttempts) {
       debugError('[WebSocket] 达到最大重连次数，停止重连');
+      return;
+    }
+
+    if (this.reconnectTimer) {
       return;
     }
 
@@ -148,9 +202,17 @@ class WebSocketClient {
       `[WebSocket] ${delay}ms后尝试重连 (${this.reconnectAttempts}/${this.maxReconnectAttempts})`,
     );
 
-    setTimeout(() => {
+    this.reconnectTimer = setTimeout(() => {
+      this.reconnectTimer = null;
       this.connect();
     }, delay);
+  }
+
+  private clearReconnectTimer() {
+    if (this.reconnectTimer) {
+      clearTimeout(this.reconnectTimer);
+      this.reconnectTimer = null;
+    }
   }
 
   getReadyState(): number {
