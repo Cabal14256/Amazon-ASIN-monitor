@@ -58,3 +58,9 @@ docs/
 
 # 本地依赖升级备份目录（不参与 Git 活动）
 backups/
+
+# 本地代码存档目录（不参与 Git 活动）
+archives/
+
+# 导出任务产物（不参与 Git 活动）
+server/tasks/export/

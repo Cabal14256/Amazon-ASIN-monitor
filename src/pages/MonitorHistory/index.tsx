@@ -1,6 +1,7 @@
+import analyticsServices from '@/services/analytics';
 import services from '@/services/asin';
 import { formatBeijingNow, toBeijingDayjs } from '@/utils/beijingTime';
-import { debugLog } from '@/utils/debug';
+import { debugError, debugLog } from '@/utils/debug';
 import { exportToExcel } from '@/utils/export';
 import { DownloadOutlined, DownOutlined } from '@ant-design/icons';
 import {
@@ -16,12 +17,10 @@ import type { TableProps } from 'antd';
 import { Button, Card, Dropdown, message, Space, Table, Tag } from 'antd';
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 
-const {
-  queryMonitorHistory,
-  getMonitorStatistics,
-  getPeakHoursStatistics,
-  getAbnormalDurationStatistics,
-} = services.MonitorController;
+const { queryMonitorHistory, getAbnormalDurationStatistics } =
+  services.MonitorController;
+const { getMonitorHistoryPeakHours, getMonitorHistorySummary } =
+  analyticsServices.AnalyticsController;
 
 // 国家选项映射
 const countryMap: Record<
@@ -327,7 +326,7 @@ const MonitorHistoryPage: React.FC<unknown> = () => {
       window.URL.revokeObjectURL(downloadURL);
       message.success('异常时长统计导出成功');
     } catch (error) {
-      console.error('导出异常时长统计失败:', error);
+      debugError('导出异常时长统计失败:', error);
       message.error('导出失败，请重试');
     }
   };
@@ -341,29 +340,26 @@ const MonitorHistoryPage: React.FC<unknown> = () => {
       } else if (type === 'asin' && id) {
         params.asinId = id;
       }
-      const { data } = await getMonitorStatistics(params);
-      setStatistics(data || {});
+      const statisticsResponse = await getMonitorHistorySummary(params);
+      setStatistics(statisticsResponse?.data || {});
 
       // 如果有国家筛选，加载高峰期统计
       const countryToUse = country || selectedCountry;
       if (countryToUse) {
         try {
-          const peakData = await getPeakHoursStatistics({
+          const peakData = await getMonitorHistoryPeakHours({
             country: countryToUse,
           });
-          const peakStats =
-            peakData && typeof peakData === 'object' && !('success' in peakData)
-              ? peakData
-              : (peakData as any)?.data || {};
+          const peakStats = peakData?.data || {};
           setPeakHoursStatistics(peakStats);
         } catch (error) {
-          console.error('加载高峰期统计失败:', error);
+          debugError('加载高峰期统计失败:', error);
         }
       } else {
         setPeakHoursStatistics({});
       }
     } catch (error) {
-      console.error('加载统计信息失败:', error);
+      debugError('加载统计信息失败:', error);
     }
   };
 
@@ -919,7 +915,7 @@ const MonitorHistoryPage: React.FC<unknown> = () => {
                 setAbnormalDurationQueryRange(null);
               }
             } catch (error) {
-              console.error('加载异常时长统计失败:', error);
+              debugError('加载异常时长统计失败:', error);
               setShowAbnormalDurationTable(false);
               setAbnormalDurationData(null);
               setAbnormalDurationQueryRange(null);
@@ -980,7 +976,8 @@ const MonitorHistoryPage: React.FC<unknown> = () => {
                 filename,
               );
             } catch (error) {
-              console.error('导出失败:', error);
+              debugError('导出失败:', error);
+              message.error('导出失败，请重试');
             }
           };
 

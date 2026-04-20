@@ -34,6 +34,7 @@ const spApiConfigRoutes = require('./routes/spApiConfigRoutes');
 const userRoutes = require('./routes/userRoutes');
 const roleRoutes = require('./routes/roleRoutes');
 const dashboardRoutes = require('./routes/dashboardRoutes');
+const analyticsRoutes = require('./routes/analyticsRoutes');
 const auditLogRoutes = require('./routes/auditLogRoutes');
 const exportRoutes = require('./routes/exportRoutes');
 const taskRoutes = require('./routes/taskRoutes');
@@ -140,9 +141,10 @@ const timeout = require('./middleware/timeout');
 app.use('/api/v1/variant-check/batch-query-parent-asin', timeout(300000));
 // 为导出路由设置更长的超时时间（10分钟），因为数据量大时可能需要较长时间
 app.use('/api/v1/export', timeout(600000));
-// 为监控历史统计查询设置更长的超时时间（10分钟），因为统计查询涉及大量数据聚合
-app.use('/api/v1/monitor-history/statistics', timeout(600000));
-// 为统计查询和仪表盘设置更长的超时时间（2分钟）
+// 为 period summary 设置更长的超时时间（5分钟），避免大范围统计被 2 分钟阈值提前打断
+app.use('/api/v1/analytics/period-summary/details', timeout(300000));
+app.use('/api/v1/analytics/period-summary', timeout(300000));
+// 为其他统计查询和仪表盘设置更长的超时时间（2分钟）
 app.use('/api/v1/analytics', timeout(120000));
 app.use('/api/v1/dashboard', timeout(120000));
 // 其他 API 使用默认超时（5分钟）
@@ -170,6 +172,7 @@ app.use('/api/v1', authRoutes); // 认证路由（放在最前面，登录不需
 app.use('/api/v1', auditLogMiddleware);
 
 app.use('/api/v1', dashboardRoutes); // 仪表盘路由
+app.use('/api/v1', analyticsRoutes); // 数据分析路由
 app.use('/api/v1', asinRoutes);
 app.use('/api/v1', monitorRoutes);
 app.use('/api/v1', variantCheckRoutes);
