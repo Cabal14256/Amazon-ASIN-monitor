@@ -328,6 +328,30 @@ export async function getPeriodSummary(
   );
 }
 
+/** 周期汇总时间槽明细 */
+export async function getPeriodSummaryTimeSlotDetails(
+  params: {
+    country?: string;
+    site?: string;
+    brand?: string;
+    startTime?: string;
+    endTime?: string;
+    timeSlotGranularity?: string;
+  },
+  options?: { [key: string]: any },
+) {
+  return request<API.Result_PeriodSummaryTimeSlotDetails_>(
+    '/api/v1/monitor-history/statistics/period-summary/details',
+    {
+      method: 'GET',
+      params: {
+        ...params,
+      },
+      ...(options || {}),
+    },
+  );
+}
+
 /** 按国家统计ASIN时长 */
 export async function getASINStatisticsByCountry(
   params?: {

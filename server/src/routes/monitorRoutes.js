@@ -41,6 +41,10 @@ router.get(
   monitorController.getPeriodSummary,
 );
 router.get(
+  '/monitor-history/statistics/period-summary/details',
+  monitorController.getPeriodSummaryTimeSlotDetails,
+);
+router.get(
   '/monitor-history/statistics/asin-by-country',
   monitorController.getASINStatisticsByCountry,
 );

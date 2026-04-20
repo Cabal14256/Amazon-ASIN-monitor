@@ -91,6 +91,7 @@ CREATE TABLE IF NOT EXISTS `monitor_history` (
   `check_time` DATETIME NOT NULL COMMENT '检查时间',
   `hour_ts` DATETIME GENERATED ALWAYS AS (TIMESTAMP(DATE_FORMAT(`check_time`, '%Y-%m-%d %H:00:00'))) STORED COMMENT '小时时间槽',
   `day_ts` DATETIME GENERATED ALWAYS AS (TIMESTAMP(DATE(`check_time`))) STORED COMMENT '天时间槽',
+  `month_ts` DATETIME GENERATED ALWAYS AS (TIMESTAMP(DATE_FORMAT(`check_time`, '%Y-%m-01 00:00:00'))) STORED COMMENT '月时间槽',
   `check_result` TEXT COMMENT '检查结果详情(JSON格式)',
   `notification_sent` TINYINT(1) DEFAULT 0 COMMENT '是否已发送通知: 0-否, 1-是',
   `create_time` DATETIME DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
@@ -108,15 +109,17 @@ CREATE TABLE IF NOT EXISTS `monitor_history` (
   INDEX `idx_asin_country_check_time_broken` (`asin_id`, `country`, `check_time`, `is_broken`) COMMENT '状态变化查询优化索引，优化窗口函数查询性能',
   INDEX `idx_country_hour_site_brand` (`country`, `hour_ts`, `site_snapshot`, `brand_snapshot`),
   INDEX `idx_country_day_site_brand` (`country`, `day_ts`, `site_snapshot`, `brand_snapshot`),
+  INDEX `idx_country_month_site_brand` (`country`, `month_ts`, `site_snapshot`, `brand_snapshot`),
   INDEX `idx_hour_country_asin` (`hour_ts`, `country`, `asin_id`, `asin_code`, `is_broken`),
   INDEX `idx_day_country_asin` (`day_ts`, `country`, `asin_id`, `asin_code`, `is_broken`),
+  INDEX `idx_month_country_asin` (`month_ts`, `country`, `asin_id`, `asin_code`, `is_broken`),
   FOREIGN KEY (`variant_group_id`) REFERENCES `variant_groups`(`id`) ON DELETE SET NULL,
   FOREIGN KEY (`asin_id`) REFERENCES `asins`(`id`) ON DELETE SET NULL
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='监控历史表';
 
 -- 监控历史聚合表（用于数据分析加速）
 CREATE TABLE IF NOT EXISTS `monitor_history_agg` (
-  `granularity` ENUM('hour','day') NOT NULL COMMENT '时间粒度',
+  `granularity` ENUM('hour','day','month') NOT NULL COMMENT '时间粒度',
   `time_slot` DATETIME NOT NULL COMMENT '时间槽（按小时或按天对齐）',
   `country` VARCHAR(10) NOT NULL COMMENT '国家',
   `asin_key` VARCHAR(50) NOT NULL COMMENT 'ASIN主键（asin_id或asin_code）',
@@ -135,7 +138,7 @@ CREATE TABLE IF NOT EXISTS `monitor_history_agg` (
 
 -- 监控历史聚合表（按时间槽/国家/站点/品牌/ASIN，用于周期汇总加速）
 CREATE TABLE IF NOT EXISTS `monitor_history_agg_dim` (
-  `granularity` ENUM('hour','day') NOT NULL COMMENT '时间粒度',
+  `granularity` ENUM('hour','day','month') NOT NULL COMMENT '时间粒度',
   `time_slot` DATETIME NOT NULL COMMENT '时间槽（按小时或按天对齐）',
   `country` VARCHAR(10) NOT NULL COMMENT '国家',
   `site` VARCHAR(100) NOT NULL DEFAULT '' COMMENT '站点',
@@ -157,7 +160,7 @@ CREATE TABLE IF NOT EXISTS `monitor_history_agg_dim` (
 
 -- 监控历史聚合表（按时间槽/国家/变体组/ASIN，用于变体组统计加速）
 CREATE TABLE IF NOT EXISTS `monitor_history_agg_variant_group` (
-  `granularity` ENUM('hour','day') NOT NULL COMMENT '时间粒度',
+  `granularity` ENUM('hour','day','month') NOT NULL COMMENT '时间粒度',
   `time_slot` DATETIME NOT NULL COMMENT '时间槽（按小时或按天对齐）',
   `country` VARCHAR(10) NOT NULL COMMENT '国家',
   `variant_group_id` VARCHAR(50) NOT NULL COMMENT '变体组ID',
@@ -173,12 +176,42 @@ CREATE TABLE IF NOT EXISTS `monitor_history_agg_variant_group` (
   PRIMARY KEY (`granularity`, `time_slot`, `country`, `variant_group_id`, `asin_key`),
   INDEX `idx_agg_variant_group_slot` (`time_slot`),
   INDEX `idx_agg_variant_group_country_slot` (`country`, `time_slot`),
-  INDEX `idx_agg_variant_group_lookup` (`granularity`, `country`, `variant_group_id`, `time_slot`)
+  INDEX `idx_agg_variant_group_lookup` (`granularity`, `country`, `variant_group_id`, `time_slot`),
   INDEX `idx_agg_variant_group_time_slot` (`time_slot`),
   INDEX `idx_agg_variant_group_country_time_slot` (`country`, `time_slot`),
   INDEX `idx_agg_variant_group_group_slot` (`variant_group_id`, `time_slot`),
   INDEX `idx_agg_variant_group_granularity_time_slot` (`granularity`, `time_slot`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='监控历史聚合表（按时间槽/国家/变体组/ASIN）';
+
+-- 分析刷新水位表
+CREATE TABLE IF NOT EXISTS `analytics_refresh_watermark` (
+  `processor_name` VARCHAR(100) NOT NULL COMMENT '刷新处理器名称',
+  `last_history_id` BIGINT NOT NULL DEFAULT 0 COMMENT '最后处理的 monitor_history.id',
+  `last_check_time` DATETIME DEFAULT NULL COMMENT '最后处理的检查时间',
+  `updated_at` DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT '更新时间',
+  PRIMARY KEY (`processor_name`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='分析刷新水位表';
+
+-- 监控历史状态区间表（用于精确异常时长计算）
+CREATE TABLE IF NOT EXISTS `monitor_history_status_interval` (
+  `asin_key` VARCHAR(50) NOT NULL COMMENT 'ASIN主键（asin_id或asin_code）',
+  `asin_id` VARCHAR(50) DEFAULT NULL COMMENT 'ASIN ID',
+  `asin_code` VARCHAR(20) DEFAULT NULL COMMENT 'ASIN编码快照',
+  `asin_name` VARCHAR(500) DEFAULT NULL COMMENT 'ASIN名称快照',
+  `country` VARCHAR(10) NOT NULL COMMENT '国家',
+  `variant_group_id` VARCHAR(50) DEFAULT NULL COMMENT '变体组ID',
+  `variant_group_name` VARCHAR(255) DEFAULT NULL COMMENT '变体组名称快照',
+  `interval_start` DATETIME NOT NULL COMMENT '状态区间开始时间',
+  `interval_end` DATETIME DEFAULT NULL COMMENT '状态区间结束时间，NULL 表示当前仍开放',
+  `is_broken` TINYINT(1) NOT NULL COMMENT '区间状态: 0-正常, 1-异常',
+  `updated_at` DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT '更新时间',
+  PRIMARY KEY (`asin_key`, `country`, `interval_start`),
+  INDEX `idx_interval_country_start` (`country`, `interval_start`),
+  INDEX `idx_interval_variant_group_start` (`variant_group_id`, `country`, `interval_start`),
+  INDEX `idx_interval_range` (`interval_start`, `interval_end`),
+  INDEX `idx_interval_broken_range` (`is_broken`, `interval_start`, `interval_end`),
+  INDEX `idx_interval_open_lookup` (`asin_key`, `country`, `interval_end`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='监控历史状态区间表（用于精确异常时长计算）';
 
 -- 飞书通知配置表（按区域配置：US和EU）
 CREATE TABLE IF NOT EXISTS `feishu_config` (
