@@ -1,3 +1,4 @@
+const multer = require('multer');
 const logger = require('../utils/logger');
 
 /**
@@ -18,20 +19,36 @@ function errorHandler(err, req, res, next) {
 
   // 默认错误信息
   let errorMessage = '服务器内部错误';
-  let errorCode = err.statusCode || err.code || 500;
+  let statusCode = 500;
+
+  if (typeof err.statusCode === 'number') {
+    statusCode = err.statusCode;
+  } else if (typeof err.status === 'number') {
+    statusCode = err.status;
+  } else if (err instanceof multer.MulterError) {
+    statusCode = 400;
+  } else if (typeof err.code === 'number') {
+    statusCode = err.code;
+  }
 
   // 如果是已知错误类型，返回友好信息
-  if (err.statusCode && err.statusCode < 500) {
+  if (err instanceof multer.MulterError) {
+    if (err.code === 'LIMIT_FILE_SIZE') {
+      errorMessage = '上传文件不能超过 10MB';
+    } else {
+      errorMessage = err.message || '文件上传失败';
+    }
+  } else if (statusCode < 500) {
     errorMessage = err.message || errorMessage;
   } else if (!isProduction) {
     // 开发环境返回详细错误
     errorMessage = err.message || errorMessage;
   }
 
-  res.status(errorCode).json({
+  res.status(statusCode).json({
     success: false,
     errorMessage,
-    errorCode,
+    errorCode: statusCode,
     // 仅在开发环境返回堆栈信息
     ...(!isProduction && { stack: err.stack }),
   });

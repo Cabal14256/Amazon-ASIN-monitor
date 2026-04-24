@@ -4,6 +4,7 @@ import { formatBeijing } from '@/utils/beijingTime';
 import { useMessage } from '@/utils/message';
 import { extractAsyncTask, openTaskCenter } from '@/utils/task';
 import {
+  FooterToolbar,
   PageContainer,
   ProForm,
   ProFormRadio,
@@ -25,6 +26,7 @@ import {
 } from 'antd';
 import dayjs from 'dayjs';
 import React, { useCallback, useEffect, useState } from 'react';
+import './index.less';
 
 const { getSPAPIConfigs, updateSPAPIConfig } = services.SPAPIConfigController;
 const { getFeishuConfigs, upsertFeishuConfig } = services.FeishuController;
@@ -86,6 +88,14 @@ const ALL_MONITOR_CONFIG_KEYS = [
   ...MONITOR_SCHEDULE_CONFIG_KEYS,
 ];
 
+const SETTINGS_TABS_WITH_FLOATING_ACTIONS = new Set([
+  'sp-api',
+  'monitor',
+  'feishu',
+]);
+
+const SETTINGS_FLOATING_ACTIONS_PADDING = 88;
+
 function buildSpApiFormValues(configs: API.SPAPIConfig[]) {
   const formValues: Record<string, any> = {};
 
@@ -134,6 +144,7 @@ const SettingsPage: React.FC<unknown> = () => {
   const [spApiConfigs, setSpApiConfigs] = useState<API.SPAPIConfig[]>([]);
   const [feishuConfigs, setFeishuConfigs] = useState<API.FeishuConfig[]>([]);
   const [loading, setLoading] = useState(false);
+  const [saving, setSaving] = useState(false);
   const [activeTab, setActiveTab] = useState<string>('sp-api');
   const [spApiForm] = ProForm.useForm();
   const [monitorForm] = ProForm.useForm();
@@ -440,6 +451,7 @@ const SettingsPage: React.FC<unknown> = () => {
   // 保存当前页面配置项
   const saveConfigGroup = useCallback(
     async (configKeys: string[], formValues: any) => {
+      setSaving(true);
       try {
         const configs = configKeys.map((key) => {
           let value = formValues[key];
@@ -463,6 +475,8 @@ const SettingsPage: React.FC<unknown> = () => {
         await loadConfigs();
       } catch (error: any) {
         message.error(error?.errorMessage || '保存失败');
+      } finally {
+        setSaving(false);
       }
     },
     [message],
@@ -482,6 +496,7 @@ const SettingsPage: React.FC<unknown> = () => {
 
   // 保存飞书配置
   const handleSaveFeishuConfig = async (values: any) => {
+    setSaving(true);
     try {
       await Promise.all([
         upsertFeishuConfig({
@@ -499,8 +514,43 @@ const SettingsPage: React.FC<unknown> = () => {
       await loadConfigs();
     } catch (error: any) {
       message.error(error?.errorMessage || '保存失败');
+    } finally {
+      setSaving(false);
     }
   };
+
+  const handleSubmitActiveTab = useCallback(() => {
+    if (activeTab === 'sp-api') {
+      spApiForm.submit();
+      return;
+    }
+    if (activeTab === 'monitor') {
+      monitorForm.submit();
+      return;
+    }
+    if (activeTab === 'feishu') {
+      feishuForm.submit();
+    }
+  }, [activeTab, feishuForm, monitorForm, spApiForm]);
+
+  const handleResetActiveTab = useCallback(() => {
+    if (activeTab === 'sp-api') {
+      handleResetSpApiConfig();
+      return;
+    }
+    if (activeTab === 'monitor') {
+      handleResetMonitorConfig();
+      return;
+    }
+    if (activeTab === 'feishu') {
+      handleResetFeishuConfig();
+    }
+  }, [
+    activeTab,
+    handleResetFeishuConfig,
+    handleResetMonitorConfig,
+    handleResetSpApiConfig,
+  ]);
 
   const tabItems = [
     {
@@ -514,18 +564,16 @@ const SettingsPage: React.FC<unknown> = () => {
           onFinish={async (values) => {
             await saveConfigGroup(ALL_SP_API_CONFIG_KEYS, values);
           }}
-          submitter={{
-            searchConfig: {
-              submitText: '提交',
-              resetText: '重置',
-            },
-            resetButtonProps: {
-              htmlType: 'button',
-              onClick: handleResetSpApiConfig,
-            },
-          }}
+          submitter={false}
         >
-          <Space direction="vertical" size="large" style={{ width: '100%' }}>
+          <Space
+            direction="vertical"
+            size="large"
+            style={{
+              width: '100%',
+              paddingBottom: SETTINGS_FLOATING_ACTIONS_PADDING,
+            }}
+          >
             <Card title="US区域 LWA 配置">
               <ProFormText
                 name="SP_API_US_LWA_CLIENT_ID"
@@ -670,18 +718,16 @@ const SettingsPage: React.FC<unknown> = () => {
           onFinish={async (values) => {
             await saveConfigGroup(ALL_MONITOR_CONFIG_KEYS, values);
           }}
-          submitter={{
-            searchConfig: {
-              submitText: '提交',
-              resetText: '重置',
-            },
-            resetButtonProps: {
-              htmlType: 'button',
-              onClick: handleResetMonitorConfig,
-            },
-          }}
+          submitter={false}
         >
-          <Space direction="vertical" size="large" style={{ width: '100%' }}>
+          <Space
+            direction="vertical"
+            size="large"
+            style={{
+              width: '100%',
+              paddingBottom: SETTINGS_FLOATING_ACTIONS_PADDING,
+            }}
+          >
             <Card title="监控功能开关">
               <ProFormSwitch
                 name="COMPETITOR_MONITOR_ENABLED"
@@ -741,18 +787,16 @@ const SettingsPage: React.FC<unknown> = () => {
           form={feishuForm}
           layout="vertical"
           onFinish={handleSaveFeishuConfig}
-          submitter={{
-            searchConfig: {
-              submitText: '提交',
-              resetText: '重置',
-            },
-            resetButtonProps: {
-              htmlType: 'button',
-              onClick: handleResetFeishuConfig,
-            },
-          }}
+          submitter={false}
         >
-          <Space direction="vertical" size="large" style={{ width: '100%' }}>
+          <Space
+            direction="vertical"
+            size="large"
+            style={{
+              width: '100%',
+              paddingBottom: SETTINGS_FLOATING_ACTIONS_PADDING,
+            }}
+          >
             <Card title="US区域配置">
               <ProFormText
                 name={['US', 'webhookUrl']}
@@ -1080,6 +1124,32 @@ const SettingsPage: React.FC<unknown> = () => {
           }, 0);
         }}
       />
+      {SETTINGS_TABS_WITH_FLOATING_ACTIONS.has(activeTab) && (
+        <FooterToolbar
+          className="settings-floating-toolbar"
+          style={{
+            background: 'transparent',
+            borderBlockStart: 'none',
+            boxShadow: 'none',
+            lineHeight: 'normal',
+            padding: 0,
+          }}
+          renderContent={() => (
+            <div className="settings-floating-toolbar-inner">
+              <Button onClick={handleResetActiveTab} disabled={saving}>
+                重置
+              </Button>
+              <Button
+                type="primary"
+                onClick={handleSubmitActiveTab}
+                loading={saving}
+              >
+                提交
+              </Button>
+            </div>
+          )}
+        />
+      )}
     </PageContainer>
   );
 };

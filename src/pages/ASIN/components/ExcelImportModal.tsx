@@ -74,6 +74,7 @@ const ONLINE_FIELDS = [
   'asinType',
 ] as const;
 const DEFAULT_ONLINE_ROW_COUNT = 12;
+const CSV_MIME_TYPE = 'text/csv';
 
 type OnlineField = (typeof ONLINE_FIELDS)[number];
 
@@ -464,10 +465,10 @@ const ExcelImportModal: React.FC<ExcelImportModalProps> = (props) => {
 
     try {
       const csvBlob = new Blob(['\ufeff' + csvLines.join('\n')], {
-        type: 'text/csv;charset=utf-8;',
+        type: CSV_MIME_TYPE,
       });
       const csvFile = new File([csvBlob], 'online-import.csv', {
-        type: 'text/csv;charset=utf-8;',
+        type: CSV_MIME_TYPE,
       });
       await submitImport(csvFile);
     } catch (error: any) {
@@ -635,7 +636,7 @@ const ExcelImportModal: React.FC<ExcelImportModalProps> = (props) => {
 
     const csvContent = templateData.map((row) => row.join(',')).join('\n');
     const blob = new Blob(['\ufeff' + csvContent], {
-      type: 'text/csv;charset=utf-8;',
+      type: CSV_MIME_TYPE,
     });
     const link = document.createElement('a');
     const url = URL.createObjectURL(blob);

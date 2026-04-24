@@ -1075,62 +1075,99 @@ class MonitorHistory {
       'mh.country',
       'mh.check_time',
     );
+    let durationRows = null;
+    const canUseSharedDurationSource =
+      !variantGroupId && !asinId && (checkType === '' || checkType === 'ASIN');
 
-    let durationSql = `
-      SELECT
-        DATE_FORMAT(${sourceConfig.rawSlotExpr}, '${sourceConfig.rawSlotFormat}') as slot_period,
-        mh.country,
-        COALESCE(NULLIF(mh.asin_code, ''), CONCAT('ID#', mh.asin_id)) as asin_key,
-        COUNT(*) as total_checks,
-        SUM(CASE WHEN mh.is_broken = 1 THEN 1 ELSE 0 END) as broken_count,
-        MAX(${isPeakCase}) as has_peak
-      FROM monitor_history mh
-      WHERE 1=1
-    `;
-    const durationConditions = [];
+    if (canUseSharedDurationSource) {
+      const useAgg =
+        process.env.ANALYTICS_AGG_ENABLED !== '0' &&
+        MonitorHistory.canUseAggForRange(sourceGranularity, startTime, endTime);
 
-    if (variantGroupId) {
-      durationSql += ` AND mh.variant_group_id = ?`;
-      durationConditions.push(variantGroupId);
-    }
-
-    if (asinId) {
-      durationSql += ` AND mh.asin_id = ?`;
-      durationConditions.push(asinId);
-    }
-
-    if (country) {
-      if (country === 'EU') {
-        durationSql += ` AND mh.country IN ('UK', 'DE', 'FR', 'IT', 'ES')`;
-      } else {
-        durationSql += ` AND mh.country = ?`;
-        durationConditions.push(country);
+      if (useAgg) {
+        try {
+          durationRows = await MonitorHistory.getDurationSourceRowsFromAgg({
+            startTime,
+            endTime,
+            sourceGranularity,
+            country,
+          });
+          logger.info('[统计查询] getStatistics duration 使用聚合表');
+        } catch (error) {
+          logger.warn(
+            '[统计查询] getStatistics duration 聚合表读取失败，回退原始表',
+            error?.message || error,
+          );
+          durationRows = null;
+        }
       }
+
+      if (!Array.isArray(durationRows)) {
+        durationRows = await MonitorHistory.getDurationSourceRowsFromRaw({
+          startTime,
+          endTime,
+          sourceGranularity,
+          country,
+        });
+      }
+    } else {
+      let durationSql = `
+        SELECT
+          DATE_FORMAT(${sourceConfig.rawSlotExpr}, '${sourceConfig.rawSlotFormat}') as slot_period,
+          mh.country,
+          COALESCE(NULLIF(mh.asin_code, ''), CONCAT('ID#', mh.asin_id)) as asin_key,
+          COUNT(*) as total_checks,
+          SUM(CASE WHEN mh.is_broken = 1 THEN 1 ELSE 0 END) as broken_count,
+          MAX(${isPeakCase}) as has_peak
+        FROM monitor_history mh
+        WHERE 1=1
+      `;
+      const durationConditions = [];
+
+      if (variantGroupId) {
+        durationSql += ` AND mh.variant_group_id = ?`;
+        durationConditions.push(variantGroupId);
+      }
+
+      if (asinId) {
+        durationSql += ` AND mh.asin_id = ?`;
+        durationConditions.push(asinId);
+      }
+
+      if (country) {
+        if (country === 'EU') {
+          durationSql += ` AND mh.country IN ('UK', 'DE', 'FR', 'IT', 'ES')`;
+        } else {
+          durationSql += ` AND mh.country = ?`;
+          durationConditions.push(country);
+        }
+      }
+
+      if (startTime) {
+        durationSql += ` AND mh.check_time >= ?`;
+        durationConditions.push(startTime);
+      }
+
+      if (endTime) {
+        durationSql += ` AND mh.check_time <= ?`;
+        durationConditions.push(endTime);
+      }
+
+      durationSql += ` AND ${MonitorHistory.getAnalyticsAsinHistoryFilter(
+        'mh.check_type',
+        'mh.asin_id',
+        'mh.asin_code',
+      )}`;
+      durationSql += `
+        GROUP BY
+          ${sourceConfig.rawSlotExpr},
+          mh.country,
+          COALESCE(NULLIF(mh.asin_code, ''), CONCAT('ID#', mh.asin_id))
+      `;
+
+      durationRows = await query(durationSql, durationConditions);
     }
 
-    if (startTime) {
-      durationSql += ` AND mh.check_time >= ?`;
-      durationConditions.push(startTime);
-    }
-
-    if (endTime) {
-      durationSql += ` AND mh.check_time <= ?`;
-      durationConditions.push(endTime);
-    }
-
-    durationSql += ` AND ${MonitorHistory.getAnalyticsAsinHistoryFilter(
-      'mh.check_type',
-      'mh.asin_id',
-      'mh.asin_code',
-    )}`;
-    durationSql += `
-      GROUP BY
-        ${sourceConfig.rawSlotExpr},
-        mh.country,
-        COALESCE(NULLIF(mh.asin_code, ''), CONCAT('ID#', mh.asin_id))
-    `;
-
-    const durationRows = await query(durationSql, durationConditions);
     const [durationMetrics = {}] = MonitorHistory.buildDurationRowsByGroup(
       durationRows,
       {
@@ -1222,6 +1259,17 @@ class MonitorHistory {
 
     const diffHours =
       (endDate.getTime() - startDate.getTime()) / (1000 * 60 * 60);
+    const hourBackfillHours =
+      Number(process.env.ANALYTICS_AGG_BACKFILL_HOURS) || 48;
+    const startAgeHours = (Date.now() - startDate.getTime()) / (1000 * 60 * 60);
+
+    if (
+      targetGranularity === 'day' &&
+      (diffHours > hourBackfillHours || startAgeHours > hourBackfillHours)
+    ) {
+      return 'day';
+    }
+
     return diffHours <= 31 * 24 ? 'hour' : 'day';
   }
 
@@ -2263,7 +2311,7 @@ class MonitorHistory {
     const now = Date.now();
     const cached = AGG_COVERAGE_CACHE.get(cacheKey);
     if (cached && now - cached.cachedAt < cacheTtlMs) {
-      return resolveCachedAnalyticsResult(cached, includeMeta);
+      return cached;
     }
 
     const sql = `
