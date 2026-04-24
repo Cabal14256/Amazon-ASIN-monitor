@@ -334,9 +334,9 @@ const AnalyticsPageContent: React.FC<unknown> = () => {
   const progressProfileRef = useRef<ProgressProfile>({});
   // 三个表格各自的时间槽粒度
   const [allCountriesTimeSlot, setAllCountriesTimeSlot] =
-    useState<string>('hour');
-  const [regionTimeSlot, setRegionTimeSlot] = useState<string>('hour');
-  const [periodTimeSlot, setPeriodTimeSlot] = useState<string>('hour');
+    useState<string>('day');
+  const [regionTimeSlot, setRegionTimeSlot] = useState<string>('day');
+  const [periodTimeSlot, setPeriodTimeSlot] = useState<string>('day');
   // 三个图表各自的数量/百分比模式
   const [countryBarValueMode, setCountryBarValueMode] = useState<
     'count' | 'percent'
