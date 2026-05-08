@@ -1,4 +1,4 @@
-const { query } = require('../config/database');
+const { query, withTransaction } = require('../config/database');
 const { v4: uuidv4 } = require('uuid');
 const VariantGroup = require('./VariantGroup');
 const MonitorHistory = require('./MonitorHistory');
@@ -15,6 +15,20 @@ function normalizeAsinType(asinType) {
   if (type === '1' || type === 1) return '1';
   if (type === '2' || type === 2) return '2';
   return null;
+}
+
+function normalizeAsinCode(asin) {
+  return asin ? String(asin).trim().toUpperCase() : asin;
+}
+
+function normalizeCountryCode(country) {
+  return country ? String(country).trim().toUpperCase() : country;
+}
+
+function createValidationError(message, statusCode = 400) {
+  const error = new Error(message);
+  error.statusCode = statusCode;
+  return error;
 }
 
 function buildManualActionCheckResult({
@@ -205,54 +219,140 @@ class ASIN {
 
   // 根据ASIN编码查询（可选：同时查询国家）
   static async findByASIN(asin, country = null) {
+    const normalizedAsin = normalizeAsinCode(asin);
+    const normalizedCountry = normalizeCountryCode(country);
     if (country) {
       const [result] = await query(
         `SELECT * FROM asins WHERE asin = ? AND country = ?`,
-        [asin, country],
+        [normalizedAsin, normalizedCountry],
       );
       return result;
     }
-    const [result] = await query(`SELECT * FROM asins WHERE asin = ?`, [asin]);
+    const [result] = await query(`SELECT * FROM asins WHERE asin = ?`, [
+      normalizedAsin,
+    ]);
     return result;
+  }
+
+  static async findExistingByASINs(asinList, country, queryExecutor = query) {
+    const normalizedAsins = Array.from(
+      new Set(
+        (asinList || []).map((asin) => normalizeAsinCode(asin)).filter(Boolean),
+      ),
+    );
+    const normalizedCountry = normalizeCountryCode(country);
+
+    if (normalizedAsins.length === 0 || !normalizedCountry) {
+      return [];
+    }
+
+    const placeholders = normalizedAsins.map(() => '?').join(', ');
+    return queryExecutor(
+      `SELECT asin, country FROM asins WHERE country = ? AND asin IN (${placeholders})`,
+      [normalizedCountry, ...normalizedAsins],
+    );
   }
 
   // 创建ASIN
   static async create(data) {
-    const id = uuidv4();
-    const { asin, name, country, site, brand, variantGroupId, asinType } = data;
+    const [created] = await this.createMany([data]);
+    return created || null;
+  }
 
-    // 检查ASIN是否已存在（同一国家）
-    const existing = await this.findByASIN(asin, country);
-    if (existing) {
-      throw new Error(`ASIN ${asin} 在国家 ${country} 中已存在`);
+  static async createMany(items) {
+    const normalizedItems = (items || []).map((item) => ({
+      ...item,
+      asin: normalizeAsinCode(item.asin),
+      country: normalizeCountryCode(item.country),
+      asinType: normalizeAsinType(item.asinType),
+    }));
+
+    if (normalizedItems.length === 0) {
+      return [];
     }
 
-    await query(
-      `INSERT INTO asins (id, asin, name, asin_type, country, site, brand, variant_group_id, is_broken, variant_status) 
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, 'NORMAL')`,
-      [
-        id,
-        asin,
-        name || null,
-        asinType || null,
-        country,
-        site,
-        brand,
-        variantGroupId,
-      ],
+    const seenAsins = new Set();
+    for (const item of normalizedItems) {
+      const key = `${item.country || ''}|${item.asin || ''}`;
+      if (seenAsins.has(key)) {
+        throw createValidationError(
+          `ASIN ${item.asin} 在国家 ${item.country} 中重复输入`,
+        );
+      }
+      seenAsins.add(key);
+    }
+
+    const itemsByCountry = new Map();
+    for (const item of normalizedItems) {
+      const countryItems = itemsByCountry.get(item.country) || [];
+      countryItems.push(item.asin);
+      itemsByCountry.set(item.country, countryItems);
+    }
+
+    const existingRows = [];
+    for (const [country, asinList] of itemsByCountry.entries()) {
+      const rows = await this.findExistingByASINs(asinList, country);
+      existingRows.push(...rows);
+    }
+
+    if (existingRows.length > 0) {
+      const existingAsins = existingRows
+        .map((row) => `${row.asin}(${row.country})`)
+        .join('、');
+      throw createValidationError(`ASIN ${existingAsins} 已存在`);
+    }
+
+    const createdIds = await withTransaction(
+      async ({ query: transactionQuery }) => {
+        const ids = [];
+        for (const item of normalizedItems) {
+          const id = uuidv4();
+          ids.push(id);
+          const { asin, name, country, site, brand, variantGroupId, asinType } =
+            item;
+
+          await transactionQuery(
+            `INSERT INTO asins (id, asin, name, asin_type, country, site, brand, variant_group_id, is_broken, variant_status)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, 'NORMAL')`,
+            [
+              id,
+              asin,
+              name || null,
+              asinType || null,
+              country,
+              site,
+              brand,
+              variantGroupId,
+            ],
+          );
+        }
+
+        const groupIds = Array.from(
+          new Set(
+            normalizedItems.map((item) => item.variantGroupId).filter(Boolean),
+          ),
+        );
+        for (const groupId of groupIds) {
+          await transactionQuery(
+            `UPDATE variant_groups SET update_time = NOW() WHERE id = ?`,
+            [groupId],
+          );
+        }
+
+        return ids;
+      },
     );
 
-    // 更新变体组的更新时间（ASIN变动）
-    if (variantGroupId) {
-      await VariantGroup.updateTimeOnASINChange(variantGroupId);
-    }
-
-    return this.findById(id);
+    VariantGroup.clearCache();
+    return Promise.all(createdIds.map((id) => this.findById(id)));
   }
 
   // 更新ASIN
   static async update(id, data) {
-    const { asin, name, country, site, brand, asinType } = data;
+    const { name, site, brand } = data;
+    const asin = normalizeAsinCode(data.asin);
+    const country = normalizeCountryCode(data.country);
+    const asinType = normalizeAsinType(data.asinType);
     await query(
       `UPDATE asins SET asin = ?, name = ?, asin_type = ?, country = ?, site = ?, brand = ?, update_time = NOW() WHERE id = ?`,
       [asin, name, asinType || null, country, site, brand, id],

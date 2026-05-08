@@ -104,7 +104,7 @@ export async function addASIN(
   body?: API.ASINInfoVO,
   options?: { [key: string]: any },
 ) {
-  return request<API.Result_ASINInfo_>('/api/v1/asins', {
+  return request<API.Result_ASINCreate_>('/api/v1/asins', {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',

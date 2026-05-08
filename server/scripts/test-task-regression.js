@@ -420,22 +420,22 @@ async function verifyTaskAppearsInList(serverUrl, authHeaders, taskId) {
 function buildImportWorkbookBuffer(testData) {
   const workbook = new ExcelJS.Workbook();
   const worksheet = workbook.addWorksheet('ASIN Import');
-  worksheet.addRow(['变体组名称', '国家', '站点', '品牌', 'ASIN', 'ASIN类型']);
+  worksheet.addRow(['国家', 'ASIN类型', '站点', '品牌', '变体组名称', 'ASIN']);
   worksheet.addRow([
-    testData.groupName,
     testData.country,
+    '1',
     testData.site,
     testData.brand,
+    testData.groupName,
     testData.validAsin,
-    '1',
   ]);
   worksheet.addRow([
-    testData.groupName,
     testData.country,
+    '2',
     '',
     testData.brand,
+    testData.groupName,
     testData.invalidAsin,
-    '2',
   ]);
   return workbook.xlsx.writeBuffer();
 }

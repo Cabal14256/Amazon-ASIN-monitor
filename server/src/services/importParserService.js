@@ -1,8 +1,26 @@
 const ExcelJS = require('exceljs');
 const path = require('path');
 const { Readable } = require('stream');
+const iconv = require('iconv-lite');
 
 const VALID_COUNTRIES = ['US', 'UK', 'DE', 'FR', 'IT', 'ES'];
+const HEADER_KEYWORDS = [
+  '国家',
+  '站点',
+  '品牌',
+  '变体组',
+  '组名称',
+  '名称',
+  '类型',
+  'ASIN',
+  'asin',
+  'country',
+  'site',
+  'brand',
+  'group',
+  'variant',
+  'type',
+];
 
 function worksheetToRows(worksheet) {
   const rows = [];
@@ -39,111 +57,146 @@ function repairHeaderText(value) {
   return header;
 }
 
-function findColumnIndexes(headers, { withSite }) {
-  const groupNameIndex = headers.findIndex((header, index) => {
-    const lower = header.toLowerCase();
-    return (
-      header.includes('变体组') ||
-      header.includes('组名称') ||
-      header === '变体组名称' ||
-      header.includes('变体') ||
-      header.includes('组') ||
-      lower.includes('group') ||
-      lower.includes('variant') ||
-      (index === 0 && header.length > 0)
-    );
-  });
+function scoreHeaderText(text) {
+  const firstLine = String(text || '').split(/\r?\n/, 1)[0];
+  const normalizedFirstLine = firstLine.toLowerCase();
+  return HEADER_KEYWORDS.reduce(
+    (score, keyword) =>
+      score + (normalizedFirstLine.includes(keyword.toLowerCase()) ? 1 : 0),
+    0,
+  );
+}
 
-  const countryIndex = headers.findIndex((header, index) => {
-    const lower = header.toLowerCase();
-    return (
-      header.includes('国家') ||
-      header === '国家' ||
-      header.includes('国') ||
-      lower.includes('country') ||
-      lower === 'country' ||
-      (index === 1 && header.length > 0 && header.length < 10)
-    );
-  });
+function normalizeCsvBuffer(buffer) {
+  if (
+    buffer.length >= 3 &&
+    buffer[0] === 0xef &&
+    buffer[1] === 0xbb &&
+    buffer[2] === 0xbf
+  ) {
+    return buffer.slice(3);
+  }
 
-  const siteIndex = withSite
-    ? headers.findIndex((header, index) => {
-        const lower = header.toLowerCase();
-        return (
-          header.includes('站点') ||
-          header === '站点' ||
-          header.includes('站') ||
-          lower.includes('site') ||
-          (index === 2 && header.length > 0 && header.length < 20)
-        );
-      })
-    : -1;
+  if (buffer.length >= 2 && buffer[0] === 0xff && buffer[1] === 0xfe) {
+    return Buffer.from(iconv.decode(buffer.slice(2), 'utf16-le'), 'utf8');
+  }
 
-  const brandIndex = headers.findIndex((header, index) => {
-    const lower = header.toLowerCase();
-    return (
-      header.includes('品牌') ||
-      header === '品牌' ||
-      header.includes('品') ||
-      lower.includes('brand') ||
-      (index === (withSite ? 3 : 2) && header.length > 0 && header.length < 50)
-    );
-  });
+  if (buffer.length >= 2 && buffer[0] === 0xfe && buffer[1] === 0xff) {
+    return Buffer.from(iconv.decode(buffer.slice(2), 'utf16-be'), 'utf8');
+  }
 
-  const asinIndex = headers.findIndex((header, index) => {
-    const lower = header.toLowerCase();
-    return (
-      header.includes('ASIN') ||
-      header === 'asin' ||
-      lower === 'asin' ||
-      lower.includes('asin') ||
-      (index >= (withSite ? 4 : 3) &&
-        header.length > 0 &&
-        /^[A-Z0-9]+$/i.test(header))
-    );
-  });
+  const utf8Text = buffer.toString('utf8');
+  const gb18030Text = iconv.decode(buffer, 'gb18030');
+  const utf8Score = scoreHeaderText(utf8Text);
+  const gb18030Score = scoreHeaderText(gb18030Text);
 
-  const asinNameIndex = headers.findIndex((header) => {
-    const lower = header.toLowerCase();
-    return (
-      (header.includes('名称') && header.includes('ASIN')) ||
-      header === 'ASIN名称' ||
-      (header.includes('名称') &&
-        !header.includes('组') &&
-        !header.includes('变体组')) ||
-      (lower.includes('asin') && lower.includes('name')) ||
-      (lower.includes('name') &&
-        !lower.includes('group') &&
-        !lower.includes('variant'))
-    );
-  });
+  if (gb18030Score > utf8Score) {
+    return Buffer.from(gb18030Text, 'utf8');
+  }
 
-  const asinTypeIndex = headers.findIndex((header, index) => {
-    const lower = header.toLowerCase();
-    if (
-      (header.includes('类型') && header.includes('ASIN')) ||
-      header === 'ASIN类型'
-    ) {
-      return true;
-    }
-    if (
-      header.includes('类型') &&
+  return buffer;
+}
+
+function findColumnIndex(headers, semanticMatcher) {
+  return headers.findIndex((header, index) =>
+    semanticMatcher(header, header.toLowerCase(), index),
+  );
+}
+
+function isGroupNameHeader(header, lower) {
+  return (
+    header.includes('变体组') ||
+    header.includes('组名称') ||
+    header.includes('变体') ||
+    header.includes('组') ||
+    lower.includes('group') ||
+    lower.includes('variant')
+  );
+}
+
+function isCountryHeader(header, lower) {
+  return (
+    header.includes('国家') ||
+    header === '国家' ||
+    header.includes('国') ||
+    lower.includes('country') ||
+    lower === 'country'
+  );
+}
+
+function isSiteHeader(header, lower) {
+  return (
+    header.includes('站点') ||
+    header === '站点' ||
+    header.includes('站') ||
+    lower.includes('site')
+  );
+}
+
+function isBrandHeader(header, lower) {
+  return (
+    header.includes('品牌') ||
+    header === '品牌' ||
+    header.includes('品') ||
+    lower.includes('brand')
+  );
+}
+
+function isAsinNameHeader(header, lower) {
+  return (
+    (header.includes('名称') && header.includes('ASIN')) ||
+    header === 'ASIN名称' ||
+    (header.includes('名称') &&
       !header.includes('组') &&
-      !header.includes('变体组')
-    ) {
-      return true;
-    }
-    if (
-      (lower.includes('asin') && lower.includes('type')) ||
-      (lower.includes('type') && !lower.includes('variant'))
-    ) {
-      return true;
-    }
-    if (asinIndex !== -1 && index > asinIndex && index >= headers.length - 2) {
-      return true;
-    }
+      !header.includes('变体组')) ||
+    (lower.includes('asin') && lower.includes('name')) ||
+    (lower.includes('name') &&
+      !lower.includes('group') &&
+      !lower.includes('variant'))
+  );
+}
+
+function isAsinTypeHeader(header, lower) {
+  return (
+    (header.includes('类型') && header.includes('ASIN')) ||
+    header === 'ASIN类型' ||
+    (header.includes('类型') &&
+      !header.includes('组') &&
+      !header.includes('变体组')) ||
+    (lower.includes('asin') && lower.includes('type')) ||
+    (lower.includes('type') && !lower.includes('variant'))
+  );
+}
+
+function isAsinValueHeader(header, lower) {
+  if (isAsinTypeHeader(header, lower) || isAsinNameHeader(header, lower)) {
     return false;
-  });
+  }
+
+  return (
+    header.includes('ASIN') ||
+    header === 'asin' ||
+    lower === 'asin' ||
+    lower.includes('asin')
+  );
+}
+
+function findColumnIndexes(headers, { withSite }) {
+  const groupNameIndex = findColumnIndex(headers, isGroupNameHeader);
+
+  const countryIndex = findColumnIndex(headers, isCountryHeader);
+
+  const siteIndex = withSite ? findColumnIndex(headers, isSiteHeader) : -1;
+
+  const brandIndex = findColumnIndex(headers, isBrandHeader);
+
+  const asinNameIndex = headers.findIndex((header) =>
+    isAsinNameHeader(header, header.toLowerCase()),
+  );
+
+  const asinIndex = findColumnIndex(headers, isAsinValueHeader);
+
+  const asinTypeIndex = findColumnIndex(headers, isAsinTypeHeader);
 
   return {
     groupNameIndex,
@@ -180,30 +233,8 @@ async function parseWorkbook(file) {
   }
 
   if (ext === '.csv') {
-    let csvBuffer = fileBuffer;
-    if (
-      csvBuffer.length >= 3 &&
-      csvBuffer[0] === 0xef &&
-      csvBuffer[1] === 0xbb &&
-      csvBuffer[2] === 0xbf
-    ) {
-      csvBuffer = csvBuffer.slice(3);
-    }
-    if (
-      csvBuffer.length >= 2 &&
-      csvBuffer[0] === 0xff &&
-      csvBuffer[1] === 0xfe
-    ) {
-      csvBuffer = csvBuffer.slice(2);
-    }
-    if (
-      csvBuffer.length >= 2 &&
-      csvBuffer[0] === 0xfe &&
-      csvBuffer[1] === 0xff
-    ) {
-      csvBuffer = csvBuffer.slice(2);
-    }
-    const stream = Readable.from(csvBuffer);
+    const csvBuffer = normalizeCsvBuffer(fileBuffer);
+    const stream = Readable.from([csvBuffer]);
     await workbook.csv.read(stream);
   } else if (ext === '.xlsx') {
     await workbook.xlsx.load(fileBuffer);

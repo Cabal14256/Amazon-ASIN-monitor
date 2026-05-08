@@ -167,6 +167,17 @@ declare namespace API {
     data?: ASINInfo;
   }
 
+  interface ASINBatchCreateResult {
+    total?: number;
+    list?: ASINInfo[];
+  }
+
+  interface Result_ASINCreate_ {
+    success?: boolean;
+    errorMessage?: string;
+    data?: ASINInfo | ASINBatchCreateResult;
+  }
+
   /** 变体组创建/更新VO */
   interface VariantGroupVO {
     name?: string;
@@ -178,6 +189,7 @@ declare namespace API {
   /** ASIN创建/更新VO */
   interface ASINInfoVO {
     asin?: string;
+    asins?: string[];
     name?: string;
     asinType?: ASINType;
     country?: Country;

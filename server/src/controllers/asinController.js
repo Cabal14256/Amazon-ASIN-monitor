@@ -46,6 +46,29 @@ function parseManualBrokenAction(body = {}) {
   return markedBroken ? 'MARK_BROKEN' : 'CLEAR_SELF_MANUAL';
 }
 
+const ASIN_CODE_PATTERN = /^[A-Z0-9]{10}$/;
+const MAX_BATCH_CREATE_ASINS = 200;
+
+function parseASINList(body = {}) {
+  const rawInput =
+    Array.isArray(body.asins) && body.asins.length > 0 ? body.asins : body.asin;
+  const rawItems = Array.isArray(rawInput)
+    ? rawInput
+    : String(rawInput || '').split(/[,，;；\s]+/);
+
+  return Array.from(
+    new Set(
+      rawItems
+        .map((item) =>
+          String(item || '')
+            .trim()
+            .toUpperCase(),
+        )
+        .filter(Boolean),
+    ),
+  );
+}
+
 // 查询变体组列表
 exports.getVariantGroups = async (req, res) => {
   try {
@@ -137,14 +160,30 @@ exports.deleteVariantGroup = async (req, res) => {
 // 添加ASIN
 exports.createASIN = async (req, res) => {
   try {
-    validateRequiredFields(req.body, [
-      'asin',
-      'country',
-      'site',
-      'brand',
-      'parentId',
-    ]);
-    const { asin, name, country, site, brand, parentId, asinType } = req.body;
+    validateRequiredFields(req.body, ['country', 'site', 'brand', 'parentId']);
+    const { name, country, site, brand, parentId, asinType } = req.body;
+    const asinList = parseASINList(req.body);
+
+    if (asinList.length === 0) {
+      return sendErrorResponse(res, 400, '请至少输入一个ASIN编码');
+    }
+    if (asinList.length > MAX_BATCH_CREATE_ASINS) {
+      return sendErrorResponse(
+        res,
+        400,
+        `一次最多添加${MAX_BATCH_CREATE_ASINS}个ASIN`,
+      );
+    }
+
+    const invalidASIN = asinList.find((asin) => !ASIN_CODE_PATTERN.test(asin));
+    if (invalidASIN) {
+      return sendErrorResponse(
+        res,
+        400,
+        `ASIN编码 ${invalidASIN} 格式不正确（应为10位字母数字组合）`,
+      );
+    }
+
     // 验证asinType值
     if (asinType && !['1', '2'].includes(String(asinType))) {
       return sendErrorResponse(
@@ -153,16 +192,27 @@ exports.createASIN = async (req, res) => {
         'ASIN类型必须是 1（主链）或 2（副评）',
       );
     }
-    const asinData = await ASIN.create({
-      asin,
-      name: name || null, // name字段可选
-      country,
-      site,
-      brand,
-      variantGroupId: parentId,
-      asinType: asinType || null,
+
+    const asinDataList = await ASIN.createMany(
+      asinList.map((asin) => ({
+        asin,
+        name: name || null, // name字段可选
+        country,
+        site,
+        brand,
+        variantGroupId: parentId,
+        asinType: asinType || null,
+      })),
+    );
+
+    if (asinDataList.length === 1) {
+      return sendSuccessResponse(res, asinDataList[0]);
+    }
+
+    sendSuccessResponse(res, {
+      total: asinDataList.length,
+      list: asinDataList,
     });
-    sendSuccessResponse(res, asinData);
   } catch (error) {
     if (error.statusCode === 400) {
       return sendErrorResponse(res, 400, error.message);
@@ -477,8 +527,10 @@ exports.importFromExcel = async (req, res) => {
       errorCode: 0,
     });
   } catch (error) {
-    logger.error('Excel导入错误:', error);
-    logger.error('错误堆栈:', error.stack);
+    logger.error('Excel导入错误:', {
+      message: error.message,
+      statusCode: error.statusCode || 500,
+    });
     const statusCode = error.statusCode || 500;
     res.status(statusCode).json({
       success: false,

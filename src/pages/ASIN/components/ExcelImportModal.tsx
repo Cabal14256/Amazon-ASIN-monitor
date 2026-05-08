@@ -66,12 +66,20 @@ interface OnlineImportRow {
 }
 
 const ONLINE_FIELDS = [
-  'groupName',
   'country',
+  'asinType',
   'site',
   'brand',
+  'groupName',
   'asin',
-  'asinType',
+] as const;
+const IMPORT_HEADER = [
+  '国家',
+  'ASIN类型',
+  '站点',
+  '品牌',
+  '变体组名称',
+  'ASIN',
 ] as const;
 const DEFAULT_ONLINE_ROW_COUNT = 12;
 
@@ -441,7 +449,7 @@ const ExcelImportModal: React.FC<ExcelImportModalProps> = (props) => {
       }
     }
 
-    const header = ['变体组名称', '国家', '站点', '品牌', 'ASIN', 'ASIN类型'];
+    const header = [...IMPORT_HEADER];
     const escapeCsvValue = (value?: string) => {
       const normalized = (value || '').trim();
       return `"${normalized.replace(/"/g, '""')}"`;
@@ -450,12 +458,12 @@ const ExcelImportModal: React.FC<ExcelImportModalProps> = (props) => {
       header.join(','),
       ...validRows.map((row) =>
         [
-          row.groupName,
           row.country,
+          row.asinType,
           row.site,
           row.brand,
+          row.groupName,
           row.asin,
-          row.asinType,
         ]
           .map((value) => escapeCsvValue(value))
           .join(','),
@@ -520,24 +528,6 @@ const ExcelImportModal: React.FC<ExcelImportModalProps> = (props) => {
       render: (_, __, index) => index + 1,
     },
     {
-      title: renderRequiredTitle('变体组名称'),
-      dataIndex: 'groupName',
-      width: 220,
-      render: (_, record) => (
-        <Input
-          className="online-cell-input"
-          value={record.groupName}
-          placeholder="如：iPhone 15 Pro 变体组"
-          onFocus={() =>
-            setActiveCell({ rowId: record.id, field: 'groupName' })
-          }
-          onChange={(event) =>
-            updateOnlineCell(record.id, 'groupName', event.target.value)
-          }
-        />
-      ),
-    },
-    {
       title: renderRequiredTitle('国家'),
       dataIndex: 'country',
       width: 120,
@@ -550,6 +540,28 @@ const ExcelImportModal: React.FC<ExcelImportModalProps> = (props) => {
           onChange={(event) =>
             updateOnlineCell(record.id, 'country', event.target.value)
           }
+        />
+      ),
+    },
+    {
+      title: 'ASIN类型',
+      dataIndex: 'asinType',
+      width: 130,
+      render: (_, record) => (
+        <Select
+          className="online-cell-select"
+          value={record.asinType || undefined}
+          placeholder="可选"
+          options={[
+            { value: '1', label: '1 主链' },
+            { value: '2', label: '2 副评' },
+          ]}
+          onFocus={() => setActiveCell({ rowId: record.id, field: 'asinType' })}
+          onChange={(value) =>
+            updateOnlineCell(record.id, 'asinType', value || '')
+          }
+          allowClear
+          style={{ width: '100%' }}
         />
       ),
     },
@@ -586,6 +598,24 @@ const ExcelImportModal: React.FC<ExcelImportModalProps> = (props) => {
       ),
     },
     {
+      title: renderRequiredTitle('变体组名称'),
+      dataIndex: 'groupName',
+      width: 220,
+      render: (_, record) => (
+        <Input
+          className="online-cell-input"
+          value={record.groupName}
+          placeholder="如：iPhone 15 Pro 变体组"
+          onFocus={() =>
+            setActiveCell({ rowId: record.id, field: 'groupName' })
+          }
+          onChange={(event) =>
+            updateOnlineCell(record.id, 'groupName', event.target.value)
+          }
+        />
+      ),
+    },
+    {
       title: renderRequiredTitle('ASIN'),
       dataIndex: 'asin',
       width: 180,
@@ -601,36 +631,14 @@ const ExcelImportModal: React.FC<ExcelImportModalProps> = (props) => {
         />
       ),
     },
-    {
-      title: 'ASIN类型',
-      dataIndex: 'asinType',
-      width: 130,
-      render: (_, record) => (
-        <Select
-          className="online-cell-select"
-          value={record.asinType || undefined}
-          placeholder="可选"
-          options={[
-            { value: '1', label: '1 主链' },
-            { value: '2', label: '2 副评' },
-          ]}
-          onFocus={() => setActiveCell({ rowId: record.id, field: 'asinType' })}
-          onChange={(value) =>
-            updateOnlineCell(record.id, 'asinType', value || '')
-          }
-          allowClear
-          style={{ width: '100%' }}
-        />
-      ),
-    },
   ];
 
   const downloadTemplate = () => {
     const templateData = [
-      ['变体组名称', '国家', '站点', '品牌', 'ASIN', 'ASIN类型'],
-      ['iPhone 15 Pro 变体组', 'US', '12', 'Apple', 'B0CHX1W1XY', '1'],
-      ['iPhone 15 Pro 变体组', 'US', '12', 'Apple', 'B0CHX1W2XY', '1'],
-      ['MacBook Pro 变体组', 'UK', '15', 'Apple', 'B09JQL8KP9', ''],
+      [...IMPORT_HEADER],
+      ['US', '1', '12', 'Apple', 'iPhone 15 Pro 变体组', 'B0CHX1W1XY'],
+      ['US', '1', '12', 'Apple', 'iPhone 15 Pro 变体组', 'B0CHX1W2XY'],
+      ['UK', '', '15', 'Apple', 'MacBook Pro 变体组', 'B09JQL8KP9'],
     ];
 
     const csvContent = templateData.map((row) => row.join(',')).join('\n');
@@ -683,7 +691,7 @@ const ExcelImportModal: React.FC<ExcelImportModalProps> = (props) => {
                       <div>
                         <p>
                           1.
-                          Excel文件格式：第一行为表头，包含：变体组名称（必填）、国家（必填）、站点（必填）、品牌（必填）、ASIN（必填）、ASIN类型（可选）
+                          Excel文件格式：第一行为表头，表头顺序不限；必须包含：国家、站点、品牌、变体组名称、ASIN，可选包含：ASIN类型
                         </p>
                         <p>2. 相同变体组名称的行会被归为一个变体组</p>
                         <p>3. 支持的文件格式：.xlsx, .xls, .csv</p>

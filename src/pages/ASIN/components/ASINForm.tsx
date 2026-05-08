@@ -4,10 +4,37 @@ import {
   ModalForm,
   ProFormSelect,
   ProFormText,
+  ProFormTextArea,
 } from '@ant-design/pro-components';
-import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import React, {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from 'react';
 
 const { addASIN, modifyASIN, queryVariantGroupList } = services.ASINController;
+const ASIN_CODE_PATTERN = /^[A-Z0-9]{10}$/;
+const MAX_BATCH_CREATE_ASINS = 200;
+
+const normalizeASINInput = (value?: string | string[]) => {
+  const rawItems = Array.isArray(value)
+    ? value
+    : String(value || '').split(/[,，;；\s]+/);
+
+  return Array.from(
+    new Set(
+      rawItems
+        .map((item) =>
+          String(item || '')
+            .trim()
+            .toUpperCase(),
+        )
+        .filter(Boolean),
+    ),
+  );
+};
 
 interface ASINFormProps {
   modalVisible: boolean;
@@ -78,17 +105,31 @@ const ASINForm: React.FC<ASINFormProps> = (props) => {
       submittingRef.current = true;
 
       try {
+        const asinList = normalizeASINInput(formValues.asin);
+        const normalizedValues = {
+          ...formValues,
+          asin: asinList[0],
+          asins: isEdit ? undefined : asinList,
+          country: formValues.country
+            ? (String(formValues.country).trim().toUpperCase() as API.Country)
+            : formValues.country,
+        };
+
         if (isEdit) {
           await modifyASIN(
             {
               asinId: values?.id || '',
             },
-            formValues,
+            normalizedValues,
           );
           message.success('更新成功');
         } else {
-          await addASIN(formValues);
-          message.success('创建成功');
+          await addASIN(normalizedValues);
+          message.success(
+            asinList.length > 1
+              ? `创建成功，共添加 ${asinList.length} 个ASIN`
+              : '创建成功',
+          );
         }
         onSubmit();
         return true;
@@ -126,23 +167,60 @@ const ASINForm: React.FC<ASINFormProps> = (props) => {
         disabled={isEdit || !!variantGroupId} // 编辑时或已指定变体组时禁用
         options={variantGroupOptions}
       />
-      <ProFormText
-        name="asin"
-        label="ASIN编码"
-        placeholder="请输入ASIN编码（如：B0CHX1W1XY）"
-        rules={[
-          { required: true, message: '请输入ASIN编码' },
-          {
-            pattern: /^[A-Z0-9]{10}$/,
-            message: 'ASIN编码格式不正确（应为10位字母数字组合）',
-          },
-        ]}
-        fieldProps={{
-          maxLength: 10,
-          style: { textTransform: 'uppercase' },
-        }}
-        disabled={isEdit} // 编辑时禁用ASIN编码修改
-      />
+      {isEdit ? (
+        <ProFormText
+          name="asin"
+          label="ASIN编码"
+          placeholder="请输入ASIN编码（如：B0CHX1W1XY）"
+          rules={[
+            { required: true, message: '请输入ASIN编码' },
+            {
+              pattern: ASIN_CODE_PATTERN,
+              message: 'ASIN编码格式不正确（应为10位字母数字组合）',
+            },
+          ]}
+          fieldProps={{
+            maxLength: 10,
+            style: { textTransform: 'uppercase' },
+          }}
+          disabled
+        />
+      ) : (
+        <ProFormTextArea
+          name="asin"
+          label="ASIN编码"
+          placeholder="可输入多个ASIN，支持换行、逗号、分号或空格分隔"
+          rules={[
+            {
+              validator: async (_, value) => {
+                const asinList = normalizeASINInput(value);
+                if (asinList.length === 0) {
+                  throw new Error('请输入ASIN编码');
+                }
+                if (asinList.length > MAX_BATCH_CREATE_ASINS) {
+                  throw new Error(
+                    `一次最多添加 ${MAX_BATCH_CREATE_ASINS} 个ASIN`,
+                  );
+                }
+
+                const invalidASIN = asinList.find(
+                  (asin) => !ASIN_CODE_PATTERN.test(asin),
+                );
+                if (invalidASIN) {
+                  throw new Error(
+                    `ASIN编码 ${invalidASIN} 格式不正确（应为10位字母数字组合）`,
+                  );
+                }
+              },
+            },
+          ]}
+          fieldProps={{
+            autoSize: { minRows: 3, maxRows: 6 },
+            maxLength: 4000,
+            style: { textTransform: 'uppercase' },
+          }}
+        />
+      )}
       <ProFormSelect
         name="country"
         label="所属国家"
