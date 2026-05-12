@@ -3,20 +3,32 @@ const path = require('path');
 const logger = require('../utils/logger');
 
 // 允许的文件类型
-const ALLOWED_MIME_TYPES = [
-  'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
-  'text/csv',
-  'application/csv',
-  'text/x-csv',
-  'text/comma-separated-values',
-];
+const ALLOWED_MIME_TYPES_BY_EXTENSION = {
+  '.xlsx': [
+    'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+  ],
+  '.csv': [
+    'text/csv',
+    'application/csv',
+    'text/x-csv',
+    'text/comma-separated-values',
+    'text/plain',
+    'application/vnd.ms-excel',
+  ],
+};
 
-const ALLOWED_EXTENSIONS = ['.xlsx', '.csv'];
+const ALLOWED_EXTENSIONS = Object.keys(ALLOWED_MIME_TYPES_BY_EXTENSION);
 
 // 文件大小限制（10MB）
 const MAX_FILE_SIZE = 10 * 1024 * 1024;
 
 const storage = multer.memoryStorage();
+
+const createUploadError = (message) => {
+  const error = new Error(message);
+  error.statusCode = 400;
+  return error;
+};
 
 const fileFilter = (req, file, cb) => {
   const ext = path.extname(file.originalname).toLowerCase();
@@ -28,17 +40,21 @@ const fileFilter = (req, file, cb) => {
       extension: ext,
     });
     return cb(
-      new Error(`不支持的文件类型。仅支持: ${ALLOWED_EXTENSIONS.join(', ')}`),
+      createUploadError(
+        `不支持的文件类型。仅支持: ${ALLOWED_EXTENSIONS.join(', ')}`,
+      ),
     );
   }
 
   // 验证 MIME 类型
-  if (!ALLOWED_MIME_TYPES.includes(file.mimetype)) {
+  const allowedMimeTypes = ALLOWED_MIME_TYPES_BY_EXTENSION[ext];
+  if (!allowedMimeTypes.includes(file.mimetype)) {
     logger.warn('文件上传被拒绝: 不支持的MIME类型', {
       filename: file.originalname,
       mimetype: file.mimetype,
+      extension: ext,
     });
-    return cb(new Error(`不支持的文件 MIME 类型: ${file.mimetype}`));
+    return cb(createUploadError(`不支持的文件 MIME 类型: ${file.mimetype}`));
   }
 
   cb(null, true);
