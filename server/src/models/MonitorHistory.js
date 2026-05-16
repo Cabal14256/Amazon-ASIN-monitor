@@ -989,6 +989,56 @@ class MonitorHistory {
       endTime = '',
     } = params;
 
+    if (
+      checkType === 'ASIN' &&
+      !variantGroupId &&
+      !asinId &&
+      process.env.ANALYTICS_AGG_ENABLED !== '0'
+    ) {
+      const sourceGranularity = MonitorHistory.getDurationSourceGranularity(
+        'day',
+        startTime,
+        endTime,
+      );
+      if (
+        MonitorHistory.canUseAggForRange(sourceGranularity, startTime, endTime)
+      ) {
+        try {
+          const rows = await MonitorHistory.getDurationMetricRowsFromAgg({
+            aggTable: 'monitor_history_agg',
+            sourceGranularity,
+            targetGranularity: sourceGranularity,
+            targetPeriodExpr: "'ALL'",
+            startTime,
+            endTime,
+            country,
+            orderBy: 'ORDER BY target_period ASC',
+          });
+          const metrics = MonitorHistory.mapDurationMetricsRecord(
+            rows[0] || {},
+          );
+          logger.info('[统计查询] getStatistics 使用聚合表');
+          return {
+            totalChecks: metrics.totalChecks,
+            brokenCount: metrics.brokenCount,
+            normalCount: Math.max(0, metrics.totalChecks - metrics.brokenCount),
+            groupCount: 0,
+            asinCount: metrics.totalAsinsDedup,
+            totalDurationHours: metrics.totalDurationHours,
+            abnormalDurationHours: metrics.abnormalDurationHours,
+            normalDurationHours: metrics.normalDurationHours,
+            ratioAllAsin: metrics.ratioAllAsin,
+            ratioAllTime: metrics.ratioAllTime,
+          };
+        } catch (error) {
+          logger.warn(
+            '[统计查询] getStatistics 聚合表读取失败，回退原始表',
+            error?.message || error,
+          );
+        }
+      }
+    }
+
     let sql = `
       SELECT
         COUNT(*) as total_checks,
@@ -1360,6 +1410,330 @@ class MonitorHistory {
         broken_asins_dedup: metrics.brokenAsinsDedup,
       };
     });
+  }
+
+  static getAggTargetPeriodExpr(targetGranularity = 'day') {
+    if (targetGranularity === 'hour') {
+      return "DATE_FORMAT(agg.time_slot, '%Y-%m-%d %H:00:00')";
+    }
+    if (targetGranularity === 'week') {
+      return "DATE_FORMAT(agg.time_slot, '%Y-%u')";
+    }
+    if (targetGranularity === 'month') {
+      return "DATE_FORMAT(agg.time_slot, '%Y-%m')";
+    }
+    return "DATE_FORMAT(agg.time_slot, '%Y-%m-%d')";
+  }
+
+  static getAggBucketDurationSql(
+    sourceGranularity = 'hour',
+    startTime = '',
+    endTime = '',
+  ) {
+    if (!startTime || !endTime) {
+      return {
+        sql: sourceGranularity === 'day' ? '24' : '1',
+        conditions: [],
+      };
+    }
+
+    const intervalUnit = sourceGranularity === 'day' ? 'DAY' : 'HOUR';
+    return {
+      sql: `
+        GREATEST(
+          0,
+          TIMESTAMPDIFF(
+            SECOND,
+            GREATEST(agg.time_slot, ?),
+            LEAST(DATE_ADD(agg.time_slot, INTERVAL 1 ${intervalUnit}), ?)
+          ) / 3600
+        )
+      `,
+      conditions: [startTime, endTime],
+    };
+  }
+
+  static buildAggDurationWhere({
+    sourceGranularity = 'hour',
+    startTime = '',
+    endTime = '',
+    country = '',
+    site = '',
+    brand = '',
+  } = {}) {
+    const config = MonitorHistory.getDurationSourceConfig(sourceGranularity);
+    let whereClause = 'WHERE agg.granularity = ?';
+    const conditions = [sourceGranularity];
+
+    if (country) {
+      if (country === 'EU') {
+        whereClause += ` AND agg.country IN ('UK', 'DE', 'FR', 'IT', 'ES')`;
+      } else {
+        whereClause += ' AND agg.country = ?';
+        conditions.push(country);
+      }
+    }
+
+    if (startTime) {
+      whereClause += ` AND agg.time_slot >= DATE_FORMAT(?, '${config.slotWhereFormat}')`;
+      conditions.push(startTime);
+    }
+
+    if (endTime) {
+      whereClause += ` AND agg.time_slot <= DATE_FORMAT(?, '${config.slotWhereFormat}')`;
+      conditions.push(endTime);
+    }
+
+    if (site) {
+      whereClause += ' AND agg.site = ?';
+      conditions.push(site);
+    }
+
+    if (brand) {
+      whereClause += ' AND agg.brand = ?';
+      conditions.push(brand);
+    }
+
+    return { whereClause, conditions };
+  }
+
+  static toMetricNumber(value, precision = 4) {
+    const num = Number(value);
+    if (!Number.isFinite(num)) {
+      return 0;
+    }
+    return Number(num.toFixed(precision));
+  }
+
+  static mapDurationMetricsRecord(row = {}) {
+    const totalDurationHours = MonitorHistory.toMetricNumber(
+      row.total_duration_hours,
+    );
+    const abnormalDurationHours = MonitorHistory.toMetricNumber(
+      row.abnormal_duration_hours,
+    );
+    const peakDurationHours = MonitorHistory.toMetricNumber(
+      row.peak_duration_hours,
+    );
+    const peakAbnormalDurationHours = MonitorHistory.toMetricNumber(
+      row.peak_abnormal_duration_hours,
+    );
+    const lowDurationHours = MonitorHistory.toMetricNumber(
+      row.low_duration_hours,
+    );
+    const lowAbnormalDurationHours = MonitorHistory.toMetricNumber(
+      row.low_abnormal_duration_hours,
+    );
+
+    return {
+      totalDurationHours,
+      abnormalDurationHours,
+      normalDurationHours: MonitorHistory.toMetricNumber(
+        totalDurationHours - abnormalDurationHours,
+      ),
+      peakDurationHours,
+      peakAbnormalDurationHours,
+      lowDurationHours,
+      lowAbnormalDurationHours,
+      ratioAllAsin: MonitorHistory.toMetricNumber(row.ratio_all_asin),
+      ratioAllTime:
+        totalDurationHours > 0
+          ? MonitorHistory.toMetricNumber(
+              (abnormalDurationHours / totalDurationHours) * 100,
+            )
+          : 0,
+      globalPeakRate:
+        totalDurationHours > 0
+          ? MonitorHistory.toMetricNumber(
+              (peakAbnormalDurationHours / totalDurationHours) * 100,
+            )
+          : 0,
+      globalLowRate:
+        totalDurationHours > 0
+          ? MonitorHistory.toMetricNumber(
+              (lowAbnormalDurationHours / totalDurationHours) * 100,
+            )
+          : 0,
+      ratioHigh:
+        peakDurationHours > 0
+          ? MonitorHistory.toMetricNumber(
+              (peakAbnormalDurationHours / peakDurationHours) * 100,
+            )
+          : 0,
+      ratioLow:
+        lowDurationHours > 0
+          ? MonitorHistory.toMetricNumber(
+              (lowAbnormalDurationHours / lowDurationHours) * 100,
+            )
+          : 0,
+      totalChecks: Number(row.total_checks) || 0,
+      brokenCount: Number(row.broken_count) || 0,
+      totalAsinsDedup: Number(row.total_asins_dedup) || 0,
+      brokenAsinsDedup: Number(row.broken_asins_dedup) || 0,
+      ratio_all_asin: MonitorHistory.toMetricNumber(row.ratio_all_asin),
+      ratio_all_time:
+        totalDurationHours > 0
+          ? MonitorHistory.toMetricNumber(
+              (abnormalDurationHours / totalDurationHours) * 100,
+            )
+          : 0,
+      total_asins_dedup: Number(row.total_asins_dedup) || 0,
+      broken_asins_dedup: Number(row.broken_asins_dedup) || 0,
+    };
+  }
+
+  static async getDurationMetricRowsFromAgg({
+    aggTable = 'monitor_history_agg',
+    sourceGranularity = 'hour',
+    targetGranularity = 'day',
+    startTime = '',
+    endTime = '',
+    country = '',
+    site = '',
+    brand = '',
+    groupFields = [],
+    targetPeriodExpr = '',
+    orderBy = '',
+    limit = null,
+    offset = null,
+  } = {}) {
+    const allowedTables = new Set([
+      'monitor_history_agg',
+      'monitor_history_agg_dim',
+      'monitor_history_agg_variant_group',
+    ]);
+    if (!allowedTables.has(aggTable)) {
+      throw new Error(`不支持的聚合表: ${aggTable}`);
+    }
+
+    const isCovered = await MonitorHistory.isAggTableCoveringRange(
+      aggTable,
+      sourceGranularity,
+      startTime,
+      endTime,
+    );
+    if (!isCovered) {
+      throw new Error(`聚合表覆盖不足，回退原始表: ${aggTable}`);
+    }
+
+    const bucket = MonitorHistory.getAggBucketDurationSql(
+      sourceGranularity,
+      startTime,
+      endTime,
+    );
+    const { whereClause, conditions: whereConditions } =
+      MonitorHistory.buildAggDurationWhere({
+        sourceGranularity,
+        startTime,
+        endTime,
+        country,
+        site,
+        brand,
+      });
+    const effectiveTargetPeriodExpr =
+      targetPeriodExpr ||
+      MonitorHistory.getAggTargetPeriodExpr(targetGranularity);
+    const safeGroupFields = groupFields.filter((field) =>
+      /^[a-zA-Z_][a-zA-Z0-9_]*$/.test(field),
+    );
+    const sourceGroupSelect = safeGroupFields
+      .map((field) => `agg.${field} AS ${field}`)
+      .join(',\n        ');
+    const sourceGroupPrefix = sourceGroupSelect ? `${sourceGroupSelect},` : '';
+    const perAsinGroupSelect = safeGroupFields
+      .map((field) => `source.${field} AS ${field}`)
+      .join(',\n        ');
+    const perAsinGroupPrefix = perAsinGroupSelect
+      ? `${perAsinGroupSelect},`
+      : '';
+    const outerGroupSelect = safeGroupFields
+      .map((field) => `per_asin.${field} AS ${field}`)
+      .join(',\n        ');
+    const outerGroupPrefix = outerGroupSelect ? `${outerGroupSelect},` : '';
+    const perAsinGroupBy = [
+      'source.target_period',
+      ...safeGroupFields.map((field) => `source.${field}`),
+      'source.asin_key',
+    ].join(', ');
+    const outerGroupBy = [
+      'per_asin.target_period',
+      ...safeGroupFields.map((field) => `per_asin.${field}`),
+    ].join(', ');
+    const outerOrderBy = orderBy || 'ORDER BY target_period ASC';
+    const safeLimit =
+      limit === null || limit === undefined
+        ? null
+        : Math.max(1, Number(limit) || 1);
+    const safeOffset =
+      offset === null || offset === undefined
+        ? null
+        : Math.max(0, Number(offset) || 0);
+    const limitSql =
+      safeLimit === null
+        ? ''
+        : ` LIMIT ${safeLimit}${
+            safeOffset === null ? '' : ` OFFSET ${safeOffset}`
+          }`;
+
+    const sql = `
+      SELECT
+        per_asin.target_period,
+        ${outerGroupPrefix}
+        SUM(per_asin.asin_total_duration_hours) AS total_duration_hours,
+        SUM(per_asin.asin_abnormal_duration_hours) AS abnormal_duration_hours,
+        SUM(per_asin.asin_peak_duration_hours) AS peak_duration_hours,
+        SUM(per_asin.asin_peak_abnormal_duration_hours) AS peak_abnormal_duration_hours,
+        SUM(per_asin.asin_low_duration_hours) AS low_duration_hours,
+        SUM(per_asin.asin_low_abnormal_duration_hours) AS low_abnormal_duration_hours,
+        SUM(per_asin.total_checks) AS total_checks,
+        SUM(per_asin.broken_count) AS broken_count,
+        COUNT(*) AS total_asins_dedup,
+        SUM(CASE WHEN per_asin.asin_abnormal_duration_hours > 0 THEN 1 ELSE 0 END) AS broken_asins_dedup,
+        AVG(
+          CASE
+            WHEN per_asin.asin_total_duration_hours > 0
+            THEN per_asin.asin_abnormal_duration_hours / per_asin.asin_total_duration_hours
+            ELSE 0
+          END
+        ) * 100 AS ratio_all_asin
+      FROM (
+        SELECT
+          source.target_period,
+          ${perAsinGroupPrefix}
+          source.asin_key,
+          SUM(source.bucket_hours) AS asin_total_duration_hours,
+          SUM(source.bucket_hours * source.abnormal_ratio) AS asin_abnormal_duration_hours,
+          SUM(CASE WHEN source.has_peak = 1 THEN source.bucket_hours ELSE 0 END) AS asin_peak_duration_hours,
+          SUM(CASE WHEN source.has_peak = 1 THEN source.bucket_hours * source.abnormal_ratio ELSE 0 END) AS asin_peak_abnormal_duration_hours,
+          SUM(CASE WHEN source.has_peak = 0 THEN source.bucket_hours ELSE 0 END) AS asin_low_duration_hours,
+          SUM(CASE WHEN source.has_peak = 0 THEN source.bucket_hours * source.abnormal_ratio ELSE 0 END) AS asin_low_abnormal_duration_hours,
+          SUM(source.check_count) AS total_checks,
+          SUM(source.broken_count) AS broken_count
+        FROM (
+          SELECT
+            ${effectiveTargetPeriodExpr} AS target_period,
+            ${sourceGroupPrefix}
+            agg.asin_key,
+            agg.check_count,
+            agg.broken_count,
+            agg.has_peak,
+            CASE
+              WHEN agg.check_count > 0 THEN LEAST(GREATEST(agg.broken_count / agg.check_count, 0), 1)
+              ELSE 0
+            END AS abnormal_ratio,
+            ${bucket.sql} AS bucket_hours
+          FROM ${aggTable} agg
+          ${whereClause}
+        ) source
+        WHERE source.bucket_hours > 0
+        GROUP BY ${perAsinGroupBy}
+      ) per_asin
+      GROUP BY ${outerGroupBy}
+      ${outerOrderBy}
+      ${limitSql}
+    `;
+
+    return await query(sql, [...bucket.conditions, ...whereConditions]);
   }
 
   static async getDurationSourceRowsFromAgg(params = {}) {
@@ -1823,30 +2197,26 @@ class MonitorHistory {
     } = params;
     const sourceGranularity =
       MonitorHistory.getRequestedSourceGranularity(params);
-    const queryStartDate = parseDateTimeInput(startTime);
-    const queryEndDate = parseDateTimeInput(endTime);
-    const sourceRows = await MonitorHistory.getDurationSourceRowsFromAgg({
+    const rows = await MonitorHistory.getDurationMetricRowsFromAgg({
+      aggTable: 'monitor_history_agg',
       startTime,
       endTime,
       sourceGranularity,
+      targetGranularity: groupBy,
       country,
+      orderBy: 'ORDER BY target_period ASC',
     });
 
-    return MonitorHistory.buildDurationRowsByGroup(sourceRows, {
-      sourceGranularity,
-      targetGranularity: groupBy,
-      queryStartDate,
-      queryEndDate,
-      buildGroupKey: (targetPeriod) => targetPeriod,
-      buildGroupMeta: (targetPeriod) => ({
-        time_period: targetPeriod,
-      }),
-    }).map((item) => ({
-      ...item,
-      total_asins: item.totalAsinsDedup,
-      broken_asins: item.brokenAsinsDedup,
-      asin_broken_rate: item.ratioAllAsin,
-      normal_count: Math.max(0, item.totalChecks - item.brokenCount),
+    return rows.map((row) => ({
+      time_period: row.target_period,
+      ...MonitorHistory.mapDurationMetricsRecord(row),
+      total_asins: Number(row.total_asins_dedup) || 0,
+      broken_asins: Number(row.broken_asins_dedup) || 0,
+      asin_broken_rate: MonitorHistory.toMetricNumber(row.ratio_all_asin),
+      normal_count: Math.max(
+        0,
+        (Number(row.total_checks) || 0) - (Number(row.broken_count) || 0),
+      ),
     }));
   }
 
@@ -2172,6 +2542,10 @@ class MonitorHistory {
   }
 
   static canUseAggForRange(timeSlotGranularity, startTime, endTime = '') {
+    if (process.env.ANALYTICS_AGG_ENFORCE_LOOKBACK !== '1') {
+      return Boolean(startTime || endTime);
+    }
+
     const baseTime = startTime || endTime;
     if (!baseTime) {
       return false;
@@ -2263,7 +2637,7 @@ class MonitorHistory {
     const now = Date.now();
     const cached = AGG_COVERAGE_CACHE.get(cacheKey);
     if (cached && now - cached.cachedAt < cacheTtlMs) {
-      return resolveCachedAnalyticsResult(cached, includeMeta);
+      return cached;
     }
 
     const sql = `
@@ -2533,9 +2907,7 @@ class MonitorHistory {
       startTime,
       endTime,
     );
-    const queryStartDate = parseDateTimeInput(startTime);
-    const queryEndDate = parseDateTimeInput(endTime);
-    let sourceRows = null;
+    let metrics = null;
     let source = 'raw';
 
     const useAgg =
@@ -2544,11 +2916,16 @@ class MonitorHistory {
 
     if (useAgg) {
       try {
-        sourceRows = await MonitorHistory.getDurationSourceRowsFromAgg({
+        const rows = await MonitorHistory.getDurationMetricRowsFromAgg({
+          aggTable: 'monitor_history_agg',
           startTime,
           endTime,
           sourceGranularity,
+          targetGranularity: timeSlotGranularity,
+          targetPeriodExpr: "'ALL'",
+          orderBy: 'ORDER BY target_period ASC',
         });
+        metrics = MonitorHistory.mapDurationMetricsRecord(rows[0] || {});
         logger.info('[统计查询] getAllCountriesSummary 使用聚合表');
         source = 'agg';
       } catch (error) {
@@ -2556,27 +2933,32 @@ class MonitorHistory {
           '[统计查询] getAllCountriesSummary 聚合表读取失败，回退原始表',
           error?.message || error,
         );
-        sourceRows = null;
+        metrics = null;
       }
     }
 
-    if (!Array.isArray(sourceRows)) {
-      sourceRows = await MonitorHistory.getDurationSourceRowsFromRaw({
+    if (metrics === null) {
+      const queryStartDate = parseDateTimeInput(startTime);
+      const queryEndDate = parseDateTimeInput(endTime);
+      const sourceRows = await MonitorHistory.getDurationSourceRowsFromRaw({
         startTime,
         endTime,
         sourceGranularity,
       });
       source = 'raw';
+      const rawMetricsRows = MonitorHistory.buildDurationRowsByGroup(
+        sourceRows,
+        {
+          sourceGranularity,
+          targetGranularity: timeSlotGranularity,
+          queryStartDate,
+          queryEndDate,
+          buildGroupKey: () => 'ALL',
+          buildGroupMeta: () => ({}),
+        },
+      );
+      metrics = rawMetricsRows[0] || {};
     }
-
-    const [metrics = {}] = MonitorHistory.buildDurationRowsByGroup(sourceRows, {
-      sourceGranularity,
-      targetGranularity: timeSlotGranularity,
-      queryStartDate,
-      queryEndDate,
-      buildGroupKey: () => 'ALL',
-      buildGroupMeta: () => ({}),
-    });
 
     const result = {
       timeRange: startTime && endTime ? `${startTime} ~ ${endTime}` : '',
@@ -2664,13 +3046,118 @@ class MonitorHistory {
 
     if (useAgg) {
       try {
-        sourceRows = await MonitorHistory.getDurationSourceRowsFromAgg({
+        const supportedRegionCountries = ['US', 'UK', 'DE', 'FR', 'ES', 'IT'];
+        const regionLabelMap = {
+          US: '美国',
+          EU_TOTAL: '欧洲汇总',
+          UK: '英国',
+          DE: '德国',
+          FR: '法国',
+          ES: '西班牙',
+          IT: '意大利',
+        };
+        const timeRangeLabel =
+          startTime && endTime ? `${startTime} ~ ${endTime}` : '';
+        const countryRows = await MonitorHistory.getDurationMetricRowsFromAgg({
+          aggTable: 'monitor_history_agg',
           startTime,
           endTime,
           sourceGranularity,
+          targetGranularity: timeSlotGranularity,
+          targetPeriodExpr: "'ALL'",
+          groupFields: ['country'],
+          orderBy: 'ORDER BY country ASC',
         });
+        const euRows = await MonitorHistory.getDurationMetricRowsFromAgg({
+          aggTable: 'monitor_history_agg',
+          startTime,
+          endTime,
+          sourceGranularity,
+          targetGranularity: timeSlotGranularity,
+          targetPeriodExpr: "'ALL'",
+          country: 'EU',
+          orderBy: 'ORDER BY target_period ASC',
+        });
+        const rowByRegion = new Map(
+          countryRows
+            .filter((row) =>
+              supportedRegionCountries.includes(
+                String(row.country || '').toUpperCase(),
+              ),
+            )
+            .map((row) => {
+              const regionCode = String(row.country || '').toUpperCase();
+              return [
+                regionCode,
+                {
+                  region: regionLabelMap[regionCode] || regionCode,
+                  regionCode,
+                  timeRange: timeRangeLabel,
+                  ...MonitorHistory.mapDurationMetricsRecord(row),
+                },
+              ];
+            }),
+        );
+        if (euRows[0]) {
+          rowByRegion.set('EU_TOTAL', {
+            region: regionLabelMap.EU_TOTAL,
+            regionCode: 'EU_TOTAL',
+            timeRange: timeRangeLabel,
+            ...MonitorHistory.mapDurationMetricsRecord(euRows[0]),
+          });
+        }
+        const defaultMetrics = {
+          totalDurationHours: 0,
+          abnormalDurationHours: 0,
+          normalDurationHours: 0,
+          ratioAllAsin: 0,
+          ratioAllTime: 0,
+          globalPeakRate: 0,
+          globalLowRate: 0,
+          ratioHigh: 0,
+          ratioLow: 0,
+          totalChecks: 0,
+          brokenCount: 0,
+          totalAsinsDedup: 0,
+          brokenAsinsDedup: 0,
+          peakDurationHours: 0,
+          peakAbnormalDurationHours: 0,
+          lowDurationHours: 0,
+          lowAbnormalDurationHours: 0,
+        };
+        const normalizedResult = [
+          'US',
+          'EU_TOTAL',
+          'UK',
+          'DE',
+          'FR',
+          'ES',
+          'IT',
+        ].map((regionCode) => ({
+          region: regionLabelMap[regionCode] || regionCode,
+          regionCode,
+          timeRange: timeRangeLabel,
+          ...defaultMetrics,
+          ...(rowByRegion.get(regionCode) || {}),
+        }));
         logger.info('[统计查询] getRegionSummary 使用聚合表');
         source = 'agg';
+        const generatedAt = formatDateToSqlText(new Date());
+        await storeAnalyticsResult(
+          cacheKey,
+          latestCacheKey,
+          normalizedResult,
+          {
+            source,
+            generatedAt,
+          },
+          ttlMs,
+        );
+        return finalizeAnalyticsResult(normalizedResult, {
+          includeMeta,
+          source,
+          generatedAt,
+        });
       } catch (error) {
         logger.warn(
           '[统计查询] getRegionSummary 聚合表读取失败，回退原始表',
@@ -3053,17 +3540,80 @@ class MonitorHistory {
 
     if (useAgg) {
       try {
-        sourceRows = await MonitorHistory.getDurationSourceRowsFromAgg({
+        const summaryRows = await MonitorHistory.getDurationMetricRowsFromAgg({
+          aggTable: 'monitor_history_agg_dim',
           startTime,
           endTime,
           sourceGranularity,
+          targetGranularity: sourceGranularity,
+          targetPeriodExpr: "'ALL'",
           country,
           site,
           brand,
-          withDimensions: true,
+          groupFields: ['country', 'site', 'brand'],
+          orderBy: 'ORDER BY country ASC, site ASC, brand ASC',
         });
+        const total = summaryRows.length;
+        const pageRows = summaryRows.slice(offset, offset + safePageSize);
+        const list = [];
+
+        for (const row of pageRows) {
+          const detailRows = await MonitorHistory.getDurationMetricRowsFromAgg({
+            aggTable: 'monitor_history_agg_dim',
+            startTime,
+            endTime,
+            sourceGranularity,
+            targetGranularity: timeSlotGranularity,
+            country: row.country || '',
+            site: row.site || '',
+            brand: row.brand || '',
+            orderBy: 'ORDER BY target_period ASC',
+          });
+          const timeSlotDetails = detailRows.map((detail) => ({
+            timeSlot: detail.target_period,
+            country: row.country || '',
+            site: row.site || '',
+            brand: row.brand || '',
+            ...MonitorHistory.mapDurationMetricsRecord(detail),
+          }));
+
+          list.push({
+            timeRange: queryTimeRange,
+            country: row.country || '',
+            site: row.site || '',
+            brand: row.brand || '',
+            ...MonitorHistory.mapDurationMetricsRecord(row),
+            timeSlotDetails,
+          });
+        }
+
+        const finalResult = {
+          list,
+          total,
+          current: safeCurrent,
+          pageSize: safePageSize,
+        };
         logger.info('[统计查询] getPeriodSummary 使用聚合表');
         source = 'agg';
+        const generatedAt = formatDateToSqlText(new Date());
+        await storeAnalyticsResult(
+          cacheKey,
+          latestCacheKey,
+          finalResult,
+          {
+            source,
+            generatedAt,
+          },
+          periodSummaryCacheTtl,
+        );
+        logger.info(
+          `[缓存存储] getPeriodSummary 结果已缓存，键: ${cacheKey}，TTL: ${periodSummaryCacheTtl}ms`,
+        );
+        return finalizeAnalyticsResult(finalResult, {
+          includeMeta,
+          source,
+          generatedAt,
+        });
       } catch (error) {
         logger.warn(
           '[统计查询] getPeriodSummary 聚合表读取失败，回退原始表',
@@ -3221,13 +3771,44 @@ class MonitorHistory {
 
     if (useAgg) {
       try {
-        sourceRows = await MonitorHistory.getDurationSourceRowsFromAgg({
+        const rows = await MonitorHistory.getDurationMetricRowsFromAgg({
+          aggTable: 'monitor_history_agg',
           country,
           startTime,
           endTime,
           sourceGranularity,
+          targetGranularity: sourceGranularity,
+          targetPeriodExpr: "'ALL'",
+          groupFields: ['country'],
+          orderBy: 'ORDER BY abnormal_duration_hours DESC, ratio_all_asin DESC',
         });
+        const result = rows.map((row) => ({
+          country: row.country || '',
+          ...MonitorHistory.mapDurationMetricsRecord(row),
+          total_checks: Number(row.total_checks) || 0,
+          broken_count: Number(row.broken_count) || 0,
+          normal_count: Math.max(
+            0,
+            (Number(row.total_checks) || 0) - (Number(row.broken_count) || 0),
+          ),
+        }));
         source = 'agg';
+        const generatedAt = formatDateToSqlText(new Date());
+        await storeAnalyticsResult(
+          cacheKey,
+          latestCacheKey,
+          result,
+          {
+            source,
+            generatedAt,
+          },
+          ttlMs,
+        );
+        return finalizeAnalyticsResult(result, {
+          includeMeta,
+          source,
+          generatedAt,
+        });
       } catch (error) {
         logger.warn(
           '[统计查询] getASINStatisticsByCountry 聚合表读取失败，回退原始表',
@@ -3330,19 +3911,48 @@ class MonitorHistory {
 
     if (useAgg) {
       try {
-        sourceRows =
-          await MonitorHistory.getVariantGroupDurationSourceRowsFromAgg({
-            country,
-            startTime,
-            endTime,
-            sourceGranularity,
-          });
-        if (Array.isArray(sourceRows) && sourceRows.length > 0) {
-          source = 'agg';
-        } else {
-          sourceRows = null;
-        }
+        const rows = await MonitorHistory.getDurationMetricRowsFromAgg({
+          aggTable: 'monitor_history_agg_variant_group',
+          country,
+          startTime,
+          endTime,
+          sourceGranularity,
+          targetGranularity: sourceGranularity,
+          targetPeriodExpr: "'ALL'",
+          groupFields: ['variant_group_id', 'variant_group_name', 'country'],
+          orderBy: 'ORDER BY abnormal_duration_hours DESC, ratio_all_asin DESC',
+          limit: safeLimit,
+        });
+        const result = rows.map((row) => ({
+          variant_group_id: row.variant_group_id || '',
+          variant_group_name: row.variant_group_name || '',
+          country: row.country || '',
+          ...MonitorHistory.mapDurationMetricsRecord(row),
+          total_checks: Number(row.total_checks) || 0,
+          broken_count: Number(row.broken_count) || 0,
+          normal_count: Math.max(
+            0,
+            (Number(row.total_checks) || 0) - (Number(row.broken_count) || 0),
+          ),
+        }));
+        source = 'agg';
         logger.info('[统计查询] getASINStatisticsByVariantGroup 使用聚合表');
+        const generatedAt = formatDateToSqlText(new Date());
+        await storeAnalyticsResult(
+          cacheKey,
+          latestCacheKey,
+          result,
+          {
+            source,
+            generatedAt,
+          },
+          ttlMs,
+        );
+        return finalizeAnalyticsResult(result, {
+          includeMeta,
+          source,
+          generatedAt,
+        });
       } catch (error) {
         logger.warn(
           '[统计查询] getASINStatisticsByVariantGroup 聚合表读取失败，回退原始表',
