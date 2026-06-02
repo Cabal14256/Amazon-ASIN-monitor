@@ -230,7 +230,7 @@ async function importFromFile(file, options = {}) {
   await runOptionalHook(onProgress, 55, '正在写入数据库...');
 
   let successCount = 0;
-  let failedCount = 0;
+  let failedCount = errors.length;
 
   for (let groupIndex = 0; groupIndex < groupedItems.length; groupIndex += 1) {
     const groupData = groupedItems[groupIndex];

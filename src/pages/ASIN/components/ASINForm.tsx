@@ -4,10 +4,30 @@ import {
   ModalForm,
   ProFormSelect,
   ProFormText,
+  ProFormTextArea,
 } from '@ant-design/pro-components';
-import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import React, {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from 'react';
 
 const { addASIN, modifyASIN, queryVariantGroupList } = services.ASINController;
+
+const ASIN_CODE_PATTERN = /^[A-Z0-9]{10}$/;
+
+const splitASINCodes = (value?: string) =>
+  String(value || '')
+    .split(/[\s,，;；]+/)
+    .map((item) => item.trim().toUpperCase())
+    .filter(Boolean);
+
+const uniqueASINCodes = (codes: string[]) => Array.from(new Set(codes));
+
+const getErrorMessage = (error: any, fallback: string) =>
+  error?.errorMessage || error?.message || fallback;
 
 interface ASINFormProps {
   modalVisible: boolean;
@@ -83,19 +103,60 @@ const ASINForm: React.FC<ASINFormProps> = (props) => {
             {
               asinId: values?.id || '',
             },
-            formValues,
+            {
+              ...formValues,
+              asin: formValues.asin?.trim().toUpperCase(),
+            },
           );
           message.success('更新成功');
         } else {
-          await addASIN(formValues);
-          message.success('创建成功');
+          const asinCodes = uniqueASINCodes(splitASINCodes(formValues.asin));
+          const failures: Array<{ asin: string; message: string }> = [];
+          let successCount = 0;
+
+          for (const asin of asinCodes) {
+            try {
+              await addASIN({
+                ...formValues,
+                asin,
+              });
+              successCount += 1;
+            } catch (error: any) {
+              failures.push({
+                asin,
+                message: getErrorMessage(error, '创建失败'),
+              });
+            }
+          }
+
+          if (failures.length > 0) {
+            const failureSummary = failures
+              .slice(0, 3)
+              .map((item) => `${item.asin}: ${item.message}`)
+              .join('；');
+            const moreText =
+              failures.length > 3 ? `，另有 ${failures.length - 3} 个失败` : '';
+
+            if (successCount === 0) {
+              message.error(`创建失败：${failureSummary}${moreText}`);
+              return false;
+            }
+
+            message.warning(
+              `已添加 ${successCount} 个ASIN，失败 ${failures.length} 个：${failureSummary}${moreText}`,
+            );
+          } else {
+            message.success(
+              asinCodes.length > 1
+                ? `创建成功，共添加 ${asinCodes.length} 个ASIN`
+                : '创建成功',
+            );
+          }
         }
         onSubmit();
         return true;
       } catch (error: any) {
-        message.error(
-          error?.errorMessage || (isEdit ? '更新失败' : '创建失败'),
-        );
+        message.error(getErrorMessage(error, isEdit ? '更新失败' : '创建失败'));
         return false;
       } finally {
         submittingRef.current = false;
@@ -126,23 +187,57 @@ const ASINForm: React.FC<ASINFormProps> = (props) => {
         disabled={isEdit || !!variantGroupId} // 编辑时或已指定变体组时禁用
         options={variantGroupOptions}
       />
-      <ProFormText
-        name="asin"
-        label="ASIN编码"
-        placeholder="请输入ASIN编码（如：B0CHX1W1XY）"
-        rules={[
-          { required: true, message: '请输入ASIN编码' },
-          {
-            pattern: /^[A-Z0-9]{10}$/,
-            message: 'ASIN编码格式不正确（应为10位字母数字组合）',
-          },
-        ]}
-        fieldProps={{
-          maxLength: 10,
-          style: { textTransform: 'uppercase' },
-        }}
-        disabled={isEdit} // 编辑时禁用ASIN编码修改
-      />
+      {isEdit ? (
+        <ProFormText
+          name="asin"
+          label="ASIN编码"
+          placeholder="请输入ASIN编码（如：B0CHX1W1XY）"
+          rules={[
+            { required: true, message: '请输入ASIN编码' },
+            {
+              pattern: ASIN_CODE_PATTERN,
+              message: 'ASIN编码格式不正确（应为10位字母数字组合）',
+            },
+          ]}
+          fieldProps={{
+            maxLength: 10,
+            style: { textTransform: 'uppercase' },
+          }}
+          disabled={isEdit} // 编辑时禁用ASIN编码修改
+        />
+      ) : (
+        <ProFormTextArea
+          name="asin"
+          label="ASIN编码"
+          placeholder="可输入多个ASIN，支持换行、逗号、分号或空格分隔"
+          rules={[
+            { required: true, message: '请输入ASIN编码' },
+            {
+              validator: async (_, value) => {
+                const asinCodes = splitASINCodes(value);
+                if (asinCodes.length === 0) {
+                  throw new Error('请输入ASIN编码');
+                }
+
+                const invalidASINs = asinCodes.filter(
+                  (asin) => !ASIN_CODE_PATTERN.test(asin),
+                );
+                if (invalidASINs.length > 0) {
+                  throw new Error(
+                    `ASIN编码格式不正确：${invalidASINs
+                      .slice(0, 5)
+                      .join('、')}`,
+                  );
+                }
+              },
+            },
+          ]}
+          fieldProps={{
+            autoSize: { minRows: 3, maxRows: 6 },
+            style: { textTransform: 'uppercase' },
+          }}
+        />
+      )}
       <ProFormSelect
         name="country"
         label="所属国家"

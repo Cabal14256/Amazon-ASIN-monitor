@@ -138,8 +138,14 @@ exports.updateSPAPIConfig = async (req, res) => {
     }
 
     try {
-      await reloadMonitorSchedule();
-      logger.info('✅ 监控频率配置已重新加载');
+      const scheduleResult = await reloadMonitorSchedule();
+      if (scheduleResult?.skipped) {
+        logger.info(
+          '✅ 监控频率配置已刷新，当前进程未启用调度器，跳过计划重载',
+        );
+      } else {
+        logger.info('✅ 监控频率配置已重新加载');
+      }
     } catch (scheduleError) {
       logger.error('⚠️ 重新加载监控频率配置失败:', scheduleError);
     }

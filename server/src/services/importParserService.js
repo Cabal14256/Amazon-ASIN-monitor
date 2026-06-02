@@ -1,8 +1,10 @@
 const ExcelJS = require('exceljs');
+const iconv = require('iconv-lite');
 const path = require('path');
 const { Readable } = require('stream');
 
 const VALID_COUNTRIES = ['US', 'UK', 'DE', 'FR', 'IT', 'ES'];
+const CSV_ENCODING_DETECT_BYTES = 4096;
 
 function worksheetToRows(worksheet) {
   const rows = [];
@@ -39,69 +41,167 @@ function repairHeaderText(value) {
   return header;
 }
 
+function countReplacementChars(value) {
+  return (String(value || '').match(/\uFFFD/g) || []).length;
+}
+
+function maybeDecodeLegacyCsvBuffer(buffer) {
+  if (!Buffer.isBuffer(buffer) || buffer.length === 0) {
+    return buffer;
+  }
+
+  const previewBuffer = buffer.subarray(
+    0,
+    Math.min(buffer.length, CSV_ENCODING_DETECT_BYTES),
+  );
+  const utf8Preview = previewBuffer.toString('utf8');
+  const utf8ReplacementCount = countReplacementChars(utf8Preview);
+
+  if (utf8ReplacementCount === 0) {
+    return buffer;
+  }
+
+  const gb18030Preview = iconv.decode(previewBuffer, 'gb18030');
+  const gb18030ReplacementCount = countReplacementChars(gb18030Preview);
+
+  if (
+    gb18030ReplacementCount < utf8ReplacementCount &&
+    /[\u4e00-\u9fff]/.test(gb18030Preview)
+  ) {
+    return Buffer.from(iconv.decode(buffer, 'gb18030'), 'utf8');
+  }
+
+  return buffer;
+}
+
+function normalizeCsvBuffer(buffer) {
+  if (!Buffer.isBuffer(buffer)) {
+    return Buffer.from(buffer || []);
+  }
+
+  if (
+    buffer.length >= 3 &&
+    buffer[0] === 0xef &&
+    buffer[1] === 0xbb &&
+    buffer[2] === 0xbf
+  ) {
+    return buffer.subarray(3);
+  }
+
+  if (buffer.length >= 2 && buffer[0] === 0xff && buffer[1] === 0xfe) {
+    return Buffer.from(iconv.decode(buffer.subarray(2), 'utf16-le'), 'utf8');
+  }
+
+  if (buffer.length >= 2 && buffer[0] === 0xfe && buffer[1] === 0xff) {
+    return Buffer.from(iconv.decode(buffer.subarray(2), 'utf16-be'), 'utf8');
+  }
+
+  return maybeDecodeLegacyCsvBuffer(buffer);
+}
+
 function findColumnIndexes(headers, { withSite }) {
-  const groupNameIndex = headers.findIndex((header, index) => {
+  const exactGroupNameIndex = headers.findIndex((header) => {
     const lower = header.toLowerCase();
     return (
       header.includes('变体组') ||
       header.includes('组名称') ||
       header === '变体组名称' ||
-      header.includes('变体') ||
-      header.includes('组') ||
       lower.includes('group') ||
-      lower.includes('variant') ||
-      (index === 0 && header.length > 0)
+      lower.includes('variant')
     );
   });
 
-  const countryIndex = headers.findIndex((header, index) => {
+  const groupNameIndex =
+    exactGroupNameIndex !== -1
+      ? exactGroupNameIndex
+      : headers.findIndex((header, index) => {
+          return (
+            header.includes('变体') ||
+            header.includes('组') ||
+            (index === 0 && header.length > 0)
+          );
+        });
+
+  const exactCountryIndex = headers.findIndex((header) => {
     const lower = header.toLowerCase();
-    return (
-      header.includes('国家') ||
-      header === '国家' ||
-      header.includes('国') ||
-      lower.includes('country') ||
-      lower === 'country' ||
-      (index === 1 && header.length > 0 && header.length < 10)
-    );
+    return header.includes('国家') || header === '国家' || lower === 'country';
   });
+
+  const countryIndex =
+    exactCountryIndex !== -1
+      ? exactCountryIndex
+      : headers.findIndex((header, index) => {
+          const lower = header.toLowerCase();
+          return (
+            header.includes('国') ||
+            lower.includes('country') ||
+            (index === 1 && header.length > 0 && header.length < 10)
+          );
+        });
 
   const siteIndex = withSite
-    ? headers.findIndex((header, index) => {
-        const lower = header.toLowerCase();
-        return (
-          header.includes('站点') ||
-          header === '站点' ||
-          header.includes('站') ||
-          lower.includes('site') ||
-          (index === 2 && header.length > 0 && header.length < 20)
-        );
-      })
+    ? (() => {
+        const exactSiteIndex = headers.findIndex((header) => {
+          const lower = header.toLowerCase();
+          return (
+            header.includes('站点') || header === '站点' || lower === 'site'
+          );
+        });
+        if (exactSiteIndex !== -1) {
+          return exactSiteIndex;
+        }
+        return headers.findIndex((header, index) => {
+          const lower = header.toLowerCase();
+          return (
+            header.includes('站') ||
+            lower.includes('site') ||
+            (index === 2 && header.length > 0 && header.length < 20)
+          );
+        });
+      })()
     : -1;
 
-  const brandIndex = headers.findIndex((header, index) => {
+  const exactBrandIndex = headers.findIndex((header) => {
     const lower = header.toLowerCase();
-    return (
-      header.includes('品牌') ||
-      header === '品牌' ||
-      header.includes('品') ||
-      lower.includes('brand') ||
-      (index === (withSite ? 3 : 2) && header.length > 0 && header.length < 50)
-    );
+    return header.includes('品牌') || header === '品牌' || lower === 'brand';
   });
 
-  const asinIndex = headers.findIndex((header, index) => {
-    const lower = header.toLowerCase();
-    return (
-      header.includes('ASIN') ||
-      header === 'asin' ||
-      lower === 'asin' ||
-      lower.includes('asin') ||
-      (index >= (withSite ? 4 : 3) &&
-        header.length > 0 &&
-        /^[A-Z0-9]+$/i.test(header))
-    );
-  });
+  const brandIndex =
+    exactBrandIndex !== -1
+      ? exactBrandIndex
+      : headers.findIndex((header, index) => {
+          const lower = header.toLowerCase();
+          return (
+            header.includes('品') ||
+            lower.includes('brand') ||
+            (index === (withSite ? 3 : 2) &&
+              header.length > 0 &&
+              header.length < 50)
+          );
+        });
+
+  const exactAsinIndex = headers.findIndex(
+    (header) => header === 'ASIN' || header.toLowerCase() === 'asin',
+  );
+
+  const asinIndex =
+    exactAsinIndex !== -1
+      ? exactAsinIndex
+      : headers.findIndex((header, index) => {
+          const lower = header.toLowerCase();
+          const isAsinLike = header.includes('ASIN') || lower.includes('asin');
+          const isRelatedAsinField =
+            header.includes('类型') ||
+            header.includes('名称') ||
+            lower.includes('type') ||
+            lower.includes('name');
+          return (
+            (isAsinLike && !isRelatedAsinField) ||
+            (index >= (withSite ? 4 : 3) &&
+              header.length > 0 &&
+              /^[A-Z0-9]+$/i.test(header))
+          );
+        });
 
   const asinNameIndex = headers.findIndex((header) => {
     const lower = header.toLowerCase();
@@ -180,29 +280,7 @@ async function parseWorkbook(file) {
   }
 
   if (ext === '.csv') {
-    let csvBuffer = fileBuffer;
-    if (
-      csvBuffer.length >= 3 &&
-      csvBuffer[0] === 0xef &&
-      csvBuffer[1] === 0xbb &&
-      csvBuffer[2] === 0xbf
-    ) {
-      csvBuffer = csvBuffer.slice(3);
-    }
-    if (
-      csvBuffer.length >= 2 &&
-      csvBuffer[0] === 0xff &&
-      csvBuffer[1] === 0xfe
-    ) {
-      csvBuffer = csvBuffer.slice(2);
-    }
-    if (
-      csvBuffer.length >= 2 &&
-      csvBuffer[0] === 0xfe &&
-      csvBuffer[1] === 0xff
-    ) {
-      csvBuffer = csvBuffer.slice(2);
-    }
+    const csvBuffer = normalizeCsvBuffer(fileBuffer);
     const stream = Readable.from(csvBuffer);
     await workbook.csv.read(stream);
   } else if (ext === '.xlsx') {
@@ -258,14 +336,18 @@ async function parseImportFile(file, options = {}) {
 
   const groupMap = new Map();
   const errors = [];
-  const totalDataRows = data.length - 1;
+  let totalDataRows = 0;
 
   for (let index = 1; index < data.length; index += 1) {
     const rowNumber = index + 1;
     const row = data[index];
-    if (!row || row.length === 0) {
+    const hasData = Array.isArray(row)
+      ? row.some((cell) => String(cell ?? '').trim() !== '')
+      : false;
+    if (!hasData) {
       continue;
     }
+    totalDataRows += 1;
 
     const groupName = String(row[indexes.groupNameIndex] || '').trim();
     const country = String(row[indexes.countryIndex] || '')
@@ -337,15 +419,21 @@ async function parseImportFile(file, options = {}) {
     }
 
     const group = groupMap.get(groupKey);
-    if (!group.asins.find((item) => item.asin === asin)) {
-      group.asins.push({
-        asin,
-        name: asinName || null,
-        asinType: normalizeAsinType(asinType),
-        site,
-        brand,
+    if (group.asins.find((item) => item.asin === asin)) {
+      errors.push({
+        row: rowNumber,
+        message: `ASIN ${asin} 在当前文件同一变体组中重复，跳过`,
       });
+      continue;
     }
+
+    group.asins.push({
+      asin,
+      name: asinName || null,
+      asinType: normalizeAsinType(asinType),
+      site,
+      brand,
+    });
   }
 
   return {

@@ -92,6 +92,17 @@ let backupTask = null;
 let usMonitorTask = null;
 let euMonitorTask = null;
 
+function stopMonitorTasks() {
+  if (usMonitorTask) {
+    usMonitorTask.stop();
+    usMonitorTask = null;
+  }
+  if (euMonitorTask) {
+    euMonitorTask.stop();
+    euMonitorTask = null;
+  }
+}
+
 function buildMonitorCronExpression(intervalMinutes) {
   if (!intervalMinutes || intervalMinutes <= 0) {
     return '0 * * * *';
@@ -247,11 +258,16 @@ function runEUMonitorSchedule() {
 }
 
 function scheduleMonitorTasks() {
-  if (usMonitorTask) {
-    usMonitorTask.stop();
-  }
-  if (euMonitorTask) {
-    euMonitorTask.stop();
+  stopMonitorTasks();
+
+  if (!schedulerEnabled) {
+    schedulerStatus.us.schedule = null;
+    schedulerStatus.eu.schedule = null;
+    logger.info('[定时任务] 调度器未启用，跳过监控任务计划加载');
+    return {
+      skipped: true,
+      reason: 'scheduler_disabled',
+    };
   }
 
   const { usIntervalMinutes, euIntervalMinutes } = getMonitorScheduleConfig();
@@ -278,6 +294,11 @@ function scheduleMonitorTasks() {
     `   - 欧洲区域 (EU): 每${euIntervalMinutes}分钟，按顺序依次检查: UK → DE → FR → ES → IT`,
   );
   logger.info(`   - 调度时区: ${BEIJING_TIMEZONE}`);
+  return {
+    skipped: false,
+    usCronExpression,
+    euCronExpression,
+  };
 }
 
 function initScheduler() {
@@ -469,7 +490,7 @@ async function reloadBackupSchedule() {
 async function reloadMonitorSchedule() {
   logger.info('🔄 重新加载监控频率配置...');
   await reloadMonitorScheduleConfig();
-  scheduleMonitorTasks();
+  return scheduleMonitorTasks();
 }
 
 module.exports = {

@@ -54,6 +54,29 @@ function includesManualSource(source) {
   return String(source || '').includes('MANUAL');
 }
 
+function getNotificationStatusLabel(brokenGroups) {
+  return brokenGroups > 0 ? '异常' : '正常';
+}
+
+function getNotificationCountryCode(country, countryName) {
+  const normalizedCountry = country ? String(country).trim() : '';
+  if (normalizedCountry) {
+    return normalizedCountry;
+  }
+
+  const normalizedCountryName =
+    countryName === undefined || countryName === null
+      ? ''
+      : String(countryName).trim();
+  const countryCodeMatch = normalizedCountryName.match(/\(([A-Z]{2})\)$/);
+  return countryCodeMatch ? countryCodeMatch[1] : normalizedCountryName;
+}
+
+function buildNotificationTitle(title, country, countryName, brokenGroups) {
+  const countryCode = getNotificationCountryCode(country, countryName);
+  return `${title}-${countryCode}${getNotificationStatusLabel(brokenGroups)}`;
+}
+
 /**
  * 发送飞书通知
  * @param {string} region - 区域代码（US或EU），用于查找webhook配置
@@ -182,6 +205,12 @@ function buildFeishuCard(data) {
 
   // 如果有countryDisplay（包含多个国家），使用它；否则使用区域名称
   const countryName = data.countryDisplay || countryMap[country] || country;
+  const headerTitle = buildNotificationTitle(
+    title,
+    country,
+    countryName,
+    brokenGroups,
+  );
   // 确保时间格式为 UTC+8，如果 checkTime 是 Date 对象则转换，否则使用当前时间
   const timeStr = checkTime
     ? checkTime instanceof Date
@@ -331,7 +360,7 @@ function buildFeishuCard(data) {
     header: {
       title: {
         tag: 'plain_text',
-        content: title,
+        content: headerTitle,
       },
       template: statusColor,
     },
