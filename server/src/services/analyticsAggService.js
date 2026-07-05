@@ -13,8 +13,18 @@ const REFRESH_STATUS_INTERVALS =
 const ANALYTICS_ASIN_HISTORY_FILTER =
   "mh.check_type = 'ASIN' AND (mh.asin_id IS NOT NULL OR NULLIF(mh.asin_code, '') IS NOT NULL)";
 const WATERMARK_TABLE = 'analytics_refresh_watermark';
+const DEFAULT_STATUS_INTERVAL_BATCH_SIZE = 10000;
+const DEFAULT_STATUS_INTERVAL_MAX_BATCHES_PER_RUN = 5;
 
 let isRefreshing = false;
+
+function readPositiveInteger(value, fallback) {
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed) || parsed <= 0) {
+    return fallback;
+  }
+  return Math.floor(parsed);
+}
 
 function getSupportedGranularities() {
   return ['hour', 'day', 'month'];
@@ -551,14 +561,38 @@ async function loadOpenStatusIntervals(keyPairs) {
   return results;
 }
 
-async function refreshMonitorHistoryStatusIntervals() {
-  if (!AGG_ENABLED || !REFRESH_STATUS_INTERVALS) {
-    return { skipped: true, reason: 'disabled' };
+function getStatusIntervalBatchConfig(options = {}) {
+  return {
+    batchSize: readPositiveInteger(
+      options.batchSize || process.env.ANALYTICS_STATUS_INTERVAL_BATCH_SIZE,
+      DEFAULT_STATUS_INTERVAL_BATCH_SIZE,
+    ),
+    maxBatches: readPositiveInteger(
+      options.maxBatches ||
+        process.env.ANALYTICS_STATUS_INTERVAL_MAX_BATCHES_PER_RUN,
+      DEFAULT_STATUS_INTERVAL_MAX_BATCHES_PER_RUN,
+    ),
+  };
+}
+
+async function loadStatusIntervalSourceRows(watermark, batchSize) {
+  let watermarkClause = '';
+  const conditions = [];
+
+  if (watermark?.lastCheckTime) {
+    watermarkClause =
+      'AND (mh.check_time > ? OR (mh.check_time = ? AND mh.id > ?))';
+    conditions.push(
+      watermark.lastCheckTime,
+      watermark.lastCheckTime,
+      watermark.lastHistoryId || 0,
+    );
+  } else if (watermark?.lastHistoryId > 0) {
+    watermarkClause = 'AND mh.id > ?';
+    conditions.push(watermark.lastHistoryId);
   }
 
-  const processorName = 'monitor_history_status_interval';
-  const watermark = await getRefreshWatermark(processorName);
-  const rows = await query(
+  return await query(
     `SELECT
        mh.id,
        DATE_FORMAT(mh.check_time, '%Y-%m-%d %H:%i:%s') as check_time,
@@ -572,11 +606,14 @@ async function refreshMonitorHistoryStatusIntervals() {
        mh.is_broken
      FROM monitor_history mh
      WHERE ${ANALYTICS_ASIN_HISTORY_FILTER}
-       ${watermark.lastHistoryId > 0 ? 'AND mh.id > ?' : ''}
-     ORDER BY mh.country ASC, asin_key ASC, mh.check_time ASC, mh.id ASC`,
-    watermark.lastHistoryId > 0 ? [watermark.lastHistoryId] : [],
+       ${watermarkClause}
+     ORDER BY mh.check_time ASC, mh.id ASC
+     LIMIT ${batchSize}`,
+    conditions,
   );
+}
 
+async function persistStatusIntervalRows(rows) {
   if (!Array.isArray(rows) || rows.length === 0) {
     return { skipped: true, reason: 'no_new_rows' };
   }
@@ -716,12 +753,7 @@ async function refreshMonitorHistoryStatusIntervals() {
     }
   });
 
-  await updateRefreshWatermark(processorName, maxHistoryId, maxCheckTime);
-
   const duration = Date.now() - startedAt;
-  logger.info(
-    `[状态区间刷新] duration=${duration}ms, sourceRows=${rows.length}, closedIntervals=${persistedClosures.length}, insertedIntervals=${intervalsToInsert.length}`,
-  );
 
   return {
     success: true,
@@ -729,6 +761,75 @@ async function refreshMonitorHistoryStatusIntervals() {
     sourceRows: rows.length,
     closedIntervals: persistedClosures.length,
     insertedIntervals: intervalsToInsert.length,
+    maxHistoryId,
+    maxCheckTime,
+  };
+}
+
+async function refreshMonitorHistoryStatusIntervals(options = {}) {
+  if (!AGG_ENABLED || !REFRESH_STATUS_INTERVALS) {
+    return { skipped: true, reason: 'disabled' };
+  }
+
+  const processorName = 'monitor_history_status_interval';
+  const { batchSize, maxBatches } = getStatusIntervalBatchConfig(options);
+  const startedAt = Date.now();
+  let watermark = await getRefreshWatermark(processorName);
+  let batches = 0;
+  let sourceRows = 0;
+  let closedIntervals = 0;
+  let insertedIntervals = 0;
+  let complete = false;
+  let lastHistoryId = watermark.lastHistoryId || 0;
+  let lastCheckTime = watermark.lastCheckTime || '';
+
+  for (let batchIndex = 0; batchIndex < maxBatches; batchIndex += 1) {
+    const rows = await loadStatusIntervalSourceRows(watermark, batchSize);
+    if (!Array.isArray(rows) || rows.length === 0) {
+      complete = true;
+      break;
+    }
+
+    const batchResult = await persistStatusIntervalRows(rows);
+    batches += 1;
+    sourceRows += batchResult.sourceRows || 0;
+    closedIntervals += batchResult.closedIntervals || 0;
+    insertedIntervals += batchResult.insertedIntervals || 0;
+    lastHistoryId = batchResult.maxHistoryId || lastHistoryId;
+    lastCheckTime = batchResult.maxCheckTime || lastCheckTime;
+    await updateRefreshWatermark(processorName, lastHistoryId, lastCheckTime);
+    watermark = {
+      lastHistoryId,
+      lastCheckTime,
+    };
+
+    if (rows.length < batchSize) {
+      complete = true;
+      break;
+    }
+  }
+
+  if (batches === 0) {
+    return { skipped: true, reason: 'no_new_rows' };
+  }
+
+  const duration = Date.now() - startedAt;
+  logger.info(
+    `[状态区间刷新] duration=${duration}ms, batches=${batches}, batchSize=${batchSize}, complete=${complete}, sourceRows=${sourceRows}, closedIntervals=${closedIntervals}, insertedIntervals=${insertedIntervals}, lastHistoryId=${lastHistoryId}, lastCheckTime=${lastCheckTime}`,
+  );
+
+  return {
+    success: true,
+    duration,
+    batches,
+    batchSize,
+    maxBatches,
+    complete,
+    sourceRows,
+    closedIntervals,
+    insertedIntervals,
+    lastHistoryId,
+    lastCheckTime,
   };
 }
 
@@ -823,6 +924,8 @@ function getAggStatus() {
     backfillHours: BACKFILL_HOURS,
     backfillDays: BACKFILL_DAYS,
     backfillMonths: BACKFILL_MONTHS,
+    statusIntervalBatchSize: getStatusIntervalBatchConfig().batchSize,
+    statusIntervalMaxBatchesPerRun: getStatusIntervalBatchConfig().maxBatches,
     granularities: getSupportedGranularities(),
     isRefreshing,
   };

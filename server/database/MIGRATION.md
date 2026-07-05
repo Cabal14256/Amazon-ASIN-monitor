@@ -30,6 +30,7 @@
 | 026 | `026_normalize_user_status_and_audit_permissions.sql` | 统一用户状态字段并补齐角色/审计权限 | ⚠️ 旧库升级必执行 |
 | 027 | `027_normalize_competitor_schema.sql` | 补齐旧版竞品库缺失的状态/通知/时间字段 | ⚠️ 使用竞品监控且库较旧时必执行 |
 | 028 | `028_add_variant_group_agg_table.sql` | 添加变体组维度聚合表（variant-group 统计加速） | ✅ 已整合到 init.sql |
+| 031 | `031_optimize_analytics_refresh_indexes.sql` | 优化状态区间刷新与变体组聚合查询索引 | ⚠️ 旧库升级建议执行 |
 
 > **注意**: 所有标记为 "✅ 已整合到 init.sql" 的迁移脚本，其功能已包含在 `init.sql` 中。新安装系统时直接使用 `init.sql` 即可，无需执行这些迁移脚本。竞品数据库相关的迁移脚本已整合到 `competitor-init.sql`。如果旧版竞品库报 `Unknown column 'vg.is_broken'`，请执行 `027_normalize_competitor_schema.sql`。如果旧库要启用变体组聚合加速，请执行 `028_add_variant_group_agg_table.sql` 并重建聚合表。
 
@@ -422,6 +423,25 @@ node server/scripts/rebuild-analytics-agg.js --yes
 
 ---
 
+### 031: 优化数据分析刷新索引
+
+**文件**: `031_optimize_analytics_refresh_indexes.sql`
+
+**说明**: 为数据分析后台刷新补充索引，避免生产启动时状态区间刷新扫描并排序整张 `monitor_history` 大表。
+
+**变更内容**:
+
+- 为 `monitor_history` 添加 `idx_status_interval_refresh (check_type, check_time, id)`
+- 为 `monitor_history_agg_variant_group` 补齐 `idx_agg_variant_group_lookup (granularity, country, variant_group_id, time_slot)`
+
+**执行方式**:
+
+```bash
+mysql -u root -p amazon_asin_monitor < server/database/migrations/031_optimize_analytics_refresh_indexes.sql
+```
+
+---
+
 ### 027: 统一竞品库状态字段与基础时间字段
 
 **文件**: `027_normalize_competitor_schema.sql`
@@ -472,12 +492,13 @@ mysql -u root -p amazon_asin_monitor < server/database/migrations/021_add_monito
 mysql -u root -p amazon_asin_monitor < server/database/migrations/022_add_monitor_history_agg_peak.sql
 mysql -u root -p amazon_asin_monitor < server/database/migrations/023_add_analytics_fastpath.sql
 mysql -u root -p amazon_asin_monitor < server/database/migrations/028_add_variant_group_agg_table.sql
+mysql -u root -p amazon_asin_monitor < server/database/migrations/031_optimize_analytics_refresh_indexes.sql
 ```
 
 执行完 `028_add_variant_group_agg_table.sql` 后，建议立即执行：
 
 ```bash
-node server/scripts/rebuild-analytics-agg.js --yes
+node server/scripts/rebuild-analytics-agg.js --yes --skip-status-interval
 ```
 
 竞品数据库迁移（如使用竞品监控功能）：
