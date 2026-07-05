@@ -11,6 +11,13 @@ const {
   getUserStatusErrorMessage,
 } = require('../utils/userStatus');
 
+const NO_TOKEN_REASON = '未提供认证令牌';
+const NO_TOKEN_LOG_THROTTLE_MS = Math.max(
+  Number.parseInt(process.env.WS_NO_TOKEN_LOG_THROTTLE_MS || '', 10) || 60000,
+  1000,
+);
+const MAX_NO_TOKEN_LOG_IP_ENTRIES = 1000;
+
 function normalizeUserId(userId) {
   if (!userId) {
     return null;
@@ -99,6 +106,7 @@ class WebSocketService {
     this.wss = null;
     this.clients = new Set();
     this.clientUsers = new Map();
+    this.noTokenLogByIp = new Map();
   }
 
   removeClient(ws) {
@@ -106,13 +114,49 @@ class WebSocketService {
     this.clientUsers.delete(ws);
   }
 
+  logUnauthorizedConnection(authResult, req) {
+    const ip = req.socket?.remoteAddress || null;
+
+    if (authResult.reason !== NO_TOKEN_REASON) {
+      logger.warn('[WebSocket] 已拒绝未授权连接', {
+        reason: authResult.reason,
+        ip,
+      });
+      return;
+    }
+
+    const key = ip || 'unknown';
+    const now = Date.now();
+    const previous = this.noTokenLogByIp.get(key);
+    if (previous && now - previous.lastLoggedAt < NO_TOKEN_LOG_THROTTLE_MS) {
+      previous.suppressedCount += 1;
+      return;
+    }
+
+    if (
+      !this.noTokenLogByIp.has(key) &&
+      this.noTokenLogByIp.size >= MAX_NO_TOKEN_LOG_IP_ENTRIES
+    ) {
+      this.noTokenLogByIp.clear();
+    }
+
+    this.noTokenLogByIp.set(key, {
+      lastLoggedAt: now,
+      suppressedCount: 0,
+    });
+
+    logger.info('[WebSocket] 已拒绝未授权连接(未提供认证令牌)', {
+      reason: authResult.reason,
+      ip,
+      suppressedCount: previous?.suppressedCount || 0,
+      throttleMs: NO_TOKEN_LOG_THROTTLE_MS,
+    });
+  }
+
   async handleConnection(ws, req) {
     const authResult = await authenticateConnection(req);
     if (!authResult.success) {
-      logger.warn('[WebSocket] 已拒绝未授权连接', {
-        reason: authResult.reason,
-        ip: req.socket?.remoteAddress || null,
-      });
+      this.logUnauthorizedConnection(authResult, req);
       ws.close(authResult.code, authResult.reason);
       return;
     }

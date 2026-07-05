@@ -5,7 +5,7 @@ const analyticsAggService = require('../services/analyticsAggService');
 const logger = require('../utils/logger');
 
 const AGG_COVERAGE_CACHE = new Map();
-const ANALYTICS_CACHE_VERSION = 'full-history-v2';
+const ANALYTICS_CACHE_VERSION = 'full-history-v3';
 
 function alignTimeToSlotText(value, granularity) {
   if (!value) {
@@ -15,6 +15,9 @@ function alignTimeToSlotText(value, granularity) {
   const datePart = normalized.slice(0, 10);
   if (!/^\d{4}-\d{2}-\d{2}$/.test(datePart)) {
     return '';
+  }
+  if (granularity === 'month') {
+    return `${datePart.slice(0, 7)}-01 00:00:00`;
   }
   if (granularity === 'day') {
     return `${datePart} 00:00:00`;
@@ -277,6 +280,70 @@ function formatDateToHourText(date) {
   return `${formatDateToSqlText(date).slice(0, 13)}:00:00`;
 }
 
+function floorDateToGranularity(date, granularity) {
+  const normalized = new Date(date);
+  if (Number.isNaN(normalized.getTime())) {
+    return null;
+  }
+
+  if (granularity === 'month') {
+    normalized.setDate(1);
+    normalized.setHours(0, 0, 0, 0);
+    return normalized;
+  }
+
+  if (granularity === 'day') {
+    normalized.setHours(0, 0, 0, 0);
+    return normalized;
+  }
+
+  if (granularity === 'week') {
+    const { year, week } = getISOWeekInfo(normalized);
+    return getISOWeekStartDate(year, week);
+  }
+
+  normalized.setMinutes(0, 0, 0);
+  return normalized;
+}
+
+function addGranularity(date, granularity, step = 1) {
+  const normalized = new Date(date);
+  if (Number.isNaN(normalized.getTime())) {
+    return null;
+  }
+
+  if (granularity === 'month') {
+    normalized.setMonth(normalized.getMonth() + step);
+    return normalized;
+  }
+
+  if (granularity === 'day') {
+    normalized.setDate(normalized.getDate() + step);
+    return normalized;
+  }
+
+  if (granularity === 'week') {
+    normalized.setDate(normalized.getDate() + step * 7);
+    return normalized;
+  }
+
+  normalized.setHours(normalized.getHours() + step);
+  return normalized;
+}
+
+function formatDateToGranularityText(date, granularity) {
+  if (granularity === 'month') {
+    return formatDateToMonthText(date);
+  }
+  if (granularity === 'day') {
+    return formatDateToDayText(date);
+  }
+  if (granularity === 'week') {
+    return formatISOWeekTextFromDate(date);
+  }
+  return formatDateToHourText(date);
+}
+
 function getISOWeekInfo(date) {
   const target = new Date(date);
   target.setHours(0, 0, 0, 0);
@@ -325,6 +392,15 @@ function getBucketRangeByPeriod(timePeriod, granularity) {
     if (bucketStart) {
       bucketEnd = new Date(bucketStart);
       bucketEnd.setHours(bucketEnd.getHours() + 1);
+    }
+  } else if (granularity === 'month') {
+    const match = period.match(/^(\d{4})-(\d{2})$/);
+    if (match) {
+      bucketStart = parseDateTimeInput(`${match[1]}-${match[2]}-01 00:00:00`);
+      if (bucketStart) {
+        bucketEnd = new Date(bucketStart);
+        bucketEnd.setMonth(bucketEnd.getMonth() + 1);
+      }
     }
   } else if (granularity === 'day') {
     bucketStart = parseDateTimeInput(`${period} 00:00:00`);
@@ -433,6 +509,276 @@ function buildAbnormalDurationSummary(data, startTime, endTime) {
       }
       return b.maxAbnormalDuration - a.maxAbnormalDuration;
     });
+}
+
+function buildTimeSeriesPeriods(queryStartDate, queryEndDate, granularity) {
+  if (!queryStartDate || !queryEndDate || queryEndDate < queryStartDate) {
+    return [];
+  }
+
+  const periods = [];
+  let cursor = floorDateToGranularity(queryStartDate, granularity);
+
+  while (cursor && cursor <= queryEndDate) {
+    periods.push(formatDateToGranularityText(cursor, granularity));
+    cursor = addGranularity(cursor, granularity, 1);
+  }
+
+  return periods;
+}
+
+function buildAbnormalDurationSummaryFromIntervals(
+  intervalRows,
+  startTime,
+  endTime,
+  queryStartDate,
+  queryEndDate,
+) {
+  const queryTimeRange =
+    startTime && endTime ? `${startTime} ~ ${endTime}` : '-';
+  const summaryMap = new Map();
+
+  intervalRows.forEach((row) => {
+    if (Number(row?.is_broken) !== 1) {
+      return;
+    }
+
+    const intervalStart = parseDateTimeInput(row.interval_start);
+    const intervalEnd =
+      parseDateTimeInput(row.interval_end) || queryEndDate || new Date();
+    if (!intervalStart || !intervalEnd) {
+      return;
+    }
+
+    const effectiveStart = new Date(
+      Math.max(
+        intervalStart.getTime(),
+        queryStartDate ? queryStartDate.getTime() : intervalStart.getTime(),
+      ),
+    );
+    const effectiveEnd = new Date(
+      Math.min(
+        intervalEnd.getTime(),
+        queryEndDate ? queryEndDate.getTime() : intervalEnd.getTime(),
+      ),
+    );
+    if (effectiveEnd <= effectiveStart) {
+      return;
+    }
+
+    const asin = row.asin || row.asin_key || `ASIN-${row.asin_id || '-'}`;
+    const country = row.country || '';
+    const key = `${row.asin_id || asin}-${country}`;
+    const durationHours =
+      (effectiveEnd.getTime() - effectiveStart.getTime()) / (1000 * 60 * 60);
+
+    if (!summaryMap.has(key)) {
+      summaryMap.set(key, {
+        key,
+        asin,
+        country,
+        queryTimeRange,
+        abnormalCount: 0,
+        totalAbnormalDuration: 0,
+        minAbnormalDuration: Number.POSITIVE_INFINITY,
+        maxAbnormalDuration: 0,
+        maxAbnormalTime: '-',
+      });
+    }
+
+    const summary = summaryMap.get(key);
+    summary.abnormalCount += 1;
+    summary.totalAbnormalDuration += durationHours;
+    summary.minAbnormalDuration = Math.min(
+      summary.minAbnormalDuration,
+      durationHours,
+    );
+    if (durationHours > summary.maxAbnormalDuration) {
+      summary.maxAbnormalDuration = durationHours;
+      summary.maxAbnormalTime = formatDateToSqlText(effectiveStart);
+    }
+  });
+
+  return Array.from(summaryMap.values())
+    .map((item) => ({
+      key: item.key,
+      asin: item.asin,
+      country: item.country,
+      queryTimeRange: item.queryTimeRange,
+      abnormalCount: item.abnormalCount,
+      averageAbnormalDuration: Number(
+        (item.abnormalCount > 0
+          ? item.totalAbnormalDuration / item.abnormalCount
+          : 0
+        ).toFixed(2),
+      ),
+      minAbnormalDuration: Number(
+        (item.minAbnormalDuration === Number.POSITIVE_INFINITY
+          ? 0
+          : item.minAbnormalDuration
+        ).toFixed(2),
+      ),
+      maxAbnormalDuration: Number(item.maxAbnormalDuration.toFixed(2)),
+      maxAbnormalTime: item.maxAbnormalTime,
+    }))
+    .sort((a, b) => {
+      if (b.abnormalCount !== a.abnormalCount) {
+        return b.abnormalCount - a.abnormalCount;
+      }
+      return b.maxAbnormalDuration - a.maxAbnormalDuration;
+    });
+}
+
+function buildAbnormalDurationSeriesFromIntervals(
+  intervalRows,
+  groupBy,
+  queryStartDate,
+  queryEndDate,
+) {
+  const seriesMap = new Map();
+  const asinMetaMap = new Map();
+
+  intervalRows.forEach((row) => {
+    const asin = row.asin || row.asin_key || `ASIN-${row.asin_id || '-'}`;
+    const metaKey = `${row.asin_id || asin}|${row.country || ''}`;
+    if (!asinMetaMap.has(metaKey)) {
+      asinMetaMap.set(metaKey, {
+        asinId: row.asin_id,
+        asin,
+        country: row.country || '',
+      });
+    }
+
+    const intervalStart = parseDateTimeInput(row.interval_start);
+    const intervalEnd =
+      parseDateTimeInput(row.interval_end) || queryEndDate || new Date();
+    if (!intervalStart || !intervalEnd) {
+      return;
+    }
+
+    const effectiveStart = new Date(
+      Math.max(
+        intervalStart.getTime(),
+        queryStartDate ? queryStartDate.getTime() : intervalStart.getTime(),
+      ),
+    );
+    const effectiveEnd = new Date(
+      Math.min(
+        intervalEnd.getTime(),
+        queryEndDate ? queryEndDate.getTime() : intervalEnd.getTime(),
+      ),
+    );
+    if (effectiveEnd <= effectiveStart) {
+      return;
+    }
+
+    let cursor = new Date(effectiveStart);
+    while (cursor < effectiveEnd) {
+      const bucketStart = floorDateToGranularity(cursor, groupBy);
+      const bucketEnd = addGranularity(bucketStart, groupBy, 1);
+      const overlapHours = calculateOverlapHours(
+        bucketStart,
+        bucketEnd,
+        effectiveStart,
+        effectiveEnd,
+      );
+      if (overlapHours <= 0) {
+        cursor = bucketEnd;
+        continue;
+      }
+
+      const timePeriod = formatDateToGranularityText(bucketStart, groupBy);
+      const dataKey = `${timePeriod}|${metaKey}`;
+      if (!seriesMap.has(dataKey)) {
+        seriesMap.set(dataKey, {
+          timePeriod,
+          asinId: row.asin_id,
+          asin,
+          country: row.country || '',
+          abnormalDuration: 0,
+          totalDuration: 0,
+          abnormalRatio: 0,
+          brokenCount: 0,
+          totalChecks: 0,
+        });
+      }
+
+      const item = seriesMap.get(dataKey);
+      item.totalDuration += overlapHours;
+      item.totalChecks += 1;
+      if (Number(row.is_broken) === 1) {
+        item.abnormalDuration += overlapHours;
+        item.brokenCount += 1;
+      }
+      cursor = bucketEnd;
+    }
+  });
+
+  const timePeriods = buildTimeSeriesPeriods(
+    queryStartDate,
+    queryEndDate,
+    groupBy,
+  );
+  const filled = [];
+
+  asinMetaMap.forEach((meta, metaKey) => {
+    timePeriods.forEach((timePeriod) => {
+      const dataKey = `${timePeriod}|${metaKey}`;
+      if (seriesMap.has(dataKey)) {
+        const current = seriesMap.get(dataKey);
+        const totalDuration = Number(current.totalDuration.toFixed(4));
+        const abnormalDuration = Number(current.abnormalDuration.toFixed(4));
+        filled.push({
+          ...current,
+          totalDuration,
+          abnormalDuration,
+          abnormalRatio:
+            totalDuration > 0
+              ? Number(((abnormalDuration / totalDuration) * 100).toFixed(2))
+              : 0,
+        });
+        return;
+      }
+
+      const { bucketStart, bucketEnd } = getBucketRangeByPeriod(
+        timePeriod,
+        groupBy,
+      );
+      const totalDuration =
+        bucketStart && bucketEnd && queryStartDate && queryEndDate
+          ? Number(
+              calculateOverlapHours(
+                bucketStart,
+                bucketEnd,
+                queryStartDate,
+                queryEndDate,
+              ).toFixed(4),
+            )
+          : 0;
+
+      filled.push({
+        timePeriod,
+        asinId: meta.asinId,
+        asin: meta.asin,
+        country: meta.country,
+        abnormalDuration: 0,
+        totalDuration,
+        abnormalRatio: 0,
+        brokenCount: 0,
+        totalChecks: 0,
+      });
+    });
+  });
+
+  return filled.sort((left, right) => {
+    const leftKey = `${left.timePeriod}|${left.country}|${
+      left.asinId || left.asin
+    }`;
+    const rightKey = `${right.timePeriod}|${right.country}|${
+      right.asinId || right.asin
+    }`;
+    return leftKey.localeCompare(rightKey);
+  });
 }
 
 function buildQueryTimeRangeText(startTime, endTime) {
@@ -601,6 +947,53 @@ function finalizeDurationMetrics(accumulator) {
     totalAsinsDedup,
     brokenAsinsDedup,
   };
+}
+
+function getHistoryCheckResultLength(entry = {}) {
+  if (!entry || entry.checkResult === undefined || entry.checkResult === null) {
+    return 0;
+  }
+
+  try {
+    return JSON.stringify(entry.checkResult).length;
+  } catch (error) {
+    return -1;
+  }
+}
+
+function summarizeHistoryEntry(entry = {}) {
+  return {
+    checkType: entry.checkType || 'GROUP',
+    country: entry.country || null,
+    variantGroupId: entry.variantGroupId || null,
+    asinId: entry.asinId || null,
+    asinCode: entry.asinCode || null,
+    checkResultLength: getHistoryCheckResultLength(entry),
+  };
+}
+
+function summarizeHistoryEntries(entries = []) {
+  const summary = {
+    totalEntries: 0,
+    groupEntries: 0,
+    asinEntries: 0,
+    maxCheckResultLength: 0,
+  };
+
+  entries.forEach((entry) => {
+    summary.totalEntries += 1;
+    if (entry?.checkType === 'ASIN') {
+      summary.asinEntries += 1;
+    } else {
+      summary.groupEntries += 1;
+    }
+    summary.maxCheckResultLength = Math.max(
+      summary.maxCheckResultLength,
+      Math.max(0, getHistoryCheckResultLength(entry)),
+    );
+  });
+
+  return summary;
 }
 
 class MonitorHistory {
@@ -974,8 +1367,47 @@ class MonitorHistory {
       (variant_group_id, variant_group_name, asin_id, asin_code, asin_name, site_snapshot, brand_snapshot, check_type, country, is_broken, check_time, check_result)
       VALUES ${placeholders.join(', ')}`;
 
-    await query(sql, values);
-    MonitorHistory.invalidateCaches();
+    try {
+      await query(sql, values);
+      MonitorHistory.invalidateCaches();
+      return;
+    } catch (error) {
+      logger.warn('[监控历史] 批量写入失败，降级为逐条写入', {
+        message: error.message,
+        batch: summarizeHistoryEntries(entries),
+      });
+    }
+
+    let insertedCount = 0;
+    let failedCount = 0;
+
+    for (const entry of entries) {
+      try {
+        await query(
+          MonitorHistory.getInsertSql(),
+          MonitorHistory.buildInsertParams(entry),
+        );
+        insertedCount += 1;
+      } catch (singleError) {
+        failedCount += 1;
+        logger.error('[监控历史] 单条写入失败', {
+          message: singleError.message,
+          entry: summarizeHistoryEntry(entry),
+        });
+      }
+    }
+
+    if (insertedCount > 0) {
+      MonitorHistory.invalidateCaches();
+    }
+
+    if (failedCount > 0) {
+      logger.error('[监控历史] 逐条写入后仍有失败记录', {
+        insertedCount,
+        failedCount,
+        totalEntries: entries.length,
+      });
+    }
   }
 
   // 获取统计信息
@@ -1210,7 +1642,10 @@ class MonitorHistory {
     if (targetGranularity === 'hour') {
       return 'hour';
     }
-    if (targetGranularity === 'week' || targetGranularity === 'month') {
+    if (targetGranularity === 'month') {
+      return 'month';
+    }
+    if (targetGranularity === 'week') {
       return 'day';
     }
 
@@ -1226,6 +1661,17 @@ class MonitorHistory {
   }
 
   static getDurationSourceConfig(sourceGranularity = 'hour') {
+    if (sourceGranularity === 'month') {
+      return {
+        sourceGranularity: 'month',
+        rawSlotExpr:
+          "TIMESTAMP(DATE_FORMAT(mh.check_time, '%Y-%m-01 00:00:00'))",
+        rawSlotFormat: '%Y-%m',
+        aggSlotFormat: '%Y-%m',
+        slotWhereFormat: '%Y-%m-01 00:00:00',
+      };
+    }
+
     if (sourceGranularity === 'day') {
       return {
         sourceGranularity: 'day',
@@ -1864,7 +2310,7 @@ class MonitorHistory {
     const cacheKey = `statisticsByTime:${ANALYTICS_CACHE_VERSION}:${country}:${startTime}:${endTime}:${groupBy}:${
       sourceGranularityOverride || 'auto'
     }`;
-    const latestCacheKey = `statisticsByTime:${country}:${groupBy}:${
+    const latestCacheKey = `statisticsByTime:${country}:${startTime}:${endTime}:${groupBy}:${
       sourceGranularityOverride || 'auto'
     }`;
     const ttlMs =
@@ -1963,7 +2409,8 @@ class MonitorHistory {
 
     if (
       sourceGranularityOverride === 'hour' ||
-      sourceGranularityOverride === 'day'
+      sourceGranularityOverride === 'day' ||
+      sourceGranularityOverride === 'month'
     ) {
       return sourceGranularityOverride;
     }
@@ -2172,6 +2619,10 @@ class MonitorHistory {
   }
 
   static canUseAggForRange(timeSlotGranularity, startTime, endTime = '') {
+    if (process.env.ANALYTICS_AGG_ENFORCE_LOOKBACK !== '1') {
+      return true;
+    }
+
     const baseTime = startTime || endTime;
     if (!baseTime) {
       return false;
@@ -2186,9 +2637,13 @@ class MonitorHistory {
     const backfillHours =
       Number(process.env.ANALYTICS_AGG_BACKFILL_HOURS) || 48;
     const backfillDays = Number(process.env.ANALYTICS_AGG_BACKFILL_DAYS) || 30;
+    const backfillMonths =
+      Number(process.env.ANALYTICS_AGG_BACKFILL_MONTHS) || 24;
     const limitMs =
       timeSlotGranularity === 'hour'
         ? backfillHours * 60 * 60 * 1000
+        : timeSlotGranularity === 'month'
+        ? backfillMonths * 30 * 24 * 60 * 60 * 1000
         : backfillDays * 24 * 60 * 60 * 1000;
 
     return diffMs <= limitMs;
@@ -2263,7 +2718,7 @@ class MonitorHistory {
     const now = Date.now();
     const cached = AGG_COVERAGE_CACHE.get(cacheKey);
     if (cached && now - cached.cachedAt < cacheTtlMs) {
-      return resolveCachedAnalyticsResult(cached, includeMeta);
+      return cached;
     }
 
     const sql = `
@@ -2373,6 +2828,515 @@ class MonitorHistory {
       lowBroken,
       lowTotal,
     };
+  }
+
+  static buildPeriodSummaryGroupWhereClause(
+    groupList = [],
+    {
+      alias = 'agg',
+      siteField = 'site',
+      brandField = 'brand',
+      countryField = 'country',
+    } = {},
+  ) {
+    if (!Array.isArray(groupList) || groupList.length === 0) {
+      return {
+        clause: '',
+        conditions: [],
+      };
+    }
+
+    const clause = groupList
+      .map(
+        () =>
+          `(${alias}.${countryField} = ? AND COALESCE(${alias}.${siteField}, '') = ? AND COALESCE(${alias}.${brandField}, '') = ?)`,
+      )
+      .join(' OR ');
+    const conditions = groupList.flatMap((item) => [
+      item.country || '',
+      item.site || '',
+      item.brand || '',
+    ]);
+
+    return {
+      clause: ` AND (${clause})`,
+      conditions,
+    };
+  }
+
+  static async getPeriodSummaryPageGroupsFromAgg(params = {}) {
+    const {
+      country = '',
+      site = '',
+      brand = '',
+      startTime = '',
+      endTime = '',
+      sourceGranularity = 'day',
+      current = 1,
+      pageSize = 10,
+    } = params;
+    const config = MonitorHistory.getDurationSourceConfig(sourceGranularity);
+    const aggTable = 'monitor_history_agg_dim';
+    const isCovered = await MonitorHistory.isAggTableCoveringRange(
+      aggTable,
+      sourceGranularity,
+      startTime,
+      endTime,
+    );
+    if (!isCovered) {
+      throw new Error(`聚合表覆盖不足，回退原始表: ${aggTable}`);
+    }
+
+    let whereClause = 'WHERE agg.granularity = ?';
+    const conditions = [sourceGranularity];
+
+    if (country) {
+      if (country === 'EU') {
+        whereClause += ` AND agg.country IN ('UK', 'DE', 'FR', 'IT', 'ES')`;
+      } else {
+        whereClause += ' AND agg.country = ?';
+        conditions.push(country);
+      }
+    }
+
+    if (startTime) {
+      whereClause += ` AND agg.time_slot >= DATE_FORMAT(?, '${config.slotWhereFormat}')`;
+      conditions.push(startTime);
+    }
+
+    if (endTime) {
+      whereClause += ` AND agg.time_slot <= DATE_FORMAT(?, '${config.slotWhereFormat}')`;
+      conditions.push(endTime);
+    }
+
+    if (site) {
+      whereClause += ' AND agg.site = ?';
+      conditions.push(site);
+    }
+
+    if (brand) {
+      whereClause += ' AND agg.brand = ?';
+      conditions.push(brand);
+    }
+
+    const safeCurrent = Math.max(1, Number(current) || 1);
+    const safePageSize = Math.max(1, Number(pageSize) || 10);
+    const offset = (safeCurrent - 1) * safePageSize;
+
+    const groupedSql = `
+      SELECT
+        agg.country,
+        agg.site,
+        agg.brand
+      FROM ${aggTable} agg
+      ${whereClause}
+      GROUP BY agg.country, agg.site, agg.brand
+    `;
+
+    const rows = await query(
+      `SELECT grouped.*, COUNT(1) OVER() as total_rows
+       FROM (${groupedSql}) grouped
+       ORDER BY grouped.country ASC, grouped.site ASC, grouped.brand ASC
+       LIMIT ${safePageSize} OFFSET ${offset}`,
+      conditions,
+    );
+
+    let total = Number(rows?.[0]?.total_rows || 0);
+    if (rows.length === 0 && offset > 0) {
+      const countRows = await query(
+        `SELECT COUNT(1) as total
+         FROM (${groupedSql}) grouped`,
+        conditions,
+      );
+      total = Number(countRows?.[0]?.total || 0);
+    }
+
+    if (total === 0) {
+      const hasRaw = await MonitorHistory.hasHistoryInRange(startTime, endTime);
+      if (hasRaw) {
+        throw new Error('聚合结果为空，触发回退');
+      }
+    }
+
+    return {
+      total,
+      current: safeCurrent,
+      pageSize: safePageSize,
+      list: rows.map((item) => ({
+        country: item.country || '',
+        site: item.site || '',
+        brand: item.brand || '',
+      })),
+    };
+  }
+
+  static async getPeriodSummaryPageGroupsFromRaw(params = {}) {
+    const {
+      country = '',
+      site = '',
+      brand = '',
+      startTime = '',
+      endTime = '',
+      current = 1,
+      pageSize = 10,
+    } = params;
+
+    let whereClause = `WHERE ${MonitorHistory.getAnalyticsAsinHistoryFilter(
+      'mh.check_type',
+      'mh.asin_id',
+      'mh.asin_code',
+    )}`;
+    const conditions = [];
+
+    if (country) {
+      if (country === 'EU') {
+        whereClause += ` AND mh.country IN ('UK', 'DE', 'FR', 'IT', 'ES')`;
+      } else {
+        whereClause += ' AND mh.country = ?';
+        conditions.push(country);
+      }
+    }
+
+    if (startTime) {
+      whereClause += ' AND mh.check_time >= ?';
+      conditions.push(startTime);
+    }
+
+    if (endTime) {
+      whereClause += ' AND mh.check_time <= ?';
+      conditions.push(endTime);
+    }
+
+    if (site) {
+      whereClause += " AND COALESCE(mh.site_snapshot, '') = ?";
+      conditions.push(site);
+    }
+
+    if (brand) {
+      whereClause += " AND COALESCE(mh.brand_snapshot, '') = ?";
+      conditions.push(brand);
+    }
+
+    const safeCurrent = Math.max(1, Number(current) || 1);
+    const safePageSize = Math.max(1, Number(pageSize) || 10);
+    const offset = (safeCurrent - 1) * safePageSize;
+    const groupedSql = `
+      SELECT
+        mh.country,
+        COALESCE(mh.site_snapshot, '') as site,
+        COALESCE(mh.brand_snapshot, '') as brand
+      FROM monitor_history mh
+      ${whereClause}
+      GROUP BY mh.country, COALESCE(mh.site_snapshot, ''), COALESCE(mh.brand_snapshot, '')
+    `;
+    const rows = await query(
+      `SELECT grouped.*, COUNT(1) OVER() as total_rows
+       FROM (${groupedSql}) grouped
+       ORDER BY grouped.country ASC, grouped.site ASC, grouped.brand ASC
+       LIMIT ${safePageSize} OFFSET ${offset}`,
+      conditions,
+    );
+
+    let total = Number(rows?.[0]?.total_rows || 0);
+    if (rows.length === 0 && offset > 0) {
+      const countRows = await query(
+        `SELECT COUNT(1) as total
+         FROM (${groupedSql}) grouped`,
+        conditions,
+      );
+      total = Number(countRows?.[0]?.total || 0);
+    }
+
+    return {
+      total,
+      current: safeCurrent,
+      pageSize: safePageSize,
+      list: rows.map((item) => ({
+        country: item.country || '',
+        site: item.site || '',
+        brand: item.brand || '',
+      })),
+    };
+  }
+
+  static async getDurationSourceRowsFromAggForGroups(params = {}) {
+    const {
+      startTime = '',
+      endTime = '',
+      sourceGranularity = 'day',
+      groupList = [],
+    } = params;
+
+    if (!Array.isArray(groupList) || groupList.length === 0) {
+      return [];
+    }
+
+    const config = MonitorHistory.getDurationSourceConfig(sourceGranularity);
+    const aggTable = 'monitor_history_agg_dim';
+    const isCovered = await MonitorHistory.isAggTableCoveringRange(
+      aggTable,
+      sourceGranularity,
+      startTime,
+      endTime,
+    );
+    if (!isCovered) {
+      throw new Error(`聚合表覆盖不足，回退原始表: ${aggTable}`);
+    }
+
+    let whereClause = 'WHERE agg.granularity = ?';
+    const conditions = [sourceGranularity];
+
+    if (startTime) {
+      whereClause += ` AND agg.time_slot >= DATE_FORMAT(?, '${config.slotWhereFormat}')`;
+      conditions.push(startTime);
+    }
+
+    if (endTime) {
+      whereClause += ` AND agg.time_slot <= DATE_FORMAT(?, '${config.slotWhereFormat}')`;
+      conditions.push(endTime);
+    }
+
+    const groupClause = MonitorHistory.buildPeriodSummaryGroupWhereClause(
+      groupList,
+      {
+        alias: 'agg',
+      },
+    );
+    whereClause += groupClause.clause;
+    conditions.push(...groupClause.conditions);
+
+    return await query(
+      `
+        SELECT
+          DATE_FORMAT(agg.time_slot, '${config.aggSlotFormat}') as slot_period,
+          agg.country,
+          agg.site,
+          agg.brand,
+          agg.asin_key,
+          agg.check_count as total_checks,
+          agg.broken_count,
+          agg.has_peak
+        FROM ${aggTable} agg
+        ${whereClause}
+        ORDER BY agg.time_slot ASC, agg.country ASC, agg.site ASC, agg.brand ASC, agg.asin_key ASC
+      `,
+      conditions,
+    );
+  }
+
+  static async getDurationSourceRowsFromRawForGroups(params = {}) {
+    const {
+      startTime = '',
+      endTime = '',
+      sourceGranularity = 'day',
+      groupList = [],
+    } = params;
+
+    if (!Array.isArray(groupList) || groupList.length === 0) {
+      return [];
+    }
+
+    const config = MonitorHistory.getDurationSourceConfig(sourceGranularity);
+    const isPeakCase = MonitorHistory.getPeakHourCase(
+      'mh.country',
+      'mh.check_time',
+    );
+    let whereClause = `WHERE ${MonitorHistory.getAnalyticsAsinHistoryFilter(
+      'mh.check_type',
+      'mh.asin_id',
+      'mh.asin_code',
+    )}`;
+    const conditions = [];
+
+    if (startTime) {
+      whereClause += ' AND mh.check_time >= ?';
+      conditions.push(startTime);
+    }
+
+    if (endTime) {
+      whereClause += ' AND mh.check_time <= ?';
+      conditions.push(endTime);
+    }
+
+    const groupClause = MonitorHistory.buildPeriodSummaryGroupWhereClause(
+      groupList,
+      {
+        alias: 'mh',
+        siteField: 'site_snapshot',
+        brandField: 'brand_snapshot',
+      },
+    );
+    whereClause += groupClause.clause;
+    conditions.push(...groupClause.conditions);
+
+    return await query(
+      `
+        SELECT
+          DATE_FORMAT(${config.rawSlotExpr}, '${config.rawSlotFormat}') as slot_period,
+          mh.country,
+          COALESCE(mh.site_snapshot, '') as site,
+          COALESCE(mh.brand_snapshot, '') as brand,
+          COALESCE(NULLIF(mh.asin_code, ''), CONCAT('ID#', mh.asin_id)) as asin_key,
+          COUNT(*) as total_checks,
+          SUM(CASE WHEN mh.is_broken = 1 THEN 1 ELSE 0 END) as broken_count,
+          MAX(${isPeakCase}) as has_peak
+        FROM monitor_history mh
+        ${whereClause}
+        AND (mh.asin_id IS NOT NULL OR NULLIF(mh.asin_code, '') IS NOT NULL)
+        GROUP BY
+          ${config.rawSlotExpr},
+          mh.country,
+          COALESCE(mh.site_snapshot, ''),
+          COALESCE(mh.brand_snapshot, ''),
+          COALESCE(NULLIF(mh.asin_code, ''), CONCAT('ID#', mh.asin_id))
+        ORDER BY ${config.rawSlotExpr} ASC, mh.country ASC, COALESCE(mh.site_snapshot, '') ASC, COALESCE(mh.brand_snapshot, '') ASC
+      `,
+      conditions,
+    );
+  }
+
+  static async getStatusIntervalCoverage() {
+    const [rangeRow = {}] = await query(
+      `SELECT
+         DATE_FORMAT(MIN(interval_start), '%Y-%m-%d %H:%i:%s') as min_start
+       FROM monitor_history_status_interval`,
+    );
+    const [watermarkRow = {}] = await query(
+      `SELECT
+         DATE_FORMAT(last_check_time, '%Y-%m-%d %H:%i:%s') as last_check_time
+       FROM analytics_refresh_watermark
+       WHERE processor_name = 'monitor_history_status_interval'`,
+    );
+    return {
+      minStart: rangeRow?.min_start || '',
+      lastCheckTime: watermarkRow?.last_check_time || '',
+    };
+  }
+
+  static async canUseStatusIntervalForRange(startTime = '', endTime = '') {
+    const coverage = await MonitorHistory.getStatusIntervalCoverage();
+    if (!coverage.minStart || !coverage.lastCheckTime) {
+      return false;
+    }
+
+    const normalizedStart = startTime ? String(startTime).trim() : '';
+    const normalizedEnd = endTime ? String(endTime).trim() : '';
+    if (normalizedStart && coverage.minStart > normalizedStart) {
+      return false;
+    }
+
+    if (normalizedEnd) {
+      const maxCoveredTime = parseDateTimeInput(coverage.lastCheckTime);
+      const requestedEnd = parseDateTimeInput(normalizedEnd);
+      const lagToleranceMs =
+        (Number(process.env.ANALYTICS_AGG_ACCEPTABLE_LAG_MINUTES) || 120) *
+        60 *
+        1000;
+      if (
+        !maxCoveredTime ||
+        !requestedEnd ||
+        requestedEnd.getTime() - maxCoveredTime.getTime() > lagToleranceMs
+      ) {
+        return false;
+      }
+    }
+
+    return true;
+  }
+
+  static async getAbnormalDurationIntervalRows(params = {}) {
+    const {
+      asinIds = [],
+      asinCodes = [],
+      variantGroupId = '',
+      country = '',
+      startTime = '',
+      endTime = '',
+      asinType = '',
+      asinName = '',
+      variantGroupName = '',
+    } = params;
+    const normalizedAsinIds = Array.isArray(asinIds) ? asinIds : [];
+    const normalizedAsinCodes = Array.isArray(asinCodes) ? asinCodes : [];
+    const normalizedAsinType = asinType ? String(asinType).trim() : '';
+    const effectiveEndTime = endTime || formatDateToSqlText(new Date());
+    const effectiveStartTime = startTime || '1970-01-01 00:00:00';
+
+    let whereClause =
+      'WHERE si.interval_start < ? AND COALESCE(si.interval_end, ?) > ?';
+    const conditions = [effectiveEndTime, effectiveEndTime, effectiveStartTime];
+
+    if (variantGroupId) {
+      whereClause += ' AND si.variant_group_id = ?';
+      conditions.push(variantGroupId);
+    }
+
+    if (normalizedAsinIds.length > 0) {
+      const placeholders = normalizedAsinIds.map(() => '?').join(',');
+      whereClause += ` AND si.asin_id IN (${placeholders})`;
+      conditions.push(...normalizedAsinIds);
+    }
+
+    if (normalizedAsinCodes.length > 0) {
+      const placeholders = normalizedAsinCodes.map(() => '?').join(',');
+      whereClause += ` AND COALESCE(NULLIF(si.asin_code, ''), a.asin) IN (${placeholders})`;
+      conditions.push(...normalizedAsinCodes);
+    }
+
+    if (variantGroupName) {
+      whereClause += ` AND COALESCE(NULLIF(si.variant_group_name, ''), vg.name, '') LIKE ?`;
+      conditions.push(`%${variantGroupName}%`);
+    }
+
+    if (asinName) {
+      whereClause += ` AND COALESCE(NULLIF(si.asin_name, ''), a.name, '') LIKE ?`;
+      conditions.push(`%${asinName}%`);
+    }
+
+    if (normalizedAsinType) {
+      if (normalizedAsinType === '1' || normalizedAsinType === 'MAIN_LINK') {
+        whereClause += ` AND a.asin_type IN ('1', 'MAIN_LINK')`;
+      } else if (
+        normalizedAsinType === '2' ||
+        normalizedAsinType === 'SUB_REVIEW'
+      ) {
+        whereClause += ` AND a.asin_type IN ('2', 'SUB_REVIEW')`;
+      } else {
+        whereClause += ' AND a.asin_type = ?';
+        conditions.push(normalizedAsinType);
+      }
+    }
+
+    if (country) {
+      if (country === 'EU') {
+        whereClause += ` AND si.country IN ('UK', 'DE', 'FR', 'IT', 'ES')`;
+      } else {
+        whereClause += ' AND si.country = ?';
+        conditions.push(country);
+      }
+    }
+
+    return await query(
+      `
+        SELECT
+          si.asin_key,
+          si.asin_id,
+          COALESCE(NULLIF(si.asin_code, ''), a.asin) as asin,
+          COALESCE(NULLIF(si.asin_name, ''), a.name, COALESCE(NULLIF(si.asin_code, ''), CONCAT('ID#', si.asin_id))) as asin_name,
+          si.country,
+          si.variant_group_id,
+          COALESCE(NULLIF(si.variant_group_name, ''), vg.name, '') as variant_group_name,
+          DATE_FORMAT(si.interval_start, '%Y-%m-%d %H:%i:%s') as interval_start,
+          DATE_FORMAT(si.interval_end, '%Y-%m-%d %H:%i:%s') as interval_end,
+          si.is_broken
+        FROM monitor_history_status_interval si
+        LEFT JOIN asins a ON a.id = si.asin_id
+        LEFT JOIN variant_groups vg ON vg.id = si.variant_group_id
+        ${whereClause}
+        ORDER BY si.country ASC, si.asin_key ASC, si.interval_start ASC
+      `,
+      conditions,
+    );
   }
 
   static getPeakHourCase(countryField, timeField = 'mh.check_time') {
@@ -2509,7 +3473,7 @@ class MonitorHistory {
 
     // 生成缓存键
     const cacheKey = `allCountriesSummary:${ANALYTICS_CACHE_VERSION}:${startTime}:${endTime}:${timeSlotGranularity}`;
-    const latestCacheKey = `allCountriesSummary:${timeSlotGranularity}`;
+    const latestCacheKey = `allCountriesSummary:${startTime}:${endTime}:${timeSlotGranularity}`;
     const ttlMs =
       Number(process.env.ANALYTICS_ALL_COUNTRIES_SUMMARY_TTL_MS) || 300000;
     const cached = await analyticsCacheService.get(cacheKey);
@@ -2630,7 +3594,7 @@ class MonitorHistory {
 
     // 生成缓存键
     const cacheKey = `regionSummary:${ANALYTICS_CACHE_VERSION}:${startTime}:${endTime}:${timeSlotGranularity}`;
-    const latestCacheKey = `regionSummary:${timeSlotGranularity}`;
+    const latestCacheKey = `regionSummary:${startTime}:${endTime}:${timeSlotGranularity}`;
     const ttlMs = Number(process.env.ANALYTICS_REGION_SUMMARY_TTL_MS) || 300000;
     const cached = await analyticsCacheService.get(cacheKey);
     if (cached !== null) {
@@ -3008,9 +3972,8 @@ class MonitorHistory {
       includeMeta = false,
     } = params;
 
-    // 生成缓存键
-    const cacheKey = `periodSummary:${ANALYTICS_CACHE_VERSION}:${country}:${site}:${brand}:${startTime}:${endTime}:${timeSlotGranularity}:${current}:${pageSize}`;
-    const latestCacheKey = `periodSummary:${country}:${site}:${brand}:${timeSlotGranularity}:${current}:${pageSize}`;
+    const cacheKey = `periodSummary:${ANALYTICS_CACHE_VERSION}:overview:${country}:${site}:${brand}:${startTime}:${endTime}:${timeSlotGranularity}:${current}:${pageSize}`;
+    const latestCacheKey = `periodSummary:overview:${country}:${site}:${brand}:${startTime}:${endTime}:${timeSlotGranularity}:${current}:${pageSize}`;
     const periodSummaryCacheTtl =
       Number(process.env.ANALYTICS_PERIOD_SUMMARY_TTL_MS) || 300000;
     const cached = await analyticsCacheService.get(cacheKey);
@@ -3043,8 +4006,8 @@ class MonitorHistory {
     const queryTimeRange = buildQueryTimeRangeText(startTime, endTime);
     const safeCurrent = Math.max(1, Number(current) || 1);
     const safePageSize = Math.max(1, Number(pageSize) || 10);
-    const offset = (safeCurrent - 1) * safePageSize;
-    let sourceRows = null;
+    let sourceRows = [];
+    let pageGroups = null;
     let source = 'raw';
 
     const useAgg =
@@ -3053,15 +4016,24 @@ class MonitorHistory {
 
     if (useAgg) {
       try {
-        sourceRows = await MonitorHistory.getDurationSourceRowsFromAgg({
-          startTime,
-          endTime,
-          sourceGranularity,
+        pageGroups = await MonitorHistory.getPeriodSummaryPageGroupsFromAgg({
           country,
           site,
           brand,
-          withDimensions: true,
+          startTime,
+          endTime,
+          sourceGranularity,
+          current: safeCurrent,
+          pageSize: safePageSize,
         });
+        sourceRows = await MonitorHistory.getDurationSourceRowsFromAggForGroups(
+          {
+            startTime,
+            endTime,
+            sourceGranularity,
+            groupList: pageGroups.list,
+          },
+        );
         logger.info('[统计查询] getPeriodSummary 使用聚合表');
         source = 'agg';
       } catch (error) {
@@ -3069,100 +4041,88 @@ class MonitorHistory {
           '[统计查询] getPeriodSummary 聚合表读取失败，回退原始表',
           error?.message || error,
         );
+        pageGroups = null;
         sourceRows = null;
       }
     }
 
-    if (!Array.isArray(sourceRows)) {
-      sourceRows = await MonitorHistory.getDurationSourceRowsFromRaw({
-        startTime,
-        endTime,
-        sourceGranularity,
+    if (!pageGroups) {
+      pageGroups = await MonitorHistory.getPeriodSummaryPageGroupsFromRaw({
         country,
         site,
         brand,
+        startTime,
+        endTime,
+        current: safeCurrent,
+        pageSize: safePageSize,
+      });
+      sourceRows = await MonitorHistory.getDurationSourceRowsFromRawForGroups({
+        startTime,
+        endTime,
+        sourceGranularity,
+        groupList: pageGroups.list,
       });
       source = 'raw';
     }
 
-    const timeSlotDetails = MonitorHistory.buildDurationRowsByGroup(
-      sourceRows,
-      {
+    const metricsByGroup = new Map(
+      MonitorHistory.buildDurationRowsByGroup(sourceRows, {
         sourceGranularity,
-        targetGranularity: timeSlotGranularity,
+        targetGranularity: sourceGranularity,
         queryStartDate,
         queryEndDate,
-        buildGroupKey: (targetPeriod, row) =>
-          [
-            targetPeriod,
-            row.country || '',
-            row.site || '',
-            row.brand || '',
-          ].join('|'),
-        buildGroupMeta: (targetPeriod, row) => ({
-          timeSlot: targetPeriod,
+        buildGroupKey: (_, row) =>
+          buildPeriodSummaryGroupKey(row.country, row.site, row.brand),
+        buildGroupMeta: (_, row) => ({
+          timeRange: queryTimeRange,
           country: row.country || '',
           site: row.site || '',
           brand: row.brand || '',
         }),
-      },
-    ).sort((a, b) => {
-      const left = `${a.country}|${a.site}|${a.brand}|${a.timeSlot}`;
-      const right = `${b.country}|${b.site}|${b.brand}|${b.timeSlot}`;
-      return left.localeCompare(right);
-    });
-
-    const timeSlotMap = new Map();
-    timeSlotDetails.forEach((item) => {
+      }).map((item) => [
+        buildPeriodSummaryGroupKey(item.country, item.site, item.brand),
+        item,
+      ]),
+    );
+    const list = (pageGroups.list || []).map((group) => {
       const groupKey = buildPeriodSummaryGroupKey(
-        item.country,
-        item.site,
-        item.brand,
+        group.country,
+        group.site,
+        group.brand,
       );
-      if (!timeSlotMap.has(groupKey)) {
-        timeSlotMap.set(groupKey, []);
-      }
-      timeSlotMap.get(groupKey).push(item);
+      const metrics = metricsByGroup.get(groupKey);
+      return {
+        ...(metrics || {
+          timeRange: queryTimeRange,
+          country: group.country || '',
+          site: group.site || '',
+          brand: group.brand || '',
+          totalDurationHours: 0,
+          abnormalDurationHours: 0,
+          normalDurationHours: 0,
+          ratioAllAsin: 0,
+          ratioAllTime: 0,
+          globalPeakRate: 0,
+          globalLowRate: 0,
+          ratioHigh: 0,
+          ratioLow: 0,
+          totalChecks: 0,
+          brokenCount: 0,
+          totalAsinsDedup: 0,
+          brokenAsinsDedup: 0,
+          peakDurationHours: 0,
+          peakAbnormalDurationHours: 0,
+          lowDurationHours: 0,
+          lowAbnormalDurationHours: 0,
+        }),
+        hasTimeSlotDetails: true,
+      };
     });
-
-    const fullList = MonitorHistory.buildDurationRowsByGroup(sourceRows, {
-      sourceGranularity,
-      targetGranularity: sourceGranularity,
-      queryStartDate,
-      queryEndDate,
-      buildGroupKey: (_, row) =>
-        buildPeriodSummaryGroupKey(row.country, row.site, row.brand),
-      buildGroupMeta: (_, row) => ({
-        timeRange: queryTimeRange,
-        country: row.country || '',
-        site: row.site || '',
-        brand: row.brand || '',
-      }),
-    })
-      .sort((a, b) => {
-        const left = `${a.country}|${a.site}|${a.brand}`;
-        const right = `${b.country}|${b.site}|${b.brand}`;
-        return left.localeCompare(right);
-      })
-      .map((item) => {
-        const groupKey = buildPeriodSummaryGroupKey(
-          item.country,
-          item.site,
-          item.brand,
-        );
-        return {
-          ...item,
-          timeSlotDetails: timeSlotMap.get(groupKey) || [],
-        };
-      });
-    const total = fullList.length;
-    const list = fullList.slice(offset, offset + safePageSize);
-
     const finalResult = {
       list,
-      total,
-      current: safeCurrent,
-      pageSize: safePageSize,
+      total: Number(pageGroups.total) || 0,
+      current: Number(pageGroups.current) || safeCurrent,
+      pageSize: Number(pageGroups.pageSize) || safePageSize,
     };
     const generatedAt = formatDateToSqlText(new Date());
 
@@ -3181,6 +4141,107 @@ class MonitorHistory {
     );
 
     return finalizeAnalyticsResult(finalResult, {
+      includeMeta,
+      source,
+      generatedAt,
+    });
+  }
+
+  static async getPeriodSummaryTimeSlotDetails(params = {}) {
+    const {
+      country = '',
+      site = '',
+      brand = '',
+      startTime = '',
+      endTime = '',
+      timeSlotGranularity = 'day',
+      includeMeta = false,
+    } = params;
+
+    const cacheKey = `periodSummaryDetails:${ANALYTICS_CACHE_VERSION}:${country}:${site}:${brand}:${startTime}:${endTime}:${timeSlotGranularity}`;
+    const ttlMs = Number(process.env.ANALYTICS_PERIOD_SUMMARY_TTL_MS) || 300000;
+    const cached = await analyticsCacheService.get(cacheKey);
+    if (cached !== null) {
+      return resolveCachedAnalyticsResult(cached, includeMeta);
+    }
+
+    const sourceGranularity = MonitorHistory.getDurationSourceGranularity(
+      timeSlotGranularity,
+      startTime,
+      endTime,
+    );
+    const queryStartDate = parseDateTimeInput(startTime);
+    const queryEndDate = parseDateTimeInput(endTime);
+    const groupList = [
+      {
+        country,
+        site,
+        brand,
+      },
+    ];
+    let sourceRows = [];
+    let source = 'raw';
+
+    const useAgg =
+      process.env.ANALYTICS_AGG_ENABLED !== '0' &&
+      MonitorHistory.canUseAggForRange(sourceGranularity, startTime, endTime);
+
+    if (useAgg) {
+      try {
+        sourceRows = await MonitorHistory.getDurationSourceRowsFromAggForGroups(
+          {
+            startTime,
+            endTime,
+            sourceGranularity,
+            groupList,
+          },
+        );
+        source = 'agg';
+      } catch (error) {
+        logger.warn(
+          '[统计查询] getPeriodSummaryTimeSlotDetails 聚合表读取失败，回退原始表',
+          error?.message || error,
+        );
+        sourceRows = [];
+      }
+    }
+
+    if (source === 'raw' || sourceRows.length === 0) {
+      sourceRows = await MonitorHistory.getDurationSourceRowsFromRawForGroups({
+        startTime,
+        endTime,
+        sourceGranularity,
+        groupList,
+      });
+      source = 'raw';
+    }
+
+    const result = MonitorHistory.buildDurationRowsByGroup(sourceRows, {
+      sourceGranularity,
+      targetGranularity: timeSlotGranularity,
+      queryStartDate,
+      queryEndDate,
+      buildGroupKey: (targetPeriod) => targetPeriod,
+      buildGroupMeta: (targetPeriod) => ({
+        timeSlot: targetPeriod,
+      }),
+    }).sort((left, right) =>
+      String(left.timeSlot || '').localeCompare(String(right.timeSlot || '')),
+    );
+    const generatedAt = formatDateToSqlText(new Date());
+
+    await storeAnalyticsResult(
+      cacheKey,
+      '',
+      result,
+      {
+        source,
+        generatedAt,
+      },
+      ttlMs,
+    );
+
+    return finalizeAnalyticsResult(result, {
       includeMeta,
       source,
       generatedAt,
@@ -3462,6 +4523,52 @@ class MonitorHistory {
           'CONCAT(SUBSTRING(YEARWEEK(mh.check_time, 3), 1, 4), "-", LPAD(SUBSTRING(YEARWEEK(mh.check_time, 3), 5), 2, "0"))';
         defaultBucketDurationHours = 24 * 7;
       }
+    }
+
+    if (
+      queryStartDate &&
+      queryEndDate &&
+      (await MonitorHistory.canUseStatusIntervalForRange(startTime, endTime))
+    ) {
+      const intervalRows = await MonitorHistory.getAbnormalDurationIntervalRows(
+        {
+          asinIds: normalizedAsinIds,
+          asinCodes: normalizedAsinCodes,
+          variantGroupId,
+          country,
+          startTime,
+          endTime,
+          asinType: normalizedAsinType,
+          asinName,
+          variantGroupName,
+        },
+      );
+      const summary = buildAbnormalDurationSummaryFromIntervals(
+        intervalRows,
+        startTime,
+        endTime,
+        queryStartDate,
+        queryEndDate,
+      );
+
+      if (!shouldIncludeSeries) {
+        return {
+          timeGranularity: groupBy,
+          data: [],
+          summary,
+        };
+      }
+
+      return {
+        timeGranularity: groupBy,
+        data: buildAbnormalDurationSeriesFromIntervals(
+          intervalRows,
+          groupBy,
+          queryStartDate,
+          queryEndDate,
+        ),
+        summary,
+      };
     }
 
     // 构建WHERE条件

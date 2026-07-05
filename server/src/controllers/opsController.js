@@ -114,7 +114,7 @@ exports.clearAnalyticsCache = async (req, res) => {
 exports.refreshAnalyticsAgg = async (req, res) => {
   try {
     const { granularity, startTime, endTime } = req.body || {};
-    const allowed = ['hour', 'day'];
+    const allowed = ['hour', 'day', 'month'];
     const aggStatus = analyticsAggService.getAggStatus();
 
     if (!aggStatus.enabled) {
@@ -128,7 +128,7 @@ exports.refreshAnalyticsAgg = async (req, res) => {
     if (granularity && !allowed.includes(granularity)) {
       return res.status(400).json({
         success: false,
-        errorMessage: 'granularity 必须为 hour 或 day',
+        errorMessage: 'granularity 必须为 hour、day 或 month',
         errorCode: 400,
       });
     }
@@ -156,7 +156,11 @@ exports.refreshAnalyticsAgg = async (req, res) => {
         'day',
         options,
       );
-      result = { hourResult, dayResult };
+      const monthResult = await analyticsAggService.refreshAnalyticsAggBundle(
+        'month',
+        options,
+      );
+      result = { hourResult, dayResult, monthResult };
     } else {
       result = await analyticsAggService.refreshRecentMonitorHistoryAgg();
     }

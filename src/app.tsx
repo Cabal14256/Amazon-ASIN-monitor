@@ -155,6 +155,7 @@ export async function getInitialState(): Promise<{
 
       // 如果是401错误，清除会话并重定向
       if (response.errorCode === 401) {
+        wsClient.disconnect();
         clearToken();
         if (!isLoginPage) {
           setTimeout(() => {
@@ -198,6 +199,7 @@ export async function getInitialState(): Promise<{
       errorCode === 403
     ) {
       debugWarn('[getInitialState] 会话无效或过期，清除会话并重定向到登录页');
+      wsClient.disconnect();
       clearToken();
       // 如果不在登录页，重定向到登录页
       if (!isLoginPage) {
@@ -532,6 +534,7 @@ export const layout = ({ initialState, setInitialState }: any) => {
             error,
           });
         } finally {
+          wsClient.disconnect();
           clearToken();
           await setInitialState({
             currentUser: undefined,
@@ -676,6 +679,7 @@ export const request = {
     (response: any) => {
       // 处理401错误，跳转到登录页
       if (response?.status === 401 || response?.data?.errorCode === 401) {
+        wsClient.disconnect();
         clearToken();
         if (window.location.pathname !== '/login') {
           window.location.href = '/login';
