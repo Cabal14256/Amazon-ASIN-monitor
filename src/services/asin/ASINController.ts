@@ -99,12 +99,48 @@ export async function deleteVariantGroup(
   });
 }
 
+/** 批量删除变体组/ASIN */
+export async function batchDeleteVariantGroups(
+  body: {
+    groupIds?: string[];
+    asinIds?: string[];
+    useAsync?: boolean;
+  },
+  options?: { [key: string]: any },
+) {
+  return request<API.Result_any_>('/api/v1/variant-groups/batch-delete', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+    },
+    data: body,
+    ...(options || {}),
+  });
+}
+
 /** 添加ASIN到变体组 */
 export async function addASIN(
   body?: API.ASINInfoVO,
   options?: { [key: string]: any },
 ) {
   return request<API.Result_ASINInfo_>('/api/v1/asins', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+    },
+    data: body,
+    ...(options || {}),
+  });
+}
+
+/** 批量添加ASIN到变体组 */
+export async function batchCreateASINs(
+  body: {
+    items: API.ASINInfoVO[];
+  },
+  options?: { [key: string]: any },
+) {
+  return request<API.Result_any_>('/api/v1/asins/batch-create', {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',

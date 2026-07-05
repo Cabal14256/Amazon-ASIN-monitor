@@ -4,6 +4,7 @@ const competitorMonitorTaskQueue = require('./competitorMonitorTaskQueue');
 const exportTaskQueue = require('./exportTaskQueue');
 const importTaskQueue = require('./importTaskQueue');
 const batchCheckTaskQueue = require('./batchCheckTaskQueue');
+const batchDeleteTaskQueue = require('./batchDeleteTaskQueue');
 const backupTaskQueue = require('./backupTaskQueue');
 const variantCheckTaskQueue = require('./variantCheckTaskQueue');
 
@@ -32,6 +33,11 @@ const queueRegistrations = [
     name: 'batchCheck',
     aliases: ['batchcheck', 'batch-check'],
     module: batchCheckTaskQueue,
+  },
+  {
+    name: 'batchDelete',
+    aliases: ['batchdelete', 'batch-delete'],
+    module: batchDeleteTaskQueue,
   },
   {
     name: 'backup',

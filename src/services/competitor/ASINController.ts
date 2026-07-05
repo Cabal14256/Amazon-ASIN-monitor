@@ -114,12 +114,51 @@ export async function deleteCompetitorVariantGroup(
   );
 }
 
+/** 批量删除竞品变体组/ASIN */
+export async function batchDeleteCompetitorVariantGroups(
+  body: {
+    groupIds?: string[];
+    asinIds?: string[];
+    useAsync?: boolean;
+  },
+  options?: { [key: string]: any },
+) {
+  return request<API.Result_any_>(
+    '/api/v1/competitor/variant-groups/batch-delete',
+    {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      data: body,
+      ...(options || {}),
+    },
+  );
+}
+
 /** 添加ASIN到变体组 */
 export async function addCompetitorASIN(
   body?: API.ASINInfoVO,
   options?: { [key: string]: any },
 ) {
   return request<API.Result_ASINInfo_>('/api/v1/competitor/asins', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+    },
+    data: body,
+    ...(options || {}),
+  });
+}
+
+/** 批量添加竞品ASIN到变体组 */
+export async function batchCreateCompetitorASINs(
+  body: {
+    items: API.ASINInfoVO[];
+  },
+  options?: { [key: string]: any },
+) {
+  return request<API.Result_any_>('/api/v1/competitor/asins/batch-create', {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',

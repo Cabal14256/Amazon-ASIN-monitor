@@ -45,6 +45,39 @@ function shouldUseAsync(req) {
   return Boolean(req.user?.userId || req.user?.id);
 }
 
+function getBatchCheckSyncMaxGroups() {
+  const configured = Number(process.env.BATCH_CHECK_SYNC_MAX_GROUPS);
+  return Number.isFinite(configured) && configured > 0
+    ? Math.floor(configured)
+    : 20;
+}
+
+function getBatchCheckSyncConcurrency(total) {
+  const configured = Number(process.env.BATCH_CHECK_SYNC_CONCURRENCY);
+  const concurrency =
+    Number.isFinite(configured) && configured > 0 ? Math.floor(configured) : 3;
+  return Math.max(1, Math.min(concurrency, total || 1));
+}
+
+async function runWithConcurrency(items, concurrency, worker) {
+  const results = new Array(items.length);
+  let nextIndex = 0;
+
+  const workers = Array.from(
+    { length: Math.min(concurrency, items.length) },
+    async () => {
+      while (nextIndex < items.length) {
+        const currentIndex = nextIndex;
+        nextIndex += 1;
+        results[currentIndex] = await worker(items[currentIndex], currentIndex);
+      }
+    },
+  );
+
+  await Promise.all(workers);
+  return results;
+}
+
 async function createVariantCheckTask(taskType, params, userId) {
   const taskId = uuidv4();
   await variantCheckTaskQueue.enqueue({
@@ -175,7 +208,8 @@ exports.batchCheckVariantGroups = async (req, res) => {
       });
     }
 
-    if (shouldUseAsync(req)) {
+    const forceAsync = groupIds.length > getBatchCheckSyncMaxGroups();
+    if (shouldUseAsync(req) || forceAsync) {
       const batchCheckTaskQueue = require('../services/batchCheckTaskQueue');
       const taskRegistryService = require('../services/taskRegistryService');
 
@@ -215,28 +249,32 @@ exports.batchCheckVariantGroups = async (req, res) => {
     // 同步模式（原有逻辑）
     // 批量检查时默认也强制刷新（不使用缓存）
     const shouldForceRefresh = forceRefresh !== false;
+    const concurrency = getBatchCheckSyncConcurrency(groupIds.length);
 
-    const results = [];
-    for (const groupId of groupIds) {
-      try {
-        const result = await variantCheckService.checkVariantGroup(
-          groupId,
-          shouldForceRefresh,
-        );
+    const results = await runWithConcurrency(
+      groupIds,
+      concurrency,
+      async (groupId) => {
+        try {
+          const result = await variantCheckService.checkVariantGroup(
+            groupId,
+            shouldForceRefresh,
+          );
 
-        results.push({
-          groupId,
-          success: true,
-          ...mapVariantGroupResultWithVariantView(result),
-        });
-      } catch (error) {
-        results.push({
-          groupId,
-          success: false,
-          error: error.message,
-        });
-      }
-    }
+          return {
+            groupId,
+            success: true,
+            ...mapVariantGroupResultWithVariantView(result),
+          };
+        } catch (error) {
+          return {
+            groupId,
+            success: false,
+            error: error.message,
+          };
+        }
+      },
+    );
 
     res.json({
       success: true,

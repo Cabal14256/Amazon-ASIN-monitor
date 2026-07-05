@@ -63,7 +63,10 @@ const TABLE_DEFINITIONS = [
       CREATE TABLE IF NOT EXISTS competitor_monitor_history (
         id BIGINT AUTO_INCREMENT PRIMARY KEY COMMENT '历史记录ID',
         variant_group_id VARCHAR(50) COMMENT '变体组ID',
+        variant_group_name VARCHAR(255) COMMENT '变体组名称快照（记录时的变体组名称）',
         asin_id VARCHAR(50) COMMENT 'ASIN ID',
+        asin_code VARCHAR(20) COMMENT 'ASIN编码快照（记录时的ASIN编码）',
+        asin_name VARCHAR(500) COMMENT 'ASIN名称快照（记录时的ASIN名称）',
         check_type VARCHAR(20) DEFAULT 'GROUP' COMMENT '检查类型: GROUP-变体组, ASIN-单个ASIN',
         country VARCHAR(10) NOT NULL COMMENT '国家',
         is_broken TINYINT(1) DEFAULT 0 COMMENT '检查结果: 0-正常, 1-异常',
@@ -74,13 +77,7 @@ const TABLE_DEFINITIONS = [
         INDEX idx_variant_group_id (variant_group_id),
         INDEX idx_asin_id (asin_id),
         INDEX idx_check_time (check_time),
-        INDEX idx_country (country),
-        CONSTRAINT fk_competitor_history_group
-          FOREIGN KEY (variant_group_id) REFERENCES competitor_variant_groups(id)
-          ON DELETE SET NULL,
-        CONSTRAINT fk_competitor_history_asin
-          FOREIGN KEY (asin_id) REFERENCES competitor_asins(id)
-          ON DELETE SET NULL
+        INDEX idx_country (country)
       ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='竞品监控历史表'
     `,
   },
@@ -159,6 +156,21 @@ const COLUMN_DEFINITIONS = [
     table: 'competitor_asins',
     column: 'feishu_notify_enabled',
     sql: `ALTER TABLE competitor_asins ADD COLUMN feishu_notify_enabled TINYINT(1) DEFAULT 0 COMMENT '飞书通知开关: 0-关闭, 1-开启（默认关闭）'`,
+  },
+  {
+    table: 'competitor_monitor_history',
+    column: 'variant_group_name',
+    sql: `ALTER TABLE competitor_monitor_history ADD COLUMN variant_group_name VARCHAR(255) COMMENT '变体组名称快照（记录时的变体组名称）' AFTER variant_group_id`,
+  },
+  {
+    table: 'competitor_monitor_history',
+    column: 'asin_code',
+    sql: `ALTER TABLE competitor_monitor_history ADD COLUMN asin_code VARCHAR(20) COMMENT 'ASIN编码快照（记录时的ASIN编码）' AFTER asin_id`,
+  },
+  {
+    table: 'competitor_monitor_history',
+    column: 'asin_name',
+    sql: `ALTER TABLE competitor_monitor_history ADD COLUMN asin_name VARCHAR(500) COMMENT 'ASIN名称快照（记录时的ASIN名称）' AFTER asin_code`,
   },
   {
     table: 'competitor_monitor_history',

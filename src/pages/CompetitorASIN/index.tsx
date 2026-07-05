@@ -7,7 +7,7 @@ import { formatBeijing } from '@/utils/beijingTime';
 import { debugError, debugLog } from '@/utils/debug';
 import { exportToExcel } from '@/utils/export';
 import { useMessage } from '@/utils/message';
-import { extractAsyncTask } from '@/utils/task';
+import { extractAsyncTask, waitForTaskResult } from '@/utils/task';
 import { MoreOutlined } from '@ant-design/icons';
 import {
   ActionType,
@@ -19,7 +19,7 @@ import {
 } from '@ant-design/pro-components';
 import { Access, history, useAccess } from '@umijs/max';
 import type { MenuProps } from 'antd';
-import { Button, Dropdown, Switch, Tag } from 'antd';
+import { Button, Dropdown, Modal, Switch, Tag } from 'antd';
 import React, { useCallback, useMemo, useRef, useState } from 'react';
 import ASINForm from './components/ASINForm';
 import BatchDeleteConfirmModal from './components/BatchDeleteConfirmModal';
@@ -30,8 +30,7 @@ import './index.less';
 
 const {
   queryCompetitorVariantGroupList,
-  deleteCompetitorVariantGroup,
-  deleteCompetitorASIN,
+  batchDeleteCompetitorVariantGroups,
   updateCompetitorASINFeishuNotify,
   updateCompetitorVariantGroupFeishuNotify,
 } = services.CompetitorASINController;
@@ -78,24 +77,64 @@ const CompetitorASINManagement: React.FC<unknown> = () => {
   const handleRemove = useCallback(
     async (selectedRows: (API.VariantGroup | API.ASINInfo)[]) => {
       const hide = message.loading('正在删除');
-      if (!selectedRows || selectedRows.length === 0) return true;
+      if (!selectedRows || selectedRows.length === 0) {
+        hide();
+        return true;
+      }
       try {
-        // 区分变体组和ASIN进行删除
+        const groupIds: string[] = [];
+        const asinIds: string[] = [];
         for (const row of selectedRows) {
+          if (!row.id) {
+            continue;
+          }
           if ((row as API.VariantGroup).parentId === undefined) {
-            // 变体组
-            await deleteCompetitorVariantGroup({
-              groupId: row.id || '',
-            });
+            groupIds.push(row.id);
           } else {
-            // ASIN
-            await deleteCompetitorASIN({
-              asinId: row.id || '',
-            });
+            asinIds.push(row.id);
           }
         }
+        const response = await batchDeleteCompetitorVariantGroups({
+          groupIds,
+          asinIds,
+        });
+        const result = response?.data || {};
         hide();
-        message.success('删除成功，即将刷新');
+
+        if (result.mode === 'async' && result.taskId) {
+          Modal.confirm({
+            title: '批量删除任务已创建',
+            content: '删除将在后台执行，页面关闭或刷新不会中断任务。',
+            okText: '任务中心',
+            cancelText: '留在当前页',
+            onOk: () => history.push('/tasks'),
+          });
+          void waitForTaskResult(result.taskId, {
+            timeoutMs: 60 * 60 * 1000,
+          })
+            .then(() => {
+              message.success('批量删除任务已完成');
+              requestCacheRef.current.clear();
+              actionRef.current?.reload();
+            })
+            .catch((error: any) => {
+              message.error(error?.message || '批量删除任务失败');
+            });
+          return true;
+        }
+
+        const deletedGroupCount = Number(result.deletedGroupCount || 0);
+        const deletedDirectAsinCount = Number(
+          result.deletedDirectAsinCount || 0,
+        );
+        const deletedNestedAsinCount = Number(
+          result.deletedNestedAsinCount || 0,
+        );
+        message.success(
+          `删除成功：变体组 ${deletedGroupCount} 个，ASIN ${
+            deletedDirectAsinCount + deletedNestedAsinCount
+          } 个，即将刷新`,
+        );
         // 清除缓存
         requestCacheRef.current.clear();
         // 刷新表格

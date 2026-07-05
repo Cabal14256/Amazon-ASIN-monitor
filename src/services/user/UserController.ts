@@ -65,6 +65,23 @@ export async function deleteUser(
   });
 }
 
+/** 批量删除用户 POST /api/v1/users/batch-delete */
+export async function batchDeleteUsers(
+  body: {
+    userIds: string[];
+  },
+  options?: { [key: string]: any },
+) {
+  return request<API.Result_any_>('/api/v1/users/batch-delete', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+    },
+    data: body,
+    ...(options || {}),
+  });
+}
+
 /** 修改用户密码 PUT /api/v1/users/:userId/password */
 export async function updateUserPassword(
   userId: string,

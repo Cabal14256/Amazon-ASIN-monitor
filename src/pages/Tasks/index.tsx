@@ -65,6 +65,10 @@ type StructuredTaskResult = {
   missingCount?: number;
   errors?: Array<{ row?: number; message?: string }>;
   failedSamples?: Array<{ groupId?: string; error?: string }>;
+  deletedGroupCount?: number;
+  deletedDirectAsinCount?: number;
+  deletedNestedAsinCount?: number;
+  skippedCount?: number;
   healthCheck?: {
     passed?: boolean;
     checkedAt?: string;
@@ -182,6 +186,14 @@ function getResultSummary(task: TaskRecord) {
   }
   if (task.taskType === 'batch-check') {
     return `成功 ${result.successCount || 0}，失败 ${result.failedCount || 0}`;
+  }
+  if (task.taskType === 'batch-delete') {
+    const deletedAsinCount =
+      Number(result.deletedDirectAsinCount || 0) +
+      Number(result.deletedNestedAsinCount || 0);
+    return `删除变体组 ${
+      result.deletedGroupCount || 0
+    }，ASIN ${deletedAsinCount}，跳过 ${result.skippedCount || 0}`;
   }
   if (task.taskType === 'backup') {
     return result.filename || result.message || '任务已完成';

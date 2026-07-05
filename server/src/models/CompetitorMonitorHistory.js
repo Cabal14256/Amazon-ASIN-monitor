@@ -80,9 +80,9 @@ class CompetitorMonitorHistory {
     let sql = `
       SELECT 
         mh.*,
-        vg.name as variant_group_name,
-        a.asin,
-        a.name as asin_name,
+        COALESCE(mh.variant_group_name, vg.name) as variant_group_name,
+        COALESCE(mh.asin_code, a.asin) as asin,
+        COALESCE(mh.asin_name, a.name) as asin_name,
         parent_asin.parent_asin
       FROM competitor_monitor_history mh
       LEFT JOIN competitor_variant_groups vg ON vg.id = mh.variant_group_id
@@ -109,7 +109,7 @@ class CompetitorMonitorHistory {
     }
 
     if (asin) {
-      sql += ` AND a.asin LIKE ?`;
+      sql += ` AND COALESCE(mh.asin_code, a.asin) LIKE ?`;
       conditions.push(`%${asin}%`);
     }
 
@@ -192,9 +192,9 @@ class CompetitorMonitorHistory {
     const [history] = await query(
       `SELECT 
         mh.*,
-        vg.name as variant_group_name,
-        a.asin,
-        a.name as asin_name,
+        COALESCE(mh.variant_group_name, vg.name) as variant_group_name,
+        COALESCE(mh.asin_code, a.asin) as asin,
+        COALESCE(mh.asin_name, a.name) as asin_name,
         parent_asin.parent_asin
       FROM competitor_monitor_history mh
       LEFT JOIN competitor_variant_groups vg ON vg.id = mh.variant_group_id
@@ -233,7 +233,10 @@ class CompetitorMonitorHistory {
   static async create(data) {
     const {
       variantGroupId,
+      variantGroupName = null,
       asinId,
+      asinCode = null,
+      asinName = null,
       checkType = 'GROUP',
       country,
       isBroken = 0,
@@ -244,13 +247,16 @@ class CompetitorMonitorHistory {
 
     const sql = `
       INSERT INTO competitor_monitor_history 
-      (variant_group_id, asin_id, check_type, country, is_broken, check_result, check_time, notification_sent)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+      (variant_group_id, variant_group_name, asin_id, asin_code, asin_name, check_type, country, is_broken, check_result, check_time, notification_sent)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `;
 
     const result = await query(sql, [
       variantGroupId || null,
+      variantGroupName || null,
       asinId || null,
+      asinCode || null,
+      asinName || null,
       checkType,
       country,
       isBroken ? 1 : 0,
@@ -272,10 +278,13 @@ class CompetitorMonitorHistory {
     const placeholders = [];
     const values = [];
     for (const entry of entries) {
-      placeholders.push('(?, ?, ?, ?, ?, ?, ?, ?)');
+      placeholders.push('(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)');
       values.push(
         entry.variantGroupId || null,
+        entry.variantGroupName || null,
         entry.asinId || null,
+        entry.asinCode || null,
+        entry.asinName || null,
         entry.checkType || 'GROUP',
         entry.country || null,
         entry.isBroken ? 1 : 0,
@@ -287,7 +296,7 @@ class CompetitorMonitorHistory {
 
     const sql = `
       INSERT INTO competitor_monitor_history 
-      (variant_group_id, asin_id, check_type, country, is_broken, check_result, check_time, notification_sent)
+      (variant_group_id, variant_group_name, asin_id, asin_code, asin_name, check_type, country, is_broken, check_result, check_time, notification_sent)
       VALUES ${placeholders.join(', ')}
     `;
 

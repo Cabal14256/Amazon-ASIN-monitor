@@ -295,6 +295,7 @@ async function checkCompetitorVariantGroup(
       const checkTime = new Date();
       await CompetitorMonitorHistory.create({
         variantGroupId,
+        variantGroupName: groupSnapshot.name,
         checkType: 'GROUP',
         country: groupSnapshot.country,
         isBroken: isBroken ? 1 : 0,
@@ -306,6 +307,9 @@ async function checkCompetitorVariantGroup(
         const asinHistoryEntries = groupSnapshot.children.map((asinInfo) => ({
           asinId: asinInfo.id,
           variantGroupId,
+          variantGroupName: groupSnapshot.name,
+          asinCode: asinInfo.asin,
+          asinName: asinInfo.name,
           checkType: 'ASIN',
           country: asinInfo.country,
           isBroken: asinInfo.isBroken === 1 ? 1 : 0,
@@ -361,9 +365,13 @@ async function checkSingleCompetitorASIN(asinId, forceRefresh = false) {
     await CompetitorASIN.updateVariantStatusAndCheckTime(asinId, isBroken);
 
     // 如果ASIN属于某个变体组，同步更新变体组状态
+    let variantGroupName = null;
     if (asin.variantGroupId) {
       // 重新查询变体组，获取所有ASIN的最新状态
       const group = await CompetitorVariantGroup.findById(asin.variantGroupId);
+      if (group) {
+        variantGroupName = group.name || null;
+      }
       if (group && group.children && group.children.length > 0) {
         // 检查变体组中是否有任何ASIN异常
         const hasBrokenASIN = group.children.some(
@@ -382,6 +390,9 @@ async function checkSingleCompetitorASIN(asinId, forceRefresh = false) {
     await CompetitorMonitorHistory.create({
       asinId,
       variantGroupId: asin.variantGroupId,
+      variantGroupName,
+      asinCode: asin.asin,
+      asinName: asin.name,
       checkType: 'ASIN',
       country: asin.country,
       isBroken: isBroken ? 1 : 0,

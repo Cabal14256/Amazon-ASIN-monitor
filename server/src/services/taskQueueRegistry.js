@@ -1,12 +1,14 @@
 const exportTaskQueue = require('./exportTaskQueue');
 const importTaskQueue = require('./importTaskQueue');
 const batchCheckTaskQueue = require('./batchCheckTaskQueue');
+const batchDeleteTaskQueue = require('./batchDeleteTaskQueue');
 const backupTaskQueue = require('./backupTaskQueue');
 
 const TASK_QUEUE_MAP = {
   export: exportTaskQueue,
   import: importTaskQueue,
   'batch-check': batchCheckTaskQueue,
+  'batch-delete': batchDeleteTaskQueue,
   backup: backupTaskQueue,
 };
 

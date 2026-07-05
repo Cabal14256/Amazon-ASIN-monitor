@@ -15,7 +15,7 @@ import PermissionTab from './components/PermissionTab';
 import RoleTab from './components/RoleTab';
 import UserForm from './components/UserForm';
 
-const { getUserList, deleteUser } = services.UserController;
+const { batchDeleteUsers, getUserList } = services.UserController;
 
 const USER_STATUS_META: Record<
   API.UserStatus,
@@ -61,7 +61,10 @@ const UserManagement: React.FC<unknown> = () => {
               key: 'permissions',
             }
           : null,
-      ].filter(Boolean) as { tab: string; key: 'users' | 'roles' | 'permissions' }[],
+      ].filter(Boolean) as {
+        tab: string;
+        key: 'users' | 'roles' | 'permissions';
+      }[],
     [access.canReadRole, access.canReadUser],
   );
 
@@ -75,15 +78,30 @@ const UserManagement: React.FC<unknown> = () => {
    * 删除用户
    */
   const handleRemove = async (selectedRows: API.UserInfo[]) => {
-    const hide = message.loading('正在删除');
     if (!selectedRows || selectedRows.length === 0) return true;
+    const hide = message.loading('正在删除');
     try {
-      for (const row of selectedRows) {
-        await deleteUser(row.id || '');
-      }
+      const response = await batchDeleteUsers({
+        userIds: selectedRows.map((row) => row.id || '').filter(Boolean),
+      });
+      const result = response?.data || response;
+      const deletedCount = Number(result?.deletedCount || 0);
+      const skippedCount = Array.isArray(result?.skipped)
+        ? result.skipped.length
+        : 0;
+      const failedCount = Array.isArray(result?.failed)
+        ? result.failed.length
+        : 0;
+
       hide();
-      message.success('删除成功，即将刷新');
-      return true;
+      if (failedCount > 0 || skippedCount > 0) {
+        message.warning(
+          `删除完成：成功 ${deletedCount} 个，跳过 ${skippedCount} 个，失败 ${failedCount} 个`,
+        );
+      } else {
+        message.success('删除成功，即将刷新');
+      }
+      return deletedCount > 0;
     } catch (error: any) {
       hide();
       message.error(error?.errorMessage || '删除失败，请重试');
@@ -116,8 +134,13 @@ const UserManagement: React.FC<unknown> = () => {
         {} as Record<string, { text: string }>,
       ),
       render: (_: any, record: API.UserInfo) => (
-        <Tag color={USER_STATUS_META[record.status || 'INACTIVE']?.color || 'default'}>
-          {USER_STATUS_META[record.status || 'INACTIVE']?.label || record.status}
+        <Tag
+          color={
+            USER_STATUS_META[record.status || 'INACTIVE']?.color || 'default'
+          }
+        >
+          {USER_STATUS_META[record.status || 'INACTIVE']?.label ||
+            record.status}
         </Tag>
       ),
     },

@@ -586,7 +586,7 @@ class VariantGroup {
   }
 
   // 创建变体组
-  static async create(data) {
+  static async create(data, options = {}) {
     const id = uuidv4();
     const { name, country, site, brand } = data;
     await query(
@@ -594,7 +594,9 @@ class VariantGroup {
        VALUES (?, ?, ?, ?, ?, 0, 'NORMAL')`,
       [id, name, country, site, brand],
     );
-    this.clearCache();
+    if (options.clearCache !== false) {
+      this.clearCache();
+    }
     return this.findById(id);
   }
 

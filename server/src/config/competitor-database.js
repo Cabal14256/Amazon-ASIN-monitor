@@ -44,6 +44,9 @@ const COMPATIBILITY_COLUMNS = new Set([
   'update_time',
   'last_check_time',
   'notification_sent',
+  'variant_group_name',
+  'asin_code',
+  'asin_name',
   'enabled',
 ]);
 

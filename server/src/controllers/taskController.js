@@ -3,6 +3,7 @@ const taskRegistryService = require('../services/taskRegistryService');
 const { getQueueByTaskType } = require('../services/taskQueueRegistry');
 const exportTaskQueue = require('../services/exportTaskQueue');
 const batchCheckTaskQueue = require('../services/batchCheckTaskQueue');
+const batchDeleteTaskQueue = require('../services/batchDeleteTaskQueue');
 const importTaskQueue = require('../services/importTaskQueue');
 const backupTaskQueue = require('../services/backupTaskQueue');
 const variantCheckTaskQueue = require('../services/variantCheckTaskQueue');
@@ -18,6 +19,10 @@ async function findTaskFromQueues(taskId) {
     {
       taskType: 'batch-check',
       resolver: () => batchCheckTaskQueue.getJobState(taskId),
+    },
+    {
+      taskType: 'batch-delete',
+      resolver: () => batchDeleteTaskQueue.getJobState(taskId),
     },
     { taskType: 'import', resolver: () => importTaskQueue.getJobState(taskId) },
     { taskType: 'backup', resolver: () => backupTaskQueue.getJobState(taskId) },

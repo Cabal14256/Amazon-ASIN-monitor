@@ -2,11 +2,10 @@ const path = require('path');
 const { Worker } = require('worker_threads');
 const logger = require('../utils/logger');
 const VariantGroup = require('../models/VariantGroup');
-const ASIN = require('../models/ASIN');
 const CompetitorVariantGroup = require('../models/CompetitorVariantGroup');
-const CompetitorASIN = require('../models/CompetitorASIN');
 const { parseImportFile } = require('./importParserService');
 const { isTaskCancelledError } = require('./taskCancellationService');
+const { batchCreateASINs } = require('./asinBatchCreateService');
 
 const IMPORT_PARSE_WORKER_SCRIPT = path.join(
   __dirname,
@@ -188,11 +187,9 @@ async function importFromFile(file, options = {}) {
   const models = isCompetitor
     ? {
         VariantGroupModel: CompetitorVariantGroup,
-        ASINModel: CompetitorASIN,
       }
     : {
         VariantGroupModel: VariantGroup,
-        ASINModel: ASIN,
       };
 
   await runOptionalHook(checkCancelled, '导入任务已取消');
@@ -230,7 +227,9 @@ async function importFromFile(file, options = {}) {
   await runOptionalHook(onProgress, 55, '正在写入数据库...');
 
   let successCount = 0;
-  let failedCount = 0;
+  let failedCount = errors.length;
+  let cacheDirty = false;
+  const itemsToCreate = [];
 
   for (let groupIndex = 0; groupIndex < groupedItems.length; groupIndex += 1) {
     const groupData = groupedItems[groupIndex];
@@ -261,20 +260,28 @@ async function importFromFile(file, options = {}) {
       if (existingGroup) {
         groupId = existingGroup.id;
       } else if (isCompetitor) {
-        const newGroup = await models.VariantGroupModel.create({
-          name: groupData.name,
-          country: groupData.country,
-          brand: groupData.brand,
-        });
+        const newGroup = await models.VariantGroupModel.create(
+          {
+            name: groupData.name,
+            country: groupData.country,
+            brand: groupData.brand,
+          },
+          { clearCache: false },
+        );
         groupId = newGroup.id;
+        cacheDirty = true;
       } else {
-        const newGroup = await models.VariantGroupModel.create({
-          name: groupData.name,
-          country: groupData.country,
-          site: groupData.site,
-          brand: groupData.brand,
-        });
+        const newGroup = await models.VariantGroupModel.create(
+          {
+            name: groupData.name,
+            country: groupData.country,
+            site: groupData.site,
+            brand: groupData.brand,
+          },
+          { clearCache: false },
+        );
         groupId = newGroup.id;
+        cacheDirty = true;
       }
 
       for (
@@ -287,51 +294,26 @@ async function importFromFile(file, options = {}) {
           `导入任务已取消（在处理 ${asinData.asin} 前停止）`,
         );
 
-        try {
-          const existingASIN = await models.ASINModel.findByASIN(
-            asinData.asin,
-            groupData.country,
-          );
-          await maybeCheckCancelled(
-            `导入任务已取消（在处理 ${asinData.asin} 时停止）`,
-          );
-          if (existingASIN) {
-            failedCount += 1;
-            errors.push({
-              row: 0,
-              message: `ASIN ${asinData.asin} 在国家 ${groupData.country} 中已存在，跳过`,
-            });
-            continue;
-          }
-
-          const payload = isCompetitor
+        itemsToCreate.push(
+          isCompetitor
             ? {
                 asin: asinData.asin,
                 name: asinData.name,
                 country: groupData.country,
-                brand: asinData.brand,
-                variantGroupId: groupId,
+                brand: asinData.brand || groupData.brand,
+                parentId: groupId,
                 asinType: asinData.asinType,
               }
             : {
                 asin: asinData.asin,
                 name: asinData.name,
                 country: groupData.country,
-                site: asinData.site,
-                brand: asinData.brand,
-                variantGroupId: groupId,
+                site: asinData.site || groupData.site,
+                brand: asinData.brand || groupData.brand,
+                parentId: groupId,
                 asinType: asinData.asinType,
-              };
-
-          await models.ASINModel.create(payload);
-          successCount += 1;
-        } catch (error) {
-          failedCount += 1;
-          errors.push({
-            row: 0,
-            message: `创建ASIN ${asinData.asin} 失败: ${error.message}`,
-          });
-        }
+              },
+        );
       }
     } catch (error) {
       failedCount += groupData.asins.length;
@@ -340,6 +322,41 @@ async function importFromFile(file, options = {}) {
         message: `创建变体组 ${groupData.name} (${groupData.country}) 失败: ${error.message}`,
       });
     }
+  }
+
+  await maybeCheckCancelled('导入任务已取消（在批量写入ASIN前停止）');
+
+  if (itemsToCreate.length > 0) {
+    await runOptionalHook(onProgress, 90, '正在批量写入ASIN...');
+    const writeStartedAt = Date.now();
+    const batchResult = await batchCreateASINs({
+      domain: isCompetitor ? 'competitor' : 'asin',
+      items: itemsToCreate,
+      clearCache: false,
+    });
+
+    successCount += batchResult.successCount;
+    failedCount += batchResult.failedCount;
+    cacheDirty = cacheDirty || batchResult.successCount > 0;
+
+    for (const error of batchResult.errors || []) {
+      errors.push({
+        row: 0,
+        message: `创建ASIN ${error.asin || ''} 失败: ${error.message}`,
+      });
+    }
+
+    logger.info('[导入服务] 批量写入ASIN完成', {
+      mode,
+      total: batchResult.total,
+      successCount: batchResult.successCount,
+      failedCount: batchResult.failedCount,
+      durationMs: Date.now() - writeStartedAt,
+    });
+  }
+
+  if (cacheDirty) {
+    models.VariantGroupModel.clearCache();
   }
 
   const total = Number(totalDataRows) || 0;

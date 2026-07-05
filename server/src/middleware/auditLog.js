@@ -52,7 +52,10 @@ async function auditLogMiddleware(req, res, next) {
     resource = 'auth';
   } else if (path.includes('/variant-groups')) {
     resource = 'variant_group';
-    if (method === 'POST') {
+    if (path.includes('/batch-delete') && method === 'POST') {
+      action = 'BATCH_DELETE';
+      resourceName = '批量删除变体组';
+    } else if (method === 'POST') {
       action = 'CREATE';
       resourceName = req.body?.name || null;
       resourceId = req.body?.id || null;
@@ -72,7 +75,10 @@ async function auditLogMiddleware(req, res, next) {
     // GET请求不记录（只读操作）
   } else if (path.includes('/asins')) {
     resource = 'asin';
-    if (method === 'POST') {
+    if (path.includes('/batch-create') && method === 'POST') {
+      action = 'BATCH_CREATE';
+      resourceName = '批量新增ASIN';
+    } else if (method === 'POST') {
       action = 'CREATE';
       resourceName = req.body?.asin || null;
       resourceId = req.body?.id || null;
@@ -92,7 +98,10 @@ async function auditLogMiddleware(req, res, next) {
     // GET请求不记录（只读操作）
   } else if (path.includes('/users')) {
     resource = 'user';
-    if (path.includes('/password') && method === 'PUT') {
+    if (path.includes('/batch-delete') && method === 'POST') {
+      action = 'BATCH_DELETE';
+      resourceName = '批量删除用户';
+    } else if (path.includes('/password') && method === 'PUT') {
       action = 'RESET_PASSWORD';
       resourceId = req.params?.userId || null;
       resourceName = req.body?.username || null;

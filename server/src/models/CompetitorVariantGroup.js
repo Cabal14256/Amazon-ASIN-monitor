@@ -463,7 +463,7 @@ class CompetitorVariantGroup {
   }
 
   // 创建变体组
-  static async create(data) {
+  static async create(data, options = {}) {
     const id = uuidv4();
     const { name, brand } = data;
     const country = normalizeCountryCode(data.country);
@@ -472,7 +472,9 @@ class CompetitorVariantGroup {
        VALUES (?, ?, ?, ?, 0, 'NORMAL', 0)`,
       [id, name, country, brand],
     );
-    this.clearCache();
+    if (options.clearCache !== false) {
+      this.clearCache();
+    }
     return this.findById(id);
   }
 
