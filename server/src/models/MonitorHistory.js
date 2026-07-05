@@ -949,6 +949,152 @@ function finalizeDurationMetrics(accumulator) {
   };
 }
 
+function normalizeSqlDurationMetricRow(row = {}, extra = {}) {
+  const totalDurationHours = Number(row.totalDurationHours || 0);
+  const abnormalDurationHours = Number(row.abnormalDurationHours || 0);
+  const normalDurationHours = Number(row.normalDurationHours || 0);
+  const peakDurationHours = Number(row.peakDurationHours || 0);
+  const peakAbnormalDurationHours = Number(row.peakAbnormalDurationHours || 0);
+  const lowDurationHours = Number(row.lowDurationHours || 0);
+  const lowAbnormalDurationHours = Number(row.lowAbnormalDurationHours || 0);
+  const ratioAllAsin = Number(row.ratioAllAsin || 0);
+  const ratioAllTime = Number(row.ratioAllTime || 0);
+  const globalPeakRate = Number(row.globalPeakRate || 0);
+  const globalLowRate = Number(row.globalLowRate || 0);
+  const ratioHigh = Number(row.ratioHigh || 0);
+  const ratioLow = Number(row.ratioLow || 0);
+  const totalChecks = Number(row.totalChecks || 0);
+  const brokenCount = Number(row.brokenCount || 0);
+  const totalAsinsDedup = Number(row.totalAsinsDedup || 0);
+  const brokenAsinsDedup = Number(row.brokenAsinsDedup || 0);
+
+  return {
+    ...extra,
+    totalDurationHours,
+    abnormalDurationHours,
+    normalDurationHours,
+    peakDurationHours,
+    peakAbnormalDurationHours,
+    lowDurationHours,
+    lowAbnormalDurationHours,
+    ratioAllAsin,
+    ratioAllTime,
+    globalPeakRate,
+    globalLowRate,
+    ratioHigh,
+    ratioLow,
+    totalChecks,
+    brokenCount,
+    totalAsinsDedup,
+    brokenAsinsDedup,
+    ratio_all_asin: ratioAllAsin,
+    ratio_all_time: ratioAllTime,
+    total_asins_dedup: totalAsinsDedup,
+    broken_asins_dedup: brokenAsinsDedup,
+  };
+}
+
+function getAggTargetPeriodSqlExpr(targetGranularity = 'day', alias = 'agg') {
+  if (targetGranularity === 'hour') {
+    return `DATE_FORMAT(${alias}.time_slot, '%Y-%m-%d %H:00:00')`;
+  }
+  if (targetGranularity === 'week') {
+    return `CONCAT(SUBSTRING(YEARWEEK(${alias}.time_slot, 3), 1, 4), '-', LPAD(SUBSTRING(YEARWEEK(${alias}.time_slot, 3), 5), 2, '0'))`;
+  }
+  if (targetGranularity === 'month') {
+    return `DATE_FORMAT(${alias}.time_slot, '%Y-%m')`;
+  }
+  return `DATE_FORMAT(${alias}.time_slot, '%Y-%m-%d')`;
+}
+
+function getAggSlotEndSqlExpr(sourceGranularity = 'hour', alias = 'agg') {
+  if (sourceGranularity === 'month') {
+    return `DATE_ADD(${alias}.time_slot, INTERVAL 1 MONTH)`;
+  }
+  if (sourceGranularity === 'day') {
+    return `DATE_ADD(${alias}.time_slot, INTERVAL 1 DAY)`;
+  }
+  return `DATE_ADD(${alias}.time_slot, INTERVAL 1 HOUR)`;
+}
+
+function getAggBucketHoursSqlExpr(sourceGranularity = 'hour', alias = 'agg') {
+  const slotEndExpr = getAggSlotEndSqlExpr(sourceGranularity, alias);
+  return `GREATEST(
+    0,
+    TIMESTAMPDIFF(
+      SECOND,
+      GREATEST(${alias}.time_slot, CAST(? AS DATETIME)),
+      LEAST(${slotEndExpr}, CAST(? AS DATETIME))
+    ) / 3600
+  )`;
+}
+
+function getDurationMetricsSqlSelect(prefix = '') {
+  const qualifier = prefix ? `${prefix}.` : '';
+  return `
+    ROUND(SUM(${qualifier}total_duration_hours), 4) as totalDurationHours,
+    ROUND(SUM(${qualifier}abnormal_duration_hours), 4) as abnormalDurationHours,
+    ROUND(SUM(${qualifier}total_duration_hours) - SUM(${qualifier}abnormal_duration_hours), 4) as normalDurationHours,
+    ROUND(SUM(${qualifier}peak_duration_hours), 4) as peakDurationHours,
+    ROUND(SUM(${qualifier}peak_abnormal_duration_hours), 4) as peakAbnormalDurationHours,
+    ROUND(SUM(${qualifier}low_duration_hours), 4) as lowDurationHours,
+    ROUND(SUM(${qualifier}low_abnormal_duration_hours), 4) as lowAbnormalDurationHours,
+    ROUND(
+      COALESCE(AVG(CASE WHEN ${qualifier}total_duration_hours > 0 THEN ${qualifier}abnormal_duration_hours / ${qualifier}total_duration_hours ELSE NULL END), 0) * 100,
+      4
+    ) as ratioAllAsin,
+    ROUND(
+      CASE WHEN SUM(${qualifier}total_duration_hours) > 0 THEN SUM(${qualifier}abnormal_duration_hours) / SUM(${qualifier}total_duration_hours) * 100 ELSE 0 END,
+      4
+    ) as ratioAllTime,
+    ROUND(
+      CASE WHEN SUM(${qualifier}total_duration_hours) > 0 THEN SUM(${qualifier}peak_abnormal_duration_hours) / SUM(${qualifier}total_duration_hours) * 100 ELSE 0 END,
+      4
+    ) as globalPeakRate,
+    ROUND(
+      CASE WHEN SUM(${qualifier}total_duration_hours) > 0 THEN SUM(${qualifier}low_abnormal_duration_hours) / SUM(${qualifier}total_duration_hours) * 100 ELSE 0 END,
+      4
+    ) as globalLowRate,
+    ROUND(
+      CASE WHEN SUM(${qualifier}peak_duration_hours) > 0 THEN SUM(${qualifier}peak_abnormal_duration_hours) / SUM(${qualifier}peak_duration_hours) * 100 ELSE 0 END,
+      4
+    ) as ratioHigh,
+    ROUND(
+      CASE WHEN SUM(${qualifier}low_duration_hours) > 0 THEN SUM(${qualifier}low_abnormal_duration_hours) / SUM(${qualifier}low_duration_hours) * 100 ELSE 0 END,
+      4
+    ) as ratioLow,
+    SUM(${qualifier}total_checks) as totalChecks,
+    SUM(${qualifier}broken_count) as brokenCount,
+    COUNT(*) as totalAsinsDedup,
+    SUM(CASE WHEN ${qualifier}abnormal_duration_hours > 0 THEN 1 ELSE 0 END) as brokenAsinsDedup
+  `;
+}
+
+function getAggDurationCtesSql(baseSql) {
+  return `
+    WITH base AS (
+      ${baseSql}
+    ),
+    asin_metrics AS (
+      SELECT
+        base.group_key,
+        base.group_label,
+        base.asin_key,
+        SUM(base.bucket_hours) as total_duration_hours,
+        SUM(base.bucket_hours * CASE WHEN base.check_count > 0 THEN base.broken_count / base.check_count ELSE 0 END) as abnormal_duration_hours,
+        SUM(CASE WHEN base.has_peak = 1 THEN base.bucket_hours ELSE 0 END) as peak_duration_hours,
+        SUM(CASE WHEN base.has_peak = 1 THEN base.bucket_hours * CASE WHEN base.check_count > 0 THEN base.broken_count / base.check_count ELSE 0 END ELSE 0 END) as peak_abnormal_duration_hours,
+        SUM(CASE WHEN base.has_peak = 0 THEN base.bucket_hours ELSE 0 END) as low_duration_hours,
+        SUM(CASE WHEN base.has_peak = 0 THEN base.bucket_hours * CASE WHEN base.check_count > 0 THEN base.broken_count / base.check_count ELSE 0 END ELSE 0 END) as low_abnormal_duration_hours,
+        SUM(base.check_count) as total_checks,
+        SUM(base.broken_count) as broken_count
+      FROM base
+      WHERE base.bucket_hours > 0
+      GROUP BY base.group_key, base.group_label, base.asin_key
+    )
+  `;
+}
+
 function getHistoryCheckResultLength(entry = {}) {
   if (!entry || entry.checkResult === undefined || entry.checkResult === null) {
     return 0;
@@ -1499,16 +1645,43 @@ class MonitorHistory {
       startTime,
       endTime,
     );
-    const sourceConfig =
-      MonitorHistory.getDurationSourceConfig(sourceGranularity);
-    const queryStartDate = parseDateTimeInput(startTime);
-    const queryEndDate = parseDateTimeInput(endTime);
-    const isPeakCase = MonitorHistory.getPeakHourCase(
-      'mh.country',
-      'mh.check_time',
-    );
+    let durationMetrics = null;
+    const canUseAggDuration =
+      !variantGroupId &&
+      !asinId &&
+      (checkType === 'ASIN' || !checkType) &&
+      process.env.ANALYTICS_AGG_ENABLED !== '0' &&
+      MonitorHistory.canUseAggForRange(sourceGranularity, startTime, endTime);
 
-    let durationSql = `
+    if (canUseAggDuration) {
+      try {
+        durationMetrics = await MonitorHistory.getAllCountriesSummaryFromAgg({
+          country,
+          startTime,
+          endTime,
+          timeSlotGranularity: 'day',
+          sourceGranularity,
+        });
+      } catch (error) {
+        logger.warn(
+          '[统计查询] getStatistics 聚合表时长汇总失败，回退原始表',
+          error?.message || error,
+        );
+        durationMetrics = null;
+      }
+    }
+
+    if (!durationMetrics) {
+      const sourceConfig =
+        MonitorHistory.getDurationSourceConfig(sourceGranularity);
+      const queryStartDate = parseDateTimeInput(startTime);
+      const queryEndDate = parseDateTimeInput(endTime);
+      const isPeakCase = MonitorHistory.getPeakHourCase(
+        'mh.country',
+        'mh.check_time',
+      );
+
+      let durationSql = `
       SELECT
         DATE_FORMAT(${sourceConfig.rawSlotExpr}, '${sourceConfig.rawSlotFormat}') as slot_period,
         mh.country,
@@ -1519,61 +1692,63 @@ class MonitorHistory {
       FROM monitor_history mh
       WHERE 1=1
     `;
-    const durationConditions = [];
+      const durationConditions = [];
 
-    if (variantGroupId) {
-      durationSql += ` AND mh.variant_group_id = ?`;
-      durationConditions.push(variantGroupId);
-    }
-
-    if (asinId) {
-      durationSql += ` AND mh.asin_id = ?`;
-      durationConditions.push(asinId);
-    }
-
-    if (country) {
-      if (country === 'EU') {
-        durationSql += ` AND mh.country IN ('UK', 'DE', 'FR', 'IT', 'ES')`;
-      } else {
-        durationSql += ` AND mh.country = ?`;
-        durationConditions.push(country);
+      if (variantGroupId) {
+        durationSql += ` AND mh.variant_group_id = ?`;
+        durationConditions.push(variantGroupId);
       }
-    }
 
-    if (startTime) {
-      durationSql += ` AND mh.check_time >= ?`;
-      durationConditions.push(startTime);
-    }
+      if (asinId) {
+        durationSql += ` AND mh.asin_id = ?`;
+        durationConditions.push(asinId);
+      }
 
-    if (endTime) {
-      durationSql += ` AND mh.check_time <= ?`;
-      durationConditions.push(endTime);
-    }
+      if (country) {
+        if (country === 'EU') {
+          durationSql += ` AND mh.country IN ('UK', 'DE', 'FR', 'IT', 'ES')`;
+        } else {
+          durationSql += ` AND mh.country = ?`;
+          durationConditions.push(country);
+        }
+      }
 
-    durationSql += ` AND ${MonitorHistory.getAnalyticsAsinHistoryFilter(
-      'mh.check_type',
-      'mh.asin_id',
-      'mh.asin_code',
-    )}`;
-    durationSql += `
+      if (startTime) {
+        durationSql += ` AND mh.check_time >= ?`;
+        durationConditions.push(startTime);
+      }
+
+      if (endTime) {
+        durationSql += ` AND mh.check_time <= ?`;
+        durationConditions.push(endTime);
+      }
+
+      durationSql += ` AND ${MonitorHistory.getAnalyticsAsinHistoryFilter(
+        'mh.check_type',
+        'mh.asin_id',
+        'mh.asin_code',
+      )}`;
+      durationSql += `
       GROUP BY
         ${sourceConfig.rawSlotExpr},
         mh.country,
         COALESCE(NULLIF(mh.asin_code, ''), CONCAT('ID#', mh.asin_id))
     `;
 
-    const durationRows = await query(durationSql, durationConditions);
-    const [durationMetrics = {}] = MonitorHistory.buildDurationRowsByGroup(
-      durationRows,
-      {
-        sourceGranularity,
-        targetGranularity: sourceGranularity,
-        queryStartDate,
-        queryEndDate,
-        buildGroupKey: () => 'overall',
-        buildGroupMeta: () => ({}),
-      },
-    );
+      const durationRows = await query(durationSql, durationConditions);
+      const [rawDurationMetrics = {}] = MonitorHistory.buildDurationRowsByGroup(
+        durationRows,
+        {
+          sourceGranularity,
+          targetGranularity: sourceGranularity,
+          queryStartDate,
+          queryEndDate,
+          buildGroupKey: () => 'overall',
+          buildGroupMeta: () => ({}),
+        },
+      );
+      durationMetrics = rawDurationMetrics;
+    }
 
     return {
       ...response,
@@ -1962,201 +2137,6 @@ class MonitorHistory {
     return await query(sql, conditions);
   }
 
-  static async getVariantGroupDurationSourceRowsFromAgg(params = {}) {
-    const {
-      startTime = '',
-      endTime = '',
-      sourceGranularity = 'day',
-      country = '',
-    } = params;
-    const config = MonitorHistory.getDurationSourceConfig(sourceGranularity);
-    const aggTable = 'monitor_history_agg_variant_group';
-
-    const isCovered = await MonitorHistory.isAggTableCoveringRange(
-      aggTable,
-      sourceGranularity,
-      startTime,
-      endTime,
-    );
-    if (!isCovered) {
-      throw new Error(`聚合表覆盖不足，回退原始表: ${aggTable}`);
-    }
-
-    let whereClause = 'WHERE agg.granularity = ?';
-    const conditions = [sourceGranularity];
-
-    if (country) {
-      if (country === 'EU') {
-        whereClause += ` AND agg.country IN ('UK', 'DE', 'FR', 'IT', 'ES')`;
-      } else {
-        whereClause += ` AND agg.country = ?`;
-        conditions.push(country);
-      }
-    }
-
-    if (startTime) {
-      whereClause += ` AND agg.time_slot >= DATE_FORMAT(?, '${config.slotWhereFormat}')`;
-      conditions.push(startTime);
-    }
-
-    if (endTime) {
-      whereClause += ` AND agg.time_slot <= DATE_FORMAT(?, '${config.slotWhereFormat}')`;
-      conditions.push(endTime);
-    }
-
-    const sql = `
-      SELECT
-        DATE_FORMAT(agg.time_slot, '${config.aggSlotFormat}') as slot_period,
-        agg.country,
-        agg.variant_group_id,
-        agg.variant_group_name,
-        agg.asin_key,
-        agg.check_count as total_checks,
-        agg.broken_count,
-        agg.has_peak
-      FROM ${aggTable} agg
-      ${whereClause}
-      ORDER BY
-        agg.time_slot ASC,
-        agg.country ASC,
-        agg.variant_group_id ASC,
-        agg.asin_key ASC
-    `;
-
-    return await query(sql, conditions);
-  }
-
-  static async getVariantGroupDurationSourceRowsFromRaw(params = {}) {
-    const {
-      country = '',
-      startTime = '',
-      endTime = '',
-      sourceGranularity = 'day',
-    } = params;
-    const config = MonitorHistory.getDurationSourceConfig(sourceGranularity);
-    const isPeakCase = MonitorHistory.getPeakHourCase(
-      'mh.country',
-      'mh.check_time',
-    );
-
-    let whereClause = 'WHERE mh.variant_group_id IS NOT NULL';
-    const conditions = [];
-
-    if (country) {
-      if (country === 'EU') {
-        whereClause += ` AND mh.country IN ('UK', 'DE', 'FR', 'IT', 'ES')`;
-      } else {
-        whereClause += ` AND mh.country = ?`;
-        conditions.push(country);
-      }
-    }
-
-    if (startTime) {
-      whereClause += ` AND mh.check_time >= ?`;
-      conditions.push(startTime);
-    }
-
-    if (endTime) {
-      whereClause += ` AND mh.check_time <= ?`;
-      conditions.push(endTime);
-    }
-
-    whereClause += ` AND ${MonitorHistory.getAnalyticsAsinHistoryFilter(
-      'mh.check_type',
-      'mh.asin_id',
-      'mh.asin_code',
-    )}`;
-
-    const sql = `
-      SELECT
-        DATE_FORMAT(${config.rawSlotExpr}, '${config.rawSlotFormat}') as slot_period,
-        mh.country,
-        mh.variant_group_id,
-        COALESCE(mh.variant_group_name, vg.name) as variant_group_name,
-        COALESCE(NULLIF(mh.asin_code, ''), CONCAT('ID#', mh.asin_id)) as asin_key,
-        COUNT(*) as total_checks,
-        SUM(CASE WHEN mh.is_broken = 1 THEN 1 ELSE 0 END) as broken_count,
-        MAX(${isPeakCase}) as has_peak
-      FROM monitor_history mh
-      LEFT JOIN variant_groups vg ON vg.id = mh.variant_group_id
-      ${whereClause}
-      AND (mh.asin_id IS NOT NULL OR NULLIF(mh.asin_code, '') IS NOT NULL)
-      GROUP BY
-        ${config.rawSlotExpr},
-        mh.country,
-        mh.variant_group_id,
-        COALESCE(mh.variant_group_name, vg.name),
-        COALESCE(NULLIF(mh.asin_code, ''), CONCAT('ID#', mh.asin_id))
-      ORDER BY ${config.rawSlotExpr} ASC, mh.country ASC
-    `;
-
-    return await query(sql, conditions);
-  }
-
-  static async getStatisticsByTimeFromRaw(params = {}) {
-    const {
-      startTime = '',
-      endTime = '',
-      sourceGranularity = 'hour',
-      country = '',
-    } = params;
-    const config = MonitorHistory.getDurationSourceConfig(sourceGranularity);
-    const aggTable = 'monitor_history_agg_variant_group';
-
-    const isCovered = await MonitorHistory.isAggTableCoveringRange(
-      aggTable,
-      sourceGranularity,
-      startTime,
-      endTime,
-    );
-    if (!isCovered) {
-      throw new Error(`聚合表覆盖不足，回退原始表: ${aggTable}`);
-    }
-
-    let whereClause = 'WHERE agg.granularity = ?';
-    const conditions = [sourceGranularity];
-
-    if (country) {
-      if (country === 'EU') {
-        whereClause += ` AND agg.country IN ('UK', 'DE', 'FR', 'IT', 'ES')`;
-      } else {
-        whereClause += ` AND agg.country = ?`;
-        conditions.push(country);
-      }
-    }
-
-    if (startTime) {
-      whereClause += ` AND agg.time_slot >= DATE_FORMAT(?, '${config.slotWhereFormat}')`;
-      conditions.push(startTime);
-    }
-
-    if (endTime) {
-      whereClause += ` AND agg.time_slot <= DATE_FORMAT(?, '${config.slotWhereFormat}')`;
-      conditions.push(endTime);
-    }
-
-    const sql = `
-      SELECT
-        DATE_FORMAT(agg.time_slot, '${config.aggSlotFormat}') as slot_period,
-        agg.country,
-        agg.variant_group_id,
-        agg.variant_group_name,
-        agg.asin_key,
-        agg.check_count as total_checks,
-        agg.broken_count,
-        agg.has_peak
-      FROM ${aggTable} agg
-      ${whereClause}
-      ORDER BY
-        agg.time_slot ASC,
-        agg.country ASC,
-        agg.variant_group_id ASC,
-        agg.asin_key ASC
-    `;
-
-    return await query(sql, conditions);
-  }
-
   static async getVariantGroupDurationSourceRowsFromRaw(params = {}) {
     const {
       startTime = '',
@@ -2269,31 +2249,81 @@ class MonitorHistory {
     } = params;
     const sourceGranularity =
       MonitorHistory.getRequestedSourceGranularity(params);
-    const queryStartDate = parseDateTimeInput(startTime);
-    const queryEndDate = parseDateTimeInput(endTime);
-    const sourceRows = await MonitorHistory.getDurationSourceRowsFromAgg({
+    const config = MonitorHistory.getDurationSourceConfig(sourceGranularity);
+    const isCovered = await MonitorHistory.isAggTableCoveringRange(
+      'monitor_history_agg',
+      sourceGranularity,
       startTime,
       endTime,
-      sourceGranularity,
-      country,
-    });
+    );
+    if (!isCovered) {
+      throw new Error('聚合表覆盖不足，回退原始表: monitor_history_agg');
+    }
 
-    return MonitorHistory.buildDurationRowsByGroup(sourceRows, {
+    let whereClause = 'WHERE agg.granularity = ?';
+    const conditions = [
+      startTime || '1000-01-01 00:00:00',
+      endTime || '9999-12-31 23:59:59',
       sourceGranularity,
-      targetGranularity: groupBy,
-      queryStartDate,
-      queryEndDate,
-      buildGroupKey: (targetPeriod) => targetPeriod,
-      buildGroupMeta: (targetPeriod) => ({
-        time_period: targetPeriod,
-      }),
-    }).map((item) => ({
-      ...item,
-      total_asins: item.totalAsinsDedup,
-      broken_asins: item.brokenAsinsDedup,
-      asin_broken_rate: item.ratioAllAsin,
-      normal_count: Math.max(0, item.totalChecks - item.brokenCount),
-    }));
+    ];
+
+    if (country) {
+      if (country === 'EU') {
+        whereClause += ` AND agg.country IN ('UK', 'DE', 'FR', 'IT', 'ES')`;
+      } else {
+        whereClause += ' AND agg.country = ?';
+        conditions.push(country);
+      }
+    }
+
+    if (startTime) {
+      whereClause += ` AND agg.time_slot >= DATE_FORMAT(?, '${config.slotWhereFormat}')`;
+      conditions.push(startTime);
+    }
+
+    if (endTime) {
+      whereClause += ` AND agg.time_slot <= DATE_FORMAT(?, '${config.slotWhereFormat}')`;
+      conditions.push(endTime);
+    }
+
+    const targetPeriodExpr = getAggTargetPeriodSqlExpr(groupBy, 'agg');
+    const bucketHoursExpr = getAggBucketHoursSqlExpr(sourceGranularity, 'agg');
+    const baseSql = `
+      SELECT
+        ${targetPeriodExpr} as group_key,
+        ${targetPeriodExpr} as group_label,
+        agg.asin_key,
+        agg.check_count,
+        agg.broken_count,
+        agg.has_peak,
+        ${bucketHoursExpr} as bucket_hours
+      FROM monitor_history_agg agg
+      ${whereClause}
+    `;
+
+    const sql = `
+      ${getAggDurationCtesSql(baseSql)}
+      SELECT
+        asin_metrics.group_label as time_period,
+        ${getDurationMetricsSqlSelect('asin_metrics')}
+      FROM asin_metrics
+      GROUP BY asin_metrics.group_key, asin_metrics.group_label
+      ORDER BY asin_metrics.group_key ASC
+    `;
+    const rows = await query(sql, conditions);
+
+    return rows.map((row) => {
+      const metrics = normalizeSqlDurationMetricRow(row, {
+        time_period: row.time_period,
+      });
+      return {
+        ...metrics,
+        total_asins: metrics.totalAsinsDedup,
+        broken_asins: metrics.brokenAsinsDedup,
+        asin_broken_rate: metrics.ratioAllAsin,
+        normal_count: Math.max(0, metrics.totalChecks - metrics.brokenCount),
+      };
+    });
   }
 
   // 按时间分组统计
@@ -2789,6 +2819,107 @@ class MonitorHistory {
         return false;
       }
     }
+    return true;
+  }
+
+  static async hasVariantGroupHistoryInRange(params = {}) {
+    const { startTime = '', endTime = '', country = '' } = params;
+    let sql = `
+      SELECT 1
+      FROM monitor_history mh
+      WHERE mh.variant_group_id IS NOT NULL
+        AND (mh.asin_id IS NOT NULL OR NULLIF(mh.asin_code, '') IS NOT NULL)
+        AND ${MonitorHistory.getAnalyticsAsinHistoryFilter(
+          'mh.check_type',
+          'mh.asin_id',
+          'mh.asin_code',
+        )}
+    `;
+    const conditions = [];
+
+    if (startTime) {
+      sql += ' AND mh.check_time >= ?';
+      conditions.push(startTime);
+    }
+
+    if (endTime) {
+      sql += ' AND mh.check_time < ?';
+      conditions.push(endTime);
+    }
+
+    if (country) {
+      if (country === 'EU') {
+        sql += ` AND mh.country IN ('UK', 'DE', 'FR', 'IT', 'ES')`;
+      } else {
+        sql += ' AND mh.country = ?';
+        conditions.push(country);
+      }
+    }
+
+    sql += ' LIMIT 1';
+    const rows = await query(sql, conditions);
+    return Array.isArray(rows) && rows.length > 0;
+  }
+
+  static async isVariantGroupAggTableCoveringRange(
+    granularity,
+    startTime = '',
+    endTime = '',
+    country = '',
+  ) {
+    const coverage = await MonitorHistory.getAggRangeCoverage(
+      'monitor_history_agg_variant_group',
+      granularity,
+    );
+    if (!coverage.minSlot || !coverage.maxSlot) {
+      return false;
+    }
+
+    const alignedStart = alignTimeToSlotText(startTime, granularity);
+    const alignedEnd = alignTimeToSlotText(endTime, granularity);
+    let alignedEndForCheck = alignedEnd;
+    if (alignedEnd) {
+      const nowAligned = alignTimeToSlotText(
+        formatDateToSqlText(new Date()),
+        granularity,
+      );
+      if (nowAligned && alignedEndForCheck > nowAligned) {
+        alignedEndForCheck = nowAligned;
+      }
+    }
+
+    if (alignedEndForCheck && coverage.maxSlot < alignedEndForCheck) {
+      const lagToleranceMs =
+        (Number(process.env.ANALYTICS_AGG_ACCEPTABLE_LAG_MINUTES) || 120) *
+        60 *
+        1000;
+      const maxSlotTime = new Date(
+        coverage.maxSlot.replace(' ', 'T'),
+      ).getTime();
+      const endSlotTime = new Date(
+        alignedEndForCheck.replace(' ', 'T'),
+      ).getTime();
+      if (
+        !Number.isFinite(maxSlotTime) ||
+        !Number.isFinite(endSlotTime) ||
+        endSlotTime - maxSlotTime > lagToleranceMs
+      ) {
+        return false;
+      }
+    }
+
+    if (alignedStart && coverage.minSlot > alignedStart) {
+      const hasMissingRawHistory =
+        await MonitorHistory.hasVariantGroupHistoryInRange({
+          startTime,
+          endTime: coverage.minSlot,
+          country,
+        });
+      if (hasMissingRawHistory) {
+        return false;
+      }
+    }
+
     return true;
   }
 
@@ -3358,45 +3489,74 @@ class MonitorHistory {
 
   static async getAllCountriesSummaryFromAgg(params = {}) {
     const {
+      country = '',
       startTime = '',
       endTime = '',
       timeSlotGranularity = 'day',
+      sourceGranularity = timeSlotGranularity,
     } = params;
+    const config = MonitorHistory.getDurationSourceConfig(sourceGranularity);
 
-    const slotWhereFormat =
-      timeSlotGranularity === 'hour'
-        ? '%Y-%m-%d %H:00:00'
-        : '%Y-%m-%d 00:00:00';
+    const isCovered = await MonitorHistory.isAggTableCoveringRange(
+      'monitor_history_agg',
+      sourceGranularity,
+      startTime,
+      endTime,
+    );
+    if (!isCovered) {
+      throw new Error('聚合表覆盖不足，回退原始表: monitor_history_agg');
+    }
 
     let whereClause = 'WHERE granularity = ?';
-    const conditions = [timeSlotGranularity];
+    const conditions = [
+      startTime || '1000-01-01 00:00:00',
+      endTime || '9999-12-31 23:59:59',
+      sourceGranularity,
+    ];
+
+    if (country) {
+      if (country === 'EU') {
+        whereClause += ` AND agg.country IN ('UK', 'DE', 'FR', 'IT', 'ES')`;
+      } else {
+        whereClause += ' AND agg.country = ?';
+        conditions.push(country);
+      }
+    }
 
     if (startTime) {
-      whereClause += ` AND time_slot >= DATE_FORMAT(?, '${slotWhereFormat}')`;
+      whereClause += ` AND time_slot >= DATE_FORMAT(?, '${config.slotWhereFormat}')`;
       conditions.push(startTime);
     }
 
     if (endTime) {
-      whereClause += ` AND time_slot <= DATE_FORMAT(?, '${slotWhereFormat}')`;
+      whereClause += ` AND time_slot <= DATE_FORMAT(?, '${config.slotWhereFormat}')`;
       conditions.push(endTime);
     }
 
-    const sql = `
+    const bucketHoursExpr = getAggBucketHoursSqlExpr(sourceGranularity, 'agg');
+    const baseSql = `
       SELECT
-        SUM(check_count) as total_checks,
-        SUM(broken_count) as broken_count,
-        SUM(CASE WHEN has_peak = 1 THEN check_count ELSE 0 END) as peak_total,
-        SUM(CASE WHEN has_peak = 1 THEN broken_count ELSE 0 END) as peak_broken,
-        SUM(CASE WHEN has_peak = 0 THEN check_count ELSE 0 END) as low_total,
-        SUM(CASE WHEN has_peak = 0 THEN broken_count ELSE 0 END) as low_broken,
-        COUNT(*) as total_asins_dedup,
-        SUM(CASE WHEN has_broken = 1 THEN 1 ELSE 0 END) as broken_asins_dedup
-      FROM monitor_history_agg
+        'ALL' as group_key,
+        'ALL' as group_label,
+        agg.asin_key,
+        agg.check_count,
+        agg.broken_count,
+        agg.has_peak,
+        ${bucketHoursExpr} as bucket_hours
+      FROM monitor_history_agg agg
       ${whereClause}
     `;
 
+    const sql = `
+      ${getAggDurationCtesSql(baseSql)}
+      SELECT
+        ${getDurationMetricsSqlSelect('asin_metrics')}
+      FROM asin_metrics
+      GROUP BY asin_metrics.group_key
+    `;
+
     const [row] = await query(sql, conditions);
-    return row || {};
+    return normalizeSqlDurationMetricRow(row || {});
   }
 
   static async getAllCountriesSummaryFromRaw(params = {}) {
@@ -3497,9 +3657,7 @@ class MonitorHistory {
       startTime,
       endTime,
     );
-    const queryStartDate = parseDateTimeInput(startTime);
-    const queryEndDate = parseDateTimeInput(endTime);
-    let sourceRows = null;
+    let result = null;
     let source = 'raw';
 
     const useAgg =
@@ -3508,9 +3666,10 @@ class MonitorHistory {
 
     if (useAgg) {
       try {
-        sourceRows = await MonitorHistory.getDurationSourceRowsFromAgg({
+        result = await MonitorHistory.getAllCountriesSummaryFromAgg({
           startTime,
           endTime,
+          timeSlotGranularity,
           sourceGranularity,
         });
         logger.info('[统计查询] getAllCountriesSummary 使用聚合表');
@@ -3520,49 +3679,34 @@ class MonitorHistory {
           '[统计查询] getAllCountriesSummary 聚合表读取失败，回退原始表',
           error?.message || error,
         );
-        sourceRows = null;
+        result = null;
       }
     }
 
-    if (!Array.isArray(sourceRows)) {
-      sourceRows = await MonitorHistory.getDurationSourceRowsFromRaw({
+    if (!result) {
+      const sourceRows = await MonitorHistory.getDurationSourceRowsFromRaw({
         startTime,
         endTime,
         sourceGranularity,
       });
       source = 'raw';
+      const [metrics = {}] = MonitorHistory.buildDurationRowsByGroup(
+        sourceRows,
+        {
+          sourceGranularity,
+          targetGranularity: timeSlotGranularity,
+          queryStartDate: parseDateTimeInput(startTime),
+          queryEndDate: parseDateTimeInput(endTime),
+          buildGroupKey: () => 'ALL',
+          buildGroupMeta: () => ({}),
+        },
+      );
+      result = metrics || {};
     }
 
-    const [metrics = {}] = MonitorHistory.buildDurationRowsByGroup(sourceRows, {
-      sourceGranularity,
-      targetGranularity: timeSlotGranularity,
-      queryStartDate,
-      queryEndDate,
-      buildGroupKey: () => 'ALL',
-      buildGroupMeta: () => ({}),
-    });
-
-    const result = {
+    result = {
       timeRange: startTime && endTime ? `${startTime} ~ ${endTime}` : '',
-      ...(metrics || {
-        totalDurationHours: 0,
-        abnormalDurationHours: 0,
-        normalDurationHours: 0,
-        ratioAllAsin: 0,
-        ratioAllTime: 0,
-        globalPeakRate: 0,
-        globalLowRate: 0,
-        ratioHigh: 0,
-        ratioLow: 0,
-        totalChecks: 0,
-        brokenCount: 0,
-        totalAsinsDedup: 0,
-        brokenAsinsDedup: 0,
-        peakDurationHours: 0,
-        peakAbnormalDurationHours: 0,
-        lowDurationHours: 0,
-        lowAbnormalDurationHours: 0,
-      }),
+      ...normalizeSqlDurationMetricRow(result),
     };
 
     const generatedAt = formatDateToSqlText(new Date());
@@ -3584,6 +3728,108 @@ class MonitorHistory {
   }
 
   // 区域汇总统计（美国/欧洲）
+  static async getRegionSummaryFromAgg(params = {}) {
+    const {
+      startTime = '',
+      endTime = '',
+      timeSlotGranularity = 'day',
+      sourceGranularity = timeSlotGranularity,
+    } = params;
+    const config = MonitorHistory.getDurationSourceConfig(sourceGranularity);
+    const isCovered = await MonitorHistory.isAggTableCoveringRange(
+      'monitor_history_agg',
+      sourceGranularity,
+      startTime,
+      endTime,
+    );
+    if (!isCovered) {
+      throw new Error('聚合表覆盖不足，回退原始表: monitor_history_agg');
+    }
+
+    let whereClause = 'WHERE agg.granularity = ?';
+    const conditions = [
+      startTime || '1000-01-01 00:00:00',
+      endTime || '9999-12-31 23:59:59',
+      sourceGranularity,
+    ];
+
+    if (startTime) {
+      whereClause += ` AND agg.time_slot >= DATE_FORMAT(?, '${config.slotWhereFormat}')`;
+      conditions.push(startTime);
+    }
+
+    if (endTime) {
+      whereClause += ` AND agg.time_slot <= DATE_FORMAT(?, '${config.slotWhereFormat}')`;
+      conditions.push(endTime);
+    }
+
+    const bucketHoursExpr = getAggBucketHoursSqlExpr(sourceGranularity, 'agg');
+    const sql = `
+      WITH source_base AS (
+        SELECT
+          agg.country,
+          agg.asin_key,
+          agg.check_count,
+          agg.broken_count,
+          agg.has_peak,
+          ${bucketHoursExpr} as bucket_hours
+        FROM monitor_history_agg agg
+        ${whereClause}
+      ),
+      base AS (
+        SELECT
+          source_base.country as group_key,
+          source_base.country as group_label,
+          source_base.asin_key,
+          source_base.check_count,
+          source_base.broken_count,
+          source_base.has_peak,
+          source_base.bucket_hours
+        FROM source_base
+        WHERE source_base.country IN ('US', 'UK', 'DE', 'FR', 'ES', 'IT')
+        UNION ALL
+        SELECT
+          'EU_TOTAL' as group_key,
+          'EU_TOTAL' as group_label,
+          source_base.asin_key,
+          source_base.check_count,
+          source_base.broken_count,
+          source_base.has_peak,
+          source_base.bucket_hours
+        FROM source_base
+        WHERE source_base.country IN ('UK', 'DE', 'FR', 'ES', 'IT')
+      ),
+      asin_metrics AS (
+        SELECT
+          base.group_key,
+          base.group_label,
+          base.asin_key,
+          SUM(base.bucket_hours) as total_duration_hours,
+          SUM(base.bucket_hours * CASE WHEN base.check_count > 0 THEN base.broken_count / base.check_count ELSE 0 END) as abnormal_duration_hours,
+          SUM(CASE WHEN base.has_peak = 1 THEN base.bucket_hours ELSE 0 END) as peak_duration_hours,
+          SUM(CASE WHEN base.has_peak = 1 THEN base.bucket_hours * CASE WHEN base.check_count > 0 THEN base.broken_count / base.check_count ELSE 0 END ELSE 0 END) as peak_abnormal_duration_hours,
+          SUM(CASE WHEN base.has_peak = 0 THEN base.bucket_hours ELSE 0 END) as low_duration_hours,
+          SUM(CASE WHEN base.has_peak = 0 THEN base.bucket_hours * CASE WHEN base.check_count > 0 THEN base.broken_count / base.check_count ELSE 0 END ELSE 0 END) as low_abnormal_duration_hours,
+          SUM(base.check_count) as total_checks,
+          SUM(base.broken_count) as broken_count
+        FROM base
+        WHERE base.bucket_hours > 0
+        GROUP BY base.group_key, base.group_label, base.asin_key
+      )
+      SELECT
+        asin_metrics.group_label as regionCode,
+        ${getDurationMetricsSqlSelect('asin_metrics')}
+      FROM asin_metrics
+      GROUP BY asin_metrics.group_key, asin_metrics.group_label
+    `;
+    const rows = await query(sql, conditions);
+    return rows.map((row) =>
+      normalizeSqlDurationMetricRow(row, {
+        regionCode: row.regionCode || '',
+      }),
+    );
+  }
+
   static async getRegionSummary(params = {}) {
     const {
       startTime = '',
@@ -3617,9 +3863,7 @@ class MonitorHistory {
       startTime,
       endTime,
     );
-    const queryStartDate = parseDateTimeInput(startTime);
-    const queryEndDate = parseDateTimeInput(endTime);
-    let sourceRows = null;
+    let regionMetricsRows = null;
     let source = 'raw';
 
     const useAgg =
@@ -3628,9 +3872,10 @@ class MonitorHistory {
 
     if (useAgg) {
       try {
-        sourceRows = await MonitorHistory.getDurationSourceRowsFromAgg({
+        regionMetricsRows = await MonitorHistory.getRegionSummaryFromAgg({
           startTime,
           endTime,
+          timeSlotGranularity,
           sourceGranularity,
         });
         logger.info('[统计查询] getRegionSummary 使用聚合表');
@@ -3640,11 +3885,12 @@ class MonitorHistory {
           '[统计查询] getRegionSummary 聚合表读取失败，回退原始表',
           error?.message || error,
         );
-        sourceRows = null;
+        regionMetricsRows = null;
       }
     }
 
-    if (!Array.isArray(sourceRows)) {
+    let sourceRows = null;
+    if (!Array.isArray(regionMetricsRows)) {
       sourceRows = await MonitorHistory.getDurationSourceRowsFromRaw({
         startTime,
         endTime,
@@ -3666,59 +3912,60 @@ class MonitorHistory {
     };
     const timeRangeLabel =
       startTime && endTime ? `${startTime} ~ ${endTime}` : '';
-    const regionRows = sourceRows.filter((row) =>
-      supportedRegionCountries.includes(
-        String(row.country || '').toUpperCase(),
-      ),
-    );
+    if (!Array.isArray(regionMetricsRows)) {
+      const regionRows = sourceRows.filter((row) =>
+        supportedRegionCountries.includes(
+          String(row.country || '').toUpperCase(),
+        ),
+      );
 
-    const countryRegionResult = MonitorHistory.buildDurationRowsByGroup(
-      regionRows,
-      {
-        sourceGranularity,
-        targetGranularity: timeSlotGranularity,
-        queryStartDate,
-        queryEndDate,
-        buildGroupKey: (_, row) => {
-          const regionCode = String(row.country || '').toUpperCase();
-          return supportedRegionCountries.includes(regionCode)
-            ? regionCode
-            : '';
+      const countryRegionResult = MonitorHistory.buildDurationRowsByGroup(
+        regionRows,
+        {
+          sourceGranularity,
+          targetGranularity: timeSlotGranularity,
+          queryStartDate: parseDateTimeInput(startTime),
+          queryEndDate: parseDateTimeInput(endTime),
+          buildGroupKey: (_, row) => {
+            const regionCode = String(row.country || '').toUpperCase();
+            return supportedRegionCountries.includes(regionCode)
+              ? regionCode
+              : '';
+          },
+          buildGroupMeta: (_, row) => {
+            const regionCode = String(row.country || '').toUpperCase();
+            return {
+              region: regionLabelMap[regionCode] || regionCode,
+              regionCode,
+              timeRange: timeRangeLabel,
+            };
+          },
         },
-        buildGroupMeta: (_, row) => {
-          const regionCode = String(row.country || '').toUpperCase();
-          return {
-            region: regionLabelMap[regionCode] || regionCode,
-            regionCode,
+      );
+
+      const euSummaryResult = MonitorHistory.buildDurationRowsByGroup(
+        regionRows.filter((row) =>
+          euCountryCodes.includes(String(row.country || '').toUpperCase()),
+        ),
+        {
+          sourceGranularity,
+          targetGranularity: timeSlotGranularity,
+          queryStartDate: parseDateTimeInput(startTime),
+          queryEndDate: parseDateTimeInput(endTime),
+          buildGroupKey: () => 'EU_TOTAL',
+          buildGroupMeta: () => ({
+            region: regionLabelMap.EU_TOTAL,
+            regionCode: 'EU_TOTAL',
             timeRange: timeRangeLabel,
-          };
+          }),
         },
-      },
-    );
+      );
 
-    const euSummaryResult = MonitorHistory.buildDurationRowsByGroup(
-      regionRows.filter((row) =>
-        euCountryCodes.includes(String(row.country || '').toUpperCase()),
-      ),
-      {
-        sourceGranularity,
-        targetGranularity: timeSlotGranularity,
-        queryStartDate,
-        queryEndDate,
-        buildGroupKey: () => 'EU_TOTAL',
-        buildGroupMeta: () => ({
-          region: regionLabelMap.EU_TOTAL,
-          regionCode: 'EU_TOTAL',
-          timeRange: timeRangeLabel,
-        }),
-      },
-    );
+      regionMetricsRows = [...countryRegionResult, ...euSummaryResult];
+    }
 
     const rowByRegion = new Map(
-      [...countryRegionResult, ...euSummaryResult].map((item) => [
-        item.regionCode,
-        item,
-      ]),
+      regionMetricsRows.map((item) => [item.regionCode, item]),
     );
     const defaultMetrics = {
       totalDurationHours: 0,
@@ -4249,6 +4496,86 @@ class MonitorHistory {
   }
 
   // 按国家统计ASIN时长（基于监控历史）
+  static async getASINStatisticsByCountryFromAgg(params = {}) {
+    const {
+      country = '',
+      startTime = '',
+      endTime = '',
+      sourceGranularity = 'day',
+    } = params;
+    const config = MonitorHistory.getDurationSourceConfig(sourceGranularity);
+    const isCovered = await MonitorHistory.isAggTableCoveringRange(
+      'monitor_history_agg',
+      sourceGranularity,
+      startTime,
+      endTime,
+    );
+    if (!isCovered) {
+      throw new Error('聚合表覆盖不足，回退原始表: monitor_history_agg');
+    }
+
+    let whereClause = 'WHERE agg.granularity = ?';
+    const conditions = [
+      startTime || '1000-01-01 00:00:00',
+      endTime || '9999-12-31 23:59:59',
+      sourceGranularity,
+    ];
+
+    if (country) {
+      if (country === 'EU') {
+        whereClause += ` AND agg.country IN ('UK', 'DE', 'FR', 'IT', 'ES')`;
+      } else {
+        whereClause += ' AND agg.country = ?';
+        conditions.push(country);
+      }
+    }
+
+    if (startTime) {
+      whereClause += ` AND agg.time_slot >= DATE_FORMAT(?, '${config.slotWhereFormat}')`;
+      conditions.push(startTime);
+    }
+
+    if (endTime) {
+      whereClause += ` AND agg.time_slot <= DATE_FORMAT(?, '${config.slotWhereFormat}')`;
+      conditions.push(endTime);
+    }
+
+    const bucketHoursExpr = getAggBucketHoursSqlExpr(sourceGranularity, 'agg');
+    const baseSql = `
+      SELECT
+        agg.country as group_key,
+        agg.country as group_label,
+        agg.asin_key,
+        agg.check_count,
+        agg.broken_count,
+        agg.has_peak,
+        ${bucketHoursExpr} as bucket_hours
+      FROM monitor_history_agg agg
+      ${whereClause}
+    `;
+    const sql = `
+      ${getAggDurationCtesSql(baseSql)}
+      SELECT
+        asin_metrics.group_label as country,
+        ${getDurationMetricsSqlSelect('asin_metrics')}
+      FROM asin_metrics
+      GROUP BY asin_metrics.group_key, asin_metrics.group_label
+      ORDER BY abnormalDurationHours DESC, ratioAllTime DESC
+    `;
+    const rows = await query(sql, conditions);
+    return rows.map((row) =>
+      normalizeSqlDurationMetricRow(row, {
+        country: row.country || '',
+        total_checks: Number(row.totalChecks || 0),
+        broken_count: Number(row.brokenCount || 0),
+        normal_count: Math.max(
+          0,
+          Number(row.totalChecks || 0) - Number(row.brokenCount || 0),
+        ),
+      }),
+    );
+  }
+
   static async getASINStatisticsByCountry(params = {}) {
     const {
       country = '',
@@ -4282,7 +4609,7 @@ class MonitorHistory {
 
     if (useAgg) {
       try {
-        sourceRows = await MonitorHistory.getDurationSourceRowsFromAgg({
+        sourceRows = await MonitorHistory.getASINStatisticsByCountryFromAgg({
           country,
           startTime,
           endTime,
@@ -4308,28 +4635,31 @@ class MonitorHistory {
       source = 'raw';
     }
 
-    const result = MonitorHistory.buildDurationRowsByGroup(sourceRows, {
-      sourceGranularity,
-      targetGranularity: sourceGranularity,
-      queryStartDate,
-      queryEndDate,
-      buildGroupKey: (_, row) => row.country || '',
-      buildGroupMeta: (_, row) => ({
-        country: row.country || '',
-      }),
-    })
-      .map((item) => ({
-        ...item,
-        total_checks: item.totalChecks,
-        broken_count: item.brokenCount,
-        normal_count: Math.max(0, item.totalChecks - item.brokenCount),
-      }))
-      .sort((a, b) => {
-        if (b.abnormalDurationHours !== a.abnormalDurationHours) {
-          return b.abnormalDurationHours - a.abnormalDurationHours;
-        }
-        return b.ratioAllTime - a.ratioAllTime;
-      });
+    const result =
+      source === 'agg'
+        ? sourceRows
+        : MonitorHistory.buildDurationRowsByGroup(sourceRows, {
+            sourceGranularity,
+            targetGranularity: sourceGranularity,
+            queryStartDate,
+            queryEndDate,
+            buildGroupKey: (_, row) => row.country || '',
+            buildGroupMeta: (_, row) => ({
+              country: row.country || '',
+            }),
+          })
+            .map((item) => ({
+              ...item,
+              total_checks: item.totalChecks,
+              broken_count: item.brokenCount,
+              normal_count: Math.max(0, item.totalChecks - item.brokenCount),
+            }))
+            .sort((a, b) => {
+              if (b.abnormalDurationHours !== a.abnormalDurationHours) {
+                return b.abnormalDurationHours - a.abnormalDurationHours;
+              }
+              return b.ratioAllTime - a.ratioAllTime;
+            });
 
     const generatedAt = formatDateToSqlText(new Date());
     await storeAnalyticsResult(
@@ -4352,6 +4682,115 @@ class MonitorHistory {
       `[缓存存储] getASINStatisticsByCountry 结果已缓存，键: ${cacheKey}，TTL: ${ttlMs}ms`,
     );
     return result;
+  }
+
+  static async getASINStatisticsByVariantGroupFromAgg(params = {}) {
+    const {
+      country = '',
+      startTime = '',
+      endTime = '',
+      sourceGranularity = 'day',
+      limit = 10,
+    } = params;
+    const safeLimit = Math.max(1, Math.min(Number(limit) || 10, 100));
+    const config = MonitorHistory.getDurationSourceConfig(sourceGranularity);
+    const aggTable = 'monitor_history_agg_variant_group';
+    const isCovered = await MonitorHistory.isVariantGroupAggTableCoveringRange(
+      sourceGranularity,
+      startTime,
+      endTime,
+      country,
+    );
+    if (!isCovered) {
+      throw new Error(`聚合表覆盖不足，回退原始表: ${aggTable}`);
+    }
+
+    let whereClause =
+      "WHERE agg.granularity = ? AND agg.variant_group_id IS NOT NULL AND NULLIF(agg.asin_key, '') IS NOT NULL";
+    const conditions = [
+      startTime || '1000-01-01 00:00:00',
+      endTime || '9999-12-31 23:59:59',
+      sourceGranularity,
+    ];
+
+    if (country) {
+      if (country === 'EU') {
+        whereClause += ` AND agg.country IN ('UK', 'DE', 'FR', 'IT', 'ES')`;
+      } else {
+        whereClause += ' AND agg.country = ?';
+        conditions.push(country);
+      }
+    }
+
+    if (startTime) {
+      whereClause += ` AND agg.time_slot >= DATE_FORMAT(?, '${config.slotWhereFormat}')`;
+      conditions.push(startTime);
+    }
+
+    if (endTime) {
+      whereClause += ` AND agg.time_slot <= DATE_FORMAT(?, '${config.slotWhereFormat}')`;
+      conditions.push(endTime);
+    }
+
+    const bucketHoursExpr = getAggBucketHoursSqlExpr(sourceGranularity, 'agg');
+    const sql = `
+      WITH base AS (
+        SELECT
+          agg.variant_group_id as group_key,
+          COALESCE(NULLIF(agg.variant_group_name, ''), '') as group_label,
+          COALESCE(NULLIF(agg.country, ''), '') as country,
+          agg.asin_key,
+          agg.check_count,
+          agg.broken_count,
+          agg.has_peak,
+          ${bucketHoursExpr} as bucket_hours
+        FROM ${aggTable} agg
+        ${whereClause}
+      ),
+      asin_metrics AS (
+        SELECT
+          base.group_key,
+          base.asin_key,
+          MIN(base.group_label) as group_label,
+          MIN(base.country) as country,
+          SUM(base.bucket_hours) as total_duration_hours,
+          SUM(base.bucket_hours * CASE WHEN base.check_count > 0 THEN base.broken_count / base.check_count ELSE 0 END) as abnormal_duration_hours,
+          SUM(CASE WHEN base.has_peak = 1 THEN base.bucket_hours ELSE 0 END) as peak_duration_hours,
+          SUM(CASE WHEN base.has_peak = 1 THEN base.bucket_hours * CASE WHEN base.check_count > 0 THEN base.broken_count / base.check_count ELSE 0 END ELSE 0 END) as peak_abnormal_duration_hours,
+          SUM(CASE WHEN base.has_peak = 0 THEN base.bucket_hours ELSE 0 END) as low_duration_hours,
+          SUM(CASE WHEN base.has_peak = 0 THEN base.bucket_hours * CASE WHEN base.check_count > 0 THEN base.broken_count / base.check_count ELSE 0 END ELSE 0 END) as low_abnormal_duration_hours,
+          SUM(base.check_count) as total_checks,
+          SUM(base.broken_count) as broken_count
+        FROM base
+        WHERE base.bucket_hours > 0
+        GROUP BY base.group_key, base.asin_key
+      )
+      SELECT
+        asin_metrics.group_key as variant_group_id,
+        MIN(asin_metrics.group_label) as variant_group_name,
+        MIN(asin_metrics.country) as country,
+        ${getDurationMetricsSqlSelect('asin_metrics')}
+      FROM asin_metrics
+      GROUP BY asin_metrics.group_key
+      HAVING SUM(asin_metrics.abnormal_duration_hours) > 0
+      ORDER BY abnormalDurationHours DESC, ratioAllTime DESC
+      LIMIT ${safeLimit}
+    `;
+
+    const rows = await query(sql, conditions);
+    return rows.map((row) =>
+      normalizeSqlDurationMetricRow(row, {
+        variant_group_id: row.variant_group_id || '',
+        variant_group_name: row.variant_group_name || '',
+        country: row.country || '',
+        total_checks: Number(row.totalChecks || 0),
+        broken_count: Number(row.brokenCount || 0),
+        normal_count: Math.max(
+          0,
+          Number(row.totalChecks || 0) - Number(row.brokenCount || 0),
+        ),
+      }),
+    );
   }
 
   // 按变体组统计ASIN时长（基于监控历史）
@@ -4392,13 +4831,14 @@ class MonitorHistory {
     if (useAgg) {
       try {
         sourceRows =
-          await MonitorHistory.getVariantGroupDurationSourceRowsFromAgg({
+          await MonitorHistory.getASINStatisticsByVariantGroupFromAgg({
             country,
             startTime,
             endTime,
             sourceGranularity,
+            limit: safeLimit,
           });
-        if (Array.isArray(sourceRows) && sourceRows.length > 0) {
+        if (Array.isArray(sourceRows)) {
           source = 'agg';
         } else {
           sourceRows = null;
@@ -4424,32 +4864,37 @@ class MonitorHistory {
       source = 'raw';
     }
 
-    const result = MonitorHistory.buildDurationRowsByGroup(sourceRows, {
-      sourceGranularity,
-      targetGranularity: sourceGranularity,
-      queryStartDate,
-      queryEndDate,
-      buildGroupKey: (_, row) => row.variant_group_id || '',
-      buildGroupMeta: (_, row) => ({
-        variant_group_id: row.variant_group_id || '',
-        variant_group_name: row.variant_group_name || '',
-        country: row.country || '',
-      }),
-    })
-      .filter((item) => item.variant_group_id && item.abnormalDurationHours > 0)
-      .map((item) => ({
-        ...item,
-        total_checks: item.totalChecks,
-        broken_count: item.brokenCount,
-        normal_count: Math.max(0, item.totalChecks - item.brokenCount),
-      }))
-      .sort((a, b) => {
-        if (b.abnormalDurationHours !== a.abnormalDurationHours) {
-          return b.abnormalDurationHours - a.abnormalDurationHours;
-        }
-        return b.ratioAllTime - a.ratioAllTime;
-      })
-      .slice(0, safeLimit);
+    const result =
+      source === 'agg'
+        ? sourceRows
+        : MonitorHistory.buildDurationRowsByGroup(sourceRows, {
+            sourceGranularity,
+            targetGranularity: sourceGranularity,
+            queryStartDate,
+            queryEndDate,
+            buildGroupKey: (_, row) => row.variant_group_id || '',
+            buildGroupMeta: (_, row) => ({
+              variant_group_id: row.variant_group_id || '',
+              variant_group_name: row.variant_group_name || '',
+              country: row.country || '',
+            }),
+          })
+            .filter(
+              (item) => item.variant_group_id && item.abnormalDurationHours > 0,
+            )
+            .map((item) => ({
+              ...item,
+              total_checks: item.totalChecks,
+              broken_count: item.brokenCount,
+              normal_count: Math.max(0, item.totalChecks - item.brokenCount),
+            }))
+            .sort((a, b) => {
+              if (b.abnormalDurationHours !== a.abnormalDurationHours) {
+                return b.abnormalDurationHours - a.abnormalDurationHours;
+              }
+              return b.ratioAllTime - a.ratioAllTime;
+            })
+            .slice(0, safeLimit);
 
     const generatedAt = formatDateToSqlText(new Date());
     await storeAnalyticsResult(
