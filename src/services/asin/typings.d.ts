@@ -782,6 +782,8 @@ declare namespace API {
     lowDurationHours?: number;
     /** 低峰异常时长（小时） */
     lowAbnormalDurationHours?: number;
+    /** 是否可加载时间槽明细 */
+    hasTimeSlotDetails?: boolean;
     /** 时间槽明细 */
     timeSlotDetails?: PeriodSummaryTimeSlotDetail[];
   }
@@ -797,6 +799,13 @@ declare namespace API {
     success?: boolean;
     errorMessage?: string;
     data?: PageInfo_PeriodSummary_;
+    meta?: AnalyticsResponseMeta;
+  }
+
+  interface Result_PeriodSummaryTimeSlotDetails_ {
+    success?: boolean;
+    errorMessage?: string;
+    data?: PeriodSummaryTimeSlotDetail[];
     meta?: AnalyticsResponseMeta;
   }
 

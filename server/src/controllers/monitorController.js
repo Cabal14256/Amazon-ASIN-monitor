@@ -715,6 +715,59 @@ exports.getPeriodSummary = async (req, res) => {
   }
 };
 
+exports.getPeriodSummaryTimeSlotDetails = async (req, res) => {
+  const startTime = Date.now();
+  try {
+    const {
+      country,
+      site,
+      brand,
+      startTime: startTimeParam,
+      endTime,
+      timeSlotGranularity = 'day',
+    } = req.query;
+
+    const result = await withRetry(
+      async () =>
+        MonitorHistory.getPeriodSummaryTimeSlotDetails({
+          country,
+          site,
+          brand,
+          startTime: startTimeParam,
+          endTime,
+          timeSlotGranularity,
+          includeMeta: true,
+        }),
+      3,
+      2000,
+    );
+
+    const duration = Date.now() - startTime;
+    logger.info(
+      `[统计查询] getPeriodSummaryTimeSlotDetails 完成，总耗时${duration}ms，返回${
+        Array.isArray(result?.data)
+          ? result.data.length
+          : Array.isArray(result)
+          ? result.length
+          : 0
+      }条记录`,
+    );
+
+    sendAnalyticsResult(res, result);
+  } catch (error) {
+    const duration = Date.now() - startTime;
+    logger.error(
+      `[统计查询] getPeriodSummaryTimeSlotDetails 失败，耗时${duration}ms:`,
+      error,
+    );
+    res.status(500).json({
+      success: false,
+      errorMessage: error.message || '查询失败',
+      errorCode: 500,
+    });
+  }
+};
+
 // 按国家统计ASIN时长
 exports.getASINStatisticsByCountry = async (req, res) => {
   try {
