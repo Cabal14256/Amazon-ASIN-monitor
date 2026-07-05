@@ -1,6 +1,74 @@
 const competitorVariantCheckService = require('../services/competitorVariantCheckService');
 const logger = require('../utils/logger');
 
+function normalizeBoolean(value) {
+  if (value === undefined || value === null) {
+    return null;
+  }
+  if (typeof value === 'boolean') {
+    return value;
+  }
+  const normalized = String(value).trim().toLowerCase();
+  if (['true', '1', 'yes', 'on'].includes(normalized)) {
+    return true;
+  }
+  if (['false', '0', 'no', 'off'].includes(normalized)) {
+    return false;
+  }
+  return null;
+}
+
+function getBatchCheckSyncMaxGroups() {
+  const configured = Number(process.env.BATCH_CHECK_SYNC_MAX_GROUPS);
+  return Number.isFinite(configured) && configured > 0
+    ? Math.floor(configured)
+    : 20;
+}
+
+function getBatchCheckSyncConcurrency(total) {
+  const configured = Number(process.env.BATCH_CHECK_SYNC_CONCURRENCY);
+  const concurrency =
+    Number.isFinite(configured) && configured > 0 ? Math.floor(configured) : 3;
+  return Math.max(1, Math.min(concurrency, total || 1));
+}
+
+function shouldUseAsyncForBatchCheck(req, total) {
+  if (total > getBatchCheckSyncMaxGroups()) {
+    return true;
+  }
+
+  const bodyFlag = normalizeBoolean(req.body?.useAsync);
+  if (bodyFlag !== null) {
+    return bodyFlag;
+  }
+
+  const queryFlag = normalizeBoolean(req.query?.useAsync);
+  if (queryFlag !== null) {
+    return queryFlag;
+  }
+
+  return true;
+}
+
+async function runWithConcurrency(items, concurrency, worker) {
+  const results = new Array(items.length);
+  let nextIndex = 0;
+
+  const workers = Array.from(
+    { length: Math.min(concurrency, items.length) },
+    async () => {
+      while (nextIndex < items.length) {
+        const currentIndex = nextIndex;
+        nextIndex += 1;
+        results[currentIndex] = await worker(items[currentIndex], currentIndex);
+      }
+    },
+  );
+
+  await Promise.all(workers);
+  return results;
+}
+
 // 检查变体组
 exports.checkCompetitorVariantGroup = async (req, res) => {
   try {
@@ -61,8 +129,6 @@ exports.checkCompetitorASIN = async (req, res) => {
 exports.batchCheckCompetitorVariantGroups = async (req, res) => {
   try {
     const { groupIds, country, forceRefresh } = req.body;
-    const shouldUseAsync =
-      req.body.useAsync !== 'false' && req.body.useAsync !== false;
     const shouldForceRefresh = forceRefresh !== false;
     const userId = req.user?.userId || req.user?.id;
 
@@ -74,7 +140,7 @@ exports.batchCheckCompetitorVariantGroups = async (req, res) => {
       });
     }
 
-    if (shouldUseAsync) {
+    if (shouldUseAsyncForBatchCheck(req, groupIds.length)) {
       const { v4: uuidv4 } = require('uuid');
       const batchCheckTaskQueue = require('../services/batchCheckTaskQueue');
       const taskRegistryService = require('../services/taskRegistryService');
@@ -112,27 +178,31 @@ exports.batchCheckCompetitorVariantGroups = async (req, res) => {
       });
     }
 
-    const results = [];
-    for (const groupId of groupIds) {
-      try {
-        const result =
-          await competitorVariantCheckService.checkCompetitorVariantGroup(
+    const concurrency = getBatchCheckSyncConcurrency(groupIds.length);
+    const results = await runWithConcurrency(
+      groupIds,
+      concurrency,
+      async (groupId) => {
+        try {
+          const result =
+            await competitorVariantCheckService.checkCompetitorVariantGroup(
+              groupId,
+              shouldForceRefresh,
+            );
+          return {
             groupId,
-            shouldForceRefresh,
-          );
-        results.push({
-          groupId,
-          success: true,
-          ...result,
-        });
-      } catch (error) {
-        results.push({
-          groupId,
-          success: false,
-          error: error.message,
-        });
-      }
-    }
+            success: true,
+            ...result,
+          };
+        } catch (error) {
+          return {
+            groupId,
+            success: false,
+            error: error.message,
+          };
+        }
+      },
+    );
 
     res.json({
       success: true,

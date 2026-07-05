@@ -26,6 +26,13 @@ router.get(
 // 创建用户（需要 user:write 权限）
 router.post('/users', checkPermission('user:write'), userController.createUser);
 
+// 批量删除用户（需要 user:delete 权限）
+router.post(
+  '/users/batch-delete',
+  checkPermission('user:delete'),
+  userController.batchDeleteUsers,
+);
+
 // 更新用户（需要 user:write 权限）
 router.put(
   '/users/:userId',

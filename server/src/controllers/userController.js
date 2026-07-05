@@ -51,20 +51,13 @@ async function ensureAdminGuard({
   const currentStatus = normalizeUserStatus(currentUser.status);
   const targetStatus = normalizeUserStatus(nextStatus);
 
-  if (
-    operatorUserId === targetUserId &&
-    currentHasAdmin &&
-    !nextHasAdmin
-  ) {
+  if (operatorUserId === targetUserId && currentHasAdmin && !nextHasAdmin) {
     const error = new Error('不能移除自己当前账户的管理员角色');
     error.statusCode = 400;
     throw error;
   }
 
-  if (
-    operatorUserId === targetUserId &&
-    targetStatus !== USER_STATUS.ACTIVE
-  ) {
+  if (operatorUserId === targetUserId && targetStatus !== USER_STATUS.ACTIVE) {
     const error = new Error('不能禁用、锁定或停用自己的账户');
     error.statusCode = 400;
     throw error;
@@ -288,72 +281,77 @@ exports.updateUser = async (req, res) => {
     const { userId } = req.params;
     const { real_name, status, roleIds, statusReason } = req.body;
 
-    const updatedUser = await withTransaction(async ({ query: transactionQuery }) => {
-      const user = await User.findById(userId, {
-        queryExecutor: transactionQuery,
-      });
-      if (!user) {
-        const error = new Error('用户不存在');
-        error.statusCode = 404;
-        throw error;
-      }
-
-      const nextRoles =
-        roleIds !== undefined
-          ? await getValidatedRoles(roleIds, transactionQuery)
-          : await User.getUserRoles(userId, {
-              queryExecutor: transactionQuery,
-            });
-
-      if (roleIds !== undefined && nextRoles.length === 0) {
-        const error = new Error('请至少保留一个角色');
-        error.statusCode = 400;
-        throw error;
-      }
-
-      const nextStatus =
-        status !== undefined ? normalizeUserStatus(status) : user.status;
-
-      await ensureAdminGuard({
-        targetUserId: userId,
-        currentUser: user,
-        nextStatus,
-        nextRoles,
-        operatorUserId: req.userId,
-        queryExecutor: transactionQuery,
-      });
-
-      const updateData = {};
-      if (real_name !== undefined) updateData.real_name = real_name;
-
-      if (Object.keys(updateData).length > 0) {
-        await User.update(userId, updateData, {
+    const updatedUser = await withTransaction(
+      async ({ query: transactionQuery }) => {
+        const user = await User.findById(userId, {
           queryExecutor: transactionQuery,
         });
-      }
+        if (!user) {
+          const error = new Error('用户不存在');
+          error.statusCode = 404;
+          throw error;
+        }
 
-      if (status !== undefined && normalizeUserStatus(user.status) !== nextStatus) {
-        await userStatusService.changeStatus(
-          userId,
+        const nextRoles =
+          roleIds !== undefined
+            ? await getValidatedRoles(roleIds, transactionQuery)
+            : await User.getUserRoles(userId, {
+                queryExecutor: transactionQuery,
+              });
+
+        if (roleIds !== undefined && nextRoles.length === 0) {
+          const error = new Error('请至少保留一个角色');
+          error.statusCode = 400;
+          throw error;
+        }
+
+        const nextStatus =
+          status !== undefined ? normalizeUserStatus(status) : user.status;
+
+        await ensureAdminGuard({
+          targetUserId: userId,
+          currentUser: user,
           nextStatus,
-          statusReason || null,
-          req.userId,
-          {
-            queryExecutor: transactionQuery,
-          },
-        );
-      }
-
-      if (roleIds !== undefined) {
-        await User.updateRoles(userId, roleIds, {
+          nextRoles,
+          operatorUserId: req.userId,
           queryExecutor: transactionQuery,
         });
-      }
 
-      return User.findById(userId, {
-        queryExecutor: transactionQuery,
-      });
-    });
+        const updateData = {};
+        if (real_name !== undefined) updateData.real_name = real_name;
+
+        if (Object.keys(updateData).length > 0) {
+          await User.update(userId, updateData, {
+            queryExecutor: transactionQuery,
+          });
+        }
+
+        if (
+          status !== undefined &&
+          normalizeUserStatus(user.status) !== nextStatus
+        ) {
+          await userStatusService.changeStatus(
+            userId,
+            nextStatus,
+            statusReason || null,
+            req.userId,
+            {
+              queryExecutor: transactionQuery,
+            },
+          );
+        }
+
+        if (roleIds !== undefined) {
+          await User.updateRoles(userId, roleIds, {
+            queryExecutor: transactionQuery,
+          });
+        }
+
+        return User.findById(userId, {
+          queryExecutor: transactionQuery,
+        });
+      },
+    );
 
     await permissionCacheService.clearUserCache(userId);
     const roles = await User.getUserRoles(userId);
@@ -447,6 +445,129 @@ exports.deleteUser = async (req, res) => {
     res.status(error.statusCode || 500).json({
       success: false,
       errorMessage: error.message || '删除用户失败',
+      errorCode: error.statusCode || 500,
+    });
+  }
+};
+
+/**
+ * 批量删除用户
+ */
+exports.batchDeleteUsers = async (req, res) => {
+  const startedAt = Date.now();
+  try {
+    const rawUserIds = Array.isArray(req.body?.userIds) ? req.body.userIds : [];
+    const userIds = Array.from(
+      new Set(
+        rawUserIds.map((userId) => String(userId || '').trim()).filter(Boolean),
+      ),
+    );
+
+    if (userIds.length === 0) {
+      return res.status(400).json({
+        success: false,
+        errorMessage: '请提供用户ID列表',
+        errorCode: 400,
+      });
+    }
+
+    const result = {
+      totalRequested: userIds.length,
+      deletedCount: 0,
+      skipped: [],
+      failed: [],
+    };
+    const deletedUserIds = [];
+
+    await withTransaction(async ({ query: transactionQuery }) => {
+      let remainingActiveAdminDeletes = Math.max(
+        (await User.countUsersByRoleCode('ADMIN', {
+          activeOnly: true,
+          queryExecutor: transactionQuery,
+        })) - 1,
+        0,
+      );
+
+      for (const userId of userIds) {
+        try {
+          if (userId === req.userId) {
+            result.skipped.push({
+              userId,
+              reason: '不能删除自己的账户',
+            });
+            continue;
+          }
+
+          const user = await User.findById(userId, {
+            queryExecutor: transactionQuery,
+          });
+          if (!user) {
+            result.skipped.push({
+              userId,
+              reason: '用户不存在',
+            });
+            continue;
+          }
+
+          const roles = await User.getUserRoles(userId, {
+            queryExecutor: transactionQuery,
+          });
+          const isActiveAdmin =
+            normalizeUserStatus(user.status) === USER_STATUS.ACTIVE &&
+            roles.some((role) => role.code === 'ADMIN');
+
+          if (isActiveAdmin) {
+            if (remainingActiveAdminDeletes <= 0) {
+              result.skipped.push({
+                userId,
+                reason: '系统至少需要保留一个启用中的管理员账户',
+              });
+              continue;
+            }
+            remainingActiveAdminDeletes -= 1;
+          }
+
+          await User.delete(userId, {
+            queryExecutor: transactionQuery,
+          });
+          deletedUserIds.push(userId);
+          result.deletedCount += 1;
+        } catch (error) {
+          result.failed.push({
+            userId,
+            message: error.message || '删除失败',
+          });
+        }
+      }
+    });
+
+    await Promise.all(
+      deletedUserIds.map((userId) =>
+        permissionCacheService.clearUserCache(userId),
+      ),
+    );
+
+    logger.info('[用户批量删除] 完成', {
+      totalRequested: result.totalRequested,
+      deletedCount: result.deletedCount,
+      skippedCount: result.skipped.length,
+      failedCount: result.failed.length,
+      durationMs: Date.now() - startedAt,
+    });
+
+    res.json({
+      success: true,
+      data: result,
+      errorCode: 0,
+    });
+  } catch (error) {
+    logger.error('批量删除用户错误:', {
+      message: error.message,
+      operatorUserId: req.userId,
+    });
+    res.status(error.statusCode || 500).json({
+      success: false,
+      errorMessage: error.message || '批量删除用户失败',
       errorCode: error.statusCode || 500,
     });
   }

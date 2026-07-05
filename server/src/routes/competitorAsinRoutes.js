@@ -56,6 +56,11 @@ router.post(
   checkPermission('asin:write'),
   competitorAsinController.createCompetitorVariantGroup,
 );
+router.post(
+  '/competitor/variant-groups/batch-delete',
+  checkPermission('asin:delete'),
+  competitorAsinController.batchDeleteCompetitorVariantGroups,
+);
 router.put(
   '/competitor/variant-groups/:groupId',
   checkPermission('asin:write'),
@@ -77,6 +82,11 @@ router.post(
   '/competitor/asins',
   checkPermission('asin:write'),
   competitorAsinController.createCompetitorASIN,
+);
+router.post(
+  '/competitor/asins/batch-create',
+  checkPermission('asin:write'),
+  competitorAsinController.batchCreateCompetitorASINs,
 );
 router.put(
   '/competitor/asins/:asinId',

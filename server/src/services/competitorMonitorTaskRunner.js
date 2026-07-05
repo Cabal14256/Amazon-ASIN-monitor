@@ -259,6 +259,9 @@ async function processCompetitorCountry(
             historyEntries.push({
               asinId: asinInfo.id,
               variantGroupId: group.id,
+              variantGroupName: group.name,
+              asinCode: asinInfo.asin,
+              asinName: asinInfo.name,
               checkType: 'ASIN',
               country: asinInfo.country,
               isBroken: asinInfo.isBroken === 1 ? 1 : 0,

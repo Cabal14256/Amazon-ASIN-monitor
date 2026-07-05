@@ -3,6 +3,14 @@ const CompetitorASIN = require('../models/CompetitorASIN');
 const logger = require('../utils/logger');
 const { importFromFile } = require('../services/importService');
 const taskRegistryService = require('../services/taskRegistryService');
+const batchDeleteTaskQueue = require('../services/batchDeleteTaskQueue');
+const {
+  analyzeBatchDelete,
+  shouldUseAsyncForBatchDelete,
+  executeBatchDelete,
+  createBatchDeleteTaskId,
+} = require('../services/batchDeleteService');
+const { batchCreateASINs } = require('../services/asinBatchCreateService');
 const {
   sendSuccessResponse,
   sendErrorResponse,
@@ -100,6 +108,74 @@ exports.deleteCompetitorVariantGroup = async (req, res) => {
   }
 };
 
+// 批量删除竞品变体组/ASIN
+exports.batchDeleteCompetitorVariantGroups = async (req, res) => {
+  try {
+    const { groupIds = [], asinIds = [], useAsync } = req.body || {};
+    const analysis = await analyzeBatchDelete({
+      domain: 'competitor',
+      groupIds,
+      asinIds,
+    });
+    const shouldUseAsync = shouldUseAsyncForBatchDelete(analysis, useAsync);
+
+    if (shouldUseAsync) {
+      const taskId = createBatchDeleteTaskId();
+      const userId = req.user?.userId || req.user?.id || req.userId || null;
+      const now = new Date().toISOString();
+      const title = '批量删除竞品变体组';
+
+      await taskRegistryService.createTask({
+        taskId,
+        taskType: 'batch-delete',
+        taskSubType: 'competitor-variant-group-delete',
+        title,
+        userId,
+        message: '批量删除任务已创建，等待处理',
+      });
+
+      await batchDeleteTaskQueue.enqueue({
+        taskId,
+        taskType: 'batch-delete',
+        taskSubType: 'competitor-variant-group-delete',
+        title,
+        domain: 'competitor',
+        groupIds: analysis.requestedGroupIds,
+        asinIds: analysis.requestedAsinIds,
+        userId,
+        createdAt: now,
+      });
+
+      logger.info('[批量删除] 创建竞品后台任务成功', {
+        taskId,
+        totalRequested: analysis.totalRequested,
+        estimatedAsinCount: analysis.estimatedAsinCount,
+        userId,
+      });
+
+      return sendSuccessResponse(res, {
+        mode: 'async',
+        taskId,
+        status: 'pending',
+        totalRequested: analysis.totalRequested,
+        estimatedAsinCount: analysis.estimatedAsinCount,
+      });
+    }
+
+    const result = await executeBatchDelete({
+      domain: 'competitor',
+      groupIds,
+      asinIds,
+    });
+    sendSuccessResponse(res, result);
+  } catch (error) {
+    if (error.statusCode === 400) {
+      return sendErrorResponse(res, 400, error.message);
+    }
+    handleControllerError(error, req, res);
+  }
+};
+
 // 添加ASIN
 exports.createCompetitorASIN = async (req, res) => {
   try {
@@ -122,6 +198,23 @@ exports.createCompetitorASIN = async (req, res) => {
       asinType: asinType || null,
     });
     sendSuccessResponse(res, asinData);
+  } catch (error) {
+    if (error.statusCode === 400) {
+      return sendErrorResponse(res, 400, error.message);
+    }
+    handleControllerError(error, req, res);
+  }
+};
+
+// 批量添加竞品ASIN
+exports.batchCreateCompetitorASINs = async (req, res) => {
+  try {
+    const { items = [] } = req.body || {};
+    const result = await batchCreateASINs({
+      domain: 'competitor',
+      items,
+    });
+    sendSuccessResponse(res, result);
   } catch (error) {
     if (error.statusCode === 400) {
       return sendErrorResponse(res, 400, error.message);

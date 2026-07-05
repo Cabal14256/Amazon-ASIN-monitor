@@ -289,6 +289,10 @@ function groupKey(country, groupName) {
   return `${country}||${groupName}`;
 }
 
+function groupIdKey(variantGroupId) {
+  return `ID||${variantGroupId}`;
+}
+
 function uniqueByKey(items, keyFn) {
   const seen = new Set();
   const result = [];
@@ -300,6 +304,14 @@ function uniqueByKey(items, keyFn) {
     }
   }
   return result;
+}
+
+function chunkArray(items, size) {
+  const chunks = [];
+  for (let index = 0; index < items.length; index += size) {
+    chunks.push(items.slice(index, index + size));
+  }
+  return chunks;
 }
 
 function buildOrConditions(items, conditionBuilder) {
@@ -371,6 +383,7 @@ async function enrichEntries(entries) {
 function buildIntervals(entries) {
   const intervalsByPair = new Map();
   const intervalsByGroup = new Map();
+  const intervalsByGroupId = new Map();
 
   for (const entry of entries) {
     const pair = pairKey(entry.asin, entry.country);
@@ -384,6 +397,14 @@ function buildIntervals(entries) {
       intervalsByGroup.set(group, []);
     }
     intervalsByGroup.get(group).push(entry);
+
+    if (entry.variantGroupId) {
+      const groupId = groupIdKey(entry.variantGroupId);
+      if (!intervalsByGroupId.has(groupId)) {
+        intervalsByGroupId.set(groupId, []);
+      }
+      intervalsByGroupId.get(groupId).push(entry);
+    }
   }
 
   for (const list of intervalsByPair.values()) {
@@ -392,8 +413,11 @@ function buildIntervals(entries) {
   for (const list of intervalsByGroup.values()) {
     list.sort((a, b) => compareSqlDateTime(a.start, b.start));
   }
+  for (const list of intervalsByGroupId.values()) {
+    list.sort((a, b) => compareSqlDateTime(a.start, b.start));
+  }
 
-  return { intervalsByPair, intervalsByGroup };
+  return { intervalsByPair, intervalsByGroup, intervalsByGroupId };
 }
 
 function findPairMatch(row, intervalsByPair) {
@@ -402,11 +426,22 @@ function findPairMatch(row, intervalsByPair) {
 }
 
 function findGroupMatches(row, intervalsByGroup) {
-  const list =
-    intervalsByGroup.get(groupKey(row.country, row.variant_group_name)) || [];
-  const matches = list.filter((entry) =>
-    isTimeInInterval(row.check_time, entry),
+  const candidateLists = [];
+  if (row.variant_group_id && intervalsByGroup.intervalsByGroupId) {
+    candidateLists.push(
+      intervalsByGroup.intervalsByGroupId.get(
+        groupIdKey(row.variant_group_id),
+      ) || [],
+    );
+  }
+  candidateLists.push(
+    intervalsByGroup.intervalsByGroup.get(
+      groupKey(row.country, row.variant_group_name),
+    ) || [],
   );
+  const matches = candidateLists
+    .flat()
+    .filter((entry) => isTimeInInterval(row.check_time, entry));
   const byAsin = new Map();
   for (const match of matches) {
     byAsin.set(match.asin, match);
@@ -468,8 +503,7 @@ async function fetchTargetRows(entries, coverageStart, coverageEnd) {
        asin_code,
        country,
        is_broken,
-       DATE_FORMAT(check_time, '%Y-%m-%d %H:%i:%s') as check_time,
-       check_result
+       DATE_FORMAT(check_time, '%Y-%m-%d %H:%i:%s') as check_time
      FROM monitor_history
      WHERE check_type = 'ASIN'
        AND check_time >= ?
@@ -480,28 +514,68 @@ async function fetchTargetRows(entries, coverageStart, coverageEnd) {
   );
 
   const groups = uniqueByKey(entries, (entry) =>
-    groupKey(entry.country, entry.groupName),
+    entry.variantGroupId
+      ? groupIdKey(entry.variantGroupId)
+      : groupKey(entry.country, entry.groupName),
   );
-  const groupWhere = buildOrConditions(groups, (entry) => ({
-    clause: 'country = ? AND variant_group_name = ?',
-    values: [entry.country, entry.groupName],
-  }));
-  const groupRows = await query(
-    `SELECT
-       id,
-       variant_group_name,
-       country,
-       is_broken,
-       DATE_FORMAT(check_time, '%Y-%m-%d %H:%i:%s') as check_time,
-       check_result
-     FROM monitor_history
-     WHERE check_type = 'GROUP'
-       AND check_time >= ?
-       AND check_time <= ?
-       AND (${groupWhere.sql})
-     ORDER BY check_time, id`,
-    [coverageStart, coverageEnd, ...groupWhere.params],
+  const groupRowsById = new Map();
+  const groupIds = Array.from(
+    new Set(groups.map((entry) => entry.variantGroupId).filter(Boolean)),
   );
+  if (groupIds.length > 0) {
+    const groupIdPlaceholders = groupIds.map(() => '?').join(',');
+    const rows = await query(
+      `SELECT
+         id,
+         variant_group_id,
+         variant_group_name,
+         country,
+         is_broken,
+         DATE_FORMAT(check_time, '%Y-%m-%d %H:%i:%s') as check_time
+       FROM monitor_history
+       WHERE check_type = 'GROUP'
+         AND check_time >= ?
+         AND check_time <= ?
+         AND variant_group_id IN (${groupIdPlaceholders})
+       ORDER BY check_time, id`,
+      [coverageStart, coverageEnd, ...groupIds],
+    );
+    for (const row of rows) {
+      groupRowsById.set(row.id, row);
+    }
+  }
+
+  const fallbackGroups = groups.filter((entry) => !entry.variantGroupId);
+  if (fallbackGroups.length > 0) {
+    const groupWhere = buildOrConditions(fallbackGroups, (entry) => ({
+      clause: 'country = ? AND variant_group_name = ?',
+      values: [entry.country, entry.groupName],
+    }));
+    const rows = await query(
+      `SELECT
+         id,
+         variant_group_id,
+         variant_group_name,
+         country,
+         is_broken,
+         DATE_FORMAT(check_time, '%Y-%m-%d %H:%i:%s') as check_time
+       FROM monitor_history
+       WHERE check_type = 'GROUP'
+         AND check_time >= ?
+         AND check_time <= ?
+         AND (${groupWhere.sql})
+       ORDER BY check_time, id`,
+      [coverageStart, coverageEnd, ...groupWhere.params],
+    );
+    for (const row of rows) {
+      groupRowsById.set(row.id, row);
+    }
+  }
+
+  const groupRows = Array.from(groupRowsById.values()).sort((a, b) => {
+    const timeCompare = compareSqlDateTime(a.check_time, b.check_time);
+    return timeCompare === 0 ? Number(a.id) - Number(b.id) : timeCompare;
+  });
 
   return { asinRows, groupRows };
 }
@@ -514,22 +588,23 @@ function buildPlans({ asinRows, groupRows }, intervals, sourceName) {
       id: row.id,
       nextBroken,
       previousBroken: Number(row.is_broken || 0),
-      checkResult: patchAsinCheckResult(row, match, sourceName),
       type: 'ASIN',
       checkTime: row.check_time,
+      asin_code: row.asin_code,
+      match,
     };
   });
 
   const groupPlans = groupRows.map((row) => {
-    const matches = findGroupMatches(row, intervals.intervalsByGroup);
+    const matches = findGroupMatches(row, intervals);
     const nextBroken = matches.length > 0 ? 1 : 0;
     return {
       id: row.id,
       nextBroken,
       previousBroken: Number(row.is_broken || 0),
-      checkResult: patchGroupCheckResult(row, matches, sourceName),
       type: 'GROUP',
       checkTime: row.check_time,
+      matches,
     };
   });
 
@@ -610,6 +685,9 @@ async function createBackups({
   const groupNames = Array.from(
     new Set(entries.map((entry) => entry.groupName)),
   );
+  const variantGroupIds = Array.from(
+    new Set(entries.map((entry) => entry.variantGroupId).filter(Boolean)),
+  );
   const countryPlaceholders = countries.map(() => '?').join(',');
   const asinPlaceholders = asins.map(() => '?').join(',');
   const groupPlaceholders = groupNames.map(() => '?').join(',');
@@ -643,35 +721,79 @@ async function createBackups({
   };
 
   const aggVariantTable = `mhavg_bak_${suffix}`;
+  const aggVariantClauses = [];
+  const aggVariantParams = [
+    ...countries,
+    ...asins,
+    coverageAggStart,
+    coverageAggEnd,
+  ];
+  if (variantGroupIds.length > 0) {
+    const variantGroupIdPlaceholders = variantGroupIds.map(() => '?').join(',');
+    aggVariantClauses.push(
+      `variant_group_id IN (${variantGroupIdPlaceholders})`,
+    );
+    aggVariantParams.push(...variantGroupIds);
+  }
+  if (groupNames.length > 0) {
+    aggVariantClauses.push(`variant_group_name IN (${groupPlaceholders})`);
+    aggVariantParams.push(...groupNames);
+  }
   backupTables.monitorHistoryAggVariantGroup = {
     table: aggVariantTable,
     rows: await backupBySelect(
       aggVariantTable,
       `SELECT * FROM monitor_history_agg_variant_group
        WHERE country IN (${countryPlaceholders})
-         AND variant_group_name IN (${groupPlaceholders})
          AND asin_key IN (${asinPlaceholders})
          AND time_slot >= ?
-         AND time_slot <= ?`,
-      [...countries, ...groupNames, ...asins, coverageAggStart, coverageAggEnd],
+         AND time_slot <= ?
+         AND (${aggVariantClauses.join(' OR ')})`,
+      aggVariantParams,
     ),
   };
 
   return backupTables;
 }
 
-async function applyPlans(plans) {
+async function applyPlans(plans, sourceName) {
   const connection = await pool.getConnection();
   try {
     await connection.beginTransaction();
-    for (const plan of plans) {
-      await connection.execute(
-        `UPDATE monitor_history
-         SET is_broken = ?, check_result = ?
-         WHERE id = ?`,
-        [plan.nextBroken, plan.checkResult, plan.id],
+
+    for (const chunk of chunkArray(plans, 50)) {
+      const ids = chunk.map((plan) => plan.id);
+      const placeholders = ids.map(() => '?').join(',');
+      const [rows] = await connection.execute(
+        `SELECT id, check_result
+         FROM monitor_history
+         WHERE id IN (${placeholders})
+         FOR UPDATE`,
+        ids,
       );
+      const checkResultById = new Map(
+        rows.map((row) => [String(row.id), row.check_result]),
+      );
+
+      for (const plan of chunk) {
+        const currentRow = {
+          ...plan,
+          check_result: checkResultById.get(String(plan.id)) || null,
+        };
+        const nextCheckResult =
+          plan.type === 'ASIN'
+            ? patchAsinCheckResult(currentRow, plan.match, sourceName)
+            : patchGroupCheckResult(currentRow, plan.matches, sourceName);
+
+        await connection.execute(
+          `UPDATE monitor_history
+           SET is_broken = ?, check_result = ?
+           WHERE id = ?`,
+          [plan.nextBroken, nextCheckResult, plan.id],
+        );
+      }
     }
+
     await connection.commit();
   } catch (error) {
     try {
@@ -817,6 +939,7 @@ async function main() {
     entries: entries.length,
     affectedAsins: intervals.intervalsByPair.size,
     affectedGroups: intervals.intervalsByGroup.size,
+    affectedGroupIds: intervals.intervalsByGroupId.size,
     coverageStart,
     coverageEnd,
     coverageAggStart,
@@ -848,7 +971,7 @@ async function main() {
     });
     logger.info('[周度历史覆盖] 备份完成:', backupTables);
 
-    await applyPlans(plans.allPlans);
+    await applyPlans(plans.allPlans, sourceName);
     logger.info('[周度历史覆盖] monitor_history 覆盖完成:', {
       updatedRows: plans.allPlans.length,
     });

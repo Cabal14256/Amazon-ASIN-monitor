@@ -3,6 +3,14 @@ const ASIN = require('../models/ASIN');
 const logger = require('../utils/logger');
 const { importFromFile } = require('../services/importService');
 const taskRegistryService = require('../services/taskRegistryService');
+const batchDeleteTaskQueue = require('../services/batchDeleteTaskQueue');
+const {
+  analyzeBatchDelete,
+  shouldUseAsyncForBatchDelete,
+  executeBatchDelete,
+  createBatchDeleteTaskId,
+} = require('../services/batchDeleteService');
+const { batchCreateASINs } = require('../services/asinBatchCreateService');
 const {
   sendSuccessResponse,
   sendErrorResponse,
@@ -134,6 +142,74 @@ exports.deleteVariantGroup = async (req, res) => {
   }
 };
 
+// 批量删除变体组/ASIN
+exports.batchDeleteVariantGroups = async (req, res) => {
+  try {
+    const { groupIds = [], asinIds = [], useAsync } = req.body || {};
+    const analysis = await analyzeBatchDelete({
+      domain: 'asin',
+      groupIds,
+      asinIds,
+    });
+    const shouldUseAsync = shouldUseAsyncForBatchDelete(analysis, useAsync);
+
+    if (shouldUseAsync) {
+      const taskId = createBatchDeleteTaskId();
+      const userId = req.user?.userId || req.user?.id || req.userId || null;
+      const now = new Date().toISOString();
+      const title = '批量删除变体组';
+
+      await taskRegistryService.createTask({
+        taskId,
+        taskType: 'batch-delete',
+        taskSubType: 'variant-group-delete',
+        title,
+        userId,
+        message: '批量删除任务已创建，等待处理',
+      });
+
+      await batchDeleteTaskQueue.enqueue({
+        taskId,
+        taskType: 'batch-delete',
+        taskSubType: 'variant-group-delete',
+        title,
+        domain: 'asin',
+        groupIds: analysis.requestedGroupIds,
+        asinIds: analysis.requestedAsinIds,
+        userId,
+        createdAt: now,
+      });
+
+      logger.info('[批量删除] 创建主营后台任务成功', {
+        taskId,
+        totalRequested: analysis.totalRequested,
+        estimatedAsinCount: analysis.estimatedAsinCount,
+        userId,
+      });
+
+      return sendSuccessResponse(res, {
+        mode: 'async',
+        taskId,
+        status: 'pending',
+        totalRequested: analysis.totalRequested,
+        estimatedAsinCount: analysis.estimatedAsinCount,
+      });
+    }
+
+    const result = await executeBatchDelete({
+      domain: 'asin',
+      groupIds,
+      asinIds,
+    });
+    sendSuccessResponse(res, result);
+  } catch (error) {
+    if (error.statusCode === 400) {
+      return sendErrorResponse(res, 400, error.message);
+    }
+    handleControllerError(error, req, res);
+  }
+};
+
 // 添加ASIN
 exports.createASIN = async (req, res) => {
   try {
@@ -163,6 +239,23 @@ exports.createASIN = async (req, res) => {
       asinType: asinType || null,
     });
     sendSuccessResponse(res, asinData);
+  } catch (error) {
+    if (error.statusCode === 400) {
+      return sendErrorResponse(res, 400, error.message);
+    }
+    handleControllerError(error, req, res);
+  }
+};
+
+// 批量添加ASIN
+exports.batchCreateASINs = async (req, res) => {
+  try {
+    const { items = [] } = req.body || {};
+    const result = await batchCreateASINs({
+      domain: 'asin',
+      items,
+    });
+    sendSuccessResponse(res, result);
   } catch (error) {
     if (error.statusCode === 400) {
       return sendErrorResponse(res, 400, error.message);

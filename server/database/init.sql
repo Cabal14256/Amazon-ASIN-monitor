@@ -109,9 +109,7 @@ CREATE TABLE IF NOT EXISTS `monitor_history` (
   INDEX `idx_country_hour_site_brand` (`country`, `hour_ts`, `site_snapshot`, `brand_snapshot`),
   INDEX `idx_country_day_site_brand` (`country`, `day_ts`, `site_snapshot`, `brand_snapshot`),
   INDEX `idx_hour_country_asin` (`hour_ts`, `country`, `asin_id`, `asin_code`, `is_broken`),
-  INDEX `idx_day_country_asin` (`day_ts`, `country`, `asin_id`, `asin_code`, `is_broken`),
-  FOREIGN KEY (`variant_group_id`) REFERENCES `variant_groups`(`id`) ON DELETE SET NULL,
-  FOREIGN KEY (`asin_id`) REFERENCES `asins`(`id`) ON DELETE SET NULL
+  INDEX `idx_day_country_asin` (`day_ts`, `country`, `asin_id`, `asin_code`, `is_broken`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='监控历史表';
 
 -- 监控历史聚合表（用于数据分析加速）

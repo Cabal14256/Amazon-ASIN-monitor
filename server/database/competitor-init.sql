@@ -56,7 +56,10 @@ CREATE TABLE IF NOT EXISTS `competitor_asins` (
 CREATE TABLE IF NOT EXISTS `competitor_monitor_history` (
   `id` BIGINT AUTO_INCREMENT PRIMARY KEY COMMENT '历史记录ID',
   `variant_group_id` VARCHAR(50) COMMENT '变体组ID',
+  `variant_group_name` VARCHAR(255) COMMENT '变体组名称快照（记录时的变体组名称）',
   `asin_id` VARCHAR(50) COMMENT 'ASIN ID',
+  `asin_code` VARCHAR(20) COMMENT 'ASIN编码快照（记录时的ASIN编码）',
+  `asin_name` VARCHAR(500) COMMENT 'ASIN名称快照（记录时的ASIN名称）',
   `check_type` VARCHAR(20) DEFAULT 'GROUP' COMMENT '检查类型: GROUP-变体组, ASIN-单个ASIN',
   `country` VARCHAR(10) NOT NULL COMMENT '国家',
   `is_broken` TINYINT(1) DEFAULT 0 COMMENT '检查结果: 0-正常, 1-异常',
@@ -67,9 +70,7 @@ CREATE TABLE IF NOT EXISTS `competitor_monitor_history` (
   INDEX `idx_variant_group_id` (`variant_group_id`),
   INDEX `idx_asin_id` (`asin_id`),
   INDEX `idx_check_time` (`check_time`),
-  INDEX `idx_country` (`country`),
-  FOREIGN KEY (`variant_group_id`) REFERENCES `competitor_variant_groups`(`id`) ON DELETE SET NULL,
-  FOREIGN KEY (`asin_id`) REFERENCES `competitor_asins`(`id`) ON DELETE SET NULL
+  INDEX `idx_country` (`country`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='竞品监控历史表';
 
 -- 竞品飞书通知配置表（按区域配置：US和EU）

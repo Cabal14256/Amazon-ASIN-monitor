@@ -14,7 +14,8 @@ import React, {
   useState,
 } from 'react';
 
-const { addASIN, modifyASIN, queryVariantGroupList } = services.ASINController;
+const { batchCreateASINs, modifyASIN, queryVariantGroupList } =
+  services.ASINController;
 
 const ASIN_CODE_PATTERN = /^[A-Z0-9]{10}$/;
 
@@ -111,23 +112,20 @@ const ASINForm: React.FC<ASINFormProps> = (props) => {
           message.success('更新成功');
         } else {
           const asinCodes = uniqueASINCodes(splitASINCodes(formValues.asin));
-          const failures: Array<{ asin: string; message: string }> = [];
-          let successCount = 0;
-
-          for (const asin of asinCodes) {
-            try {
-              await addASIN({
-                ...formValues,
-                asin,
-              });
-              successCount += 1;
-            } catch (error: any) {
-              failures.push({
-                asin,
-                message: getErrorMessage(error, '创建失败'),
-              });
-            }
-          }
+          const response = await batchCreateASINs({
+            items: asinCodes.map((asin) => ({
+              ...formValues,
+              asin,
+            })),
+          });
+          const batchResult = response?.data || response;
+          const successCount = Number(batchResult?.successCount || 0);
+          const failures: Array<{ asin: string; message: string }> = (
+            batchResult?.errors || []
+          ).map((error: any) => ({
+            asin: error.asin || '',
+            message: error.message || '创建失败',
+          }));
 
           if (failures.length > 0) {
             const failureSummary = failures

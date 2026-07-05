@@ -20,6 +20,12 @@ const validateFileUpload = (req, res, next) => {
 router.get('/variant-groups', asinController.getVariantGroups);
 router.get('/variant-groups/:groupId', asinController.getVariantGroupById);
 router.post('/variant-groups', asinController.createVariantGroup);
+router.post(
+  '/variant-groups/batch-delete',
+  authenticateToken,
+  checkPermission('asin:delete'),
+  asinController.batchDeleteVariantGroups,
+);
 router.put('/variant-groups/:groupId', asinController.updateVariantGroup);
 router.delete('/variant-groups/:groupId', asinController.deleteVariantGroup);
 router.put(
@@ -35,6 +41,12 @@ router.put(
 
 // ASIN路由
 router.post('/asins', asinController.createASIN);
+router.post(
+  '/asins/batch-create',
+  authenticateToken,
+  checkPermission('asin:write'),
+  asinController.batchCreateASINs,
+);
 router.put('/asins/:asinId', asinController.updateASIN);
 router.delete('/asins/:asinId', asinController.deleteASIN);
 router.post('/asins/:asinId/move', asinController.moveASIN);

@@ -1192,105 +1192,134 @@ async function batchQueryParentAsin(asinList, country, options = {}) {
     throw new Error('没有有效的ASIN');
   }
 
-  logger.info(
-    `[batchQueryParentAsin] 开始批量查询 ${cleanAsinList.length} 个ASIN的父变体 (${country})`,
-  );
-
   const onProgress =
     typeof options.onProgress === 'function' ? options.onProgress : null;
+  const configuredConcurrency =
+    Number(options.concurrency || process.env.PARENT_ASIN_QUERY_CONCURRENCY) ||
+    5;
+  const concurrency = Math.max(
+    1,
+    Math.min(Math.floor(configuredConcurrency), cleanAsinList.length),
+  );
   let completedCount = 0;
 
-  const queryResults = await Promise.all(
-    cleanAsinList.map(async (asin) => {
-      try {
-        // 强制刷新，不使用缓存，确保获取最新数据
-        const result = await checkASINVariants(
-          asin,
-          country,
-          true,
-          PRIORITY.MANUAL,
-        );
-
-        const parentAsinRaw = result?.details?.parentAsin || null;
-        const parentAsin = parentAsinRaw
-          ? String(parentAsinRaw).trim().toUpperCase()
-          : null;
-        const hasParentAsin = !!parentAsin;
-
-        return {
-          asin,
-          hasParentAsin,
-          parentAsin,
-          title: result?.details?.title || '',
-          brand: result?.details?.brand || null,
-          hasVariants: result?.hasVariants || false,
-          variantCount: result?.variantCount || 0,
-          error: null,
-        };
-      } catch (error) {
-        logger.error(
-          `[batchQueryParentAsin] 查询ASIN ${asin} 失败:`,
-          error.message || error,
-        );
-
-        return {
-          asin,
-          hasParentAsin: false,
-          parentAsin: null,
-          title: '',
-          brand: null,
-          hasVariants: false,
-          variantCount: 0,
-          error: error.message || '查询失败',
-        };
-      } finally {
-        completedCount += 1;
-        if (onProgress) {
-          onProgress({
-            asin,
-            completed: completedCount,
-            total: cleanAsinList.length,
-          });
-        }
-      }
-    }),
+  logger.info(
+    `[batchQueryParentAsin] 开始批量查询 ${cleanAsinList.length} 个ASIN的父变体 (${country})，并发=${concurrency}`,
   );
 
-  const parentTitlePromises = new Map();
+  async function runWithConcurrency(items, worker) {
+    const output = new Array(items.length);
+    let nextIndex = 0;
+
+    const workers = Array.from(
+      { length: Math.min(concurrency, items.length) },
+      async () => {
+        while (nextIndex < items.length) {
+          const currentIndex = nextIndex;
+          nextIndex += 1;
+          output[currentIndex] = await worker(
+            items[currentIndex],
+            currentIndex,
+          );
+        }
+      },
+    );
+
+    await Promise.all(workers);
+    return output;
+  }
+
+  const queryResults = await runWithConcurrency(cleanAsinList, async (asin) => {
+    try {
+      // 强制刷新，不使用缓存，确保获取最新数据
+      const result = await checkASINVariants(
+        asin,
+        country,
+        true,
+        PRIORITY.MANUAL,
+      );
+
+      const parentAsinRaw = result?.details?.parentAsin || null;
+      const parentAsin = parentAsinRaw
+        ? String(parentAsinRaw).trim().toUpperCase()
+        : null;
+      const hasParentAsin = !!parentAsin;
+
+      return {
+        asin,
+        hasParentAsin,
+        parentAsin,
+        title: result?.details?.title || '',
+        brand: result?.details?.brand || null,
+        hasVariants: result?.hasVariants || false,
+        variantCount: result?.variantCount || 0,
+        error: null,
+      };
+    } catch (error) {
+      logger.error(
+        `[batchQueryParentAsin] 查询ASIN ${asin} 失败:`,
+        error.message || error,
+      );
+
+      return {
+        asin,
+        hasParentAsin: false,
+        parentAsin: null,
+        title: '',
+        brand: null,
+        hasVariants: false,
+        variantCount: 0,
+        error: error.message || '查询失败',
+      };
+    } finally {
+      completedCount += 1;
+      if (onProgress) {
+        onProgress({
+          asin,
+          completed: completedCount,
+          total: cleanAsinList.length,
+        });
+      }
+    }
+  });
+
+  const parentTitleTasks = [];
+  const parentTitleMap = new Map();
+  const scheduledParentAsins = new Set();
   for (const result of queryResults) {
     if (result.error || !result.parentAsin) continue;
 
     const parentAsin = result.parentAsin;
-    if (parentTitlePromises.has(parentAsin)) continue;
+    if (scheduledParentAsins.has(parentAsin)) continue;
+    scheduledParentAsins.add(parentAsin);
 
     if (parentAsin === result.asin) {
-      parentTitlePromises.set(parentAsin, Promise.resolve(result.title || ''));
+      parentTitleMap.set(parentAsin, result.title || '');
       continue;
     }
 
-    parentTitlePromises.set(
+    parentTitleTasks.push({
       parentAsin,
-      checkASINVariants(parentAsin, country, false, PRIORITY.MANUAL)
-        .then((parentResult) => parentResult?.details?.title || '')
-        .catch((error) => {
-          logger.warn(
-            `[batchQueryParentAsin] 获取父体标题失败: ${parentAsin}`,
-            error.message || error,
-          );
-          return '';
-        }),
-    );
+    });
   }
 
-  const parentTitleMap = new Map();
-  await Promise.all(
-    Array.from(parentTitlePromises.entries()).map(
-      async ([parentAsin, promise]) => {
-        const title = await promise;
-        parentTitleMap.set(parentAsin, title);
-      },
-    ),
-  );
+  await runWithConcurrency(parentTitleTasks, async ({ parentAsin }) => {
+    try {
+      const parentResult = await checkASINVariants(
+        parentAsin,
+        country,
+        false,
+        PRIORITY.MANUAL,
+      );
+      parentTitleMap.set(parentAsin, parentResult?.details?.title || '');
+    } catch (error) {
+      logger.warn(
+        `[batchQueryParentAsin] 获取父体标题失败: ${parentAsin}`,
+        error.message || error,
+      );
+      parentTitleMap.set(parentAsin, '');
+    }
+  });
 
   const results = queryResults.map((result) => ({
     ...result,

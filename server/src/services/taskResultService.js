@@ -140,6 +140,45 @@ function normalizeBatchCheckTaskResult(result = {}, extra = {}) {
   });
 }
 
+function normalizeBatchDeleteTaskResult(result = {}, extra = {}) {
+  const total = Number(result.totalRequested || result.total) || 0;
+  const deletedGroupCount = Number(result.deletedGroupCount) || 0;
+  const deletedDirectAsinCount = Number(result.deletedDirectAsinCount) || 0;
+  const deletedNestedAsinCount = Number(result.deletedNestedAsinCount) || 0;
+  const skippedCount =
+    Number(result.skippedCount) ||
+    (Array.isArray(result.skipped?.groupIds)
+      ? result.skipped.groupIds.length
+      : 0) +
+      (Array.isArray(result.skipped?.asinIds)
+        ? result.skipped.asinIds.length
+        : 0);
+  const failedCount = Number(result.failedCount) || 0;
+  const warnings = normalizeWarnings(result.warnings);
+
+  if (skippedCount > 0) {
+    warnings.push(`有 ${skippedCount} 个删除目标不存在或已被删除`);
+  }
+  if (failedCount > 0) {
+    warnings.push(`有 ${failedCount} 个删除分块失败`);
+  }
+
+  return buildStructuredTaskResult({
+    ...result,
+    ...extra,
+    total,
+    totalRequested: total,
+    deletedGroupCount,
+    deletedDirectAsinCount,
+    deletedNestedAsinCount,
+    skippedCount,
+    failedCount,
+    summary: `共 ${total} 项，删除变体组 ${deletedGroupCount} 个，直接删除 ASIN ${deletedDirectAsinCount} 个，组内级联 ASIN ${deletedNestedAsinCount} 个，跳过 ${skippedCount} 个`,
+    verificationPassed: failedCount === 0,
+    warnings,
+  });
+}
+
 async function verifyDatabaseHealth() {
   try {
     const rows = await query('SELECT 1 AS ok');
@@ -179,6 +218,7 @@ module.exports = {
   getDownloadableTaskArtifact,
   inferMimeType,
   normalizeBatchCheckTaskResult,
+  normalizeBatchDeleteTaskResult,
   normalizeImportTaskResult,
   verifyDatabaseHealth,
 };
