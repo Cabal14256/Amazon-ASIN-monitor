@@ -30,7 +30,8 @@ database/
 │   ├── 023_add_analytics_fastpath.sql
 │   ├── 026_normalize_user_status_and_audit_permissions.sql
 │   ├── 027_normalize_competitor_schema.sql
-│   └── 028_add_variant_group_agg_table.sql
+│   ├── 028_add_variant_group_agg_table.sql
+│   └── 031_optimize_analytics_refresh_indexes.sql
 ├── MIGRATION.md                # 迁移说明文档
 └── README.md                   # 本文件
 ```
@@ -109,6 +110,7 @@ mysql -u root -p < server/database/competitor-init.sql
 - `026_normalize_user_status_and_audit_permissions.sql`: 统一用户状态字段并补齐角色/审计权限
 - `027_normalize_competitor_schema.sql`: 补齐旧版竞品库缺失的状态/通知/时间字段
 - `028_add_variant_group_agg_table.sql`: 添加变体组维度聚合表（variant-group 统计加速）
+- `031_optimize_analytics_refresh_indexes.sql`: 优化状态区间刷新与变体组聚合查询索引
 
 **执行方式**:
 
