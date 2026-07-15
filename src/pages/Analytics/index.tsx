@@ -1910,7 +1910,7 @@ const AnalyticsPageContent: React.FC<unknown> = () => {
 
       // 注意：后端目前只支持 Excel 格式
       await exportToExcel(
-        '/v1/export/monitor-history',
+        '/api/v1/export/monitor-history',
         queryParams,
         `监控历史_${dateRange[0].format('YYYY-MM-DD')}_${dateRange[1].format(
           'YYYY-MM-DD',

@@ -211,7 +211,7 @@ const ASINForm: React.FC<ASINFormProps> = (props) => {
           rules={[
             { required: true, message: '请输入ASIN编码' },
             {
-              validator: async (_, value) => {
+              validator: async (_rule: unknown, value?: string) => {
                 const asinCodes = splitASINCodes(value);
                 if (asinCodes.length === 0) {
                   throw new Error('请输入ASIN编码');

@@ -2,6 +2,7 @@
 import GlobalAlert from '@/components/GlobalAlert';
 import { logout } from '@/services/auth/AuthController';
 import { wsClient } from '@/services/websocket';
+import { resolveApiBaseURL, resolveApiRequest } from '@/utils/apiUrl';
 import { debugError, debugLog, debugWarn } from '@/utils/debug';
 import { clearToken, getToken, hasAuthSession } from '@/utils/token';
 import * as Icons from '@ant-design/icons';
@@ -624,49 +625,21 @@ export function rootContainer(container: React.ReactElement) {
   return React.createElement(AntdApp, null, container);
 }
 
-function normalizeBaseURL(baseURL: string): string {
-  return baseURL.trim().replace(/\/+$/, '');
-}
-
-function resolveRequestBaseURL(): string {
-  const configuredBaseURL = process.env.API_BASE_URL;
-  if (!configuredBaseURL) {
-    return '/api';
-  }
-
-  const normalizedBaseURL = normalizeBaseURL(configuredBaseURL);
-  if (normalizedBaseURL.endsWith('/api/v1')) {
-    return normalizedBaseURL.slice(0, -7);
-  }
-  if (normalizedBaseURL.endsWith('/api')) {
-    return normalizedBaseURL.slice(0, -4);
-  }
-  return normalizedBaseURL;
-}
-
-function dedupeApiPrefix(baseURL: string | undefined, url: string | undefined) {
-  if (!baseURL || !url) {
-    return baseURL;
-  }
-
-  const normalizedBaseURL = normalizeBaseURL(baseURL);
-  if (/\/api$/i.test(normalizedBaseURL) && /^\/api(\/|$)/i.test(url)) {
-    return normalizedBaseURL.slice(0, -4);
-  }
-  return normalizedBaseURL;
-}
-
 // 请求配置
 export const request = {
-  baseURL: resolveRequestBaseURL(),
+  baseURL: resolveApiBaseURL(process.env.API_BASE_URL),
   credentials: 'include' as const,
+  withCredentials: true,
   // 请求拦截器 - 添加Token
   requestInterceptors: [
     (config: any) => {
       if (typeof config.url === 'string') {
-        config.baseURL = dedupeApiPrefix(config.baseURL, config.url);
+        const resolvedRequest = resolveApiRequest(config.baseURL, config.url);
+        config.baseURL = resolvedRequest.baseURL;
+        config.url = resolvedRequest.url;
       }
       config.credentials = 'include';
+      config.withCredentials = true;
       const token = getToken();
       if (token && config.headers) {
         config.headers.Authorization = `Bearer ${token}`;

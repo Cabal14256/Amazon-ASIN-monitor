@@ -22,6 +22,7 @@
 | 016 | `016_add_snapshot_fields_to_monitor_history.sql` | 为监控历史表补充快照字段 | ✅ 已整合到 init.sql |
 | 017 | `017_optimize_monitor_history_indexes.sql` | 优化监控历史表索引 | ✅ 已整合到 init.sql |
 | 018 | `018_add_analytics_query_index.sql` | 添加数据分析查询索引 | ✅ 已整合到 init.sql |
+| 019 | `019_add_backup_config_table.sql` | 添加自动备份配置表 | ✅ 已整合到 init.sql |
 | 020 | `020_add_status_change_indexes.sql` | 添加状态变化查询索引 | ✅ 已整合到 init.sql |
 | 021 | `021_add_monitor_history_agg_table.sql` | 添加监控历史聚合表 | ✅ 已整合到 init.sql |
 | 022 | `022_add_monitor_history_agg_peak.sql` | 聚合表补充高峰期字段 | ✅ 已整合到 init.sql |
@@ -346,6 +347,22 @@ mysql -u root -p amazon_asin_monitor < server/database/migrations/018_add_analyt
 
 ---
 
+### 019: 添加自动备份配置表
+
+**文件**: `019_add_backup_config_table.sql`
+
+**说明**: 为已有数据库创建自动备份配置表，并写入默认关闭的备份计划。
+
+**执行方式**:
+
+```bash
+mysql -u root -p amazon_asin_monitor < server/database/migrations/019_add_backup_config_table.sql
+```
+
+> 全新安装无需单独执行 019；`init.sql` 已包含相同且幂等的表结构和默认配置。
+
+---
+
 ### 020: 添加状态变化查询索引
 
 **文件**: `020_add_status_change_indexes.sql`
@@ -487,6 +504,7 @@ mysql -u root -p amazon_asin_monitor < server/database/migrations/012_add_compos
 mysql -u root -p amazon_asin_monitor < server/database/migrations/016_add_snapshot_fields_to_monitor_history.sql
 mysql -u root -p amazon_asin_monitor < server/database/migrations/017_optimize_monitor_history_indexes.sql
 mysql -u root -p amazon_asin_monitor < server/database/migrations/018_add_analytics_query_index.sql
+mysql -u root -p amazon_asin_monitor < server/database/migrations/019_add_backup_config_table.sql
 mysql -u root -p amazon_asin_monitor < server/database/migrations/020_add_status_change_indexes.sql
 mysql -u root -p amazon_asin_monitor < server/database/migrations/021_add_monitor_history_agg_table.sql
 mysql -u root -p amazon_asin_monitor < server/database/migrations/022_add_monitor_history_agg_peak.sql

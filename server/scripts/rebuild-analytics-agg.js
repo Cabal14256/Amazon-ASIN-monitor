@@ -453,12 +453,17 @@ async function main() {
        LIMIT 20`,
     );
 
-    await analyticsCacheService.deleteByPrefix('statisticsByTime:');
-    await analyticsCacheService.deleteByPrefix('allCountriesSummary:');
-    await analyticsCacheService.deleteByPrefix('regionSummary:');
-    await analyticsCacheService.deleteByPrefix('periodSummary:');
-    await analyticsCacheService.deleteByPrefix('asinStatisticsByCountry:');
-    await analyticsCacheService.deleteByPrefix('asinStatisticsByVariantGroup:');
+    for (const prefix of [
+      'statisticsByTime:',
+      'allCountriesSummary:',
+      'regionSummary:',
+      'periodSummary:',
+      'asinStatisticsByCountry:',
+      'asinStatisticsByVariantGroup:',
+    ]) {
+      await analyticsCacheService.deleteByPrefix(prefix);
+      await analyticsCacheService.deleteByPrefix(`latest:${prefix}`);
+    }
 
     logger.info('[Agg Rebuild] 执行完成，结果汇总:', results);
   } catch (error) {

@@ -10,7 +10,10 @@
     "postinstall": "max setup",
     "prepare": "husky",
     "setup": "max setup",
-    "start": "npm run dev"
+    "start": "npm run dev",
+    "test:api-url": "node --test tests/api-url.test.js",
+    "test:contracts": "npm run test:api-url && npm run test:init-schema",
+    "test:init-schema": "node --test tests/init-schema.test.js"
   },
   "dependencies": {
     "@ant-design/icons": "^5.0.1",

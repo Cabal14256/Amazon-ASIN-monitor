@@ -975,7 +975,7 @@ const MonitorHistoryPage: React.FC<unknown> = () => {
                 exportType === 'statusChanges' ? '状态变动' : '监控历史';
 
               await exportToExcel(
-                '/v1/export/monitor-history',
+                '/api/v1/export/monitor-history',
                 queryParams,
                 filename,
               );

@@ -265,7 +265,7 @@ const CompetitorMonitorHistoryPage: React.FC<unknown> = () => {
                 }
 
                 await exportToExcel(
-                  '/v1/export/competitor-monitor-history',
+                  '/api/v1/export/competitor-monitor-history',
                   queryParams,
                   '竞品监控历史',
                 );
