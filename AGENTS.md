@@ -15,6 +15,14 @@
   - Use `logger` sanitization (mask keys like `password`, `token`, `secret`, `authorization`).
   - For error objects, log `message` and minimal context; avoid full payload dumps.
 
+## API URL Rules
+
+- Avoid direct URL concatenation like `${baseURL}${path}` without normalization.
+- Always normalize `baseURL` (remove trailing `/`) before request/export URL assembly.
+- When `baseURL` already ends with `/api` and request path also starts with `/api`, dedupe one `/api` prefix to prevent `/api/api/...`.
+- Keep request-layer and export-layer URL merge logic consistent to avoid environment-specific regressions.
+- Any API-related change should include a quick verification that request and export endpoints do not produce duplicated `/api` prefixes.
+
 ## Git and Branch Workflow
 
 - Treat `main` as protected. Never develop or commit directly on it.
@@ -32,3 +40,36 @@
 - If a pull request is abandoned, document its replacement or the reason, close it, and delete both local and remote branches.
 - Administrator bypass is only for recovering broken branch protection or CI, not for normal development.
 - Keep human-facing collaboration guidance in `CONTRIBUTING.md`; this section is the execution contract for repository agents.
+
+## PR Content Format
+
+- All PR descriptions should follow this structure in Markdown:
+
+```md
+## 背景与问题
+- 说明业务背景、用户可见问题、根因（如果已定位）。
+
+## 本次修复
+### 1) <修复点一标题>
+- 变更点
+- 变更点
+
+### 2) <修复点二标题>
+- 变更点
+- 变更点
+
+## 影响范围
+- 文件/模块
+- 文件/模块
+
+## 验证
+- 已执行的检查（命令 + 结果）
+- 未执行项及原因（如有）
+
+## 回归建议
+- 建议回归场景 1
+- 建议回归场景 2
+```
+
+- Keep section headings in Chinese exactly as above.
+- Ensure the “背景与问题” and “验证” sections are always present.
