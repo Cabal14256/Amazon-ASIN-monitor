@@ -57,28 +57,38 @@ server {
         proxy_cache_bypass $http_upgrade;
     }
 
-    # 后端API反向代理
+    # 后端 API 反向代理
     location /api {
-        proxy_pass http://127.0.0.1:3001/api/v1;
+        # 保留原始 /api/v1/... 路径，不要在 proxy_pass 中再次追加 /api，
+        # 否则不同环境下容易生成 /api/api/... 或 /api/v1/v1/...。
+        proxy_pass http://127.0.0.1:3001;
         proxy_http_version 1.1;
         proxy_set_header Upgrade $http_upgrade;
-        proxy_set_header Connection 'upgrade';
+        proxy_set_header Connection "upgrade";
         proxy_set_header Host $host;
         proxy_set_header X-Real-IP $remote_addr;
         proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
         proxy_set_header X-Forwarded-Proto $scheme;
         proxy_cache_bypass $http_upgrade;
         
-        # 超时设置
-        proxy_connect_timeout 600s;
-        proxy_send_timeout 600s;
-        proxy_read_timeout 600s;
+        # 超时设置（覆盖最长 15 分钟的数据分析请求并预留缓冲）
+        proxy_connect_timeout 1200s;
+        proxy_send_timeout 1200s;
+        proxy_read_timeout 1200s;
     }
 
     # 健康检查端点
-    location /health {
+    location = /health {
         proxy_pass http://127.0.0.1:3001/health;
         proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+    }
+
+    # 禁止访问敏感配置和版本控制文件
+    location ~ ^/(\.user\.ini|\.htaccess|\.git|\.env|\.svn|\.project|LICENSE|README\.md) {
+        return 404;
     }
 
     # 静态资源缓存

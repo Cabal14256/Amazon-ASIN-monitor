@@ -29,6 +29,49 @@ function alignTimeToSlotText(value, granularity) {
   return `${datePart} ${hourPart}:00:00`;
 }
 
+function getExpectedSlotCount(alignedStart, alignedEnd, granularity) {
+  const startDate = parseDateTimeInput(alignedStart);
+  const endDate = parseDateTimeInput(alignedEnd);
+  if (!startDate || !endDate || endDate < startDate) {
+    return 0;
+  }
+
+  if (granularity === 'month') {
+    return (
+      (endDate.getFullYear() - startDate.getFullYear()) * 12 +
+      (endDate.getMonth() - startDate.getMonth()) +
+      1
+    );
+  }
+
+  const stepMs =
+    granularity === 'day' ? 24 * 60 * 60 * 1000 : 60 * 60 * 1000;
+  return Math.floor((endDate.getTime() - startDate.getTime()) / stepMs) + 1;
+}
+
+function getRawSlotColumnForGranularity(granularity) {
+  if (granularity === 'month') {
+    return 'month_ts';
+  }
+  if (granularity === 'day') {
+    return 'day_ts';
+  }
+  return 'hour_ts';
+}
+
+function buildSlotTexts(alignedStart, alignedEnd, granularity) {
+  const endDate = parseDateTimeInput(alignedEnd);
+  let cursor = parseDateTimeInput(alignedStart);
+  const slots = [];
+
+  while (cursor && endDate && cursor <= endDate) {
+    slots.push(formatDateToSqlText(cursor));
+    cursor = addGranularity(cursor, granularity, 1);
+  }
+
+  return slots;
+}
+
 function formatDateToSqlText(date) {
   const yyyy = date.getFullYear();
   const mm = String(date.getMonth() + 1).padStart(2, '0');
@@ -76,6 +119,25 @@ function parseDateTimeInput(value) {
   }
   const parsed = new Date(normalized);
   return Number.isNaN(parsed.getTime()) ? null : parsed;
+}
+
+function isFullDayAlignedRange(startTime = '', endTime = '') {
+  const startDate = parseDateTimeInput(startTime);
+  const endDate = parseDateTimeInput(endTime);
+  if (!startDate || !endDate || endDate < startDate) {
+    return false;
+  }
+
+  const startAligned =
+    startDate.getHours() === 0 &&
+    startDate.getMinutes() === 0 &&
+    startDate.getSeconds() === 0;
+  const endAligned =
+    endDate.getHours() === 23 &&
+    endDate.getMinutes() === 59 &&
+    endDate.getSeconds() >= 0;
+
+  return startAligned && endAligned;
 }
 
 function buildAnalyticsMeta({
@@ -1171,18 +1233,18 @@ class MonitorHistory {
     void cacheService.deleteByPrefixAsync('monitorHistoryCount:');
     cacheService.deleteByPrefix('statusChangesCount:');
     void cacheService.deleteByPrefixAsync('statusChangesCount:');
-    void analyticsCacheService.deleteByPrefix('statisticsByTime:');
-    void analyticsCacheService.deleteByPrefix('allCountriesSummary:');
-    void analyticsCacheService.deleteByPrefix('regionSummary:');
-    void analyticsCacheService.deleteByPrefix('periodSummary:');
-    void analyticsCacheService.deleteByPrefix('asinStatisticsByCountry:');
-    void analyticsCacheService.deleteByPrefix('asinStatisticsByVariantGroup:');
-    analyticsCacheService.deleteByPrefix('statisticsByTime:');
-    analyticsCacheService.deleteByPrefix('allCountriesSummary:');
-    analyticsCacheService.deleteByPrefix('regionSummary:');
-    analyticsCacheService.deleteByPrefix('periodSummary:');
-    analyticsCacheService.deleteByPrefix('asinStatisticsByCountry:');
-    analyticsCacheService.deleteByPrefix('asinStatisticsByVariantGroup:');
+
+    [
+      'statisticsByTime:',
+      'allCountriesSummary:',
+      'regionSummary:',
+      'periodSummary:',
+      'asinStatisticsByCountry:',
+      'asinStatisticsByVariantGroup:',
+    ].forEach((prefix) => {
+      void analyticsCacheService.deleteByPrefix(prefix);
+      void analyticsCacheService.deleteByPrefix(`latest:${prefix}`);
+    });
   }
 
   // 查询监控历史列表
@@ -2004,6 +2066,7 @@ class MonitorHistory {
       sourceGranularity,
       startTime,
       endTime,
+      { country },
     );
     if (!isCovered) {
       throw new Error(`聚合表覆盖不足，回退原始表: ${aggTable}`);
@@ -2255,6 +2318,7 @@ class MonitorHistory {
       sourceGranularity,
       startTime,
       endTime,
+      { country },
     );
     if (!isCovered) {
       throw new Error('聚合表覆盖不足，回退原始表: monitor_history_agg');
@@ -2366,6 +2430,11 @@ class MonitorHistory {
       MonitorHistory.getRequestedSourceGranularity(params);
     let list = null;
     let source = 'raw';
+    const canUseDayAggFallback =
+      sourceGranularity === 'hour' &&
+      !sourceGranularityOverride &&
+      groupBy === 'day' &&
+      isFullDayAlignedRange(startTime, endTime);
     const useAgg =
       process.env.ANALYTICS_AGG_ENABLED !== '0' &&
       MonitorHistory.canUseAggForRange(sourceGranularity, startTime, endTime);
@@ -2377,10 +2446,11 @@ class MonitorHistory {
           sourceGranularity,
           startTime,
           endTime,
+          { country },
         );
         if (!isCovered) {
           logger.info(
-            '[统计查询] getStatisticsByTime 聚合表覆盖不足，回退原始表',
+            '[统计查询] getStatisticsByTime 聚合表覆盖不足，回退备用数据源',
           );
         } else {
           list = await MonitorHistory.getStatisticsByTimeFromAgg(params);
@@ -2400,6 +2470,36 @@ class MonitorHistory {
       } catch (error) {
         logger.warn(
           '[统计查询] getStatisticsByTime 聚合表读取失败，回退原始表',
+          error?.message || error,
+        );
+        list = null;
+      }
+    }
+
+    if (
+      list === null &&
+      canUseDayAggFallback &&
+      process.env.ANALYTICS_AGG_ENABLED !== '0'
+    ) {
+      try {
+        const isDayAggCovered = await MonitorHistory.isAggTableCoveringRange(
+          'monitor_history_agg',
+          'day',
+          startTime,
+          endTime,
+          { country },
+        );
+        if (isDayAggCovered) {
+          list = await MonitorHistory.getStatisticsByTimeFromAgg({
+            ...params,
+            sourceGranularityOverride: 'day',
+          });
+          logger.info('[统计查询] getStatisticsByTime 使用日聚合兜底');
+          source = 'agg:day-fallback';
+        }
+      } catch (error) {
+        logger.warn(
+          '[统计查询] getStatisticsByTime 日聚合兜底失败，回退原始表',
           error?.message || error,
         );
         list = null;
@@ -2751,21 +2851,223 @@ class MonitorHistory {
       return cached;
     }
 
-    const sql = `
-      SELECT
-        DATE_FORMAT(MIN(time_slot), '%Y-%m-%d %H:%i:%s') as min_slot,
-        DATE_FORMAT(MAX(time_slot), '%Y-%m-%d %H:%i:%s') as max_slot
-      FROM ${tableName}
-      WHERE granularity = ?
-    `;
-    const [row] = await query(sql, [granularity]);
+    const minRows = await query(
+      `
+        SELECT DATE_FORMAT(time_slot, '%Y-%m-%d %H:%i:%s') as slot
+        FROM ${tableName}
+        WHERE granularity = ?
+        ORDER BY time_slot ASC
+        LIMIT 1
+      `,
+      [granularity],
+    );
+    const maxRows = await query(
+      `
+        SELECT DATE_FORMAT(time_slot, '%Y-%m-%d %H:%i:%s') as slot
+        FROM ${tableName}
+        WHERE granularity = ?
+        ORDER BY time_slot DESC
+        LIMIT 1
+      `,
+      [granularity],
+    );
     const coverage = {
-      minSlot: row?.min_slot || '',
-      maxSlot: row?.max_slot || '',
+      minSlot: minRows?.[0]?.slot || '',
+      maxSlot: maxRows?.[0]?.slot || '',
       cachedAt: now,
     };
     AGG_COVERAGE_CACHE.set(cacheKey, coverage);
     return coverage;
+  }
+
+  static async hasMissingAggSlotsInRange(
+    tableName,
+    granularity,
+    startTime = '',
+    endTime = '',
+    options = {},
+  ) {
+    const allowedTables = new Set([
+      'monitor_history_agg',
+      'monitor_history_agg_dim',
+      'monitor_history_agg_variant_group',
+    ]);
+    if (!allowedTables.has(tableName)) {
+      throw new Error(`不支持的聚合表: ${tableName}`);
+    }
+
+    const alignedStart =
+      options.alignedStart || alignTimeToSlotText(startTime, granularity);
+    const alignedEnd =
+      options.alignedEnd || alignTimeToSlotText(endTime, granularity);
+    if (!alignedStart || !alignedEnd || alignedEnd < alignedStart) {
+      return false;
+    }
+
+    const expectedSlotCount = getExpectedSlotCount(
+      alignedStart,
+      alignedEnd,
+      granularity,
+    );
+    if (expectedSlotCount <= 0) {
+      return false;
+    }
+    const maxCoverageSlots =
+      Number(process.env.ANALYTICS_AGG_SLOT_COVERAGE_MAX_SLOTS) || 5000;
+    if (expectedSlotCount > maxCoverageSlots) {
+      logger.warn('[统计查询] 聚合表时间槽覆盖检查范围过大，回退备用数据源', {
+        tableName,
+        granularity,
+        expectedSlotCount,
+        maxCoverageSlots,
+        startTime,
+        endTime,
+      });
+      return true;
+    }
+
+    const cacheTtlMs =
+      Number(process.env.ANALYTICS_AGG_COVERAGE_CACHE_TTL_MS) || 60000;
+    const country = String(options.country || '').trim().toUpperCase();
+    const rawExtraWhere = String(options.rawExtraWhere || '').trim();
+    const cacheKey = [
+      'slotCoverage',
+      tableName,
+      granularity,
+      alignedStart,
+      alignedEnd,
+      startTime || '',
+      endTime || '',
+      country,
+      rawExtraWhere,
+    ].join(':');
+    const now = Date.now();
+    const cached = AGG_COVERAGE_CACHE.get(cacheKey);
+    if (cached && now - cached.cachedAt < cacheTtlMs) {
+      return Boolean(cached.hasMissing);
+    }
+
+    let countryClause = '';
+    const countryConditions = [];
+    if (country) {
+      if (country === 'EU') {
+        countryClause = ` AND country IN ('UK', 'DE', 'FR', 'IT', 'ES')`;
+      } else {
+        countryClause = ' AND country = ?';
+        countryConditions.push(country);
+      }
+    }
+
+    const expectedSlots = buildSlotTexts(alignedStart, alignedEnd, granularity);
+    const rows = await query(
+      `
+        SELECT DATE_FORMAT(time_slot, '%Y-%m-%d %H:%i:%s') as time_slot
+        FROM ${tableName}
+        WHERE granularity = ?
+          AND time_slot >= CAST(? AS DATETIME)
+          AND time_slot <= CAST(? AS DATETIME)
+          ${countryClause}
+        GROUP BY time_slot
+        ORDER BY time_slot ASC
+      `,
+      [granularity, alignedStart, alignedEnd, ...countryConditions],
+    );
+    const coveredSlots = new Set(
+      rows.map((row) => row?.time_slot).filter(Boolean),
+    );
+    const coveredSlotCount = coveredSlots.size;
+    const missingSlots = expectedSlots.filter((slot) => !coveredSlots.has(slot));
+    let firstMissingSlot = '';
+    for (const slot of missingSlots) {
+      const hasRawHistory = await MonitorHistory.hasRawHistoryForAggSlot(
+        granularity,
+        slot,
+        {
+          country,
+          rawExtraWhere,
+          startTime,
+          endTime,
+        },
+      );
+      if (hasRawHistory) {
+        firstMissingSlot = slot;
+        break;
+      }
+    }
+    const missingSlotCount = Math.max(0, expectedSlotCount - coveredSlotCount);
+    const hasMissing = Boolean(firstMissingSlot);
+
+    AGG_COVERAGE_CACHE.set(cacheKey, {
+      hasMissing,
+      coveredSlotCount,
+      expectedSlotCount,
+      firstMissingSlot,
+      cachedAt: now,
+    });
+
+    if (hasMissing) {
+      logger.info('[统计查询] 聚合表时间槽覆盖不足，回退备用数据源', {
+        tableName,
+        granularity,
+        coveredSlotCount,
+        expectedSlotCount,
+        missingSlotCount,
+        firstMissingSlot,
+        startTime,
+        endTime,
+      });
+    }
+
+    return hasMissing;
+  }
+
+  static async hasRawHistoryForAggSlot(granularity, slot, options = {}) {
+    const slotColumn = getRawSlotColumnForGranularity(granularity);
+    const country = String(options.country || '').trim().toUpperCase();
+    const rawExtraWhere = String(options.rawExtraWhere || '').trim();
+    let whereClause = `
+      WHERE mh.${slotColumn} = CAST(? AS DATETIME)
+        AND ${MonitorHistory.getAnalyticsAsinHistoryFilter(
+          'mh.check_type',
+          'mh.asin_id',
+          'mh.asin_code',
+        )}
+    `;
+    const conditions = [slot];
+
+    if (options.startTime) {
+      whereClause += ' AND mh.check_time >= ?';
+      conditions.push(options.startTime);
+    }
+
+    if (options.endTime) {
+      whereClause += ' AND mh.check_time <= ?';
+      conditions.push(options.endTime);
+    }
+
+    if (country) {
+      if (country === 'EU') {
+        whereClause += ` AND mh.country IN ('UK', 'DE', 'FR', 'IT', 'ES')`;
+      } else {
+        whereClause += ' AND mh.country = ?';
+        conditions.push(country);
+      }
+    }
+
+    if (rawExtraWhere) {
+      whereClause += ` AND ${rawExtraWhere}`;
+    }
+
+    const rows = await query(
+      `
+        SELECT 1
+        FROM monitor_history mh
+        ${whereClause}
+        LIMIT 1
+      `,
+      conditions,
+    );
+    return Array.isArray(rows) && rows.length > 0;
   }
 
   static async isAggTableCoveringRange(
@@ -2773,6 +3075,7 @@ class MonitorHistory {
     granularity,
     startTime = '',
     endTime = '',
+    options = {},
   ) {
     const coverage = await MonitorHistory.getAggRangeCoverage(
       tableName,
@@ -2799,6 +3102,11 @@ class MonitorHistory {
     if (alignedStart && coverage.minSlot > alignedStart) {
       return false;
     }
+    if (alignedStart && coverage.maxSlot < alignedStart) {
+      return false;
+    }
+
+    let completenessEnd = alignedEndForCheck;
     if (alignedEndForCheck && coverage.maxSlot < alignedEndForCheck) {
       // 允许聚合刷新存在小幅滞后，避免因为最后1~2小时未刷新而整体回退原始表
       const lagToleranceMs =
@@ -2818,6 +3126,23 @@ class MonitorHistory {
       ) {
         return false;
       }
+      completenessEnd = coverage.maxSlot;
+    }
+
+    const hasMissingSlots =
+      await MonitorHistory.hasMissingAggSlotsInRange(
+        tableName,
+        granularity,
+        startTime,
+        endTime,
+        {
+          ...options,
+          alignedStart,
+          alignedEnd: completenessEnd,
+        },
+      );
+    if (hasMissingSlots) {
+      return false;
     }
     return true;
   }
@@ -2888,6 +3213,11 @@ class MonitorHistory {
       }
     }
 
+    if (alignedStart && coverage.maxSlot < alignedStart) {
+      return false;
+    }
+
+    let completenessEnd = alignedEndForCheck;
     if (alignedEndForCheck && coverage.maxSlot < alignedEndForCheck) {
       const lagToleranceMs =
         (Number(process.env.ANALYTICS_AGG_ACCEPTABLE_LAG_MINUTES) || 120) *
@@ -2906,6 +3236,7 @@ class MonitorHistory {
       ) {
         return false;
       }
+      completenessEnd = coverage.maxSlot;
     }
 
     if (alignedStart && coverage.minSlot > alignedStart) {
@@ -2918,6 +3249,23 @@ class MonitorHistory {
       if (hasMissingRawHistory) {
         return false;
       }
+    }
+
+    const hasMissingSlots =
+      await MonitorHistory.hasMissingAggSlotsInRange(
+        'monitor_history_agg_variant_group',
+        granularity,
+        startTime,
+        endTime,
+        {
+          alignedStart,
+          alignedEnd: completenessEnd,
+          country,
+          rawExtraWhere: 'mh.variant_group_id IS NOT NULL',
+        },
+      );
+    if (hasMissingSlots) {
+      return false;
     }
 
     return true;
@@ -3013,6 +3361,7 @@ class MonitorHistory {
       sourceGranularity,
       startTime,
       endTime,
+      { country },
     );
     if (!isCovered) {
       throw new Error(`聚合表覆盖不足，回退原始表: ${aggTable}`);
@@ -3502,6 +3851,7 @@ class MonitorHistory {
       sourceGranularity,
       startTime,
       endTime,
+      { country },
     );
     if (!isCovered) {
       throw new Error('聚合表覆盖不足，回退原始表: monitor_history_agg');
@@ -4052,6 +4402,7 @@ class MonitorHistory {
       timeSlotGranularity,
       startTime,
       endTime,
+      { country },
     );
     if (!isCovered) {
       throw new Error(`聚合表覆盖不足，回退原始表: ${aggTable}`);
@@ -4509,6 +4860,7 @@ class MonitorHistory {
       sourceGranularity,
       startTime,
       endTime,
+      { country },
     );
     if (!isCovered) {
       throw new Error('聚合表覆盖不足，回退原始表: monitor_history_agg');

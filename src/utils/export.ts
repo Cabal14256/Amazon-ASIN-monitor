@@ -3,36 +3,11 @@ import { history } from '@umijs/max';
 import { Button, Modal, Progress, message } from 'antd';
 import React from 'react';
 import ReactDOM from 'react-dom/client';
+import { buildApiURL, normalizeApiPath, normalizeBaseURL } from './apiUrl';
 import { formatBeijingNow } from './beijingTime';
 import { debugError } from './debug';
 import { waitForTaskResult } from './task';
 import { getToken } from './token';
-
-function normalizeBaseURL(baseURL: string): string {
-  return baseURL.trim().replace(/\/+$/, '');
-}
-
-function resolveApiBaseURL(baseURL: string): string {
-  const normalizedBaseURL = normalizeBaseURL(baseURL);
-  if (normalizedBaseURL.endsWith('/api/v1')) {
-    return normalizedBaseURL.slice(0, -3);
-  }
-  return normalizedBaseURL;
-}
-
-function mergeApiURL(baseURL: string, path: string): string {
-  const normalizedBaseURL = resolveApiBaseURL(baseURL);
-  const normalizedPath = path.startsWith('/') ? path : `/${path}`;
-
-  if (
-    /\/api$/i.test(normalizedBaseURL) &&
-    /^\/api(\/|$)/i.test(normalizedPath)
-  ) {
-    return `${normalizedBaseURL.slice(0, -4)}${normalizedPath}`;
-  }
-
-  return `${normalizedBaseURL}${normalizedPath}`;
-}
 
 function getExportDateSuffix(): string {
   return formatBeijingNow('YYYY-MM-DD');
@@ -42,17 +17,12 @@ function getExportDateSuffix(): string {
  * 获取API基础URL
  */
 export function getBaseURL(): string {
-  // 生产环境：使用环境变量或默认值
-  if (process.env.NODE_ENV === 'production') {
-    return resolveApiBaseURL(process.env.API_BASE_URL || '/api');
-  }
-  // 开发环境：使用代理路径
-  return resolveApiBaseURL('/api');
+  return normalizeBaseURL(process.env.API_BASE_URL);
 }
 
 /**
  * 构建完整的导出URL
- * @param path 相对路径（如 '/v1/export/asin'）
+ * @param path 相对路径（如 '/api/v1/export/asin'）
  * @param params 查询参数
  */
 export function buildExportURL(
@@ -60,7 +30,7 @@ export function buildExportURL(
   params: Record<string, any> = {},
 ): string {
   const baseURL = getBaseURL();
-  const fullURL = mergeApiURL(baseURL, path);
+  const fullURL = buildApiURL(baseURL, path);
 
   const queryParams = new URLSearchParams();
   Object.keys(params).forEach((key) => {
@@ -197,21 +167,13 @@ const ProgressModal: React.FC<ProgressModalProps> = ({
  * 导出类型映射
  */
 const EXPORT_TYPE_MAP: Record<string, string> = {
-  '/v1/export/asin': 'asin',
   '/api/v1/export/asin': 'asin',
-  '/v1/export/monitor-history': 'monitor-history',
   '/api/v1/export/monitor-history': 'monitor-history',
-  '/v1/export/variant-group': 'variant-group',
   '/api/v1/export/variant-group': 'variant-group',
-  '/v1/export/competitor-asin': 'competitor-asin',
   '/api/v1/export/competitor-asin': 'competitor-asin',
-  '/v1/export/competitor-variant-group': 'competitor-variant-group',
   '/api/v1/export/competitor-variant-group': 'competitor-variant-group',
-  '/v1/export/competitor-monitor-history': 'competitor-monitor-history',
   '/api/v1/export/competitor-monitor-history': 'competitor-monitor-history',
-  '/v1/export/analytics-monthly-breakdown': 'analytics-monthly-breakdown',
   '/api/v1/export/analytics-monthly-breakdown': 'analytics-monthly-breakdown',
-  '/v1/export/parent-asin-query': 'parent-asin-query',
   '/api/v1/export/parent-asin-query': 'parent-asin-query',
 };
 
@@ -220,7 +182,7 @@ function normalizeExportPath(url: string): string {
     return url;
   }
 
-  return url.startsWith('/api/') ? url.replace(/^\/api/i, '') : url;
+  return normalizeApiPath(url).split(/[?#]/, 1)[0];
 }
 
 function buildAuthHeaders(
@@ -304,7 +266,7 @@ async function downloadBlobWithAuth(
 
 /**
  * 后台任务导出（使用任务队列）
- * @param url 导出API地址（相对路径，如 '/v1/export/asin'）
+ * @param url 导出API地址（相对路径，如 '/api/v1/export/asin'）
  * @param params 查询参数
  * @param filename 文件名（不含扩展名）
  */
@@ -425,7 +387,7 @@ export async function exportToExcelAsync(
 
     // 创建导出任务
     const createTaskResponse = await fetch(
-      mergeApiURL(baseURL, '/v1/tasks/export'),
+      buildApiURL(baseURL, '/api/v1/tasks/export'),
       {
         method: 'POST',
         headers: buildAuthHeaders(token, true),
@@ -489,9 +451,9 @@ export async function exportToExcelAsync(
         }
 
         await downloadBlobWithAuth(
-          mergeApiURL(
+          buildApiURL(
             baseURL,
-            completedTask.downloadUrl || `/v1/tasks/${taskId}/download`,
+            completedTask.downloadUrl || `/api/v1/tasks/${taskId}/download`,
           ),
           token,
           fallbackFilename,
@@ -528,7 +490,7 @@ export async function exportToExcelAsync(
 
 /**
  * 导出数据为Excel（带进度条）
- * @param url 导出API地址（相对路径，如 '/v1/export/asin'）
+ * @param url 导出API地址（相对路径，如 '/api/v1/export/asin'）
  * @param params 查询参数
  * @param filename 文件名（不含扩展名）
  * @param useAsync 是否使用后台任务模式（默认true）
@@ -583,7 +545,7 @@ export async function exportToExcel(
 
     // 获取baseURL并构建完整URL
     const baseURL = getBaseURL();
-    const fullUrl = `${mergeApiURL(baseURL, url)}?${queryParams.toString()}`;
+    const fullUrl = `${buildApiURL(baseURL, url)}?${queryParams.toString()}`;
 
     // 使用 fetch + ReadableStream 接收 SSE 进度更新（因为需要自定义 headers）
     const response = await fetch(fullUrl, {
@@ -661,18 +623,22 @@ export async function exportToExcel(
                       currentModalState: typeof modalState,
                       currentRoot: typeof root,
                       currentProgressContainer: typeof progressContainer,
+                      currentBaseURL: string,
                       currentFullUrl: string,
                       currentToken: string | null,
                       currentFilename: string | undefined,
                     ) => {
                       setTimeout(async () => {
                         try {
-                          const redirectUrl =
-                            redirectData.downloadUrl ||
-                            currentFullUrl.replace(
-                              'useProgress=true',
-                              'useProgress=false',
-                            );
+                          const redirectUrl = redirectData.downloadUrl
+                            ? buildApiURL(
+                                currentBaseURL,
+                                redirectData.downloadUrl,
+                              )
+                            : currentFullUrl.replace(
+                                'useProgress=true',
+                                'useProgress=false',
+                              );
                           const redirectResponse = await fetch(redirectUrl, {
                             method: 'GET',
                             headers: buildAuthHeaders(currentToken),
@@ -734,6 +700,7 @@ export async function exportToExcel(
                       modalState,
                       root,
                       progressContainer,
+                      baseURL,
                       fullUrl,
                       token,
                       filename,

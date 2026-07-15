@@ -232,6 +232,22 @@ CREATE TABLE IF NOT EXISTS `sp_api_config` (
   INDEX `idx_config_key` (`config_key`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='SP-API配置表';
 
+-- 自动备份配置表
+CREATE TABLE IF NOT EXISTS `backup_config` (
+  `id` INT PRIMARY KEY AUTO_INCREMENT,
+  `enabled` TINYINT(1) DEFAULT 0 COMMENT '是否启用自动备份',
+  `schedule_type` VARCHAR(20) DEFAULT 'daily' COMMENT '备份频率: daily/weekly/monthly',
+  `schedule_value` INT DEFAULT NULL COMMENT '周几(1-7, 1=周一)或每月几号(1-31)',
+  `backup_time` VARCHAR(10) DEFAULT '02:00' COMMENT '备份时间 HH:mm',
+  `create_time` DATETIME DEFAULT CURRENT_TIMESTAMP,
+  `update_time` DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='自动备份配置表';
+
+-- 默认关闭自动备份；已有配置时不覆盖
+INSERT INTO `backup_config` (`enabled`, `schedule_type`, `backup_time`)
+SELECT 0, 'daily', '02:00'
+WHERE NOT EXISTS (SELECT 1 FROM `backup_config` LIMIT 1);
+
 -- 用户表
 CREATE TABLE IF NOT EXISTS `users` (
   `id` VARCHAR(50) PRIMARY KEY COMMENT '用户ID',

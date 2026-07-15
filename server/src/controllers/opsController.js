@@ -11,7 +11,7 @@ const {
 } = require('../services/workerProcessorRegistry');
 const logger = require('../utils/logger');
 
-const ANALYTICS_CACHE_PREFIXES = [
+const ANALYTICS_CACHE_BASE_PREFIXES = [
   'statisticsByTime:',
   'allCountriesSummary:',
   'regionSummary:',
@@ -19,6 +19,9 @@ const ANALYTICS_CACHE_PREFIXES = [
   'asinStatisticsByCountry:',
   'asinStatisticsByVariantGroup:',
 ];
+const ANALYTICS_CACHE_PREFIXES = ANALYTICS_CACHE_BASE_PREFIXES.flatMap(
+  (prefix) => [prefix, `latest:${prefix}`],
+);
 
 let lastAnalyticsCacheClearedAt = null;
 
