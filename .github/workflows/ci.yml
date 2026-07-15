@@ -23,10 +23,10 @@ jobs:
 
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: Set up Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v7
         with:
           node-version: 20
           cache: npm
@@ -44,7 +44,7 @@ jobs:
         run: npm run test:contracts
 
       - name: Run strict TypeScript check
-        run: npm exec -- tsc -- --noEmit --pretty false
+        run: npx --no-install tsc --noEmit --pretty false
 
       - name: Build production frontend
         run: npm run build
