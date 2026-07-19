@@ -1,239 +1,48 @@
-# 数据库文件说明
+# 数据库初始化
 
-本目录包含 Amazon ASIN 监控系统的所有数据库相关文件。
+本目录提供全新环境的数据库初始化脚本，以及已有数据库使用的历史迁移脚本。运行环境要求 MySQL 8.0+。
 
-## 目录结构
+## 文件职责
 
-```
-database/
-├── init.sql                    # 完整的数据库初始化脚本（包含所有最新字段和表）
-├── competitor-init.sql         # 竞品监控数据库初始化脚本
-├── migrations/                # 数据库迁移脚本目录
-│   ├── 001_add_asin_type.sql
-│   ├── 002_add_monitor_fields.sql
-│   ├── 003_add_site_and_brand.sql
-│   ├── 004_add_user_auth_tables.sql
-│   ├── 005_remove_batch_tables.sql
-│   ├── 006_add_audit_log_table.sql
-│   ├── 008_add_monitor_history_index.sql
-│   ├── 009_remove_user_email_and_reset_table.sql
-│   ├── 010_add_sessions_table.sql
-│   ├── 011_add_variant_group_fields.sql
-│   ├── 012_add_composite_indexes.sql
-│   ├── 013_add_competitor_variant_group_fields.sql
-│   ├── 016_add_snapshot_fields_to_monitor_history.sql
-│   ├── 017_optimize_monitor_history_indexes.sql
-│   ├── 018_add_analytics_query_index.sql
-│   ├── 019_add_backup_config_table.sql
-│   ├── 020_add_status_change_indexes.sql
-│   ├── 021_add_monitor_history_agg_table.sql
-│   ├── 022_add_monitor_history_agg_peak.sql
-│   ├── 023_add_analytics_fastpath.sql
-│   ├── 026_normalize_user_status_and_audit_permissions.sql
-│   ├── 027_normalize_competitor_schema.sql
-│   ├── 028_add_variant_group_agg_table.sql
-│   └── 031_optimize_analytics_refresh_indexes.sql
-├── MIGRATION.md                # 迁移说明文档
-└── README.md                   # 本文件
-```
+| 路径 | 用途 |
+| --- | --- |
+| `init.sql` | 创建主营数据库 `amazon_asin_monitor` 及当前完整 schema |
+| `competitor-init.sql` | 创建竞品数据库 `amazon_competitor_monitor` 及当前完整 schema |
+| `migrations/` | 已有数据库的历史人工迁移脚本，不是可自动连续执行的迁移链 |
+| `MIGRATION.md` | 已有数据库的备份、选取迁移、执行和验证指南 |
 
-## 文件说明
+两个初始化脚本都写死了上表中的数据库名，并在脚本内部执行 `USE`。仅修改 `.env` 中的 `DB_NAME` 或 `COMPETITOR_DB_NAME` 不会改变 SQL 的执行目标；如需自定义数据库名，应先复制并审查 SQL，再同步修改运行配置。
 
-### init.sql
+## 全新安装
 
-**用途**: 完整的数据库初始化脚本  
-**适用场景**:
-
-- 全新安装系统
-- 创建新的数据库实例
-- 生产环境部署
-
-**包含内容**:
-
-- 创建数据库 `amazon_asin_monitor`
-- 创建所有数据表（包含所有最新字段和索引）
-- 创建所有索引和外键约束
-- 插入默认角色和权限数据
-
-**执行方式**:
+在仓库根目录执行：
 
 ```bash
-mysql -u root -p < server/database/init.sql
+mysql --default-character-set=utf8mb4 -u root -p < server/database/init.sql
+mysql --default-character-set=utf8mb4 -u root -p < server/database/competitor-init.sql
 ```
 
-### competitor-init.sql
+运行配置应与初始化结果一致：
 
-**用途**: 竞品监控数据库初始化脚本  
-**适用场景**:
+| 数据库 | 后端配置 |
+| --- | --- |
+| `amazon_asin_monitor` | `DB_HOST`、`DB_PORT`、`DB_USER`、`DB_PASSWORD`、`DB_NAME` |
+| `amazon_competitor_monitor` | `COMPETITOR_DB_HOST`、`COMPETITOR_DB_PORT`、`COMPETITOR_DB_USER`、`COMPETITOR_DB_PASSWORD`、`COMPETITOR_DB_NAME` |
 
-- 创建竞品监控数据库实例
+若明确设置 `COMPETITOR_MONITOR_ENABLED=false`，可以不初始化竞品库。启用竞品监控时，必须保证 `COMPETITOR_DB_*` 指向已初始化的竞品 schema；数据库中的系统配置可能覆盖同名环境变量。
 
-**包含内容**:
-
-- 创建数据库 `amazon_competitor_monitor`
-- 创建竞品相关的所有数据表
-
-**执行方式**:
+## 初始化验证
 
 ```bash
-mysql -u root -p < server/database/competitor-init.sql
+mysql -u root -p -e "USE amazon_asin_monitor; SHOW TABLES;"
+mysql -u root -p -e "USE amazon_competitor_monitor; SHOW TABLES;"
+npm run test:init-schema
 ```
 
-### migrations/
+随后按根目录 README 创建管理员并启动后端，确认 `/health` 中数据库状态正常。
 
-**用途**: 数据库迁移脚本目录  
-**适用场景**:
+## 已有数据库
 
-- 已有数据库需要升级
-- 按版本逐步添加新功能
+不要对已有数据库重新执行初始化脚本来代替升级。`CREATE TABLE IF NOT EXISTS` 只会跳过已经存在的表，不会为旧表补列、改索引或回填数据，因而可能留下代码无法使用的混合 schema。
 
-**迁移脚本列表**:
-
-- `001_add_asin_type.sql`: 添加 ASIN 类型字段
-- `002_add_monitor_fields.sql`: 添加监控更新时间和飞书通知字段
-- `003_add_site_and_brand.sql`: 添加站点和品牌字段
-- `004_add_user_auth_tables.sql`: 添加用户认证和权限管理表
-- `005_remove_batch_tables.sql`: 删除批次管理相关表
-- `006_add_audit_log_table.sql`: 添加操作审计日志表
-- `008_add_monitor_history_index.sql`: 添加监控历史联合索引
-- `009_remove_user_email_and_reset_table.sql`: 移除用户表邮箱字段和密码重置表
-- `010_add_sessions_table.sql`: 添加多设备会话记录表
-- `011_add_variant_group_fields.sql`: 为变体组表添加监控字段
-- `012_add_composite_indexes.sql`: 添加复合索引优化查询性能
-- `013_add_competitor_variant_group_fields.sql`: 为竞品变体组表添加监控字段
-- `016_add_snapshot_fields_to_monitor_history.sql`: 为监控历史表补充快照字段
-- `017_optimize_monitor_history_indexes.sql`: 优化监控历史表索引
-- `018_add_analytics_query_index.sql`: 添加数据分析查询索引
-- `019_add_backup_config_table.sql`: 添加自动备份配置表
-- `020_add_status_change_indexes.sql`: 添加状态变化查询索引
-- `021_add_monitor_history_agg_table.sql`: 添加监控历史聚合表（数据分析加速）
-- `022_add_monitor_history_agg_peak.sql`: 聚合表补充高峰期字段（period-summary 加速）
-- `023_add_analytics_fastpath.sql`: 添加多维聚合快路径（站点/品牌）
-- `026_normalize_user_status_and_audit_permissions.sql`: 统一用户状态字段并补齐角色/审计权限
-- `027_normalize_competitor_schema.sql`: 补齐旧版竞品库缺失的状态/通知/时间字段
-- `028_add_variant_group_agg_table.sql`: 添加变体组维度聚合表（variant-group 统计加速）
-- `031_optimize_analytics_refresh_indexes.sql`: 优化状态区间刷新与变体组聚合查询索引
-
-**执行方式**:
-
-```bash
-# 按顺序执行迁移脚本
-mysql -u root -p amazon_asin_monitor < server/database/migrations/001_add_asin_type.sql
-mysql -u root -p amazon_asin_monitor < server/database/migrations/002_add_monitor_fields.sql
-# ... 依此类推
-```
-
-### MIGRATION.md
-
-**用途**: 详细的迁移说明文档  
-**内容**:
-
-- 每个迁移脚本的详细说明
-- 字段变更说明
-- 执行方式和注意事项
-
-## 使用指南
-
-### 场景 1: 全新安装（推荐）
-
-直接执行 `init.sql`，该文件已包含所有最新变更：
-
-```bash
-mysql -u root -p < server/database/init.sql
-```
-
-**优势**:
-
-- 一步完成所有表结构创建
-- 包含所有最新字段和索引
-- 无需执行迁移脚本
-- 适合生产环境部署
-
-### 场景 2: 已有数据库升级
-
-1. **备份数据库**（重要！）
-
-```bash
-mysqldump -u root -p amazon_asin_monitor > backup_$(date +%Y%m%d_%H%M%S).sql
-```
-
-2. **查看迁移文档**
-
-```bash
-cat server/database/MIGRATION.md
-```
-
-3. **按顺序执行迁移脚本**
-
-```bash
-# 按版本号顺序执行，跳过已执行的版本
-mysql -u root -p amazon_asin_monitor < server/database/migrations/001_add_asin_type.sql
-mysql -u root -p amazon_asin_monitor < server/database/migrations/002_add_monitor_fields.sql
-# ... 依此类推
-```
-
-如已启用竞品监控，旧版竞品库还需要执行：
-
-```bash
-mysql -u root -p amazon_competitor_monitor < server/database/migrations/013_add_competitor_variant_group_fields.sql
-mysql -u root -p amazon_competitor_monitor < server/database/migrations/027_normalize_competitor_schema.sql
-```
-
-## 数据库表结构
-
-### 核心业务表
-
-- `variant_groups`: 变体组表（包含监控字段和通知开关）
-- `asins`: ASIN 表（包含类型、监控时间、通知开关等字段）
-- `monitor_history`: 监控历史表（包含复合索引优化查询）
-- `monitor_history_agg`: 监控历史聚合表（数据分析加速）
-- `monitor_history_agg_dim`: 监控历史多维聚合表（站点/品牌分析加速）
-- `monitor_history_agg_variant_group`: 监控历史变体组聚合表（变体组分析加速）
-
-### 配置表
-
-- `feishu_config`: 飞书通知配置表
-- `sp_api_config`: SP-API 配置表
-- `backup_config`: 自动备份配置表（新装默认关闭）
-
-### 用户权限表
-
-- `users`: 用户表
-- `sessions`: 多设备会话表
-- `roles`: 角色表
-- `permissions`: 权限表
-- `user_roles`: 用户角色关联表
-- `role_permissions`: 角色权限关联表
-
-### 审计表
-
-- `audit_logs`: 操作审计日志表
-
-详细表结构请查看 `init.sql` 文件。
-
-## 注意事项
-
-1. ⚠️ **执行前务必备份数据库**
-2. ⚠️ **迁移脚本必须按版本号顺序执行**
-3. ⚠️ **建议先在测试环境验证**
-4. ✅ **新安装直接使用 `init.sql`，无需执行迁移脚本**
-5. ✅ `init.sql` 已包含所有最新字段、表和索引，适合生产环境部署
-
-## 版本历史
-
-- **v1.0**: 初始数据库结构
-- **v1.1**: 添加 ASIN 类型字段（001）
-- **v1.2**: 添加监控更新时间和飞书通知字段（002）
-- **v1.3**: 添加站点和品牌字段（003）
-- **v1.4**: 添加用户认证和权限管理（004）
-- **v1.5**: 删除批次管理相关表（005）
-- **v1.6**: 添加操作审计日志表（006）
-- **v1.7**: 添加监控历史联合索引（008）
-- **v1.8**: 移除用户邮箱字段和密码重置表（009）
-- **v1.9**: 添加多设备会话表（010）
-- **v2.0**: 为变体组表添加监控字段（011）
-- **v2.1**: 添加复合索引优化查询性能（012）
-- **v2.2**: 添加监控历史聚合表（021）
-- **v2.3**: 聚合表补充高峰期字段（022）
-
-**当前版本**: v2.3（init.sql 已包含所有变更）
+已有数据库必须先备份，再按 [`MIGRATION.md`](./MIGRATION.md) 比对实际结构并逐个选择迁移。当前 schema 的唯一完整参考是 `init.sql` 与 `competitor-init.sql`，不要依赖手工维护的版本号或表清单。

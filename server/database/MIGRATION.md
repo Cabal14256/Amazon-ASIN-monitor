@@ -1,556 +1,88 @@
-# 数据库迁移说明
+# 已有数据库升级指南
 
-本文档详细说明所有数据库迁移脚本的用途、执行方式和注意事项。
+本仓库没有自动迁移执行器，也没有记录已执行版本的 `schema_migrations` 表。`migrations/` 中的文件是历史补丁，存在编号重用、一次性 DDL 和数据回填，不能按文件名通配或仅按编号全部执行。
 
-## 迁移脚本列表
+## 升级流程
 
-| 版本 | 文件名 | 说明 | 状态 |
+1. 记录当前部署提交，并分别备份主营库和竞品库。
+
+   ```bash
+   git rev-parse HEAD
+   mysqldump --single-transaction --routines --triggers -u root -p amazon_asin_monitor > amazon_asin_monitor_before_upgrade.sql
+   mysqldump --single-transaction --routines --triggers -u root -p amazon_competitor_monitor > amazon_competitor_monitor_before_upgrade.sql
+   ```
+
+2. 把备份恢复到测试实例。所有候选迁移先在测试实例执行并记录耗时、锁表影响和行数变化。
+3. 若已知当前部署提交，用以下命令找出候选文件；候选文件仍需结合实际 schema 审查。
+
+   ```bash
+   git diff --name-only <deployed-commit>..origin/main -- server/database/migrations
+   ```
+
+4. 使用 `SHOW CREATE TABLE`、`SHOW INDEX` 和 `INFORMATION_SCHEMA` 对照初始化 SQL 及候选迁移。确认目标列、索引或表不存在，并检查迁移依赖的前置结构。
+5. 每次只执行一个经过确认的文件。脚本内含固定 `USE`，执行前必须核对目标数据库名。
+
+   ```bash
+   mysql --show-warnings --default-character-set=utf8mb4 -u root -p < server/database/migrations/<specific-file.sql>
+   ```
+
+6. 任一语句报错都应立即停止并检查实际 schema。不要把“重复列/索引”错误当作成功后继续执行后续文件；MySQL DDL 通常会隐式提交，不能依赖事务整体回滚。
+7. 复核表结构、索引、关键数据量和应用日志，再运行项目基线检查。聚合结构发生变化后，按维护窗口执行：
+
+   ```bash
+   npm --prefix server run rebuild:agg -- --yes --backup
+   ```
+
+## 编号与兼容性警告
+
+- `013`、`021`、`030` 均被不同迁移重复使用，编号不是唯一版本标识；始终使用完整文件名。
+- 当前 `021` 聚合建表脚本已经包含 `has_peak`。只有旧库的聚合表缺少该列时才执行 `022`；把当前两个文件连续执行会触发重复列错误。
+- 标记为“一次性”的脚本通常含无条件 `ADD COLUMN` 或 `ADD INDEX`，部分执行后再次运行也可能失败。
+- 删除、约束调整和大表回填必须在备份及测试实例验证后执行，并预留锁表和重建索引时间。
+
+## 迁移目录
+
+| 文件 | 目标数据库 | 用途 | 重复执行与主要风险 |
 | --- | --- | --- | --- |
-| 001 | `001_add_asin_type.sql` | 添加 ASIN 类型字段 | ✅ 已整合到 init.sql |
-| 002 | `002_add_monitor_fields.sql` | 添加监控更新时间和飞书通知字段 | ✅ 已整合到 init.sql |
-| 003 | `003_add_site_and_brand.sql` | 添加站点和品牌字段 | ✅ 已整合到 init.sql |
-| 004 | `004_add_user_auth_tables.sql` | 添加用户认证和权限管理表 | ✅ 已整合到 init.sql |
-| 005 | `005_remove_batch_tables.sql` | 删除批次管理相关表 | ⚠️ 仅用于升级 |
-| 006 | `006_add_audit_log_table.sql` | 添加操作审计日志表 | ✅ 已整合到 init.sql |
-| 008 | `008_add_monitor_history_index.sql` | 添加监控历史联合索引 | ✅ 已整合到 init.sql |
-| 009 | `009_remove_user_email_and_reset_table.sql` | 移除用户表邮箱字段和密码重置表 | ⚠️ 仅用于升级 |
-| 010 | `010_add_sessions_table.sql` | 添加多设备会话记录表 | ✅ 已整合到 init.sql |
-| 011 | `011_add_variant_group_fields.sql` | 为变体组表添加监控字段 | ✅ 已整合到 init.sql |
-| 012 | `012_add_composite_indexes.sql` | 添加复合索引优化查询性能 | ✅ 已整合到 init.sql |
-| 013 | `013_add_password_security_tables.sql` | 添加密码安全与登录安全相关表 | ✅ 已整合到 init.sql |
-| 013 | `013_add_competitor_variant_group_fields.sql` | 为竞品变体组表添加监控字段 | ⚠️ 仅用于升级（竞品库） |
-| 016 | `016_add_snapshot_fields_to_monitor_history.sql` | 为监控历史表补充快照字段 | ✅ 已整合到 init.sql |
-| 017 | `017_optimize_monitor_history_indexes.sql` | 优化监控历史表索引 | ✅ 已整合到 init.sql |
-| 018 | `018_add_analytics_query_index.sql` | 添加数据分析查询索引 | ✅ 已整合到 init.sql |
-| 019 | `019_add_backup_config_table.sql` | 添加自动备份配置表 | ✅ 已整合到 init.sql |
-| 020 | `020_add_status_change_indexes.sql` | 添加状态变化查询索引 | ✅ 已整合到 init.sql |
-| 021 | `021_add_monitor_history_agg_table.sql` | 添加监控历史聚合表 | ✅ 已整合到 init.sql |
-| 022 | `022_add_monitor_history_agg_peak.sql` | 聚合表补充高峰期字段 | ✅ 已整合到 init.sql |
-| 023 | `023_add_analytics_fastpath.sql` | 数据分析快路径优化（快照维度、时间槽生成列、聚合维度表） | ✅ 已整合到 init.sql |
-| 024 | `024_fix_missing_password_security_schema.sql` | 修复旧版 init.sql 缺失的密码安全字段与表 | ⚠️ 仅用于升级 |
-| 026 | `026_normalize_user_status_and_audit_permissions.sql` | 统一用户状态字段并补齐角色/审计权限 | ⚠️ 旧库升级必执行 |
-| 027 | `027_normalize_competitor_schema.sql` | 补齐旧版竞品库缺失的状态/通知/时间字段 | ⚠️ 使用竞品监控且库较旧时必执行 |
-| 028 | `028_add_variant_group_agg_table.sql` | 添加变体组维度聚合表（variant-group 统计加速） | ✅ 已整合到 init.sql |
-| 031 | `031_optimize_analytics_refresh_indexes.sql` | 优化状态区间刷新与变体组聚合查询索引 | ⚠️ 旧库升级建议执行 |
-
-> **注意**: 所有标记为 "✅ 已整合到 init.sql" 的迁移脚本，其功能已包含在 `init.sql` 中。新安装系统时直接使用 `init.sql` 即可，无需执行这些迁移脚本。竞品数据库相关的迁移脚本已整合到 `competitor-init.sql`。如果旧版竞品库报 `Unknown column 'vg.is_broken'`，请执行 `027_normalize_competitor_schema.sql`。如果旧库要启用变体组聚合加速，请执行 `028_add_variant_group_agg_table.sql` 并重建聚合表。
-
----
-
-## 迁移脚本详细说明
-
-### 001: 添加 ASIN 类型字段
-
-**文件**: `001_add_asin_type.sql`
-
-**说明**: 为 ASIN 表添加类型字段（主链/副评），替代之前的 main_link 和 sub_review 字段。
-
-**变更内容**:
-
-- 删除 `main_link` 和 `sub_review` 字段（如果存在）
-- 添加 `asin_type` 字段：`VARCHAR(20)`，可选值：`MAIN_LINK`（主链）、`SUB_REVIEW`（副评）
-- 添加索引 `idx_asin_type`
-
-**执行方式**:
-
-```bash
-mysql -u root -p amazon_asin_monitor < server/database/migrations/001_add_asin_type.sql
-```
-
----
-
-### 002: 添加监控更新时间和飞书通知字段
-
-**文件**: `002_add_monitor_fields.sql`
-
-**说明**: 为 ASIN 表添加监控更新时间和飞书通知开关字段。
-
-**变更内容**:
-
-- 添加 `last_check_time` 字段：`DATETIME`，记录上一次检查的时间
-- 添加 `feishu_notify_enabled` 字段：`TINYINT(1)`，默认值为 1（开启）
-- 添加索引 `idx_last_check_time` 和 `idx_feishu_notify_enabled`
-
-**执行方式**:
-
-```bash
-mysql -u root -p amazon_asin_monitor < server/database/migrations/002_add_monitor_fields.sql
-```
-
----
-
-### 003: 添加站点和品牌字段
-
-**文件**: `003_add_site_and_brand.sql`
-
-**说明**: 为变体组表和 ASIN 表添加站点和品牌字段。
-
-**变更内容**:
-
-- 为 `variant_groups` 表添加 `site` 和 `brand` 字段（必填）
-- 为 `asins` 表添加 `site` 和 `brand` 字段（必填）
-- 添加相应索引
-
-**字段说明**:
-
-- `site`: 内部店铺代号（如：12, 15, 20），不是 Amazon 站点信息
-- `brand`: 产品品牌名称（如：Apple, Samsung, Sony）
-
-**执行方式**:
-
-```bash
-mysql -u root -p amazon_asin_monitor < server/database/migrations/003_add_site_and_brand.sql
-```
-
----
-
-### 004: 添加用户认证和权限管理表
-
-**文件**: `004_add_user_auth_tables.sql`
-
-**说明**: 为系统添加用户认证、角色管理和权限控制功能。
-
-**变更内容**:
-
-- 创建 `users` 表（用户表）
-- 创建 `roles` 表（角色表）
-- 创建 `permissions` 表（权限表）
-- 创建 `user_roles` 表（用户角色关联表）
-- 创建 `role_permissions` 表（角色权限关联表）
-- 插入默认角色：READONLY（只读用户）、EDITOR（编辑用户）、ADMIN（管理员）
-- 插入默认权限和角色权限关联
-
-**执行方式**:
-
-```bash
-mysql -u root -p amazon_asin_monitor < server/database/migrations/004_add_user_auth_tables.sql
-```
-
----
-
-### 005: 删除批次管理相关表
-
-**文件**: `005_remove_batch_tables.sql`
-
-**说明**: 删除批次管理功能相关的表（批次管理功能已不再需要）。
-
-**变更内容**:
-
-- 删除 `batch_variant_groups` 表（批次变体组关联表）
-- 删除 `batches` 表（批次表）
-
-**注意事项**:
-
-- ⚠️ 执行前请备份数据库
-- ⚠️ 删除操作不可逆，请确认后再执行
-- ⚠️ 如果表中有数据，删除前请先导出备份
-
-**执行方式**:
-
-```bash
-mysql -u root -p amazon_asin_monitor < server/database/migrations/005_remove_batch_tables.sql
-```
-
----
-
-### 006: 添加操作审计日志表
-
-**文件**: `006_add_audit_log_table.sql`
-
-**说明**: 记录用户的所有操作，用于审计和追踪。
-
-**变更内容**:
-
-- 创建 `audit_logs` 表
-- 记录字段包括：用户信息、操作类型、资源信息、请求信息、响应状态等
-- 添加相关索引优化查询
-
-**执行方式**:
-
-```bash
-mysql -u root -p amazon_asin_monitor < server/database/migrations/006_add_audit_log_table.sql
-```
-
----
-
-### 008: 添加监控历史联合索引
-
-**文件**: `008_add_monitor_history_index.sql`
-
-**说明**: 为监控历史表添加国家+检查时间的联合索引，优化查询性能。
-
-**变更内容**:
-
-- 添加索引 `idx_country_check_time` (`country`, `check_time`)
-
-**执行方式**:
-
-```bash
-mysql -u root -p amazon_asin_monitor < server/database/migrations/008_add_monitor_history_index.sql
-```
-
----
-
-### 009: 移除用户表邮箱字段和密码重置表
-
-**文件**: `009_remove_user_email_and_reset_table.sql`
-
-**说明**: 取消邮箱字段与相关功能，简化用户模型。
-
-**变更内容**:
-
-- 删除 `users.email` 字段
-- 删除 `password_reset_tokens` 表（如果存在）
-
-**执行方式**:
-
-```bash
-mysql -u root -p amazon_asin_monitor < server/database/migrations/009_remove_user_email_and_reset_table.sql
-```
-
----
-
-### 010: 添加多设备会话记录表
-
-**文件**: `010_add_sessions_table.sql`
-
-**说明**: 为系统添加多设备登录会话管理功能。
-
-**变更内容**:
-
-- 创建 `sessions` 表
-- 支持多设备同时登录
-- 支持会话状态管理（ACTIVE/REVOKED）
-- 支持记住我功能
-
-**执行方式**:
-
-```bash
-mysql -u root -p amazon_asin_monitor < server/database/migrations/010_add_sessions_table.sql
-```
-
----
-
-### 011: 为变体组表添加监控字段
-
-**文件**: `011_add_variant_group_fields.sql`
-
-**说明**: 为变体组表添加监控更新时间和飞书通知开关字段。
-
-**变更内容**:
-
-- 添加 `last_check_time` 字段：`DATETIME`，记录上一次检查的时间
-- 添加 `feishu_notify_enabled` 字段：`TINYINT(1)`，默认值为 1（开启）
-- 添加相应索引
-
-**执行方式**:
-
-```bash
-mysql -u root -p amazon_asin_monitor < server/database/migrations/011_add_variant_group_fields.sql
-```
-
----
-
-### 012: 添加复合索引优化查询性能
-
-**文件**: `012_add_composite_indexes.sql`
-
-**说明**: 为频繁查询的字段组合添加复合索引，提升查询性能。
-
-**变更内容**:
-
-- 为 `asins` 表添加 `idx_variant_group_country_broken` 索引
-- 为 `monitor_history` 表添加 `idx_variant_group_check_time_broken` 索引
-- 为 `monitor_history` 表添加 `idx_country_check_time_broken` 索引
-- 为 `variant_groups` 表添加 `idx_country_broken` 索引
-
-**执行方式**:
-
-```bash
-mysql -u root -p amazon_asin_monitor < server/database/migrations/012_add_composite_indexes.sql
-```
-
----
-
-### 013: 为竞品变体组表添加监控字段
-
-**文件**: `013_add_competitor_variant_group_fields.sql`
-
-**说明**: 为竞品数据库的 `competitor_variant_groups` 表添加监控更新时间字段。
-
-**变更内容**:
-
-- 添加 `last_check_time` 字段：`DATETIME`，记录上一次检查的时间
-- 添加索引 `idx_last_check_time`
-
-**执行方式**:
-
-```bash
-mysql -u root -p amazon_competitor_monitor < server/database/migrations/013_add_competitor_variant_group_fields.sql
-```
-
----
-
-### 016: 为监控历史表补充快照字段
-
-**文件**: `016_add_snapshot_fields_to_monitor_history.sql`
-
-**说明**: 为监控历史表添加名称/编码快照字段，便于历史回溯与统计。
-
-**变更内容**:
-
-- 添加 `variant_group_name`、`asin_code`、`asin_name` 等快照字段
-- 回填已有数据快照（基于关联表）
-
-**执行方式**:
-
-```bash
-mysql -u root -p amazon_asin_monitor < server/database/migrations/016_add_snapshot_fields_to_monitor_history.sql
-```
-
----
-
-### 017: 优化监控历史表索引
-
-**文件**: `017_optimize_monitor_history_indexes.sql`
-
-**说明**: 根据常见查询模式添加复合索引，提高统计与筛选性能。
-
-**变更内容**:
-
-- 添加 `idx_check_time_country_broken` 索引
-- 添加 `idx_asin_code_country_check_time` 索引
-
-**执行方式**:
-
-```bash
-mysql -u root -p amazon_asin_monitor < server/database/migrations/017_optimize_monitor_history_indexes.sql
-```
-
----
-
-### 018: 添加数据分析查询索引
-
-**文件**: `018_add_analytics_query_index.sql`
-
-**说明**: 针对数据分析统计查询添加复合索引。
-
-**变更内容**:
-
-- 添加 `idx_country_time_broken_asin` 索引
-
-**执行方式**:
-
-```bash
-mysql -u root -p amazon_asin_monitor < server/database/migrations/018_add_analytics_query_index.sql
-```
-
----
-
-### 019: 添加自动备份配置表
-
-**文件**: `019_add_backup_config_table.sql`
-
-**说明**: 为已有数据库创建自动备份配置表，并写入默认关闭的备份计划。
-
-**执行方式**:
-
-```bash
-mysql -u root -p amazon_asin_monitor < server/database/migrations/019_add_backup_config_table.sql
-```
-
-> 全新安装无需单独执行 019；`init.sql` 已包含相同且幂等的表结构和默认配置。
-
----
-
-### 020: 添加状态变化查询索引
-
-**文件**: `020_add_status_change_indexes.sql`
-
-**说明**: 为状态变化窗口函数查询添加索引。
-
-**变更内容**:
-
-- 添加 `idx_asin_country_check_time_broken` 索引
-- 确保 `idx_asin_id` 索引存在
-
-**执行方式**:
-
-```bash
-mysql -u root -p amazon_asin_monitor < server/database/migrations/020_add_status_change_indexes.sql
-```
-
----
-
-### 021: 添加监控历史聚合表
-
-**文件**: `021_add_monitor_history_agg_table.sql`
-
-**说明**: 创建预聚合表，用于加速数据分析汇总接口。
-
-**变更内容**:
-
-- 新增 `monitor_history_agg` 表
-- 按 `granularity + time_slot + country + asin_key` 作为主键
-
-**执行方式**:
-
-```bash
-mysql -u root -p amazon_asin_monitor < server/database/migrations/021_add_monitor_history_agg_table.sql
-```
-
----
-
-### 022: 聚合表补充高峰期字段
-
-**文件**: `022_add_monitor_history_agg_peak.sql`
-
-**说明**: 为聚合表补充 `has_peak` 字段，用于 period-summary 统计加速。
-
-**变更内容**:
-
-- 添加 `has_peak` 字段
-
-**执行方式**:
-
-```bash
-mysql -u root -p amazon_asin_monitor < server/database/migrations/022_add_monitor_history_agg_peak.sql
-```
-
----
-
-### 028: 添加变体组维度聚合表
-
-**文件**: `028_add_variant_group_agg_table.sql`
-
-**说明**: 新增 `monitor_history_agg_variant_group`，用于加速“按变体组统计 ASIN 时长”这类分析查询。
-
-**变更内容**:
-
-- 新增 `monitor_history_agg_variant_group` 表
-- 按 `granularity + time_slot + country + variant_group_id + asin_key` 作为主键
-- 为变体组统计查询补充按国家、时间槽、变体组的索引
-
-**执行方式**:
-
-```bash
-mysql -u root -p amazon_asin_monitor < server/database/migrations/028_add_variant_group_agg_table.sql
-node server/scripts/rebuild-analytics-agg.js --yes
-```
-
----
-
-### 031: 优化数据分析刷新索引
-
-**文件**: `031_optimize_analytics_refresh_indexes.sql`
-
-**说明**: 为数据分析后台刷新补充索引，避免生产启动时状态区间刷新扫描并排序整张 `monitor_history` 大表。
-
-**变更内容**:
-
-- 为 `monitor_history` 添加 `idx_status_interval_refresh (check_type, check_time, id)`
-- 为 `monitor_history_agg_variant_group` 补齐 `idx_agg_variant_group_lookup (granularity, country, variant_group_id, time_slot)`
-
-**执行方式**:
-
-```bash
-mysql -u root -p amazon_asin_monitor < server/database/migrations/031_optimize_analytics_refresh_indexes.sql
-```
-
----
-
-### 027: 统一竞品库状态字段与基础时间字段
-
-**文件**: `027_normalize_competitor_schema.sql`
-
-**说明**: 为旧版竞品数据库补齐当前代码依赖的状态字段、通知字段和时间字段，修复 `Unknown column 'vg.is_broken'` 这类因 schema 落后导致的错误。
-
-**变更内容**:
-
-- 为 `competitor_variant_groups` 补齐 `is_broken`、`variant_status`、`feishu_notify_enabled`、`create_time`、`update_time`、`last_check_time`
-- 为 `competitor_asins` 补齐 `is_broken`、`variant_status`、`feishu_notify_enabled`、`create_time`、`update_time`、`last_check_time`
-- 为 `competitor_monitor_history` 补齐 `notification_sent`、`create_time`
-- 为 `competitor_feishu_config` 补齐 `enabled`、`create_time`、`update_time`
-- 回填空的 `variant_status`，并补齐当前代码查询依赖的非唯一索引
-
-**执行方式**:
-
-```bash
-mysql -u root -p amazon_competitor_monitor < server/database/migrations/027_normalize_competitor_schema.sql
-```
-
----
-
-## 迁移执行顺序
-
-如果您的数据库是从旧版本升级，请按以下顺序执行迁移脚本：
-
-```bash
-# 1. 备份数据库（重要！）
-mysqldump -u root -p amazon_asin_monitor > backup_$(date +%Y%m%d_%H%M%S).sql
-
-# 2. 按顺序执行迁移脚本
-mysql -u root -p amazon_asin_monitor < server/database/migrations/001_add_asin_type.sql
-mysql -u root -p amazon_asin_monitor < server/database/migrations/002_add_monitor_fields.sql
-mysql -u root -p amazon_asin_monitor < server/database/migrations/003_add_site_and_brand.sql
-mysql -u root -p amazon_asin_monitor < server/database/migrations/004_add_user_auth_tables.sql
-mysql -u root -p amazon_asin_monitor < server/database/migrations/005_remove_batch_tables.sql
-mysql -u root -p amazon_asin_monitor < server/database/migrations/006_add_audit_log_table.sql
-mysql -u root -p amazon_asin_monitor < server/database/migrations/008_add_monitor_history_index.sql
-mysql -u root -p amazon_asin_monitor < server/database/migrations/009_remove_user_email_and_reset_table.sql
-mysql -u root -p amazon_asin_monitor < server/database/migrations/010_add_sessions_table.sql
-mysql -u root -p amazon_asin_monitor < server/database/migrations/011_add_variant_group_fields.sql
-mysql -u root -p amazon_asin_monitor < server/database/migrations/012_add_composite_indexes.sql
-mysql -u root -p amazon_asin_monitor < server/database/migrations/016_add_snapshot_fields_to_monitor_history.sql
-mysql -u root -p amazon_asin_monitor < server/database/migrations/017_optimize_monitor_history_indexes.sql
-mysql -u root -p amazon_asin_monitor < server/database/migrations/018_add_analytics_query_index.sql
-mysql -u root -p amazon_asin_monitor < server/database/migrations/019_add_backup_config_table.sql
-mysql -u root -p amazon_asin_monitor < server/database/migrations/020_add_status_change_indexes.sql
-mysql -u root -p amazon_asin_monitor < server/database/migrations/021_add_monitor_history_agg_table.sql
-mysql -u root -p amazon_asin_monitor < server/database/migrations/022_add_monitor_history_agg_peak.sql
-mysql -u root -p amazon_asin_monitor < server/database/migrations/023_add_analytics_fastpath.sql
-mysql -u root -p amazon_asin_monitor < server/database/migrations/028_add_variant_group_agg_table.sql
-mysql -u root -p amazon_asin_monitor < server/database/migrations/031_optimize_analytics_refresh_indexes.sql
-```
-
-执行完 `028_add_variant_group_agg_table.sql` 后，建议立即执行：
-
-```bash
-node server/scripts/rebuild-analytics-agg.js --yes --skip-status-interval
-```
-
-竞品数据库迁移（如使用竞品监控功能）：
-
-```bash
-mysql -u root -p amazon_competitor_monitor < server/database/migrations/013_add_competitor_variant_group_fields.sql
-mysql -u root -p amazon_competitor_monitor < server/database/migrations/027_normalize_competitor_schema.sql
-```
-
-> **注意**: 如果您的数据库已经包含某些迁移的变更，可以跳过对应的迁移脚本。
-
----
-
-## 新安装推荐
-
-对于全新安装，**强烈推荐直接使用 `init.sql`**，该文件已包含所有最新变更：
-
-```bash
-mysql -u root -p < server/database/init.sql
-```
-
-这样可以：
-
-- 一步完成所有表结构创建
-- 避免迁移脚本执行顺序问题
-- 确保数据库结构完整一致
-- 适合生产环境部署
-
----
-
-## 注意事项
-
-1. ⚠️ **执行前务必备份数据库**
-2. ⚠️ **迁移脚本必须按版本号顺序执行**
-3. ⚠️ **建议先在测试环境验证**
-4. ✅ **新安装直接使用 `init.sql`，无需执行迁移脚本**
-5. ✅ **`init.sql` 已包含所有最新字段、表和索引，适合生产环境部署**
+| `001_add_asin_type.sql` | 主营 | 移除旧类型列并添加 `asin_type` | 一次性；删除旧列 |
+| `002_add_monitor_fields.sql` | 主营 | 添加 ASIN 检查时间和通知字段 | 一次性 DDL |
+| `003_add_site_and_brand.sql` | 主营 | 为变体组和 ASIN 添加站点、品牌 | 一次性；旧数据与非空列需先验证 |
+| `004_add_user_auth_tables.sql` | 主营 | 创建用户、角色和权限基础表 | 基本幂等；需核对旧用户表结构 |
+| `005_remove_batch_tables.sql` | 主营 | 删除旧批次表 | 可重复执行但会永久删除表和数据 |
+| `006_add_audit_log_table.sql` | 主营 | 创建审计日志表 | 幂等建表 |
+| `008_add_monitor_history_index.sql` | 主营 | 添加国家与检查时间索引 | 一次性索引 |
+| `009_remove_user_email_and_reset_table.sql` | 主营 | 删除邮箱列与密码重置表 | 一次性且会删除数据 |
+| `010_add_sessions_table.sql` | 主营 | 创建登录会话表 | 幂等建表 |
+| `011_add_variant_group_fields.sql` | 主营 | 添加变体组检查时间和通知字段 | 一次性 DDL |
+| `012_add_composite_indexes.sql` | 主营 | 添加业务查询复合索引 | 一次性索引 |
+| `013_add_competitor_variant_group_fields.sql` | 竞品 | 添加竞品变体组检查时间 | 一次性 DDL |
+| `013_add_password_security_tables.sql` | 主营 | 创建密码安全表并补用户安全字段 | 条件化补列；先核对 `users.status` |
+| `014_add_granular_permissions.sql` | 主营 | 补充细粒度权限与角色授权 | 幂等 upsert |
+| `015_change_asin_unique_to_composite.sql` | 主营 | 把 ASIN 唯一键改为 ASIN+国家 | 一次性；重复数据会导致建索引失败 |
+| `016_add_snapshot_fields_to_monitor_history.sql` | 主营 | 添加历史快照列并回填 | 一次性；大表更新 |
+| `017_optimize_monitor_history_indexes.sql` | 主营 | 添加历史查询索引 | 一次性索引 |
+| `018_add_analytics_query_index.sql` | 主营 | 添加分析查询索引 | 一次性索引 |
+| `019_add_backup_config_table.sql` | 主营 | 创建自动备份配置 | 幂等建表与默认数据 |
+| `020_add_status_change_indexes.sql` | 主营 | 添加状态变化查询索引 | 一次性索引 |
+| `021_add_monitor_history_agg_table.sql` | 主营 | 创建基础历史聚合表 | 幂等建表；当前定义已含 `has_peak` |
+| `021_optimize_variant_group_indexes.sql` | 主营 | 添加变体组和 ASIN 查询索引 | 一次性索引 |
+| `022_add_monitor_history_agg_peak.sql` | 主营 | 为旧聚合表补 `has_peak` | 一次性；当前 `021` 后不可再执行 |
+| `023_add_analytics_fastpath.sql` | 主营 | 添加历史维度快照、生成列和维度聚合表 | 一次性；历史回填和索引重建 |
+| `024_fix_missing_password_security_schema.sql` | 主营 | 幂等补齐密码安全 schema | 可重复执行；仍需确认外键前置表 |
+| `025_add_manual_variant_flags.sql` | 主营 | 添加人工异常标记 | 一次性 DDL |
+| `026_normalize_user_status_and_audit_permissions.sql` | 主营 | 规范用户状态并补角色、审计权限 | 条件化迁移；会改写用户状态 |
+| `027_normalize_competitor_schema.sql` | 竞品 | 创建或补齐旧竞品 schema | 基本幂等；会规范状态数据 |
+| `028_add_variant_group_agg_table.sql` | 主营 | 创建变体组维度聚合表 | 幂等建表；完成后重建聚合数据 |
+| `029_add_asin_group_manual_exclusion.sql` | 主营 | 添加人工排除父变体字段 | 一次性 DDL |
+| `030_add_analytics_rollup_and_status_interval.sql` | 主营 | 增加月聚合、水位和状态区间表 | 一次性；依赖此前聚合表 |
+| `030_optimize_batch_delete_history_fks.sql` | 主营与竞品 | 回填竞品历史快照并移除历史外键 | 条件化；大表回填和约束变更 |
+| `031_optimize_analytics_refresh_indexes.sql` | 主营 | 补充分析刷新索引 | 幂等条件索引 |
+
+## 验证清单
+
+- `SHOW TABLES` 与当前初始化 SQL 中的目标表一致。
+- `SHOW CREATE TABLE` 确认新增列类型、默认值、生成列和外键符合预期。
+- `SHOW INDEX` 确认候选索引存在且没有意外重复索引。
+- 登录、定时监控、竞品监控、数据分析和备份配置可正常访问。
+- 服务端日志没有 `Unknown column`、`Table doesn't exist` 或聚合刷新失败。
+- 完成 `npm run test:contracts`、TypeScript 检查、构建和 `git diff --check`。

@@ -303,28 +303,51 @@ function getConfigDescription(key) {
 // 获取限流器状态
 exports.getRateLimiterStatus = async (req, res) => {
   try {
-    const { region } = req.query;
-    if (region) {
-      const status = rateLimiter.getStatus(region);
-      res.json({
-        success: true,
-        data: { [region]: status },
-        errorCode: 0,
-      });
-    } else {
-      const usStatus = rateLimiter.getStatus('US');
-      const euStatus = rateLimiter.getStatus('EU');
-      res.json({
-        success: true,
-        data: {
-          US: usStatus,
-          EU: euStatus,
-        },
-        errorCode: 0,
+    const region = req.query.region
+      ? String(req.query.region).trim().toUpperCase()
+      : '';
+    const operation = req.query.operation
+      ? String(req.query.operation).trim()
+      : null;
+
+    if (region && !['US', 'EU'].includes(region)) {
+      return res.status(400).json({
+        success: false,
+        errorMessage: 'region 仅支持 US 或 EU',
+        errorCode: 400,
       });
     }
+
+    if (
+      operation &&
+      (operation === 'default' ||
+        !Object.prototype.hasOwnProperty.call(
+          rateLimiter.DEFAULT_OPERATION_CONFIGS,
+          operation,
+        ))
+    ) {
+      return res.status(400).json({
+        success: false,
+        errorMessage: 'operation 不受支持',
+        errorCode: 400,
+      });
+    }
+
+    const regions = region ? [region] : ['US', 'EU'];
+    const entries = await Promise.all(
+      regions.map(async (targetRegion) => [
+        targetRegion,
+        await rateLimiter.getStatusSnapshot(targetRegion, operation),
+      ]),
+    );
+
+    return res.json({
+      success: true,
+      data: Object.fromEntries(entries),
+      errorCode: 0,
+    });
   } catch (error) {
-    logger.error('获取限流器状态错误:', error);
+    logger.error('获取限流器状态错误:', error.message);
     res.status(500).json({
       success: false,
       errorMessage: error.message || '获取失败',

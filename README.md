@@ -103,7 +103,7 @@ mysql -u root -p < server/database/init.sql
 mysql -u root -p < server/database/competitor-init.sql
 ```
 
-`init.sql` 已包含自动备份使用的 `backup_config` 表及默认关闭的配置，新装无需额外执行 `019`。第二条命令用于独立竞品数据库；若不使用独立竞品库，请同步调整 `COMPETITOR_DB_*` 配置。旧库升级到自动备份功能时，仍应单独执行 `server/database/migrations/019_add_backup_config_table.sql`。
+`init.sql` 已包含自动备份使用的 `backup_config` 表及默认关闭的配置，新装无需额外执行 `019`。第二条命令创建固定的独立竞品数据库；只有明确关闭竞品监控时才可跳过。旧库升级到自动备份功能时，仍应按实际 schema 判断是否执行 `server/database/migrations/019_add_backup_config_table.sql`。
 
 已有数据库升级前必须先备份，再根据 [`server/database/MIGRATION.md`](./server/database/MIGRATION.md) 选择并执行迁移；不要用全新初始化流程替代升级流程。
 
@@ -175,7 +175,7 @@ curl http://localhost:3001/health
 
 区域配置缺失时会回退到全局 `SP_API_*`。如启用 `SP_API_USE_AWS_SIGNATURE=true`，还必须配置 Access Key、Secret Access Key 和 Role ARN。HTML 抓取及旧客户端兜底默认关闭，启用前应评估稳定性与合规风险。
 
-SP-API 有调用配额。优先通过监控间隔、批次数和 Worker 并发控制流量，不要把本地限流值设置得高于账号的实际配额。相关工具见：
+SP-API usage plan 按 operation 和账号等因素确定，本地 `SP_API_RATE_LIMIT_*` 只是区域保护上限。负载分析只估算定时任务，实时状态依赖 API/Worker 共用 Redis；不要把本地上限设置得高于账号的实际配额。相关工具见：
 
 ```bash
 npm --prefix server run analyze-quota
@@ -368,7 +368,7 @@ Amazon-ASIN-monitor/
 
 ### 监控频繁遇到 429
 
-降低监控并发、增加 `MONITOR_BATCH_COUNT`、延长调度间隔，并运行配额分析工具确认实际调用量。
+降低监控并发、增加 `MONITOR_BATCH_COUNT` 或延长调度间隔，并运行配额分析工具确认计划调用量。批次数增加会同步延长完整覆盖周期；实际 Amazon 限额仍需结合响应头和 429 判断。
 
 ### 健康检查返回 503
 
