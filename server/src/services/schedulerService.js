@@ -16,6 +16,7 @@ const backupService = require('./backupService');
 const { refreshRecentMonitorHistoryAgg } = require('./analyticsAggService');
 const metricsService = require('./metricsService');
 const { getUTC8ISOString, getUTC8String } = require('../utils/dateTime');
+const { calculateScheduledBatchIndex } = require('../utils/monitorBatch');
 const {
   getMonitorScheduleConfig,
   reloadMonitorScheduleConfig,
@@ -117,18 +118,19 @@ function runUSMonitorSchedule() {
   const start = Date.now();
   const now = new Date();
   const minute = now.getMinutes();
-  const hour = now.getHours();
+  const { usIntervalMinutes } = getMonitorScheduleConfig();
+  const batchIndex = calculateScheduledBatchIndex(
+    now,
+    usIntervalMinutes,
+    TOTAL_BATCHES,
+  );
 
   // --- Standard Monitor Task ---
   const usCountries = getCountriesToCheck('US', minute);
 
   if (usCountries.length > 0) {
     updateLastRun('us', 'lastStandardRun');
-    // 如果启用分批处理，计算当前批次
     if (TOTAL_BATCHES > 1) {
-      // 基于小时和分钟计算批次索引（0 到 TOTAL_BATCHES-1）
-      // 使用 (hour * 60 + minute) % TOTAL_BATCHES 来分散批次
-      const batchIndex = (hour * 60 + minute) % TOTAL_BATCHES;
       logger.info(
         `[定时任务] 标准监控（US）当前批次: ${batchIndex + 1}/${TOTAL_BATCHES}`,
       );
@@ -150,7 +152,6 @@ function runUSMonitorSchedule() {
     if (competitorUsCountries.length > 0) {
       updateLastRun('us', 'lastCompetitorRun');
       if (TOTAL_BATCHES > 1) {
-        const batchIndex = (hour * 60 + minute) % TOTAL_BATCHES;
         logger.info(
           `[定时任务] 竞品监控（US）当前批次: ${
             batchIndex + 1
@@ -175,7 +176,12 @@ function runEUMonitorSchedule() {
   const start = Date.now();
   const now = new Date();
   const minute = now.getMinutes();
-  const hour = now.getHours();
+  const { euIntervalMinutes } = getMonitorScheduleConfig();
+  const batchIndex = calculateScheduledBatchIndex(
+    now,
+    euIntervalMinutes,
+    TOTAL_BATCHES,
+  );
 
   // --- Standard Monitor Task ---
   const euCountries = getCountriesToCheck('EU', minute);
@@ -187,10 +193,7 @@ function runEUMonitorSchedule() {
 
   if (orderedEuCountries.length > 0) {
     updateLastRun('eu', 'lastStandardRun');
-    // 如果启用分批处理，计算当前批次
     if (TOTAL_BATCHES > 1) {
-      // 基于小时和分钟计算批次索引（0 到 TOTAL_BATCHES-1）
-      const batchIndex = (hour * 60 + minute) % TOTAL_BATCHES;
       logger.info(
         `[定时任务] 标准监控（EU）当前批次: ${batchIndex + 1}/${TOTAL_BATCHES}`,
       );
@@ -226,7 +229,6 @@ function runEUMonitorSchedule() {
     if (orderedCompetitorEuCountries.length > 0) {
       updateLastRun('eu', 'lastCompetitorRun');
       if (TOTAL_BATCHES > 1) {
-        const batchIndex = (hour * 60 + minute) % TOTAL_BATCHES;
         logger.info(
           `[定时任务] 竞品监控（EU）当前批次: ${
             batchIndex + 1

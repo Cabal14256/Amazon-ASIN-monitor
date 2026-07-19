@@ -20,16 +20,16 @@ const PRIORITY = {
 // Operation默认配置（基于SP-API文档）
 const DEFAULT_OPERATION_CONFIGS = {
   getCatalogItem: {
-    rate: 0.5,
-    burst: 1,
-    perMinute: 30,
-    perHour: 500,
+    rate: 2,
+    burst: 2,
+    perMinute: 120,
+    perHour: 7200,
   },
   searchCatalogItems: {
     rate: 2,
     burst: 2,
     perMinute: 120,
-    perHour: 2000,
+    perHour: 7200,
   },
   default: {
     rate: 0.5,
@@ -52,7 +52,7 @@ local keyCount = tonumber(ARGV[3])
 local retryMs = 0
 
 for i = 1, keyCount do
-  local base = 3 + ((i - 1) * 4)
+  local base = 3 + ((i - 1) * 3)
   local limitValue = tonumber(ARGV[base + 1])
   local windowMs = tonumber(ARGV[base + 2])
   redis.call('ZREMRANGEBYSCORE', KEYS[i], '-inf', now - windowMs)
@@ -72,7 +72,7 @@ if retryMs > 0 then
 end
 
 for i = 1, keyCount do
-  local base = 3 + ((i - 1) * 4)
+  local base = 3 + ((i - 1) * 3)
   local ttlMs = tonumber(ARGV[base + 3])
   redis.call('ZADD', KEYS[i], now, member)
   redis.call('PEXPIRE', KEYS[i], ttlMs)
@@ -93,6 +93,10 @@ function buildLimiterName(region, operation = null) {
 
 function buildRedisWindowKey(limiterName, windowLabel) {
   return `${RATE_LIMITER_KEY_PREFIX}:${limiterName}:${windowLabel}`;
+}
+
+function buildOperationMetadataKey(region, operation) {
+  return `${RATE_LIMITER_KEY_PREFIX}:metadata:${region}:operation:${operation}`;
 }
 
 function warnRedisFallback(error) {
@@ -235,6 +239,8 @@ class MultiLevelRateLimiter {
     this.secondLimiter =
       rate > 0 && burst > 0 ? new TokenBucket(burst, rate, 1000) : null;
     this.lastMode = 'memory';
+    this.limitSource = config.limitSource || 'default';
+    this.limitUpdatedAt = config.limitUpdatedAt || null;
   }
 
   getWindowConfigs() {
@@ -383,7 +389,154 @@ class MultiLevelRateLimiter {
         minute: this.minuteLimiter.capacity,
         hour: this.hourLimiter.capacity,
       },
+      limitSource: this.limitSource,
+      limitUpdatedAt: this.limitUpdatedAt,
     };
+  }
+
+  buildMemoryStatus(mode = 'memory') {
+    const secondTokens = this.secondLimiter
+      ? this.secondLimiter.getAvailableTokens()
+      : null;
+    const minuteTokens = this.minuteLimiter.getAvailableTokens();
+    const hourTokens = this.hourLimiter.getAvailableTokens();
+    const windows = {
+      minute: {
+        used: Math.max(this.minuteLimiter.capacity - minuteTokens, 0),
+        remaining: minuteTokens,
+        limit: this.minuteLimiter.capacity,
+        windowMs: 60000,
+      },
+      hour: {
+        used: Math.max(this.hourLimiter.capacity - hourTokens, 0),
+        remaining: hourTokens,
+        limit: this.hourLimiter.capacity,
+        windowMs: 3600000,
+      },
+    };
+
+    if (this.secondLimiter) {
+      windows.second = {
+        used: Math.max(this.secondLimiter.capacity - secondTokens, 0),
+        remaining: secondTokens,
+        limit: this.secondLimiter.capacity,
+        windowMs: 1000,
+      };
+    }
+
+    return {
+      mode,
+      lastMode: this.lastMode,
+      redisAvailable: false,
+      name: this.name,
+      secondTokens,
+      minuteTokens,
+      hourTokens,
+      limits: {
+        second: this.secondLimiter ? this.secondLimiter.capacity : null,
+        minute: this.minuteLimiter.capacity,
+        hour: this.hourLimiter.capacity,
+      },
+      windows,
+      limitSource: this.limitSource,
+      limitUpdatedAt: this.limitUpdatedAt,
+    };
+  }
+
+  async getOperationMetadata(client) {
+    const match = this.name.match(/^([^:]+):operation:(.+)$/);
+    if (!match || !client || typeof client.get !== 'function') {
+      return null;
+    }
+
+    const [, region, operation] = match;
+    const raw = await client.get(buildOperationMetadataKey(region, operation));
+    if (!raw) {
+      return null;
+    }
+
+    try {
+      const parsed = JSON.parse(raw);
+      if (!Number.isFinite(Number(parsed.rate)) || Number(parsed.rate) <= 0) {
+        return null;
+      }
+      return parsed;
+    } catch (error) {
+      logger.warn('[RateLimiter] Redis operation 配额元数据无法解析:', {
+        name: this.name,
+        message: error.message,
+      });
+      return null;
+    }
+  }
+
+  async getStatusSnapshot() {
+    const client = await this.getDistributedRedisClient();
+    if (!client) {
+      return this.buildMemoryStatus();
+    }
+
+    try {
+      const metadata = await this.getOperationMetadata(client);
+      const windows = this.getWindowConfigs().map((window) => ({ ...window }));
+
+      if (metadata) {
+        const rate = Number(metadata.rate);
+        const burst = Number(metadata.burst) || 2;
+        for (const window of windows) {
+          if (window.key.endsWith(':second')) {
+            window.limit = burst;
+          } else if (window.key.endsWith(':minute')) {
+            window.limit = Math.max(Math.floor(rate * 60), 1);
+          } else if (window.key.endsWith(':hour')) {
+            window.limit = Math.max(Math.floor(rate * 3600), 1);
+          }
+        }
+      }
+
+      const now = Date.now();
+      const usageEntries = await Promise.all(
+        windows.map(async (window) => {
+          await client.zremrangebyscore(
+            window.key,
+            '-inf',
+            now - window.windowMs,
+          );
+          const used = Number(await client.zcard(window.key)) || 0;
+          return [
+            window.key.split(':').pop(),
+            {
+              used,
+              remaining: Math.max(window.limit - used, 0),
+              limit: window.limit,
+              windowMs: window.windowMs,
+            },
+          ];
+        }),
+      );
+      const usage = Object.fromEntries(usageEntries);
+
+      return {
+        mode: 'redis-distributed',
+        lastMode: this.lastMode,
+        redisAvailable: true,
+        name: this.name,
+        secondTokens: usage.second?.remaining ?? null,
+        minuteTokens: usage.minute.remaining,
+        hourTokens: usage.hour.remaining,
+        limits: {
+          second: usage.second?.limit ?? null,
+          minute: usage.minute.limit,
+          hour: usage.hour.limit,
+        },
+        windows: usage,
+        limitSource: metadata?.source || this.limitSource,
+        limitUpdatedAt: metadata?.updatedAt || this.limitUpdatedAt,
+      };
+    } catch (error) {
+      warnRedisFallback(error);
+      return this.buildMemoryStatus('memory-fallback');
+    }
   }
 
   reset() {
@@ -479,6 +632,11 @@ function updateOperationRateLimit(region, operation, rateLimit) {
   const newPerHour = Math.floor(rateLimit * 3600);
   const currentPerMinute = limiter.minuteLimiter.capacity;
   const currentPerHour = limiter.hourLimiter.capacity;
+  const limitUpdatedAt = new Date().toISOString();
+  const shouldPersist =
+    limiter.limitSource !== 'response_header' ||
+    newPerMinute !== currentPerMinute ||
+    newPerHour !== currentPerHour;
 
   if (newPerMinute !== currentPerMinute || newPerHour !== currentPerHour) {
     logger.info(
@@ -492,7 +650,53 @@ function updateOperationRateLimit(region, operation, rateLimit) {
         perHour: newPerHour,
         rate: rateLimit,
         burst: DEFAULT_OPERATION_CONFIGS[operation]?.burst || 2,
+        limitSource: 'response_header',
+        limitUpdatedAt,
       });
+  } else {
+    limiter.limitSource = 'response_header';
+    limiter.limitUpdatedAt = limitUpdatedAt;
+  }
+
+  if (shouldPersist) {
+    void persistOperationRateLimitMetadata(
+      normalizedRegion,
+      operation,
+      rateLimit,
+      DEFAULT_OPERATION_CONFIGS[operation]?.burst || 2,
+      limitUpdatedAt,
+    );
+  }
+}
+
+async function persistOperationRateLimitMetadata(
+  region,
+  operation,
+  rateLimit,
+  burst,
+  updatedAt,
+) {
+  if (!isRedisAvailable()) {
+    return;
+  }
+
+  try {
+    const client = getRedisClient();
+    await client.set(
+      buildOperationMetadataKey(region, operation),
+      JSON.stringify({
+        rate: Number(rateLimit),
+        burst: Number(burst),
+        source: 'response_header',
+        updatedAt,
+      }),
+    );
+  } catch (error) {
+    logger.warn('[RateLimiter] 写入 operation 配额元数据失败:', {
+      region,
+      operation,
+      message: error.message,
+    });
   }
 }
 
@@ -502,13 +706,33 @@ async function acquire(
   priority = PRIORITY.SCHEDULED,
   operation = null,
 ) {
-  const limiter = getOperationRateLimiter(region, operation);
-  await limiter.acquire(tokens, priority);
+  const regionLimiter = getRateLimiter(region);
+  const operationLimiter = operation
+    ? getOperationRateLimiter(region, operation)
+    : null;
+  await acquireWithLimiters(regionLimiter, operationLimiter, tokens, priority);
+}
+
+async function acquireWithLimiters(
+  regionLimiter,
+  operationLimiter,
+  tokens,
+  priority,
+) {
+  await regionLimiter.acquire(tokens, priority);
+  if (operationLimiter) {
+    await operationLimiter.acquire(tokens, priority);
+  }
 }
 
 function getStatus(region, operation = null) {
   const limiter = getOperationRateLimiter(region, operation);
   return limiter.getStatus();
+}
+
+async function getStatusSnapshot(region, operation = null) {
+  const limiter = getOperationRateLimiter(region, operation);
+  return limiter.getStatusSnapshot();
 }
 
 function getAllOperationStatus(region = null) {
@@ -590,7 +814,9 @@ initializeRateLimiters();
 
 module.exports = {
   acquire,
+  acquireWithLimiters,
   getStatus,
+  getStatusSnapshot,
   getAllOperationStatus,
   getRateLimiter,
   getOperationRateLimiter,
