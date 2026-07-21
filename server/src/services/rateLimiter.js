@@ -47,18 +47,26 @@ let redisFallbackWarned = false;
 
 const DISTRIBUTED_ACQUIRE_SCRIPT = `
 local now = tonumber(ARGV[1])
-local member = ARGV[2]
+local memberPrefix = ARGV[2]
 local keyCount = tonumber(ARGV[3])
+local tokenCount = tonumber(ARGV[4])
 local retryMs = 0
 
 for i = 1, keyCount do
-  local base = 3 + ((i - 1) * 3)
+  local base = 4 + ((i - 1) * 3)
   local limitValue = tonumber(ARGV[base + 1])
   local windowMs = tonumber(ARGV[base + 2])
   redis.call('ZREMRANGEBYSCORE', KEYS[i], '-inf', now - windowMs)
   local count = redis.call('ZCARD', KEYS[i])
-  if count >= limitValue then
-    local oldest = redis.call('ZRANGE', KEYS[i], 0, 0, 'WITHSCORES')
+  if count + tokenCount > limitValue then
+    local requiredExpirations = count + tokenCount - limitValue
+    local oldest = redis.call(
+      'ZRANGE',
+      KEYS[i],
+      requiredExpirations - 1,
+      requiredExpirations - 1,
+      'WITHSCORES'
+    )
     local oldestScore = tonumber(oldest[2]) or now
     local waitMs = windowMs - (now - oldestScore) + 1
     if waitMs > retryMs then
@@ -72,9 +80,11 @@ if retryMs > 0 then
 end
 
 for i = 1, keyCount do
-  local base = 3 + ((i - 1) * 3)
+  local base = 4 + ((i - 1) * 3)
   local ttlMs = tonumber(ARGV[base + 3])
-  redis.call('ZADD', KEYS[i], now, member)
+  for tokenIndex = 1, tokenCount do
+    redis.call('ZADD', KEYS[i], now, memberPrefix .. ':' .. tokenIndex)
+  end
   redis.call('PEXPIRE', KEYS[i], ttlMs)
 end
 
@@ -85,6 +95,23 @@ function sleep(ms) {
   return new Promise((resolve) => {
     setTimeout(resolve, ms);
   });
+}
+
+function normalizeTokenCount(tokens) {
+  const tokenCount = Number(tokens);
+  if (!Number.isInteger(tokenCount) || tokenCount <= 0) {
+    throw new RangeError('Rate limiter tokens must be a positive integer');
+  }
+  return tokenCount;
+}
+
+function validateTokenCapacity(tokenCount, capacities) {
+  const tooSmall = capacities.find((capacity) => tokenCount > capacity);
+  if (tooSmall !== undefined) {
+    throw new RangeError(
+      `Rate limiter token request ${tokenCount} exceeds window capacity ${tooSmall}`,
+    );
+  }
 }
 
 function buildLimiterName(region, operation = null) {
@@ -216,10 +243,217 @@ class TokenBucket {
     return this.tokens;
   }
 
+  canAcquire(tokens = 1) {
+    const tokenCount = normalizeTokenCount(tokens);
+    validateTokenCapacity(tokenCount, [this.capacity]);
+    this.refill();
+    return this.tokens >= tokenCount;
+  }
+
+  consume(tokens = 1) {
+    const tokenCount = normalizeTokenCount(tokens);
+    if (this.tokens < tokenCount) {
+      return false;
+    }
+    this.tokens -= tokenCount;
+    return true;
+  }
+
+  getRetryWaitMs(tokens = 1) {
+    const tokenCount = normalizeTokenCount(tokens);
+    validateTokenCapacity(tokenCount, [this.capacity]);
+    this.refill();
+    if (this.tokens >= tokenCount) {
+      return 0;
+    }
+    if (this.refillRate <= 0) {
+      return DISTRIBUTED_RETRY_WAIT_CAP_MS;
+    }
+    return ((tokenCount - this.tokens) / this.refillRate) * 1000;
+  }
+
   reset() {
     this.tokens = this.capacity;
     this.lastRefill = Date.now();
     this.pendingQueue = new PriorityQueue();
+  }
+}
+
+function getUniqueMemoryBuckets(limiters) {
+  return [
+    ...new Set(
+      limiters.filter(Boolean).flatMap((limiter) => limiter.getMemoryBuckets()),
+    ),
+  ];
+}
+
+function tryConsumeMemoryWithLimiters(limiters, tokens = 1) {
+  const tokenCount = normalizeTokenCount(tokens);
+  const buckets = getUniqueMemoryBuckets(limiters);
+  validateTokenCapacity(
+    tokenCount,
+    buckets.map((bucket) => bucket.capacity),
+  );
+
+  if (!buckets.every((bucket) => bucket.canAcquire(tokenCount))) {
+    return false;
+  }
+
+  for (const bucket of buckets) {
+    bucket.consume(tokenCount);
+  }
+  return true;
+}
+
+class CompositeMemoryAcquireQueue {
+  constructor() {
+    this.pending = [];
+    this.sequence = 0;
+    this.timer = null;
+    this.processing = false;
+  }
+
+  acquire(limiters, tokens = 1, priority = PRIORITY.SCHEDULED) {
+    const tokenCount = normalizeTokenCount(tokens);
+    const buckets = getUniqueMemoryBuckets(limiters);
+    validateTokenCapacity(
+      tokenCount,
+      buckets.map((bucket) => bucket.capacity),
+    );
+
+    return new Promise((resolve) => {
+      this.pending.push({
+        limiters,
+        tokens: tokenCount,
+        priority,
+        sequence: this.sequence,
+        resolve,
+      });
+      this.sequence += 1;
+      this.pending.sort(
+        (left, right) =>
+          left.priority - right.priority || left.sequence - right.sequence,
+      );
+
+      if (this.timer) {
+        clearTimeout(this.timer);
+        this.timer = null;
+      }
+      this.process();
+    });
+  }
+
+  process() {
+    if (this.processing) {
+      return;
+    }
+
+    this.processing = true;
+    try {
+      let acquired = true;
+      while (acquired) {
+        acquired = false;
+        for (let index = 0; index < this.pending.length; index += 1) {
+          const request = this.pending[index];
+          if (tryConsumeMemoryWithLimiters(request.limiters, request.tokens)) {
+            this.pending.splice(index, 1);
+            request.resolve();
+            acquired = true;
+            break;
+          }
+        }
+      }
+
+      if (this.pending.length > 0 && !this.timer) {
+        const nextRetryMs = Math.min(
+          ...this.pending.map((request) => {
+            const buckets = getUniqueMemoryBuckets(request.limiters);
+            return Math.max(
+              ...buckets.map((bucket) => bucket.getRetryWaitMs(request.tokens)),
+            );
+          }),
+        );
+        const waitMs = Math.max(
+          25,
+          Math.min(
+            Number.isFinite(nextRetryMs)
+              ? nextRetryMs
+              : DISTRIBUTED_RETRY_WAIT_CAP_MS,
+            1000,
+          ),
+        );
+        this.timer = setTimeout(() => {
+          this.timer = null;
+          this.process();
+        }, waitMs);
+      }
+    } finally {
+      this.processing = false;
+    }
+  }
+}
+
+const compositeMemoryAcquireQueue = new CompositeMemoryAcquireQueue();
+
+async function acquireDistributedWindows(
+  client,
+  windows,
+  tokens = 1,
+  priority = PRIORITY.SCHEDULED,
+) {
+  if (!client || windows.length === 0) {
+    return false;
+  }
+
+  const tokenCount = normalizeTokenCount(tokens);
+  validateTokenCapacity(
+    tokenCount,
+    windows.map((window) => window.limit),
+  );
+
+  while (true) {
+    const now = Date.now();
+    const keys = windows.map((window) => window.key);
+    const args = [
+      now,
+      `${process.pid}:${priority}:${now}:${Math.random()
+        .toString(16)
+        .slice(2)}`,
+      windows.length,
+      tokenCount,
+      ...windows.flatMap((window) => [
+        window.limit,
+        window.windowMs,
+        window.ttlMs,
+      ]),
+    ];
+
+    try {
+      const result = await client.eval(
+        DISTRIBUTED_ACQUIRE_SCRIPT,
+        keys.length,
+        ...keys,
+        ...args,
+      );
+      const [allowedRaw, retryMsRaw] = Array.isArray(result)
+        ? result
+        : [0, 1000];
+      if (Number(allowedRaw) === 1) {
+        return true;
+      }
+
+      const retryMs = Math.max(Number(retryMsRaw) || 100, 25);
+      logger.debug('[RateLimiter] Redis 窗口等待', {
+        priority,
+        tokens: tokenCount,
+        windowCount: windows.length,
+        retryMs,
+      });
+      await sleep(Math.min(retryMs, DISTRIBUTED_RETRY_WAIT_CAP_MS));
+    } catch (error) {
+      warnRedisFallback(error);
+      return false;
+    }
   }
 }
 
@@ -271,6 +505,14 @@ class MultiLevelRateLimiter {
     return windows;
   }
 
+  getMemoryBuckets() {
+    return [
+      this.minuteLimiter,
+      this.hourLimiter,
+      ...(this.secondLimiter ? [this.secondLimiter] : []),
+    ];
+  }
+
   async getDistributedRedisClient() {
     if (isRedisAvailable()) {
       return getRedisClient();
@@ -297,55 +539,22 @@ class MultiLevelRateLimiter {
       return false;
     }
 
-    const windows = this.getWindowConfigs();
-    if (windows.length === 0) {
+    try {
+      const { windows } = await this.getEffectiveWindowConfigs(client);
+      const acquired = await acquireDistributedWindows(
+        client,
+        windows,
+        tokens,
+        priority,
+      );
+      if (acquired) {
+        this.lastMode = 'redis-distributed';
+      }
+      return acquired;
+    } catch (error) {
+      warnRedisFallback(error);
       return false;
     }
-
-    for (let tokenIndex = 0; tokenIndex < tokens; tokenIndex += 1) {
-      while (true) {
-        const now = Date.now();
-        const keys = windows.map((window) => window.key);
-        const args = [
-          now,
-          `${process.pid}:${priority}:${tokenIndex}:${now}:${Math.random()
-            .toString(16)
-            .slice(2)}`,
-          windows.length,
-          ...windows.flatMap((window) => [
-            window.limit,
-            window.windowMs,
-            window.ttlMs,
-          ]),
-        ];
-
-        try {
-          const result = await client.eval(
-            DISTRIBUTED_ACQUIRE_SCRIPT,
-            keys.length,
-            ...keys,
-            ...args,
-          );
-          const [allowedRaw, retryMsRaw] = Array.isArray(result)
-            ? result
-            : [0, 1000];
-          const allowed = Number(allowedRaw) === 1;
-
-          if (allowed) {
-            this.lastMode = 'redis-distributed';
-            break;
-          }
-
-          const retryMs = Math.max(Number(retryMsRaw) || 100, 25);
-          await sleep(Math.min(retryMs, DISTRIBUTED_RETRY_WAIT_CAP_MS));
-        } catch (error) {
-          warnRedisFallback(error);
-          return false;
-        }
-      }
-    }
-
-    return true;
   }
 
   async acquire(tokens = 1, priority = PRIORITY.SCHEDULED) {
@@ -355,16 +564,7 @@ class MultiLevelRateLimiter {
     }
 
     this.lastMode = 'memory';
-    const waiters = [
-      this.minuteLimiter.acquire(tokens, priority),
-      this.hourLimiter.acquire(tokens, priority),
-    ];
-
-    if (this.secondLimiter) {
-      waiters.push(this.secondLimiter.acquire(tokens, priority));
-    }
-
-    await Promise.all(waiters);
+    await compositeMemoryAcquireQueue.acquire([this], tokens, priority);
   }
 
   getStatus() {
@@ -470,6 +670,39 @@ class MultiLevelRateLimiter {
     }
   }
 
+  async getEffectiveWindowConfigs(client) {
+    const windows = this.getWindowConfigs().map((window) => ({ ...window }));
+    const metadata = await this.getOperationMetadata(client);
+
+    if (!metadata) {
+      return {
+        windows,
+        limitSource: this.limitSource,
+        limitUpdatedAt: this.limitUpdatedAt,
+      };
+    }
+
+    const rate = Number(metadata.rate);
+    const burst = Number(metadata.burst);
+    for (const window of windows) {
+      if (window.key.endsWith(':second')) {
+        if (Number.isFinite(burst) && burst > 0) {
+          window.limit = burst;
+        }
+      } else if (window.key.endsWith(':minute')) {
+        window.limit = Math.max(Math.floor(rate * 60), 1);
+      } else if (window.key.endsWith(':hour')) {
+        window.limit = Math.max(Math.floor(rate * 3600), 1);
+      }
+    }
+
+    return {
+      windows,
+      limitSource: metadata.source || 'response_header',
+      limitUpdatedAt: metadata.updatedAt || null,
+    };
+  }
+
   async getStatusSnapshot() {
     const client = await this.getDistributedRedisClient();
     if (!client) {
@@ -477,22 +710,8 @@ class MultiLevelRateLimiter {
     }
 
     try {
-      const metadata = await this.getOperationMetadata(client);
-      const windows = this.getWindowConfigs().map((window) => ({ ...window }));
-
-      if (metadata) {
-        const rate = Number(metadata.rate);
-        const burst = Number(metadata.burst) || 2;
-        for (const window of windows) {
-          if (window.key.endsWith(':second')) {
-            window.limit = burst;
-          } else if (window.key.endsWith(':minute')) {
-            window.limit = Math.max(Math.floor(rate * 60), 1);
-          } else if (window.key.endsWith(':hour')) {
-            window.limit = Math.max(Math.floor(rate * 3600), 1);
-          }
-        }
-      }
+      const { windows, limitSource, limitUpdatedAt } =
+        await this.getEffectiveWindowConfigs(client);
 
       const now = Date.now();
       const usageEntries = await Promise.all(
@@ -530,8 +749,8 @@ class MultiLevelRateLimiter {
           hour: usage.hour.limit,
         },
         windows: usage,
-        limitSource: metadata?.source || this.limitSource,
-        limitUpdatedAt: metadata?.updatedAt || this.limitUpdatedAt,
+        limitSource,
+        limitUpdatedAt,
       };
     } catch (error) {
       warnRedisFallback(error);
@@ -719,10 +938,36 @@ async function acquireWithLimiters(
   tokens,
   priority,
 ) {
-  await regionLimiter.acquire(tokens, priority);
-  if (operationLimiter) {
-    await operationLimiter.acquire(tokens, priority);
+  const limiters = [regionLimiter, operationLimiter].filter(Boolean);
+  const client = await regionLimiter.getDistributedRedisClient();
+
+  if (client) {
+    try {
+      const effectiveConfigs = await Promise.all(
+        limiters.map((limiter) => limiter.getEffectiveWindowConfigs(client)),
+      );
+      const windows = effectiveConfigs.flatMap((config) => config.windows);
+      const acquired = await acquireDistributedWindows(
+        client,
+        windows,
+        tokens,
+        priority,
+      );
+      if (acquired) {
+        for (const limiter of limiters) {
+          limiter.lastMode = 'redis-distributed';
+        }
+        return;
+      }
+    } catch (error) {
+      warnRedisFallback(error);
+    }
   }
+
+  for (const limiter of limiters) {
+    limiter.lastMode = 'memory';
+  }
+  await compositeMemoryAcquireQueue.acquire(limiters, tokens, priority);
 }
 
 function getStatus(region, operation = null) {
@@ -828,4 +1073,7 @@ module.exports = {
   MultiLevelRateLimiter,
   PriorityQueue,
   DEFAULT_OPERATION_CONFIGS,
+  DISTRIBUTED_ACQUIRE_SCRIPT,
+  acquireDistributedWindows,
+  tryConsumeMemoryWithLimiters,
 };
