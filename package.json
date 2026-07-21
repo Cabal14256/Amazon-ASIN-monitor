@@ -15,6 +15,7 @@
     "test:contracts": "npm run test:api-url && npm run test:init-schema && npm run test:database-docs && npm run test:quota-tools",
     "test:database-docs": "node --test tests/database-docs.test.js",
     "test:init-schema": "node --test tests/init-schema.test.js",
+    "test:pr-policy": "node --test tests/pr-policy.test.js",
     "test:quota-tools": "node --test tests/quota-tools.test.js"
   },
   "dependencies": {

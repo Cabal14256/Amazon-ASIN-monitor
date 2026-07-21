@@ -1,0 +1,42 @@
+name: 变更任务
+description: 规划功能、重构、测试、CI 或维护改动
+title: 'chore: '
+labels: []
+body:
+  - type: textarea
+    id: background
+    attributes:
+      label: 背景与目标
+      description: 说明为什么需要这项变更以及要解决的问题。
+    validations:
+      required: true
+  - type: textarea
+    id: work
+    attributes:
+      label: 待处理事项
+      description: 用任务清单描述计划交付内容和明确边界。
+      value: |
+        - [ ]
+    validations:
+      required: true
+  - type: textarea
+    id: acceptance
+    attributes:
+      label: 验收标准
+      description: 写出可以客观验证的完成条件。
+    validations:
+      required: true
+  - type: textarea
+    id: tests
+    attributes:
+      label: 验证方式
+      description: 列出自动化检查、手工验证和未执行项。
+    validations:
+      required: true
+  - type: textarea
+    id: risk
+    attributes:
+      label: 风险与回滚
+      description: 说明兼容性、部署风险和回滚方案。
+    validations:
+      required: true
