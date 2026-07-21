@@ -1,0 +1,92 @@
+name: Integration
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: integration-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  integration:
+    name: integration
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    services:
+      redis:
+        image: redis:7
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping" --health-interval 5s --health-timeout 3s --health-retries 10
+
+
+      mysql:
+        image: mysql:8
+        env:
+          MYSQL_ALLOW_EMPTY_PASSWORD: 'yes'
+          MYSQL_DATABASE: integration_control
+        ports:
+          - 3306:3306
+        options: >-
+          --health-cmd "mysqladmin ping -h 127.0.0.1 --silent" --health-interval 10s --health-timeout 5s --health-retries 12
+
+
+    env:
+      RUN_INTEGRATION_TESTS: 'true'
+      LOG_LEVEL: ERROR
+      REDIS_URL: redis://127.0.0.1:6379/15
+      RATE_LIMITER_KEY_PREFIX: spapi:integration:${{ github.run_id }}
+      INTEGRATION_MYSQL_HOST: 127.0.0.1
+      INTEGRATION_MYSQL_PORT: 3306
+      INTEGRATION_MYSQL_USER: root
+      INTEGRATION_MYSQL_DATABASE: amazon_asin_monitor_ci_${{ github.run_id }}
+      INTEGRATION_COMPETITOR_DATABASE: amazon_competitor_monitor_ci_${{ github.run_id }}
+      INTEGRATION_ALLOW_DROP_DATABASES: 'true'
+
+    steps:
+      - name: Record start time
+        run: echo "INTEGRATION_STARTED_AT=$(date +%s)" >> "$GITHUB_ENV"
+
+      - name: Checkout repository
+        uses: actions/checkout@v7
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v7
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: server/package-lock.json
+
+      - name: Install server dependencies
+        run: npm ci --prefix server
+
+      - name: Resolve Redis service container
+        run: |
+          redis_container_id="$(docker ps --filter ancestor=redis:7 --format '{{.ID}}' | head -n 1)"
+          test -n "$redis_container_id"
+          echo "INTEGRATION_REDIS_CONTAINER_ID=$redis_container_id" >> "$GITHUB_ENV"
+
+      - name: Run Redis and MySQL integration tests
+        run: npm --prefix server run test:integration
+
+      - name: Report integration duration
+        if: always()
+        run: |
+          duration_seconds=$(($(date +%s) - INTEGRATION_STARTED_AT))
+          {
+            echo "## Integration CI"
+            echo "- Result: ${{ job.status }}"
+            echo "- Test-step duration after services became ready: ${duration_seconds}s"
+            echo "- Promotion threshold: 10 consecutive successful runs whose total startedAt-to-updatedAt duration is under 600s"
+          } >> "$GITHUB_STEP_SUMMARY"

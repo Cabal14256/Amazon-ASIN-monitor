@@ -24,6 +24,7 @@
     "test:api": "node scripts/test-api.js",
     "test:auth": "node scripts/test-auth.js",
     "test:feishu": "node scripts/test-feishu.js",
+    "test:integration": "node --test --test-concurrency=1 test/integration/redis-mysql.integration.test.js",
     "test:queue": "node scripts/test-queue.js",
     "test:sp-api": "node scripts/test-sp-api.js",
     "test:task-regression": "node scripts/test-task-regression.js",
