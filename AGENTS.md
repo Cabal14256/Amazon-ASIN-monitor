@@ -110,7 +110,7 @@ Closes #<issue>
 - [ ] 已补充或更新测试
 - [ ] CI 已通过
 - [ ] Codex Review 已覆盖最新提交
-- [ ] 所有 P1/P2 与 Review Thread 已处理
+- [ ] 所有 P0/P1/P2 与 Review Thread 已处理
 ```
 
 - Keep section headings in Chinese exactly as above.

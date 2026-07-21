@@ -59,4 +59,4 @@ Closes #<issue>
 - [ ] 数据库变化包含升级和回滚说明，或不涉及数据库
 - [ ] CI 已通过
 - [ ] Codex Review 已覆盖最新提交
-- [ ] 所有 P1/P2 意见和 Review Thread 已处理
+- [ ] 所有 P0/P1/P2 意见和 Review Thread 已处理
