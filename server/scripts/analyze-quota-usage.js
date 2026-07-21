@@ -108,7 +108,7 @@ function logRegionReport(
     )} 次/小时`,
   );
   logger.info(
-    `  合计计划请求：${formatRange(
+    `  合计平均计划请求：${formatRange(
       projection.requestMinPerHour,
       projection.requestMaxPerHour,
     )} 次/小时，${formatRange(
@@ -128,12 +128,50 @@ function logRegionReport(
     )}%`,
   );
   logger.info(
+    `  峰值批次请求：${formatRange(
+      projection.peakBatchRequestMin,
+      projection.peakBatchRequestMax,
+    )} 次/批，分钟上限占用 ${formatRange(
+      projection.peakMinuteUsageMinPercent,
+      projection.peakMinuteUsageMaxPercent,
+      1,
+    )}%`,
+  );
+  logger.info(
+    `  峰值滚动小时：${formatRange(
+      projection.peakRollingHourRequestMin,
+      projection.peakRollingHourRequestMax,
+    )} 次，小时上限占用 ${formatRange(
+      projection.peakHourUsageMinPercent,
+      projection.peakHourUsageMaxPercent,
+      1,
+    )}%`,
+  );
+  logger.info(
     `  operation（完整轮转）：getCatalogItem ${combined.getCatalogItemMin}-${combined.getCatalogItemMax}，searchCatalogItems ${combined.searchCatalogItems}`,
   );
 
   if (combined.omittedGroupCount > 0) {
     logger.warn(
       `  MONITOR_MAX_GROUPS_PER_TASK 导致 ${combined.omittedGroupCount} 个变体组、${combined.omittedAsinCount} 个 ASIN 不在当前计划覆盖范围内`,
+    );
+  }
+
+  if (projection.peakMinuteUsageMaxPercent > 100) {
+    logger.warn(
+      `  峰值批次请求超过本地区域分钟保护上限：${formatNumber(
+        projection.peakMinuteUsageMaxPercent,
+        1,
+      )}%`,
+    );
+  }
+
+  if (projection.peakHourUsageMaxPercent > 100) {
+    logger.warn(
+      `  峰值滚动小时请求超过本地区域小时保护上限：${formatNumber(
+        projection.peakHourUsageMaxPercent,
+        1,
+      )}%`,
     );
   }
 }
