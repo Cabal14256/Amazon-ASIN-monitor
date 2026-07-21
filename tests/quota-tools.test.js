@@ -62,6 +62,37 @@ test('数据库中的调度与竞品配置优先于环境变量', () => {
   assert.equal(config.regionPerHourLimit, 2000);
 });
 
+test('数据库空值或非法值回退环境变量，环境变量无效时使用默认值', () => {
+  const rows = [
+    { config_key: 'MONITOR_US_SCHEDULE_MINUTES', config_value: '   ' },
+    { config_key: 'MONITOR_EU_SCHEDULE_MINUTES', config_value: null },
+    { config_key: 'COMPETITOR_MONITOR_ENABLED', config_value: 'invalid' },
+  ];
+  const fromEnvironment = resolveEffectiveConfig(
+    {
+      MONITOR_US_SCHEDULE_MINUTES: '15',
+      MONITOR_EU_SCHEDULE_MINUTES: '30',
+      COMPETITOR_MONITOR_ENABLED: 'false',
+    },
+    rows,
+  );
+  assert.equal(fromEnvironment.usIntervalMinutes, 15);
+  assert.equal(fromEnvironment.euIntervalMinutes, 30);
+  assert.equal(fromEnvironment.competitorEnabled, false);
+
+  const fromDefaults = resolveEffectiveConfig(
+    {
+      MONITOR_US_SCHEDULE_MINUTES: 'invalid',
+      MONITOR_EU_SCHEDULE_MINUTES: '',
+      COMPETITOR_MONITOR_ENABLED: 'invalid',
+    },
+    rows,
+  );
+  assert.equal(fromDefaults.usIntervalMinutes, 30);
+  assert.equal(fromDefaults.euIntervalMinutes, 60);
+  assert.equal(fromDefaults.competitorEnabled, true);
+});
+
 test('竞品数据库使用独立配置并按主营配置回退', () => {
   assert.deepEqual(
     buildCompetitorDatabaseConfig({
@@ -128,6 +159,49 @@ test('计划调用按完整批次轮转折算且不额外乘二', () => {
   assert.equal(projection.fullSweepMinutes, 60);
   assert.equal(projection.requestMinPerHour, 20);
   assert.equal(projection.requestMaxPerHour, 20);
+});
+
+test('不均匀分桶使用峰值批次和峰值滚动小时判断限额', () => {
+  const summary = summarizeInventory(
+    [
+      createInventoryRow({
+        id: 'batch-1',
+        country: 'US',
+        asinCount: 1000,
+        hashValue: 0,
+        createTime: '2026-01-01 00:00:00',
+      }),
+      createInventoryRow({
+        id: 'batch-2',
+        country: 'US',
+        asinCount: 700,
+        hashValue: 1,
+        createTime: '2026-01-01 00:00:01',
+      }),
+      createInventoryRow({
+        id: 'batch-3',
+        country: 'US',
+        asinCount: 300,
+        hashValue: 2,
+        createTime: '2026-01-01 00:00:02',
+      }),
+    ],
+    { batchCount: 3 },
+  ).US;
+  const projection = projectRegionWorkload(summary, 30, 3, {
+    perMinute: 1000,
+    perHour: 2000,
+  });
+
+  assert.deepEqual(
+    summary.batches.map((batch) => batch.requestMax),
+    [1000, 700, 300],
+  );
+  assert.equal(projection.peakBatchRequestMax, 1000);
+  assert.equal(projection.peakRollingHourRequestMax, 1700);
+  assert.equal(projection.peakMinuteUsageMaxPercent, 100);
+  assert.equal(projection.peakHourUsageMaxPercent, 85);
+  assert.equal(projection.requestMaxPerHour, 4000 / 3);
 });
 
 test('实验性批量查询输出上下界，任务上限报告遗漏对象', () => {

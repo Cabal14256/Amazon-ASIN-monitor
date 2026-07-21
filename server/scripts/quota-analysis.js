@@ -9,6 +9,18 @@ const DATABASE_CONFIG_KEYS = [
   'COMPETITOR_MONITOR_ENABLED',
 ];
 
+const SUMMARY_FIELDS = [
+  'groupCount',
+  'asinCount',
+  'omittedGroupCount',
+  'omittedAsinCount',
+  'getCatalogItemMin',
+  'getCatalogItemMax',
+  'searchCatalogItems',
+  'requestMin',
+  'requestMax',
+];
+
 function parseBoolean(value, fallback) {
   if (value === undefined || value === null || value === '') {
     return fallback;
@@ -42,23 +54,31 @@ function toConfigMap(rows = []) {
 
 function resolveEffectiveConfig(env = process.env, configRows = []) {
   const databaseConfig = toConfigMap(configRows);
-  const setting = (key, fallback) =>
-    databaseConfig[key] !== undefined
-      ? databaseConfig[key]
-      : env[key] ?? fallback;
+  const envUsInterval = normalizeScheduleInterval(
+    env.MONITOR_US_SCHEDULE_MINUTES,
+    30,
+  );
+  const envEuInterval = normalizeScheduleInterval(
+    env.MONITOR_EU_SCHEDULE_MINUTES,
+    60,
+  );
+  const envCompetitorEnabled = parseBoolean(
+    env.COMPETITOR_MONITOR_ENABLED,
+    true,
+  );
 
   return {
     usIntervalMinutes: normalizeScheduleInterval(
-      setting('MONITOR_US_SCHEDULE_MINUTES', 30),
-      30,
+      databaseConfig.MONITOR_US_SCHEDULE_MINUTES,
+      envUsInterval,
     ),
     euIntervalMinutes: normalizeScheduleInterval(
-      setting('MONITOR_EU_SCHEDULE_MINUTES', 60),
-      60,
+      databaseConfig.MONITOR_EU_SCHEDULE_MINUTES,
+      envEuInterval,
     ),
     competitorEnabled: parseBoolean(
-      setting('COMPETITOR_MONITOR_ENABLED', true),
-      true,
+      databaseConfig.COMPETITOR_MONITOR_ENABLED,
+      envCompetitorEnabled,
     ),
     batchCount: parsePositiveInteger(env.MONITOR_BATCH_COUNT, 1),
     batchAsinThreshold: parseNonNegativeInteger(
@@ -114,7 +134,7 @@ function findRegion(country) {
   return null;
 }
 
-function createRegionSummary() {
+function createUsageSummary() {
   return {
     groupCount: 0,
     asinCount: 0,
@@ -126,6 +146,23 @@ function createRegionSummary() {
     requestMin: 0,
     requestMax: 0,
   };
+}
+
+function createRegionSummary(batchCount = 1) {
+  const normalizedBatchCount = Math.max(parsePositiveInteger(batchCount, 1), 1);
+  return {
+    ...createUsageSummary(),
+    batches: Array.from({ length: normalizedBatchCount }, (_, batchIndex) => ({
+      batchIndex,
+      ...createUsageSummary(),
+    })),
+  };
+}
+
+function addUsageSummary(target, source) {
+  for (const key of SUMMARY_FIELDS) {
+    target[key] += Number(source?.[key]) || 0;
+  }
 }
 
 function getBatchIndex(hashValue, batchCount) {
@@ -173,8 +210,8 @@ function summarizeInventory(
   } = {},
 ) {
   const byRegion = {
-    US: createRegionSummary(),
-    EU: createRegionSummary(),
+    US: createRegionSummary(batchCount),
+    EU: createRegionSummary(batchCount),
   };
   const buckets = new Map();
 
@@ -189,6 +226,7 @@ function summarizeInventory(
       ...row,
       country,
       region,
+      batchIndex,
       asinCount: Number(row.asin_count) || 0,
     });
   }
@@ -213,16 +251,24 @@ function summarizeInventory(
         batchAsinThreshold,
         allowBatchApi,
       );
-      summary.groupCount += 1;
-      summary.asinCount += group.asinCount;
-      for (const [key, value] of Object.entries(bounds)) {
-        summary[key] += value;
-      }
+      const usage = {
+        ...createUsageSummary(),
+        groupCount: 1,
+        asinCount: group.asinCount,
+        ...bounds,
+      };
+      addUsageSummary(summary, usage);
+      addUsageSummary(summary.batches[group.batchIndex], usage);
     }
 
     for (const group of omitted) {
-      summary.omittedGroupCount += 1;
-      summary.omittedAsinCount += group.asinCount;
+      const omittedUsage = {
+        ...createUsageSummary(),
+        omittedGroupCount: 1,
+        omittedAsinCount: group.asinCount,
+      };
+      addUsageSummary(summary, omittedUsage);
+      addUsageSummary(summary.batches[group.batchIndex], omittedUsage);
     }
   }
 
@@ -230,13 +276,46 @@ function summarizeInventory(
 }
 
 function combineRegionSummaries(...summaries) {
-  const result = createRegionSummary();
+  const batchCount = Math.max(
+    1,
+    ...summaries.map((summary) => summary?.batches?.length || 0),
+  );
+  const result = createRegionSummary(batchCount);
   for (const summary of summaries) {
-    for (const key of Object.keys(result)) {
-      result[key] += Number(summary?.[key]) || 0;
+    addUsageSummary(result, summary);
+    for (let batchIndex = 0; batchIndex < batchCount; batchIndex += 1) {
+      addUsageSummary(
+        result.batches[batchIndex],
+        summary?.batches?.[batchIndex],
+      );
     }
   }
   return result;
+}
+
+function getBatchRequestValues(summary, batchCount, field) {
+  const divisor = Math.max(batchCount, 1);
+  if (summary?.batches?.length > 0) {
+    return Array.from(
+      { length: divisor },
+      (_, batchIndex) => Number(summary.batches[batchIndex]?.[field]) || 0,
+    );
+  }
+  const average = (Number(summary?.[field]) || 0) / divisor;
+  return Array.from({ length: divisor }, () => average);
+}
+
+function calculatePeakRollingWindow(values, windowSize) {
+  if (values.length === 0) return 0;
+  let peak = 0;
+  for (let start = 0; start < values.length; start += 1) {
+    let total = 0;
+    for (let offset = 0; offset < windowSize; offset += 1) {
+      total += values[(start + offset) % values.length];
+    }
+    peak = Math.max(peak, total);
+  }
+  return peak;
 }
 
 function projectRegionWorkload(
@@ -249,6 +328,27 @@ function projectRegionWorkload(
   const divisor = Math.max(batchCount, 1);
   const requestMinPerHour = (summary.requestMin / divisor) * runsPerHour;
   const requestMaxPerHour = (summary.requestMax / divisor) * runsPerHour;
+  const batchRequestMins = getBatchRequestValues(
+    summary,
+    divisor,
+    'requestMin',
+  );
+  const batchRequestMaxes = getBatchRequestValues(
+    summary,
+    divisor,
+    'requestMax',
+  );
+  const peakBatchRequestMin = Math.max(...batchRequestMins, 0);
+  const peakBatchRequestMax = Math.max(...batchRequestMaxes, 0);
+  const runsPerRollingHour = Math.max(Math.floor(runsPerHour), 1);
+  const peakRollingHourRequestMin = calculatePeakRollingWindow(
+    batchRequestMins,
+    runsPerRollingHour,
+  );
+  const peakRollingHourRequestMax = calculatePeakRollingWindow(
+    batchRequestMaxes,
+    runsPerRollingHour,
+  );
 
   return {
     runsPerHour,
@@ -261,6 +361,19 @@ function projectRegionWorkload(
     minuteUsageMaxPercent: (requestMaxPerHour / 60 / perMinute) * 100,
     hourUsageMinPercent: (requestMinPerHour / perHour) * 100,
     hourUsageMaxPercent: (requestMaxPerHour / perHour) * 100,
+    peakBatchRequestMin,
+    peakBatchRequestMax,
+    peakRollingHourRequestMin,
+    peakRollingHourRequestMax,
+    peakMinuteUsageMinPercent: (peakBatchRequestMin / perMinute) * 100,
+    peakMinuteUsageMaxPercent: (peakBatchRequestMax / perMinute) * 100,
+    peakHourUsageMinPercent: (peakRollingHourRequestMin / perHour) * 100,
+    peakHourUsageMaxPercent: (peakRollingHourRequestMax / perHour) * 100,
+    batchRequests: batchRequestMins.map((requestMin, batchIndex) => ({
+      batchIndex,
+      requestMin,
+      requestMax: batchRequestMaxes[batchIndex],
+    })),
   };
 }
 
@@ -270,6 +383,7 @@ module.exports = {
   buildCompetitorDatabaseConfig,
   buildMainDatabaseConfig,
   calculateGroupRequestBounds,
+  calculatePeakRollingWindow,
   combineRegionSummaries,
   parseBoolean,
   projectRegionWorkload,
