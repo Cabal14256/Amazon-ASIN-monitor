@@ -24,6 +24,8 @@ jobs:
     steps:
       - name: Checkout repository
         uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
 
       - name: Set up Node.js
         uses: actions/setup-node@v7
@@ -40,8 +42,23 @@ jobs:
       - name: Install server dependencies
         run: npm ci --prefix server
 
+      - name: Run PR policy tests
+        run: npm run test:pr-policy
+
+      - name: Run changed-file format tests
+        run: npm run test:changed-format
+
+      - name: Check changed-file formatting
+        env:
+          CHANGED_FILES_BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before }}
+          CHANGED_FILES_HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: npm run check:changed-format
+
       - name: Run contract tests
         run: npm run test:contracts
+
+      - name: Run server unit tests
+        run: npm --prefix server run test:unit
 
       - name: Run strict TypeScript check
         run: npx --no-install tsc --noEmit --pretty false

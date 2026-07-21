@@ -32,6 +32,7 @@
 - Every pull request must target `main`. Do not use feature branches as long-lived or stacked PR targets.
 - Before opening or merging a pull request, run the relevant checks. The default baseline is:
   - `npm run test:contracts`
+  - `npm --prefix server run test:unit`
   - `npx --no-install tsc --noEmit --pretty false`
   - `npm run build`
   - `git diff --check`
