@@ -1,0 +1,40 @@
+name: Bug 报告
+description: 报告可复现的运行问题或回归
+title: 'fix: '
+labels: []
+body:
+  - type: textarea
+    id: background
+    attributes:
+      label: 背景与问题
+      description: 说明用户可见问题、发生环境和业务影响。
+    validations:
+      required: true
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: 复现步骤
+      description: 给出最小、稳定的复现步骤以及实际结果。
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: 预期结果与验收标准
+      description: 说明正确行为和可以验证完成的条件。
+    validations:
+      required: true
+  - type: textarea
+    id: tests
+    attributes:
+      label: 测试与回归建议
+      description: 列出应补充的自动化测试和手工回归场景。
+    validations:
+      required: true
+  - type: textarea
+    id: risk
+    attributes:
+      label: 风险与回滚
+      description: 说明已知风险、兼容性要求和回滚方式。
+    validations:
+      required: true
