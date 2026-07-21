@@ -10,22 +10,22 @@ const {
   projectRegionWorkload,
   resolveEffectiveConfig,
   summarizeInventory,
-} = require('../server/scripts/quota-analysis');
-const { analyzeQuotaUsage } = require('../server/scripts/analyze-quota-usage');
+} = require('../scripts/quota-analysis');
+const { analyzeQuotaUsage } = require('../scripts/analyze-quota-usage');
 const {
   assertDistributedSnapshots,
   formatUsage,
   parseArgs,
-} = require('../server/scripts/monitor-quota-realtime');
+} = require('../scripts/monitor-quota-realtime');
 const {
   MultiLevelRateLimiter,
   acquireWithLimiters,
   tryConsumeMemoryWithLimiters,
-} = require('../server/src/services/rateLimiter');
+} = require('../src/services/rateLimiter');
 const {
   calculateFullSweepIntervalMinutes,
   calculateScheduledBatchIndex,
-} = require('../server/src/utils/monitorBatch');
+} = require('../src/utils/monitorBatch');
 
 function createInventoryRow({ id, country, asinCount, hashValue, createTime }) {
   return {

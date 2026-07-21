@@ -5,6 +5,7 @@
     "bench:analytics": "node scripts/benchmark-analytics.js",
     "build": "max build",
     "check-redis": "node scripts/check-redis.js",
+    "check:changed-format": "node scripts/check-changed-format.js",
     "dev": "max dev",
     "format": "prettier --cache --write .",
     "postinstall": "max setup",
@@ -12,11 +13,11 @@
     "setup": "max setup",
     "start": "npm run dev",
     "test:api-url": "node --test tests/api-url.test.js",
-    "test:contracts": "npm run test:api-url && npm run test:init-schema && npm run test:database-docs && npm run test:quota-tools",
+    "test:changed-format": "node --test tests/changed-format.test.js",
+    "test:contracts": "npm run test:api-url && npm run test:init-schema && npm run test:database-docs",
     "test:database-docs": "node --test tests/database-docs.test.js",
     "test:init-schema": "node --test tests/init-schema.test.js",
-    "test:pr-policy": "node --test tests/pr-policy.test.js",
-    "test:quota-tools": "node --test tests/quota-tools.test.js"
+    "test:pr-policy": "node --test tests/pr-policy.test.js"
   },
   "dependencies": {
     "@ant-design/icons": "^5.0.1",
