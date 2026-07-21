@@ -104,7 +104,7 @@ function checkFormatting(files, runner = spawnSync) {
   const prettierCli = require.resolve('prettier/bin-prettier.js');
   const result = runner(
     process.execPath,
-    [prettierCli, '--check', '--ignore-unknown', ...files],
+    [prettierCli, '--check', '--ignore-unknown', '--', ...files],
     { stdio: 'inherit' },
   );
 

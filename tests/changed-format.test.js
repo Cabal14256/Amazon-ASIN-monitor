@@ -73,6 +73,7 @@ test('使用当前 Node 进程执行仓库锁定的 Prettier CLI', () => {
   assert.deepEqual(calls[0].args.slice(1), [
     '--check',
     '--ignore-unknown',
+    '--',
     'src/index.ts',
   ]);
   assert.deepEqual(calls[0].options, { stdio: 'inherit' });
