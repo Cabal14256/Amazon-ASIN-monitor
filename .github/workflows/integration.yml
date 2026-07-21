@@ -87,6 +87,6 @@ jobs:
           {
             echo "## Integration CI"
             echo "- Result: ${{ job.status }}"
-            echo "- Duration: ${duration_seconds}s"
-            echo "- Promotion threshold: 10 consecutive successful runs, each under 600s"
+            echo "- Test-step duration after services became ready: ${duration_seconds}s"
+            echo "- Promotion threshold: 10 consecutive successful runs whose total startedAt-to-updatedAt duration is under 600s"
           } >> "$GITHUB_STEP_SUMMARY"

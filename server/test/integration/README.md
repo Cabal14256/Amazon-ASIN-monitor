@@ -18,4 +18,4 @@ gh run list --workflow integration.yml --limit 10 \
   --json conclusion,databaseId,startedAt,updatedAt,url
 ```
 
-任何失败或超时都会重新开始连续成功计数。晋级时应在治理 Issue 中记录 10 个 run ID、结论和耗时。
+用每次 run 的 `startedAt` 到 `updatedAt` 计算包含 service container 初始化在内的总耗时；job summary 中的测试步骤耗时只用于诊断，不能替代总耗时。任何失败或超时都会重新开始连续成功计数。晋级时应在治理 Issue 中记录 10 个 run ID、结论和总耗时。
