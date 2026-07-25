@@ -823,7 +823,10 @@ async function callSPAPIInternal(
           if (data) {
             try {
               const errorBody = JSON.parse(data);
-              errorCode = errorBody.code || errorBody.message || null;
+              const nestedErrorCode = Array.isArray(errorBody.errors)
+                ? errorBody.errors.find((item) => item?.code)?.code
+                : null;
+              errorCode = errorBody.code || nestedErrorCode || null;
               errorDetails = errorBody;
             } catch (e) {
               // 无法解析JSON，忽略

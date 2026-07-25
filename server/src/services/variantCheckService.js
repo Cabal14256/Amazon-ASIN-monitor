@@ -263,6 +263,9 @@ function deferASINCheck(asin, country, region = null, error = null) {
   );
 }
 
+/**
+ * 清除单个ASIN的延后记录。调用方应在状态持久化完成后再执行。
+ */
 function clearDeferredASINCheck(asin, country, region = null) {
   const cleanASIN = asin ? asin.trim().toUpperCase() : asin;
   const regionCode = region || getRegionByCountry(country);
@@ -441,7 +444,6 @@ async function doCheckASINVariants(
         source,
       });
       await setVariantResultCache(cleanASIN, country, result);
-      clearDeferredASINCheck(cleanASIN, country);
       success = true;
       isSpApiError = false;
       riskControlService.recordCheck({
@@ -957,7 +959,6 @@ async function checkVariantGroup(
         if (childRef) {
           applyEffectiveStatusToChild(childRef, isBroken);
         }
-
         if (isBroken) {
           const normalizedErrorType = errorType || 'NO_VARIANTS';
           brokenASINs.push({
@@ -1037,6 +1038,11 @@ async function checkVariantGroup(
       variantGroupId,
       autoIsBroken,
     );
+    for (const brokenASIN of brokenASINs) {
+      if (brokenASIN?.errorType === 'NOT_FOUND') {
+        clearDeferredASINCheck(brokenASIN.asin, country);
+      }
+    }
 
     groupSnapshot.is_broken = autoIsBroken ? 1 : 0;
     groupSnapshot.variant_status = autoIsBroken ? 'BROKEN' : 'NORMAL';
@@ -1200,6 +1206,15 @@ async function checkSingleASIN(asinId, forceRefresh = false) {
         manualBrokenReason: asinRecord.manualBrokenReason || '',
       },
     });
+    if (result?.errorType === 'NOT_FOUND') {
+      if (asinRecord.variantGroupId) {
+        await VariantGroup.updateVariantStatusAndCheckTime(
+          asinRecord.variantGroupId,
+          true,
+        );
+      }
+      clearDeferredASINCheck(asin, country);
+    }
 
     return {
       isBroken: effectiveStatus.isBroken === 1,
@@ -1408,6 +1423,7 @@ module.exports = {
   // 延后队列相关函数
   getDeferredASINs,
   clearDeferredASINs,
+  clearDeferredASINCheck,
   markCountryCompleted,
   getCompletedCountries,
   clearCompletedCountries,

@@ -3,12 +3,15 @@ const {
   checkVariantGroup,
   checkASINVariants,
   getDeferredASINs,
-  clearDeferredASINs,
+  clearDeferredASINCheck,
   markCountryCompleted,
   getCompletedCountries,
   clearCompletedCountries,
   getRegionByCountry,
 } = require('./variantCheckService');
+const {
+  persistDeferredNotFoundResult,
+} = require('./deferredASINPersistenceService');
 const cacheService = require('./cacheService');
 const { PRIORITY } = require('./rateLimiter');
 const logger = require('../utils/logger');
@@ -532,9 +535,11 @@ async function processDeferredASINs(region, country) {
           `[延后队列] ASIN ${deferred.asin} (${deferred.country}) 已达到最大重试次数，跳过`,
         );
         failedCount++;
+        clearDeferredASINCheck(deferred.asin, deferred.country, region);
         continue;
       }
 
+      let shouldClearDeferred = true;
       try {
         // 重试检查ASIN
         logger.info(
@@ -550,9 +555,16 @@ async function processDeferredASINs(region, country) {
 
         // 检查是否成功
         if (result && result.hasVariants !== undefined) {
+          if (result.errorType === 'NOT_FOUND') {
+            await persistDeferredNotFoundResult(deferred, result);
+          }
           successCount++;
+          const outcome =
+            result.errorType === 'NOT_FOUND'
+              ? '重试确认不存在并已标记异常'
+              : '重试成功';
           logger.info(
-            `[延后队列] ASIN ${deferred.asin} (${deferred.country}) 重试成功`,
+            `[延后队列] ASIN ${deferred.asin} (${deferred.country}) ${outcome}`,
           );
         } else {
           failedCount++;
@@ -561,6 +573,7 @@ async function processDeferredASINs(region, country) {
           );
         }
       } catch (error) {
+        shouldClearDeferred = !error.preserveDeferred;
         // 如果错误标记为已延后，说明再次失败，直接标记为失败，不再加入队列
         if (error.isDeferred) {
           failedCount++;
@@ -574,12 +587,15 @@ async function processDeferredASINs(region, country) {
             error.message,
           );
         }
+      } finally {
+        if (shouldClearDeferred) {
+          clearDeferredASINCheck(deferred.asin, deferred.country, region);
+        }
       }
     }
   }
 
-  // 清除已处理的延后ASIN
-  clearDeferredASINs(region);
+  // 清除region完成标记；持久化失败的ASIN保留在延后队列等待后续处理
   clearCompletedCountries(region);
 
   logger.info(

@@ -61,7 +61,7 @@ function isCatalogItemNotFoundError(error) {
     return false;
   }
 
-  const directCodes = [error.code, error.errorCode];
+  const directCodes = [error.code];
   if (
     directCodes.some(
       (code) =>

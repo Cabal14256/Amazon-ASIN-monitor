@@ -180,7 +180,7 @@ async function checkCompetitorVariantGroup(
       return {
         isBroken: true,
         brokenASINs: [],
-        brokenByType: { SP_API_ERROR: 0, NO_VARIANTS: 0 },
+        brokenByType: { SP_API_ERROR: 0, NOT_FOUND: 0, NO_VARIANTS: 0 },
         groupSnapshot,
         details: {
           message: '竞品变体组中没有ASIN',
@@ -275,6 +275,7 @@ async function checkCompetitorVariantGroup(
     // 统计不同类型的异常
     const brokenByType = {
       SP_API_ERROR: 0,
+      NOT_FOUND: 0,
       NO_VARIANTS: 0,
     };
     brokenASINs.forEach((item) => {
