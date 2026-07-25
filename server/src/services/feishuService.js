@@ -275,50 +275,50 @@ function buildFeishuCard(data) {
 
   // 如果有异常，按变体组分组显示异常ASIN / 人工说明
   if (brokenGroups > 0) {
-    // 按变体组名称分组
-    const asinsByGroup = {};
-    for (const asinItem of brokenASINs) {
-      const groupName = asinItem.groupName || '未知变体组';
-      if (!asinsByGroup[groupName]) {
-        asinsByGroup[groupName] = [];
-      }
-      asinsByGroup[groupName].push(asinItem);
-    }
-    const groupDetailMap = {};
+    const getGroupKey = (item, groupName) =>
+      item?.variantGroupId
+        ? `id:${item.variantGroupId}`
+        : `name:${groupName || '未知变体组'}`;
+    const groupBuckets = new Map();
     for (const groupItem of brokenGroupDetails) {
       if (!groupItem?.groupName) {
         continue;
       }
-      groupDetailMap[groupItem.groupName] = groupItem;
+      const groupKey = getGroupKey(groupItem, groupItem.groupName);
+      groupBuckets.set(groupKey, {
+        groupName: groupItem.groupName,
+        groupDetail: groupItem,
+        asins: [],
+      });
     }
-
-    // 构建异常变体组和ASIN列表（优先保留原始顺序，同时补上仅组级人工标记的项）
-    const orderedGroupNames = [];
-    const displayedGroups = new Set();
+    for (const asinItem of brokenASINs) {
+      const groupName = asinItem.groupName || '未知变体组';
+      const groupKey = getGroupKey(asinItem, groupName);
+      if (!groupBuckets.has(groupKey)) {
+        groupBuckets.set(groupKey, {
+          groupName,
+          groupDetail: null,
+          asins: [],
+        });
+      }
+      groupBuckets.get(groupKey).asins.push(asinItem);
+    }
     for (const groupName of brokenGroupNames) {
-      if (!groupName || displayedGroups.has(groupName)) {
-        continue;
-      }
-      orderedGroupNames.push(groupName);
-      displayedGroups.add(groupName);
-    }
-    for (const groupName of Object.keys(asinsByGroup)) {
-      if (!displayedGroups.has(groupName)) {
-        orderedGroupNames.push(groupName);
-        displayedGroups.add(groupName);
-      }
-    }
-    for (const groupName of Object.keys(groupDetailMap)) {
-      if (!displayedGroups.has(groupName)) {
-        orderedGroupNames.push(groupName);
-        displayedGroups.add(groupName);
+      if (
+        groupName &&
+        !Array.from(groupBuckets.values()).some(
+          (bucket) => bucket.groupName === groupName,
+        )
+      ) {
+        groupBuckets.set(`name:${groupName}`, {
+          groupName,
+          groupDetail: null,
+          asins: [],
+        });
       }
     }
 
-    for (const groupName of orderedGroupNames) {
-      const groupAsins = asinsByGroup[groupName] || [];
-      const groupDetail = groupDetailMap[groupName];
-
+    for (const { groupName, groupDetail, asins } of groupBuckets.values()) {
       contentText += `\n⚠️ ${groupName}\n`;
       if (groupDetail?.statusSource && groupDetail.statusSource !== 'NORMAL') {
         contentText += `  来源：${getStatusSourceLabel(
@@ -329,7 +329,7 @@ function buildFeishuCard(data) {
         contentText += `  说明：${groupDetail.manualBrokenReason}\n`;
       }
 
-      for (const asinItem of groupAsins) {
+      for (const asinItem of asins) {
         const asin = asinItem.asin || '';
         const brand = asinItem.brand || '';
         const asinUrl = buildAmazonAsinUrl(asin);

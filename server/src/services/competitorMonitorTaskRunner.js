@@ -4,7 +4,9 @@ const {
 } = require('./competitorVariantCheckService');
 const { clearDeferredASINCheck } = require('./variantCheckService');
 const {
-  mergeDeferredNotFoundResults,
+  getASINCheckOutcome,
+  getASINClassificationKey,
+  mergeDeferredResults,
   processDeferredASINs,
 } = require('./deferredASINRetryService');
 const {
@@ -81,6 +83,8 @@ async function processCompetitorCountry(
     brokenGroupDetails: [],
     brokenASINs: [],
     brokenByType: { SP_API_ERROR: 0, NOT_FOUND: 0, NO_VARIANTS: 0 },
+    asinClassifications: {},
+    checkedGroupKeys: [],
     checkTime,
   });
   countryResult.brokenByType = {
@@ -89,6 +93,8 @@ async function processCompetitorCountry(
     NO_VARIANTS: 0,
     ...(countryResult.brokenByType || {}),
   };
+  countryResult.asinClassifications = countryResult.asinClassifications || {};
+  countryResult.checkedGroupKeys = countryResult.checkedGroupKeys || [];
 
   let checked = 0;
   let broken = 0;
@@ -168,6 +174,10 @@ async function processCompetitorCountry(
         const groupSnapshot = groupMap.get(group.id) || group;
         checked++;
         countryResult.totalGroups++;
+        const checkedGroupKey = `group:${group.id}`;
+        if (!countryResult.checkedGroupKeys.includes(checkedGroupKey)) {
+          countryResult.checkedGroupKeys.push(checkedGroupKey);
+        }
 
         websocketService.sendMonitorProgress({
           status: 'progress',
@@ -249,16 +259,20 @@ async function processCompetitorCountry(
                 ? asinInfo.feishuNotifyEnabled !== 0
                 : false; // 默认为关闭（竞品）
 
-            const brokenASINItem = brokenASINs.find(
-              (item) =>
-                (typeof item === 'string' ? item : item.asin) === asinInfo.asin,
-            );
+            const checkOutcome = getASINCheckOutcome(result, asinInfo);
             const errorType =
-              asinInfo.isBroken === 1
-                ? brokenASINItem && typeof brokenASINItem !== 'string'
-                  ? brokenASINItem.errorType
-                  : 'NO_VARIANTS'
-                : null;
+              asinInfo.isBroken === 1 ? checkOutcome.errorType : null;
+            const classificationKey = getASINClassificationKey({
+              asin: asinInfo.asin,
+              asinId: asinInfo.id,
+              variantGroupId: group.id,
+            });
+            if (checkOutcome.classificationErrorType) {
+              countryResult.asinClassifications[classificationKey] =
+                checkOutcome.classificationErrorType;
+            } else if (!checkOutcome.isDeferred) {
+              delete countryResult.asinClassifications[classificationKey];
+            }
 
             if (
               groupNotifyEnabled &&
@@ -288,7 +302,9 @@ async function processCompetitorCountry(
               checkResult: {
                 asin: asinInfo.asin,
                 isBroken: asinInfo.isBroken === 1,
-                errorType,
+                ...(errorType ? { errorType } : {}),
+                isDeferred: checkOutcome.isDeferred,
+                currentResult: checkOutcome.currentResult,
               },
               checkTime,
             });
@@ -420,14 +436,14 @@ async function runCompetitorMonitorTask(countries, batchConfig = null) {
     for (const region of regions) {
       try {
         const deferredResult = await processDeferredASINs(region, 'competitor');
-        const { addedGroups } = mergeDeferredNotFoundResults(
+        const { addedGroups, brokenDelta } = mergeDeferredResults(
           countryResults,
-          deferredResult.notFoundResults,
+          deferredResult.deferredResults,
         );
         totalChecked += addedGroups;
-        totalBroken += addedGroups;
+        totalBroken += brokenDelta;
 
-        for (const item of deferredResult.notFoundResults) {
+        for (const item of deferredResult.deferredResults) {
           const range = competitorNotificationRanges[item.country] || {};
           competitorNotificationRanges[item.country] = {
             startTime:

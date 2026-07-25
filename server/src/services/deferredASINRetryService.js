@@ -1,10 +1,78 @@
 const {
-  persistDeferredNotFoundResult,
+  persistDeferredASINResult,
 } = require('./deferredASINPersistenceService');
 const logger = require('../utils/logger');
 
+const AUTOMATIC_ERROR_TYPES = new Set([
+  'SP_API_ERROR',
+  'NOT_FOUND',
+  'NO_VARIANTS',
+]);
+
 function normalizeOwner(owner) {
   return owner === 'competitor' ? 'competitor' : 'primary';
+}
+
+function getASINClassificationKey({
+  asin,
+  asinId = null,
+  variantGroupId = null,
+}) {
+  const groupKey = variantGroupId
+    ? `group:${variantGroupId}`
+    : `ungrouped:${asinId || asin}`;
+  return `${groupKey}:asin:${asinId || asin}`;
+}
+
+function getDeferredGroupKey(item) {
+  return item.variantGroupId
+    ? `group:${item.variantGroupId}`
+    : `ungrouped:${item.asinId || item.asin}`;
+}
+
+function getASINCheckOutcome(groupResult, asinInfo) {
+  const currentResult = (groupResult?.details?.results || []).find(
+    (entry) =>
+      String(entry?.asin || '').toUpperCase() ===
+      String(asinInfo?.asin || '').toUpperCase(),
+  );
+  const brokenASIN = (groupResult?.brokenASINs || []).find(
+    (entry) =>
+      String(typeof entry === 'string' ? entry : entry?.asin).toUpperCase() ===
+      String(asinInfo?.asin || '').toUpperCase(),
+  );
+  const isDeferred = currentResult?.isDeferred === true;
+  const currentIsBroken =
+    !isDeferred &&
+    currentResult != null &&
+    (currentResult.isBroken === true ||
+      currentResult.hasVariants === false ||
+      (currentResult.hasVariants !== true &&
+        currentResult.variantCount !== undefined &&
+        Number(currentResult.variantCount) === 0));
+  const automaticErrorType = isDeferred
+    ? null
+    : currentResult?.errorType ||
+      (currentIsBroken
+        ? 'NO_VARIANTS'
+        : typeof brokenASIN === 'object'
+        ? brokenASIN?.errorType || null
+        : null);
+  const manualErrorType =
+    asinInfo?.statusSource === 'MANUAL' ||
+    asinInfo?.statusSource === 'AUTO+MANUAL'
+      ? 'MANUAL_MARKED'
+      : null;
+  const errorType = automaticErrorType || manualErrorType;
+
+  return {
+    currentResult: currentResult || null,
+    isDeferred,
+    errorType,
+    classificationErrorType: AUTOMATIC_ERROR_TYPES.has(automaticErrorType)
+      ? automaticErrorType
+      : null,
+  };
 }
 
 async function processDeferredASINs(
@@ -27,8 +95,8 @@ async function processDeferredASINs(
   const checkVariants =
     dependencies.checkASINVariants ||
     getVariantCheckService().checkASINVariants;
-  const persistNotFound =
-    dependencies.persistDeferredNotFoundResult || persistDeferredNotFoundResult;
+  const persistResult =
+    dependencies.persistDeferredASINResult || persistDeferredASINResult;
   const priority =
     dependencies.priority || require('./rateLimiter').PRIORITY.SCHEDULED;
   const deferredByASIN = new Map();
@@ -54,7 +122,7 @@ async function processDeferredASINs(
       total: 0,
       success: 0,
       failed: 0,
-      notFoundResults: [],
+      deferredResults: [],
     };
   }
 
@@ -64,7 +132,7 @@ async function processDeferredASINs(
 
   let successCount = 0;
   let failedCount = 0;
-  const notFoundResults = [];
+  const deferredResults = [];
 
   for (const deferred of deferredASINs) {
     if (deferred.retryCount >= 1) {
@@ -97,18 +165,20 @@ async function processDeferredASINs(
         continue;
       }
 
-      if (result.errorType === 'NOT_FOUND') {
-        const persisted = await persistNotFound(deferred, result);
-        if (persisted) {
-          notFoundResults.push(persisted);
-        }
+      const persisted = await persistResult(deferred, result);
+      if (!persisted) {
+        const persistenceError = new Error(
+          `延后队列中的 ASIN ${deferred.asin} (${deferred.country}) 结果未持久化`,
+        );
+        persistenceError.preserveDeferred = true;
+        throw persistenceError;
       }
+      deferredResults.push(persisted);
 
       successCount++;
-      const outcome =
-        result.errorType === 'NOT_FOUND'
-          ? '重试确认不存在并已标记异常'
-          : '重试成功';
+      const outcome = persisted.errorType
+        ? `重试确认 ${persisted.errorType} 并已更新状态`
+        : '重试成功并已恢复正常';
       logger.info(
         `[延后队列] ${normalizedOwner} ASIN ${deferred.asin} (${deferred.country}) ${outcome}`,
       );
@@ -141,14 +211,22 @@ async function processDeferredASINs(
     total: deferredASINs.length,
     success: successCount,
     failed: failedCount,
-    notFoundResults,
+    deferredResults,
   };
 }
 
-function mergeDeferredNotFoundResults(countryResults, notFoundResults) {
-  let addedGroups = 0;
+function removeFirstMatchingGroupName(groupNames, groupName) {
+  const index = groupNames.indexOf(groupName);
+  if (index >= 0) {
+    groupNames.splice(index, 1);
+  }
+}
 
-  for (const item of notFoundResults) {
+function mergeDeferredResults(countryResults, deferredResults) {
+  let addedGroups = 0;
+  let brokenDelta = 0;
+
+  for (const item of deferredResults) {
     const countryResult = (countryResults[item.country] = countryResults[
       item.country
     ] || {
@@ -163,6 +241,8 @@ function mergeDeferredNotFoundResults(countryResults, notFoundResults) {
         NOT_FOUND: 0,
         NO_VARIANTS: 0,
       },
+      asinClassifications: {},
+      checkedGroupKeys: [],
       checkTime: item.checkTime,
     });
     countryResult.brokenByType = {
@@ -174,8 +254,12 @@ function mergeDeferredNotFoundResults(countryResults, notFoundResults) {
     countryResult.brokenGroupNames = countryResult.brokenGroupNames || [];
     countryResult.brokenGroupDetails = countryResult.brokenGroupDetails || [];
     countryResult.brokenASINs = countryResult.brokenASINs || [];
+    countryResult.asinClassifications = countryResult.asinClassifications || {};
+    countryResult.checkedGroupKeys = countryResult.checkedGroupKeys || [];
 
     const groupName = item.variantGroupName || '未分组';
+    const classificationKey = getASINClassificationKey(item);
+    const groupKey = getDeferredGroupKey(item);
     const existingASIN = countryResult.brokenASINs.find(
       (entry) =>
         entry.asin === item.asin &&
@@ -184,44 +268,124 @@ function mergeDeferredNotFoundResults(countryResults, notFoundResults) {
           : !entry.variantGroupId),
     );
     const deferredGroupKey = item.asinId || item.asin;
-    const existingGroup = countryResult.brokenGroupDetails.some((entry) =>
-      item.variantGroupId
-        ? entry.variantGroupId === item.variantGroupId
-        : !entry.variantGroupId && entry.deferredGroupKey === deferredGroupKey,
+    const existingGroupIndex = countryResult.brokenGroupDetails.findIndex(
+      (entry) =>
+        item.variantGroupId
+          ? entry.variantGroupId === item.variantGroupId
+          : !entry.variantGroupId &&
+            entry.deferredGroupKey === deferredGroupKey,
     );
-    const alreadyNotFound = existingASIN?.errorType === 'NOT_FOUND';
+    const existingGroup =
+      existingGroupIndex >= 0
+        ? countryResult.brokenGroupDetails[existingGroupIndex]
+        : null;
+    const wasChecked =
+      countryResult.checkedGroupKeys.includes(groupKey) ||
+      existingGroupIndex >= 0;
+    const wasBroken = Boolean(existingGroup);
+    const isBroken = item.isBroken === true || Number(item.isBroken) === 1;
+    const groupIsBroken =
+      item.groupIsBroken === true || Number(item.groupIsBroken) === 1;
+    const oldErrorType =
+      countryResult.asinClassifications[classificationKey] ||
+      (AUTOMATIC_ERROR_TYPES.has(existingASIN?.errorType)
+        ? existingASIN.errorType
+        : null);
+    const newErrorType =
+      item.autoIsBroken !== false && AUTOMATIC_ERROR_TYPES.has(item.errorType)
+        ? item.errorType
+        : null;
 
-    if (!existingGroup) {
+    if (!wasChecked) {
       countryResult.totalGroups++;
+      countryResult.checkedGroupKeys.push(groupKey);
+      addedGroups++;
+    } else if (!countryResult.checkedGroupKeys.includes(groupKey)) {
+      countryResult.checkedGroupKeys.push(groupKey);
+    }
+
+    if (!wasBroken && groupIsBroken) {
       countryResult.brokenGroups++;
       countryResult.brokenGroupNames.push(groupName);
       countryResult.brokenGroupDetails.push({
         variantGroupId: item.variantGroupId || null,
         groupName,
         deferredGroupKey: item.variantGroupId ? null : deferredGroupKey,
+        statusSource: item.groupStatusSource || 'NORMAL',
+        manualBroken: item.groupManualBroken || 0,
+        manualBrokenReason: item.groupManualBrokenReason || '',
+        manualBrokenUpdatedAt: item.groupManualBrokenUpdatedAt || null,
+        manualBrokenUpdatedBy: item.groupManualBrokenUpdatedBy || null,
       });
-      addedGroups++;
+      brokenDelta++;
+    } else if (wasBroken && !groupIsBroken) {
+      countryResult.brokenGroups = Math.max(0, countryResult.brokenGroups - 1);
+      countryResult.brokenGroupDetails.splice(existingGroupIndex, 1);
+      removeFirstMatchingGroupName(
+        countryResult.brokenGroupNames,
+        existingGroup.groupName || groupName,
+      );
+      brokenDelta--;
+    } else if (existingGroup) {
+      Object.assign(existingGroup, {
+        groupName,
+        statusSource:
+          item.groupStatusSource || existingGroup.statusSource || 'NORMAL',
+        manualBroken: item.groupManualBroken ?? existingGroup.manualBroken ?? 0,
+        manualBrokenReason:
+          item.groupManualBrokenReason ||
+          existingGroup.manualBrokenReason ||
+          '',
+        manualBrokenUpdatedAt:
+          item.groupManualBrokenUpdatedAt ||
+          existingGroup.manualBrokenUpdatedAt ||
+          null,
+        manualBrokenUpdatedBy:
+          item.groupManualBrokenUpdatedBy ||
+          existingGroup.manualBrokenUpdatedBy ||
+          null,
+      });
     }
 
-    if (!alreadyNotFound) {
-      if (
-        existingASIN?.errorType === 'SP_API_ERROR' &&
-        countryResult.brokenByType.SP_API_ERROR > 0
-      ) {
-        countryResult.brokenByType.SP_API_ERROR--;
-      }
-      countryResult.brokenByType.NOT_FOUND++;
+    if (
+      oldErrorType &&
+      oldErrorType !== newErrorType &&
+      countryResult.brokenByType[oldErrorType] > 0
+    ) {
+      countryResult.brokenByType[oldErrorType]--;
+    }
+    if (newErrorType && oldErrorType !== newErrorType) {
+      countryResult.brokenByType[newErrorType]++;
+    }
+    if (newErrorType) {
+      countryResult.asinClassifications[classificationKey] = newErrorType;
+    } else {
+      delete countryResult.asinClassifications[classificationKey];
     }
 
-    if (existingASIN) {
+    if (existingASIN && (!isBroken || !item.notifyEnabled)) {
+      countryResult.brokenASINs.splice(
+        countryResult.brokenASINs.indexOf(existingASIN),
+        1,
+      );
+    } else if (existingASIN) {
       existingASIN.name = item.asinName || existingASIN.name || '';
       existingASIN.groupName = groupName;
       existingASIN.brand = item.brand || existingASIN.brand || '';
-      existingASIN.errorType = 'NOT_FOUND';
+      existingASIN.errorType =
+        item.errorType ||
+        (item.statusSource === 'MANUAL' || item.statusSource === 'AUTO+MANUAL'
+          ? 'MANUAL_MARKED'
+          : null);
       existingASIN.asinId = item.asinId || existingASIN.asinId || null;
       existingASIN.variantGroupId =
         item.variantGroupId || existingASIN.variantGroupId || null;
-    } else if (item.notifyEnabled) {
+      existingASIN.statusSource = item.statusSource || 'NORMAL';
+      existingASIN.manualBroken = item.manualBroken || 0;
+      existingASIN.manualBrokenReason = item.manualBrokenReason || '';
+      existingASIN.manualBrokenUpdatedAt = item.manualBrokenUpdatedAt || null;
+      existingASIN.manualBrokenUpdatedBy = item.manualBrokenUpdatedBy || null;
+    } else if (isBroken && item.notifyEnabled) {
       countryResult.brokenASINs.push({
         asin: item.asin,
         asinId: item.asinId || null,
@@ -229,7 +393,16 @@ function mergeDeferredNotFoundResults(countryResults, notFoundResults) {
         variantGroupId: item.variantGroupId || null,
         groupName,
         brand: item.brand || '',
-        errorType: 'NOT_FOUND',
+        errorType:
+          item.errorType ||
+          (item.statusSource === 'MANUAL' || item.statusSource === 'AUTO+MANUAL'
+            ? 'MANUAL_MARKED'
+            : null),
+        statusSource: item.statusSource || 'NORMAL',
+        manualBroken: item.manualBroken || 0,
+        manualBrokenReason: item.manualBrokenReason || '',
+        manualBrokenUpdatedAt: item.manualBrokenUpdatedAt || null,
+        manualBrokenUpdatedBy: item.manualBrokenUpdatedBy || null,
       });
     }
 
@@ -241,10 +414,12 @@ function mergeDeferredNotFoundResults(countryResults, notFoundResults) {
     }
   }
 
-  return { addedGroups };
+  return { addedGroups, brokenDelta };
 }
 
 module.exports = {
-  mergeDeferredNotFoundResults,
+  getASINCheckOutcome,
+  getASINClassificationKey,
+  mergeDeferredResults,
   processDeferredASINs,
 };

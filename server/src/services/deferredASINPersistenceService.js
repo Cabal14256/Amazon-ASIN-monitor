@@ -1,5 +1,4 @@
 const logger = require('../utils/logger');
-const { ASIN_NOT_FOUND_ERROR_TYPE } = require('../utils/spApiError');
 
 function isNotificationEnabled(record, defaultValue) {
   const value =
@@ -7,17 +6,27 @@ function isNotificationEnabled(record, defaultValue) {
   return value === null ? defaultValue : Number(value) !== 0;
 }
 
-async function persistDeferredNotFoundResult(
-  deferred,
-  result,
-  dependencies = {},
-) {
-  if (result?.errorType !== ASIN_NOT_FOUND_ERROR_TYPE) {
+function isRecordBroken(record, isCompetitor) {
+  if (!record) {
+    return false;
+  }
+  const value = isCompetitor
+    ? record.isBroken ?? record.is_broken
+    : record.autoIsBroken ?? record.isBroken ?? record.is_broken;
+  return Number(value) === 1;
+}
+
+async function persistDeferredASINResult(deferred, result, dependencies = {}) {
+  if (!result || result.hasVariants === undefined) {
     return null;
   }
 
   const owner = deferred.owner === 'competitor' ? 'competitor' : 'primary';
   const isCompetitor = owner === 'competitor';
+  const autoIsBroken =
+    result.hasVariants === false ||
+    (result.variantCount !== undefined && Number(result.variantCount) === 0);
+  const errorType = result.errorType || (autoIsBroken ? 'NO_VARIANTS' : null);
   const asinModel = isCompetitor
     ? dependencies.competitorAsinModel || require('../models/CompetitorASIN')
     : dependencies.asinModel || require('../models/ASIN');
@@ -45,19 +54,45 @@ async function persistDeferredNotFoundResult(
     const variantGroupId =
       asinRecord.variantGroupId || asinRecord.variant_group_id || null;
 
-    await asinModel.updateVariantStatusAndCheckTime(asinRecord.id, true);
+    await asinModel.updateVariantStatusAndCheckTime(
+      asinRecord.id,
+      autoIsBroken,
+    );
 
     let variantGroup = null;
     let variantGroupName = null;
+    let groupAutoIsBroken = autoIsBroken;
     if (variantGroupId) {
+      variantGroup = await variantGroupModel.findById(variantGroupId);
+      groupAutoIsBroken = (variantGroup?.children || []).some((child) =>
+        isRecordBroken(child, isCompetitor),
+      );
       await variantGroupModel.updateVariantStatusAndCheckTime(
         variantGroupId,
-        true,
+        groupAutoIsBroken,
       );
       variantGroup = await variantGroupModel.findById(variantGroupId);
       variantGroupName = variantGroup?.name || null;
     }
 
+    const refreshedASIN =
+      typeof asinModel.findById === 'function'
+        ? await asinModel.findById(asinRecord.id)
+        : null;
+    const effectiveASIN = refreshedASIN || asinRecord;
+    const effectiveIsBroken =
+      Number(
+        effectiveASIN.isBroken ??
+          effectiveASIN.is_broken ??
+          (autoIsBroken ? 1 : 0),
+      ) === 1;
+    const groupIsBroken = variantGroup
+      ? Number(
+          variantGroup.isBroken ??
+            variantGroup.is_broken ??
+            (groupAutoIsBroken ? 1 : 0),
+        ) === 1
+      : effectiveIsBroken;
     const historyEntry = {
       asinId: asinRecord.id,
       asinCode: asinRecord.asin || deferred.asin,
@@ -66,10 +101,12 @@ async function persistDeferredNotFoundResult(
       variantGroupName,
       checkType: 'ASIN',
       country: deferred.country,
-      isBroken: 1,
+      isBroken: effectiveIsBroken ? 1 : 0,
       checkTime,
       checkResult: {
         ...result,
+        isBroken: autoIsBroken,
+        ...(errorType ? { errorType } : {}),
         meta: {
           ...(result.meta || {}),
           trigger: 'deferred_retry',
@@ -88,12 +125,14 @@ async function persistDeferredNotFoundResult(
         ? isNotificationEnabled(variantGroup, defaultNotifyEnabled)
         : defaultNotifyEnabled;
     const asinNotifyEnabled = isNotificationEnabled(
-      asinRecord,
+      effectiveASIN,
       defaultNotifyEnabled,
     );
 
     logger.info(
-      `[延后队列] ${owner} ASIN ${deferred.asin} (${deferred.country}) NOT_FOUND 状态已持久化`,
+      `[延后队列] ${owner} ASIN ${deferred.asin} (${
+        deferred.country
+      }) 重试结果已持久化: ${errorType || 'NORMAL'}`,
     );
     return {
       owner,
@@ -106,7 +145,20 @@ async function persistDeferredNotFoundResult(
       variantGroupName,
       checkTime,
       notifyEnabled: groupNotifyEnabled && asinNotifyEnabled,
-      errorType: ASIN_NOT_FOUND_ERROR_TYPE,
+      autoIsBroken,
+      isBroken: effectiveIsBroken,
+      groupIsBroken,
+      errorType,
+      statusSource: effectiveASIN.statusSource || 'NORMAL',
+      manualBroken: Number(effectiveASIN.manualBroken || 0) === 1 ? 1 : 0,
+      manualBrokenReason: effectiveASIN.manualBrokenReason || '',
+      manualBrokenUpdatedAt: effectiveASIN.manualBrokenUpdatedAt || null,
+      manualBrokenUpdatedBy: effectiveASIN.manualBrokenUpdatedBy || null,
+      groupStatusSource: variantGroup?.statusSource || 'NORMAL',
+      groupManualBroken: Number(variantGroup?.manualBroken || 0) === 1 ? 1 : 0,
+      groupManualBrokenReason: variantGroup?.manualBrokenReason || '',
+      groupManualBrokenUpdatedAt: variantGroup?.manualBrokenUpdatedAt || null,
+      groupManualBrokenUpdatedBy: variantGroup?.manualBrokenUpdatedBy || null,
     };
   } catch (error) {
     error.preserveDeferred = true;
@@ -115,5 +167,5 @@ async function persistDeferredNotFoundResult(
 }
 
 module.exports = {
-  persistDeferredNotFoundResult,
+  persistDeferredASINResult,
 };

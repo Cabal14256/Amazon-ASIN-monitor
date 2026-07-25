@@ -8,7 +8,9 @@ const {
   clearCompletedCountries,
 } = require('./variantCheckService');
 const {
-  mergeDeferredNotFoundResults,
+  getASINCheckOutcome,
+  getASINClassificationKey,
+  mergeDeferredResults,
   processDeferredASINs,
 } = require('./deferredASINRetryService');
 const cacheService = require('./cacheService');
@@ -155,6 +157,8 @@ async function processCountry(
     brokenGroupDetails: [],
     brokenASINs: [],
     brokenByType: { SP_API_ERROR: 0, NOT_FOUND: 0, NO_VARIANTS: 0 }, // 按类型统计异常
+    asinClassifications: {},
+    checkedGroupKeys: [],
     checkTime: taskCheckTime,
   });
   countryResult.brokenByType = {
@@ -163,6 +167,8 @@ async function processCountry(
     NO_VARIANTS: 0,
     ...(countryResult.brokenByType || {}),
   };
+  countryResult.asinClassifications = countryResult.asinClassifications || {};
+  countryResult.checkedGroupKeys = countryResult.checkedGroupKeys || [];
 
   let checked = 0;
   let broken = 0;
@@ -271,6 +277,10 @@ async function processCountry(
         const groupSnapshot = groupMap.get(group.id) || group;
         checked++;
         countryResult.totalGroups++;
+        const checkedGroupKey = `group:${group.id}`;
+        if (!countryResult.checkedGroupKeys.includes(checkedGroupKey)) {
+          countryResult.checkedGroupKeys.push(checkedGroupKey);
+        }
 
         // 每处理10个变体组后，检查并同步并发数（触发自动调整）
         if (checked % 10 === 0) {
@@ -376,18 +386,20 @@ async function processCountry(
                 ? asinInfo.feishuNotifyEnabled !== 0
                 : true; // 默认为开启
 
-            const brokenASINItem = brokenASINs.find(
-              (item) =>
-                (typeof item === 'string' ? item : item.asin) === asinInfo.asin,
-            );
+            const checkOutcome = getASINCheckOutcome(result, asinInfo);
             const errorType =
-              asinInfo.isBroken === 1
-                ? brokenASINItem && typeof brokenASINItem !== 'string'
-                  ? brokenASINItem.errorType
-                  : asinInfo.statusSource === 'MANUAL'
-                  ? 'MANUAL_MARKED'
-                  : 'NO_VARIANTS'
-                : null;
+              asinInfo.isBroken === 1 ? checkOutcome.errorType : null;
+            const classificationKey = getASINClassificationKey({
+              asin: asinInfo.asin,
+              asinId: asinInfo.id,
+              variantGroupId: group.id,
+            });
+            if (checkOutcome.classificationErrorType) {
+              countryResult.asinClassifications[classificationKey] =
+                checkOutcome.classificationErrorType;
+            } else if (!checkOutcome.isDeferred) {
+              delete countryResult.asinClassifications[classificationKey];
+            }
 
             if (
               groupNotifyEnabled &&
@@ -424,7 +436,9 @@ async function processCountry(
               checkResult: {
                 asin: asinInfo.asin,
                 isBroken: asinInfo.isBroken === 1,
-                errorType,
+                ...(errorType ? { errorType } : {}),
+                isDeferred: checkOutcome.isDeferred,
+                currentResult: checkOutcome.currentResult,
                 statusSource: asinInfo.statusSource || 'NORMAL',
                 manualBrokenReason: asinInfo.manualBrokenReason || '',
               },
@@ -611,14 +625,14 @@ async function runMonitorTask(countries, batchConfig = null) {
       );
       try {
         const deferredResult = await processDeferredASINs(region, 'primary');
-        const { addedGroups } = mergeDeferredNotFoundResults(
+        const { addedGroups, brokenDelta } = mergeDeferredResults(
           countryResults,
-          deferredResult.notFoundResults,
+          deferredResult.deferredResults,
         );
         totalChecked += addedGroups;
-        totalBroken += addedGroups;
+        totalBroken += brokenDelta;
 
-        for (const item of deferredResult.notFoundResults) {
+        for (const item of deferredResult.deferredResults) {
           const range = countryCheckRanges[item.country] || {};
           countryCheckRanges[item.country] = {
             startTime:

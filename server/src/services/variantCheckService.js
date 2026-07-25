@@ -1112,12 +1112,22 @@ async function checkVariantGroup(
             String(entry.asin || '').toUpperCase() ===
               String(item.asin || '').toUpperCase(),
         );
+        const currentCheck = results.find(
+          (entry) =>
+            String(entry?.asin || '').toUpperCase() ===
+            String(item.asin || '').toUpperCase(),
+        );
 
         return {
           asin: item.asin,
           errorType:
             autoBrokenInfo?.errorType ||
-            (item.statusSource === 'MANUAL' ? 'MANUAL_MARKED' : 'NO_VARIANTS'),
+            (item.statusSource === 'MANUAL' ||
+            item.statusSource === 'AUTO+MANUAL'
+              ? 'MANUAL_MARKED'
+              : currentCheck?.isDeferred
+              ? undefined
+              : 'NO_VARIANTS'),
           statusSource: item.statusSource || 'NORMAL',
           manualBroken: item.manualBroken === 1 ? 1 : 0,
           manualBrokenReason: item.manualBrokenReason || '',
