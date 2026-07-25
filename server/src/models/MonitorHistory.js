@@ -44,8 +44,7 @@ function getExpectedSlotCount(alignedStart, alignedEnd, granularity) {
     );
   }
 
-  const stepMs =
-    granularity === 'day' ? 24 * 60 * 60 * 1000 : 60 * 60 * 1000;
+  const stepMs = granularity === 'day' ? 24 * 60 * 60 * 1000 : 60 * 60 * 1000;
   return Math.floor((endDate.getTime() - startDate.getTime()) / stepMs) + 1;
 }
 
@@ -2939,7 +2938,9 @@ class MonitorHistory {
 
     const cacheTtlMs =
       Number(process.env.ANALYTICS_AGG_COVERAGE_CACHE_TTL_MS) || 60000;
-    const country = String(options.country || '').trim().toUpperCase();
+    const country = String(options.country || '')
+      .trim()
+      .toUpperCase();
     const rawExtraWhere = String(options.rawExtraWhere || '').trim();
     const cacheKey = [
       'slotCoverage',
@@ -2987,7 +2988,9 @@ class MonitorHistory {
       rows.map((row) => row?.time_slot).filter(Boolean),
     );
     const coveredSlotCount = coveredSlots.size;
-    const missingSlots = expectedSlots.filter((slot) => !coveredSlots.has(slot));
+    const missingSlots = expectedSlots.filter(
+      (slot) => !coveredSlots.has(slot),
+    );
     let firstMissingSlot = '';
     for (const slot of missingSlots) {
       const hasRawHistory = await MonitorHistory.hasRawHistoryForAggSlot(
@@ -3034,7 +3037,9 @@ class MonitorHistory {
 
   static async hasRawHistoryForAggSlot(granularity, slot, options = {}) {
     const slotColumn = getRawSlotColumnForGranularity(granularity);
-    const country = String(options.country || '').trim().toUpperCase();
+    const country = String(options.country || '')
+      .trim()
+      .toUpperCase();
     const rawExtraWhere = String(options.rawExtraWhere || '').trim();
     let whereClause = `
       WHERE mh.${slotColumn} = CAST(? AS DATETIME)
@@ -3140,18 +3145,17 @@ class MonitorHistory {
       completenessEnd = coverage.maxSlot;
     }
 
-    const hasMissingSlots =
-      await MonitorHistory.hasMissingAggSlotsInRange(
-        tableName,
-        granularity,
-        startTime,
-        endTime,
-        {
-          ...options,
-          alignedStart,
-          alignedEnd: completenessEnd,
-        },
-      );
+    const hasMissingSlots = await MonitorHistory.hasMissingAggSlotsInRange(
+      tableName,
+      granularity,
+      startTime,
+      endTime,
+      {
+        ...options,
+        alignedStart,
+        alignedEnd: completenessEnd,
+      },
+    );
     if (hasMissingSlots) {
       return false;
     }
@@ -3262,19 +3266,18 @@ class MonitorHistory {
       }
     }
 
-    const hasMissingSlots =
-      await MonitorHistory.hasMissingAggSlotsInRange(
-        'monitor_history_agg_variant_group',
-        granularity,
-        startTime,
-        endTime,
-        {
-          alignedStart,
-          alignedEnd: completenessEnd,
-          country,
-          rawExtraWhere: 'mh.variant_group_id IS NOT NULL',
-        },
-      );
+    const hasMissingSlots = await MonitorHistory.hasMissingAggSlotsInRange(
+      'monitor_history_agg_variant_group',
+      granularity,
+      startTime,
+      endTime,
+      {
+        alignedStart,
+        alignedEnd: completenessEnd,
+        country,
+        rawExtraWhere: 'mh.variant_group_id IS NOT NULL',
+      },
+    );
     if (hasMissingSlots) {
       return false;
     }
