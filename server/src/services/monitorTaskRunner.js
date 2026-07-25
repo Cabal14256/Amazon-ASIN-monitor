@@ -155,9 +155,15 @@ async function processCountry(
     brokenGroupNames: [],
     brokenGroupDetails: [],
     brokenASINs: [],
-    brokenByType: { SP_API_ERROR: 0, NO_VARIANTS: 0 }, // 按类型统计异常
+    brokenByType: { SP_API_ERROR: 0, NOT_FOUND: 0, NO_VARIANTS: 0 }, // 按类型统计异常
     checkTime: taskCheckTime,
   });
+  countryResult.brokenByType = {
+    SP_API_ERROR: 0,
+    NOT_FOUND: 0,
+    NO_VARIANTS: 0,
+    ...(countryResult.brokenByType || {}),
+  };
 
   let checked = 0;
   let broken = 0;
@@ -304,6 +310,7 @@ async function processCountry(
         const brokenASINs = result?.brokenASINs || [];
         const brokenByType = result?.brokenByType || {
           SP_API_ERROR: 0,
+          NOT_FOUND: 0,
           NO_VARIANTS: 0,
         };
         const updatedGroup = result?.groupSnapshot || groupSnapshot;
@@ -325,6 +332,7 @@ async function processCountry(
           // 累加错误类型统计
           countryResult.brokenByType.SP_API_ERROR +=
             brokenByType.SP_API_ERROR || 0;
+          countryResult.brokenByType.NOT_FOUND += brokenByType.NOT_FOUND || 0;
           countryResult.brokenByType.NO_VARIANTS +=
             brokenByType.NO_VARIANTS || 0;
         }
@@ -382,8 +390,8 @@ async function processCountry(
                 brokenASINItem && typeof brokenASINItem !== 'string'
                   ? brokenASINItem.errorType
                   : asinInfo.statusSource === 'MANUAL'
-                    ? 'MANUAL_MARKED'
-                    : 'NO_VARIANTS';
+                  ? 'MANUAL_MARKED'
+                  : 'NO_VARIANTS';
 
               countryResult.brokenASINs.push({
                 asin: asinInfo.asin,
@@ -761,12 +769,15 @@ async function runMonitorTask(countries, batchConfig = null) {
     // 汇总所有国家的异常类型统计
     const totalBrokenByType = {
       SP_API_ERROR: 0,
+      NOT_FOUND: 0,
       NO_VARIANTS: 0,
     };
     Object.values(countryResults).forEach((countryResult) => {
       if (countryResult.brokenByType) {
         totalBrokenByType.SP_API_ERROR +=
           countryResult.brokenByType.SP_API_ERROR || 0;
+        totalBrokenByType.NOT_FOUND +=
+          countryResult.brokenByType.NOT_FOUND || 0;
         totalBrokenByType.NO_VARIANTS +=
           countryResult.brokenByType.NO_VARIANTS || 0;
       }
@@ -783,6 +794,9 @@ async function runMonitorTask(countries, batchConfig = null) {
     const errorTypeInfo = [];
     if (totalBrokenByType.SP_API_ERROR > 0) {
       errorTypeInfo.push(`SP-API错误: ${totalBrokenByType.SP_API_ERROR} 个`);
+    }
+    if (totalBrokenByType.NOT_FOUND > 0) {
+      errorTypeInfo.push(`ASIN不存在: ${totalBrokenByType.NOT_FOUND} 个`);
     }
     if (totalBrokenByType.NO_VARIANTS > 0) {
       errorTypeInfo.push(`无父变体ASIN: ${totalBrokenByType.NO_VARIANTS} 个`);

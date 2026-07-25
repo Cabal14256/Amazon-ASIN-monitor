@@ -175,7 +175,10 @@ async function callLegacySPAPI(
       return executeRequest();
     }, scheduleOptions);
   } catch (error) {
-    logger.error('[Legacy SP-API] 调用错误:', error);
+    logger.error('[Legacy SP-API] 调用错误:', {
+      message: error.message,
+      statusCode: error.statusCode || null,
+    });
     throw error;
   }
 }

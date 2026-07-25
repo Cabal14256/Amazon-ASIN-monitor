@@ -17,6 +17,10 @@ const {
   buildEffectiveStatus,
   decorateVariantGroupStatus,
 } = require('../utils/variantStatus');
+const {
+  buildASINNotFoundResult,
+  isCatalogItemNotFoundError,
+} = require('../utils/spApiError');
 
 /**
  * 每次最多同时检查的 ASIN 数（降低并发以减少限流风险）
@@ -259,6 +263,12 @@ function deferASINCheck(asin, country, region = null, error = null) {
   );
 }
 
+function clearDeferredASINCheck(asin, country, region = null) {
+  const cleanASIN = asin ? asin.trim().toUpperCase() : asin;
+  const regionCode = region || getRegionByCountry(country);
+  cacheService.delete(`deferred:${regionCode}:${country}:${cleanASIN}`);
+}
+
 /**
  * 获取指定region和country的延后ASIN列表
  * @param {string} region - 区域代码
@@ -419,6 +429,34 @@ async function doCheckASINVariants(
     let lastError = null;
     const apiVersion = '2022-04-01';
     const path = `/catalog/${apiVersion}/items/${cleanASIN}`;
+    const resolveNotFoundResult = async (error, source) => {
+      if (!isCatalogItemNotFoundError(error)) {
+        return null;
+      }
+
+      const result = buildASINNotFoundResult({
+        asin: cleanASIN,
+        country,
+        apiVersion,
+        source,
+      });
+      await setVariantResultCache(cleanASIN, country, result);
+      clearDeferredASINCheck(cleanASIN, country);
+      success = true;
+      isSpApiError = false;
+      riskControlService.recordCheck({
+        success: true,
+        isRateLimit: false,
+        isSpApiError: false,
+        responseTime: (Date.now() - startTime) / 1000,
+      });
+      const sourceLabel =
+        source === 'legacy_spapi' ? 'Legacy SP-API' : 'SP-API';
+      logger.info(
+        `[checkASINVariants] ASIN ${cleanASIN} (${country}) 经 ${sourceLabel} 确认在目标 Marketplace 中不存在，直接标记异常`,
+      );
+      return result;
+    };
 
     // 识别operation
     const operation = operationIdentifier.identifyOperation('GET', path);
@@ -474,6 +512,11 @@ async function doCheckASINVariants(
       );
       lastError = error;
 
+      const notFoundResult = await resolveNotFoundResult(error, 'spapi');
+      if (notFoundResult) {
+        return notFoundResult;
+      }
+
       // 如果是 4xx 级别错误（如 400 InvalidInput），则不再重试，进入兜底逻辑
       if (
         error.statusCode &&
@@ -512,8 +555,19 @@ async function doCheckASINVariants(
         );
         logger.info('[checkASINVariants] 旧SP-API调用成功');
       } catch (legacyError) {
-        logger.error('[checkASINVariants] 旧客户端也失败:', legacyError);
+        logger.error('[checkASINVariants] 旧客户端也失败:', {
+          message: legacyError.message,
+          statusCode: legacyError.statusCode || null,
+        });
         lastError = legacyError;
+
+        const notFoundResult = await resolveNotFoundResult(
+          legacyError,
+          'legacy_spapi',
+        );
+        if (notFoundResult) {
+          return notFoundResult;
+        }
       }
     }
 
@@ -580,6 +634,11 @@ async function doCheckASINVariants(
       const finalError =
         lastError || new Error('SP-API响应为空且未使用HTML兜底');
       const region = getRegionByCountry(country);
+
+      const notFoundResult = await resolveNotFoundResult(finalError, 'spapi');
+      if (notFoundResult) {
+        return notFoundResult;
+      }
 
       // 将ASIN加入延后队列
       deferASINCheck(cleanASIN, country, region, finalError);
@@ -817,7 +876,7 @@ async function checkVariantGroup(
       return {
         isBroken: true,
         brokenASINs: [],
-        brokenByType: { SP_API_ERROR: 0, NO_VARIANTS: 0 },
+        brokenByType: { SP_API_ERROR: 0, NOT_FOUND: 0, NO_VARIANTS: 0 },
         groupSnapshot,
         details: { results: [] },
       };
@@ -825,7 +884,7 @@ async function checkVariantGroup(
 
     const country = groupSnapshot.country || 'US';
     const brokenASINs = [];
-    const brokenByType = { SP_API_ERROR: 0, NO_VARIANTS: 0 };
+    const brokenByType = { SP_API_ERROR: 0, NOT_FOUND: 0, NO_VARIANTS: 0 };
     const results = new Array(asins.length);
 
     const asinList = asins.map((asinEntry) => asinEntry.asin || asinEntry);
@@ -1151,7 +1210,7 @@ async function checkSingleASIN(asinId, forceRefresh = false) {
                 asin,
                 errorType:
                   autoBroken || effectiveStatus.statusSource === 'AUTO+MANUAL'
-                    ? 'NO_VARIANTS'
+                    ? result?.errorType || 'NO_VARIANTS'
                     : 'MANUAL_MARKED',
                 statusSource: effectiveStatus.statusSource,
                 manualBrokenReason: asinRecord.manualBrokenReason || '',

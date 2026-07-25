@@ -189,7 +189,7 @@ function buildFeishuCard(data) {
     brokenGroupNames = [],
     brokenGroupDetails = [],
     brokenASINs = [],
-    brokenByType = { SP_API_ERROR: 0, NO_VARIANTS: 0 },
+    brokenByType = { SP_API_ERROR: 0, NOT_FOUND: 0, NO_VARIANTS: 0 },
     checkTime,
   } = data;
 
@@ -220,6 +220,7 @@ function buildFeishuCard(data) {
 
   // 统计异常类型
   const spApiErrorCount = brokenByType?.SP_API_ERROR || 0;
+  const notFoundCount = brokenByType?.NOT_FOUND || 0;
   const noVariantsCount = brokenByType?.NO_VARIANTS || 0;
   const totalBrokenASINs = brokenASINs.length;
   const manualBrokenASINCount = brokenASINs.filter((item) =>
@@ -253,6 +254,9 @@ function buildFeishuCard(data) {
     contentText += `异常分类统计：\n`;
     if (spApiErrorCount > 0) {
       contentText += `  ❌ SP-API错误：${spApiErrorCount} 个\n`;
+    }
+    if (notFoundCount > 0) {
+      contentText += `  ⛔ ASIN不存在：${notFoundCount} 个\n`;
     }
     if (noVariantsCount > 0) {
       contentText += `  ⚠️ 无父变体ASIN：${noVariantsCount} 个\n`;
