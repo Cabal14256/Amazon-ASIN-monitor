@@ -181,6 +181,7 @@ test('延后重试得到 NOT_FOUND 时先持久化 ASIN、变体组和历史', a
             name: '测试 ASIN',
             country: 'US',
             variant_group_id: 'group-id',
+            feishu_notify_enabled: 0,
           };
         },
         async updateVariantStatusAndCheckTime(id, isBroken) {
@@ -209,7 +210,7 @@ test('延后重试得到 NOT_FOUND 时先持久化 ASIN、变体组和历史', a
   assert.equal(persisted.owner, 'primary');
   assert.equal(persisted.asin, 'B0GJCXCH6Q');
   assert.equal(persisted.variantGroupName, '测试分组');
-  assert.equal(persisted.notifyEnabled, true);
+  assert.equal(persisted.notifyEnabled, false);
   assert.deepEqual(calls, [
     'find-asin',
     'update-asin:asin-id:true',
@@ -239,7 +240,7 @@ test('竞品延后重试仅写入竞品模型并保留归属信息', async () =>
             id: 'competitor-asin-id',
             asin: 'B0GJCXCH6Q',
             variantGroupId: 'competitor-group-id',
-            feishuNotifyEnabled: 1,
+            feishu_notify_enabled: 1,
           };
         },
         async updateVariantStatusAndCheckTime() {
@@ -254,7 +255,7 @@ test('竞品延后重试仅写入竞品模型并保留归属信息', async () =>
           calls.push('find-competitor-group');
           return {
             name: '竞品分组',
-            feishuNotifyEnabled: 1,
+            feishu_notify_enabled: 1,
           };
         },
       },
@@ -377,10 +378,16 @@ test('延后确认 NOT_FOUND 会在通知前替换原 SP-API 异常分类', () =
       totalGroups: 1,
       brokenGroups: 1,
       brokenGroupNames: ['测试分组'],
-      brokenGroupDetails: [{ groupName: '测试分组' }],
+      brokenGroupDetails: [
+        {
+          variantGroupId: 'group-id',
+          groupName: '测试分组',
+        },
+      ],
       brokenASINs: [
         {
           asin: 'B0GJCXCH6Q',
+          variantGroupId: 'group-id',
           groupName: '测试分组',
           errorType: 'SP_API_ERROR',
         },
@@ -397,6 +404,7 @@ test('延后确认 NOT_FOUND 会在通知前替换原 SP-API 异常分类', () =
     {
       asin: 'B0GJCXCH6Q',
       country: 'US',
+      variantGroupId: 'group-id',
       variantGroupName: '测试分组',
       asinName: '测试 ASIN',
       notifyEnabled: true,
@@ -408,4 +416,56 @@ test('延后确认 NOT_FOUND 会在通知前替换原 SP-API 异常分类', () =
   assert.equal(countryResults.US.brokenByType.SP_API_ERROR, 0);
   assert.equal(countryResults.US.brokenByType.NOT_FOUND, 1);
   assert.equal(countryResults.US.brokenASINs[0].errorType, 'NOT_FOUND');
+});
+
+test('同名分组按 ID 合并且不会扣减其他 ASIN 的 SP-API 错误', () => {
+  const countryResults = {
+    US: {
+      country: 'US',
+      totalGroups: 1,
+      brokenGroups: 1,
+      brokenGroupNames: ['同名分组'],
+      brokenGroupDetails: [
+        {
+          variantGroupId: 'group-a',
+          groupName: '同名分组',
+        },
+      ],
+      brokenASINs: [
+        {
+          asin: 'B0OTHER001',
+          variantGroupId: 'group-a',
+          groupName: '同名分组',
+          errorType: 'SP_API_ERROR',
+        },
+      ],
+      brokenByType: {
+        SP_API_ERROR: 1,
+        NOT_FOUND: 0,
+        NO_VARIANTS: 0,
+      },
+    },
+  };
+
+  const merged = mergeDeferredNotFoundResults(countryResults, [
+    {
+      asin: 'B0GJCXCH6Q',
+      asinId: 'asin-b',
+      country: 'US',
+      variantGroupId: 'group-b',
+      variantGroupName: '同名分组',
+      notifyEnabled: true,
+      checkTime: new Date(),
+    },
+  ]);
+
+  assert.equal(merged.addedGroups, 1);
+  assert.equal(countryResults.US.totalGroups, 2);
+  assert.equal(countryResults.US.brokenGroups, 2);
+  assert.equal(countryResults.US.brokenByType.SP_API_ERROR, 1);
+  assert.equal(countryResults.US.brokenByType.NOT_FOUND, 1);
+  assert.equal(
+    countryResults.US.brokenGroupDetails[1].variantGroupId,
+    'group-b',
+  );
 });

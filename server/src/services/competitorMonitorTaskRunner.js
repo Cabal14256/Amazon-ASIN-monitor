@@ -78,6 +78,7 @@ async function processCompetitorCountry(
     totalGroups: 0,
     brokenGroups: 0,
     brokenGroupNames: [],
+    brokenGroupDetails: [],
     brokenASINs: [],
     brokenByType: { SP_API_ERROR: 0, NOT_FOUND: 0, NO_VARIANTS: 0 },
     checkTime,
@@ -208,6 +209,10 @@ async function processCompetitorCountry(
           broken++;
           countryResult.brokenGroups++;
           countryResult.brokenGroupNames.push(group.name);
+          countryResult.brokenGroupDetails.push({
+            variantGroupId: group.id,
+            groupName: group.name,
+          });
           countryResult.brokenByType.SP_API_ERROR +=
             brokenByType.SP_API_ERROR || 0;
           countryResult.brokenByType.NOT_FOUND += brokenByType.NOT_FOUND || 0;
@@ -244,25 +249,27 @@ async function processCompetitorCountry(
                 ? asinInfo.feishuNotifyEnabled !== 0
                 : false; // 默认为关闭（竞品）
 
+            const brokenASINItem = brokenASINs.find(
+              (item) =>
+                (typeof item === 'string' ? item : item.asin) === asinInfo.asin,
+            );
+            const errorType =
+              asinInfo.isBroken === 1
+                ? brokenASINItem && typeof brokenASINItem !== 'string'
+                  ? brokenASINItem.errorType
+                  : 'NO_VARIANTS'
+                : null;
+
             if (
               groupNotifyEnabled &&
               asinNotifyEnabled &&
               asinInfo.isBroken === 1
             ) {
-              // 从 brokenASINs 中查找对应的错误类型
-              const brokenASINItem = brokenASINs.find(
-                (item) =>
-                  (typeof item === 'string' ? item : item.asin) ===
-                  asinInfo.asin,
-              );
-              const errorType =
-                brokenASINItem && typeof brokenASINItem !== 'string'
-                  ? brokenASINItem.errorType
-                  : 'NO_VARIANTS';
-
               countryResult.brokenASINs.push({
                 asin: asinInfo.asin,
+                asinId: asinInfo.id,
                 name: asinInfo.name || '',
+                variantGroupId: group.id,
                 groupName: group.name,
                 brand: asinInfo.brand || '',
                 errorType,
@@ -281,6 +288,7 @@ async function processCompetitorCountry(
               checkResult: {
                 asin: asinInfo.asin,
                 isBroken: asinInfo.isBroken === 1,
+                errorType,
               },
               checkTime,
             });

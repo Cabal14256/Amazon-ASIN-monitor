@@ -1,6 +1,12 @@
 const logger = require('../utils/logger');
 const { ASIN_NOT_FOUND_ERROR_TYPE } = require('../utils/spApiError');
 
+function isNotificationEnabled(record, defaultValue) {
+  const value =
+    record?.feishuNotifyEnabled ?? record?.feishu_notify_enabled ?? null;
+  return value === null ? defaultValue : Number(value) !== 0;
+}
+
 async function persistDeferredNotFoundResult(
   deferred,
   result,
@@ -79,16 +85,12 @@ async function persistDeferredNotFoundResult(
     const defaultNotifyEnabled = isCompetitor ? false : true;
     const groupNotifyEnabled =
       variantGroupId && variantGroup
-        ? variantGroup.feishuNotifyEnabled !== null &&
-          variantGroup.feishuNotifyEnabled !== undefined
-          ? variantGroup.feishuNotifyEnabled !== 0
-          : defaultNotifyEnabled
+        ? isNotificationEnabled(variantGroup, defaultNotifyEnabled)
         : defaultNotifyEnabled;
-    const asinNotifyEnabled =
-      asinRecord.feishuNotifyEnabled !== null &&
-      asinRecord.feishuNotifyEnabled !== undefined
-        ? asinRecord.feishuNotifyEnabled !== 0
-        : defaultNotifyEnabled;
+    const asinNotifyEnabled = isNotificationEnabled(
+      asinRecord,
+      defaultNotifyEnabled,
+    );
 
     logger.info(
       `[延后队列] ${owner} ASIN ${deferred.asin} (${deferred.country}) NOT_FOUND 状态已持久化`,

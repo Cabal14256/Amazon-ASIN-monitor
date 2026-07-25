@@ -321,6 +321,7 @@ async function processCountry(
           countryResult.brokenGroups++;
           countryResult.brokenGroupNames.push(group.name);
           countryResult.brokenGroupDetails.push({
+            variantGroupId: group.id,
             groupName: variantGroupName,
             statusSource: updatedGroup?.statusSource || 'NORMAL',
             manualBroken: updatedGroup?.manualBroken === 1 ? 1 : 0,
@@ -375,27 +376,29 @@ async function processCountry(
                 ? asinInfo.feishuNotifyEnabled !== 0
                 : true; // 默认为开启
 
+            const brokenASINItem = brokenASINs.find(
+              (item) =>
+                (typeof item === 'string' ? item : item.asin) === asinInfo.asin,
+            );
+            const errorType =
+              asinInfo.isBroken === 1
+                ? brokenASINItem && typeof brokenASINItem !== 'string'
+                  ? brokenASINItem.errorType
+                  : asinInfo.statusSource === 'MANUAL'
+                  ? 'MANUAL_MARKED'
+                  : 'NO_VARIANTS'
+                : null;
+
             if (
               groupNotifyEnabled &&
               asinNotifyEnabled &&
               asinInfo.isBroken === 1
             ) {
-              // 从 brokenASINs 中查找对应的错误类型
-              const brokenASINItem = brokenASINs.find(
-                (item) =>
-                  (typeof item === 'string' ? item : item.asin) ===
-                  asinInfo.asin,
-              );
-              const errorType =
-                brokenASINItem && typeof brokenASINItem !== 'string'
-                  ? brokenASINItem.errorType
-                  : asinInfo.statusSource === 'MANUAL'
-                  ? 'MANUAL_MARKED'
-                  : 'NO_VARIANTS';
-
               countryResult.brokenASINs.push({
                 asin: asinInfo.asin,
+                asinId: asinInfo.id,
                 name: asinInfo.name || '',
+                variantGroupId: group.id,
                 groupName: group.name,
                 brand: asinInfo.brand || '',
                 errorType, // 添加错误类型
@@ -421,6 +424,7 @@ async function processCountry(
               checkResult: {
                 asin: asinInfo.asin,
                 isBroken: asinInfo.isBroken === 1,
+                errorType,
                 statusSource: asinInfo.statusSource || 'NORMAL',
                 manualBrokenReason: asinInfo.manualBrokenReason || '',
               },

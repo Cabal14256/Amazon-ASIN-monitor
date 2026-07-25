@@ -177,26 +177,35 @@ function mergeDeferredNotFoundResults(countryResults, notFoundResults) {
 
     const groupName = item.variantGroupName || '未分组';
     const existingASIN = countryResult.brokenASINs.find(
-      (entry) => entry.asin === item.asin,
+      (entry) =>
+        entry.asin === item.asin &&
+        (item.variantGroupId
+          ? entry.variantGroupId === item.variantGroupId
+          : !entry.variantGroupId),
     );
-    const existingGroup =
-      countryResult.brokenGroupNames.includes(groupName) ||
-      countryResult.brokenGroupDetails.some(
-        (entry) => entry.groupName === groupName,
-      );
+    const deferredGroupKey = item.asinId || item.asin;
+    const existingGroup = countryResult.brokenGroupDetails.some((entry) =>
+      item.variantGroupId
+        ? entry.variantGroupId === item.variantGroupId
+        : !entry.variantGroupId && entry.deferredGroupKey === deferredGroupKey,
+    );
     const alreadyNotFound = existingASIN?.errorType === 'NOT_FOUND';
 
     if (!existingGroup) {
       countryResult.totalGroups++;
       countryResult.brokenGroups++;
       countryResult.brokenGroupNames.push(groupName);
-      countryResult.brokenGroupDetails.push({ groupName });
+      countryResult.brokenGroupDetails.push({
+        variantGroupId: item.variantGroupId || null,
+        groupName,
+        deferredGroupKey: item.variantGroupId ? null : deferredGroupKey,
+      });
       addedGroups++;
     }
 
     if (!alreadyNotFound) {
       if (
-        (existingASIN || existingGroup) &&
+        existingASIN?.errorType === 'SP_API_ERROR' &&
         countryResult.brokenByType.SP_API_ERROR > 0
       ) {
         countryResult.brokenByType.SP_API_ERROR--;
@@ -209,10 +218,15 @@ function mergeDeferredNotFoundResults(countryResults, notFoundResults) {
       existingASIN.groupName = groupName;
       existingASIN.brand = item.brand || existingASIN.brand || '';
       existingASIN.errorType = 'NOT_FOUND';
+      existingASIN.asinId = item.asinId || existingASIN.asinId || null;
+      existingASIN.variantGroupId =
+        item.variantGroupId || existingASIN.variantGroupId || null;
     } else if (item.notifyEnabled) {
       countryResult.brokenASINs.push({
         asin: item.asin,
+        asinId: item.asinId || null,
         name: item.asinName || '',
+        variantGroupId: item.variantGroupId || null,
         groupName,
         brand: item.brand || '',
         errorType: 'NOT_FOUND',
