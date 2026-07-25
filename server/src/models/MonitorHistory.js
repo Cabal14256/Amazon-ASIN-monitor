@@ -1561,7 +1561,10 @@ class MonitorHistory {
 
   static async bulkCreate(entries = []) {
     if (!Array.isArray(entries) || entries.length === 0) {
-      return;
+      return {
+        insertedCount: 0,
+        failedCount: 0,
+      };
     }
 
     const placeholders = [];
@@ -1578,7 +1581,10 @@ class MonitorHistory {
     try {
       await query(sql, values);
       MonitorHistory.invalidateCaches();
-      return;
+      return {
+        insertedCount: entries.length,
+        failedCount: 0,
+      };
     } catch (error) {
       logger.warn('[监控历史] 批量写入失败，降级为逐条写入', {
         message: error.message,
@@ -1616,6 +1622,11 @@ class MonitorHistory {
         totalEntries: entries.length,
       });
     }
+
+    return {
+      insertedCount,
+      failedCount,
+    };
   }
 
   // 获取统计信息

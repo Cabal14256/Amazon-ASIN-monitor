@@ -148,6 +148,8 @@ async function checkCompetitorASINVariants(
     asin,
     country,
     forceRefresh,
+    undefined,
+    { owner: 'competitor' },
   );
 
   // 使用竞品缓存键存储结果

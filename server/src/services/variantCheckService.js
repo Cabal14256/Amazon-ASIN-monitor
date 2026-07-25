@@ -240,16 +240,25 @@ function getRegionByCountry(country) {
  * @param {string} country - 国家代码
  * @param {string} region - 区域代码（可选，如果不提供则根据country计算）
  * @param {Error|string} error - 错误信息
+ * @param {'primary'|'competitor'} owner - 记录所属监控类型
  */
-function deferASINCheck(asin, country, region = null, error = null) {
+function deferASINCheck(
+  asin,
+  country,
+  region = null,
+  error = null,
+  owner = 'primary',
+) {
   const cleanASIN = asin ? asin.trim().toUpperCase() : asin;
   const regionCode = region || getRegionByCountry(country);
-  const cacheKey = `deferred:${regionCode}:${country}:${cleanASIN}`;
+  const normalizedOwner = owner === 'competitor' ? 'competitor' : 'primary';
+  const cacheKey = `deferred:${regionCode}:${country}:${cleanASIN}:${normalizedOwner}`;
 
   const deferredData = {
     asin: cleanASIN,
     country,
     region: regionCode,
+    owner: normalizedOwner,
     error: error ? error.message || String(error) : 'Unknown error',
     deferredAt: Date.now(),
     retryCount: 0,
@@ -259,17 +268,29 @@ function deferASINCheck(asin, country, region = null, error = null) {
   cacheService.set(cacheKey, JSON.stringify(deferredData), 3600000);
 
   logger.info(
-    `[延后队列] ASIN ${cleanASIN} (${country}, region: ${regionCode}) 已加入延后队列: ${deferredData.error}`,
+    `[延后队列] ${normalizedOwner} ASIN ${cleanASIN} (${country}, region: ${regionCode}) 已加入延后队列: ${deferredData.error}`,
   );
 }
 
 /**
  * 清除单个ASIN的延后记录。调用方应在状态持久化完成后再执行。
  */
-function clearDeferredASINCheck(asin, country, region = null) {
+function clearDeferredASINCheck(
+  asin,
+  country,
+  region = null,
+  owner = 'primary',
+) {
   const cleanASIN = asin ? asin.trim().toUpperCase() : asin;
   const regionCode = region || getRegionByCountry(country);
-  cacheService.delete(`deferred:${regionCode}:${country}:${cleanASIN}`);
+  const normalizedOwner = owner === 'competitor' ? 'competitor' : 'primary';
+  const baseKey = `deferred:${regionCode}:${country}:${cleanASIN}`;
+  cacheService.delete(`${baseKey}:${normalizedOwner}`);
+
+  // 兼容本次变更前未携带 owner 的主监控延后记录。
+  if (normalizedOwner === 'primary') {
+    cacheService.delete(baseKey);
+  }
 }
 
 /**
@@ -296,7 +317,10 @@ function getDeferredASINs(region, country = null) {
     if (cached) {
       try {
         const data = JSON.parse(cached);
-        deferredASINs.push(data);
+        deferredASINs.push({
+          ...data,
+          owner: data.owner === 'competitor' ? 'competitor' : 'primary',
+        });
       } catch (e) {
         logger.warn(`[延后队列] 解析延后ASIN数据失败: ${key}`, e.message);
       }
@@ -383,8 +407,10 @@ async function doCheckASINVariants(
   country,
   forceRefresh = false,
   priority = PRIORITY.SCHEDULED,
+  options = {},
 ) {
   const startTime = Date.now();
+  const owner = options.owner === 'competitor' ? 'competitor' : 'primary';
   let isRateLimit = false;
   let isSpApiError = false;
   let success = false;
@@ -643,7 +669,7 @@ async function doCheckASINVariants(
       }
 
       // 将ASIN加入延后队列
-      deferASINCheck(cleanASIN, country, region, finalError);
+      deferASINCheck(cleanASIN, country, region, finalError, owner);
 
       // 创建一个特殊的错误对象，标记为已延后
       const deferredError = new Error(
@@ -820,9 +846,11 @@ async function checkASINVariants(
   country,
   forceRefresh = false,
   priority = PRIORITY.SCHEDULED,
+  options = {},
 ) {
   const cleanASIN = asin ? asin.trim().toUpperCase() : asin;
-  const cacheKey = `${cleanASIN}:${country}`;
+  const owner = options.owner === 'competitor' ? 'competitor' : 'primary';
+  const cacheKey = `${cleanASIN}:${country}:${owner}`;
 
   if (pendingRequests.size > MAX_PENDING_REQUESTS) {
     const oldestKey = Array.from(pendingRequests.keys())[0];
@@ -840,7 +868,7 @@ async function checkASINVariants(
     );
   } else {
     requestPromise = runWithConcurrencyLimit(
-      () => doCheckASINVariants(asin, country, forceRefresh, priority),
+      () => doCheckASINVariants(asin, country, forceRefresh, priority, options),
       priority,
     );
     pendingRequests.set(cacheKey, requestPromise);
@@ -1038,11 +1066,6 @@ async function checkVariantGroup(
       variantGroupId,
       autoIsBroken,
     );
-    for (const brokenASIN of brokenASINs) {
-      if (brokenASIN?.errorType === 'NOT_FOUND') {
-        clearDeferredASINCheck(brokenASIN.asin, country);
-      }
-    }
 
     groupSnapshot.is_broken = autoIsBroken ? 1 : 0;
     groupSnapshot.variant_status = autoIsBroken ? 'BROKEN' : 'NORMAL';

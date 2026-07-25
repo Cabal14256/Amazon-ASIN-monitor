@@ -2,6 +2,11 @@ const CompetitorVariantGroup = require('../models/CompetitorVariantGroup');
 const {
   checkCompetitorVariantGroup,
 } = require('./competitorVariantCheckService');
+const { clearDeferredASINCheck } = require('./variantCheckService');
+const {
+  mergeDeferredNotFoundResults,
+  processDeferredASINs,
+} = require('./deferredASINRetryService');
 const {
   sendCompetitorBatchNotifications,
 } = require('./competitorFeishuService');
@@ -284,6 +289,16 @@ async function processCompetitorCountry(
 
         try {
           await CompetitorMonitorHistory.bulkCreate(historyEntries);
+          for (const brokenASIN of brokenASINs) {
+            if (brokenASIN?.errorType === 'NOT_FOUND') {
+              clearDeferredASINCheck(
+                brokenASIN.asin,
+                country,
+                null,
+                'competitor',
+              );
+            }
+          }
         } catch (historyError) {
           logger.error(`  ⚠️  批量记录竞品监控历史失败:`, historyError.message);
         }
@@ -383,6 +398,54 @@ async function runCompetitorMonitorTask(countries, batchConfig = null) {
       totalBroken += broken;
     });
 
+    const competitorNotificationRanges = {};
+    for (const country of countries) {
+      competitorNotificationRanges[country] = {
+        startTime: checkTime,
+        endTime: checkTime,
+      };
+    }
+
+    const regions = new Set(
+      countries.map((country) => REGION_MAP[country] || 'US'),
+    );
+    for (const region of regions) {
+      try {
+        const deferredResult = await processDeferredASINs(region, 'competitor');
+        const { addedGroups } = mergeDeferredNotFoundResults(
+          countryResults,
+          deferredResult.notFoundResults,
+        );
+        totalChecked += addedGroups;
+        totalBroken += addedGroups;
+
+        for (const item of deferredResult.notFoundResults) {
+          const range = competitorNotificationRanges[item.country] || {};
+          competitorNotificationRanges[item.country] = {
+            startTime:
+              range.startTime && range.startTime < item.checkTime
+                ? range.startTime
+                : item.checkTime,
+            endTime:
+              range.endTime && range.endTime > item.checkTime
+                ? range.endTime
+                : item.checkTime,
+          };
+        }
+
+        if (deferredResult.total > 0) {
+          logger.info(
+            `[延后队列] ${region}区域竞品处理结果: 总计 ${deferredResult.total}, 成功 ${deferredResult.success}, 失败 ${deferredResult.failed}`,
+          );
+        }
+      } catch (deferredError) {
+        logger.error(
+          `[延后队列] 处理 ${region}区域竞品延后队列失败:`,
+          deferredError.message,
+        );
+      }
+    }
+
     const totalBrokenByType = {
       SP_API_ERROR: 0,
       NOT_FOUND: 0,
@@ -408,7 +471,7 @@ async function runCompetitorMonitorTask(countries, batchConfig = null) {
     );
 
     if (notifyResults.countryResults) {
-      for (const country of countries) {
+      for (const country of Object.keys(countryResults)) {
         const countryNotifyResult = notifyResults.countryResults[country];
         const countryResult = countryResults[country];
 
@@ -420,12 +483,20 @@ async function runCompetitorMonitorTask(countries, batchConfig = null) {
           countryResult.brokenGroups > 0
         ) {
           try {
+            const notificationRange = competitorNotificationRanges[country];
             const updatedCount =
-              await CompetitorMonitorHistory.updateNotificationStatus(
-                country,
-                checkTime,
-                1,
-              );
+              notificationRange?.startTime && notificationRange?.endTime
+                ? await CompetitorMonitorHistory.updateNotificationStatusByRange(
+                    country,
+                    notificationRange.startTime,
+                    notificationRange.endTime,
+                    1,
+                  )
+                : await CompetitorMonitorHistory.updateNotificationStatus(
+                    country,
+                    checkTime,
+                    1,
+                  );
             if (updatedCount > 0) {
               logger.info(
                 `✅ 已更新 ${country} 的 ${updatedCount} 条竞品监控历史记录为已通知状态`,

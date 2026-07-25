@@ -11,6 +11,10 @@ const {
   persistDeferredNotFoundResult,
 } = require('../src/services/deferredASINPersistenceService');
 const {
+  mergeDeferredNotFoundResults,
+  processDeferredASINs,
+} = require('../src/services/deferredASINRetryService');
+const {
   buildCompetitorFeishuCard,
 } = require('../src/services/competitorFeishuService');
 const { buildFeishuCard } = require('../src/services/feishuService');
@@ -202,7 +206,10 @@ test('延后重试得到 NOT_FOUND 时先持久化 ASIN、变体组和历史', a
     },
   );
 
-  assert.equal(persisted, true);
+  assert.equal(persisted.owner, 'primary');
+  assert.equal(persisted.asin, 'B0GJCXCH6Q');
+  assert.equal(persisted.variantGroupName, '测试分组');
+  assert.equal(persisted.notifyEnabled, true);
   assert.deepEqual(calls, [
     'find-asin',
     'update-asin:asin-id:true',
@@ -210,4 +217,195 @@ test('延后重试得到 NOT_FOUND 时先持久化 ASIN、变体组和历史', a
     'find-group:group-id',
     'history:asin-id:1',
   ]);
+});
+
+test('竞品延后重试仅写入竞品模型并保留归属信息', async () => {
+  const calls = [];
+  const persisted = await persistDeferredNotFoundResult(
+    {
+      asin: 'B0GJCXCH6Q',
+      country: 'US',
+      owner: 'competitor',
+    },
+    buildASINNotFoundResult({
+      asin: 'B0GJCXCH6Q',
+      country: 'US',
+    }),
+    {
+      competitorAsinModel: {
+        async findByASIN() {
+          calls.push('find-competitor-asin');
+          return {
+            id: 'competitor-asin-id',
+            asin: 'B0GJCXCH6Q',
+            variantGroupId: 'competitor-group-id',
+            feishuNotifyEnabled: 1,
+          };
+        },
+        async updateVariantStatusAndCheckTime() {
+          calls.push('update-competitor-asin');
+        },
+      },
+      competitorVariantGroupModel: {
+        async updateVariantStatusAndCheckTime() {
+          calls.push('update-competitor-group');
+        },
+        async findById() {
+          calls.push('find-competitor-group');
+          return {
+            name: '竞品分组',
+            feishuNotifyEnabled: 1,
+          };
+        },
+      },
+      competitorMonitorHistoryModel: {
+        async create(entry) {
+          calls.push(`competitor-history:${entry.asinId}`);
+        },
+      },
+    },
+  );
+
+  assert.equal(persisted.owner, 'competitor');
+  assert.equal(persisted.notifyEnabled, true);
+  assert.deepEqual(calls, [
+    'find-competitor-asin',
+    'update-competitor-asin',
+    'update-competitor-group',
+    'find-competitor-group',
+    'competitor-history:competitor-asin-id',
+  ]);
+});
+
+test('延后记录在 NOT_FOUND 持久化完成后才按 owner 清理', async () => {
+  const calls = [];
+  const result = buildASINNotFoundResult({
+    asin: 'B0GJCXCH6Q',
+    country: 'US',
+  });
+
+  const summary = await processDeferredASINs('US', 'competitor', {
+    priority: 'scheduled',
+    getDeferredASINs() {
+      return [
+        {
+          asin: 'B0GJCXCH6Q',
+          country: 'US',
+          region: 'US',
+          owner: 'competitor',
+          retryCount: 0,
+        },
+        {
+          asin: 'B0PRIMARY01',
+          country: 'US',
+          region: 'US',
+          owner: 'primary',
+          retryCount: 0,
+        },
+      ];
+    },
+    async checkASINVariants(asin, country, forceRefresh, priority, options) {
+      calls.push(`check:${asin}:${options.owner}`);
+      return result;
+    },
+    async persistDeferredNotFoundResult(deferred) {
+      calls.push(`persist:${deferred.asin}:${deferred.owner}`);
+      return {
+        owner: deferred.owner,
+        asin: deferred.asin,
+        country: deferred.country,
+        checkTime: new Date(),
+        errorType: 'NOT_FOUND',
+      };
+    },
+    clearDeferredASINCheck(asin, country, region, owner) {
+      calls.push(`clear:${asin}:${owner}`);
+    },
+  });
+
+  assert.equal(summary.total, 1);
+  assert.equal(summary.notFoundResults.length, 1);
+  assert.deepEqual(calls, [
+    'check:B0GJCXCH6Q:competitor',
+    'persist:B0GJCXCH6Q:competitor',
+    'clear:B0GJCXCH6Q:competitor',
+  ]);
+});
+
+test('NOT_FOUND 持久化失败时保留延后记录', async () => {
+  const calls = [];
+  const result = buildASINNotFoundResult({
+    asin: 'B0GJCXCH6Q',
+    country: 'US',
+  });
+
+  const summary = await processDeferredASINs('US', 'primary', {
+    priority: 'scheduled',
+    getDeferredASINs() {
+      return [
+        {
+          asin: 'B0GJCXCH6Q',
+          country: 'US',
+          owner: 'primary',
+          retryCount: 0,
+        },
+      ];
+    },
+    async checkASINVariants() {
+      calls.push('check');
+      return result;
+    },
+    async persistDeferredNotFoundResult() {
+      calls.push('persist');
+      const error = new Error('history write failed');
+      error.preserveDeferred = true;
+      throw error;
+    },
+    clearDeferredASINCheck() {
+      calls.push('clear');
+    },
+  });
+
+  assert.equal(summary.failed, 1);
+  assert.deepEqual(calls, ['check', 'persist']);
+});
+
+test('延后确认 NOT_FOUND 会在通知前替换原 SP-API 异常分类', () => {
+  const countryResults = {
+    US: {
+      country: 'US',
+      totalGroups: 1,
+      brokenGroups: 1,
+      brokenGroupNames: ['测试分组'],
+      brokenGroupDetails: [{ groupName: '测试分组' }],
+      brokenASINs: [
+        {
+          asin: 'B0GJCXCH6Q',
+          groupName: '测试分组',
+          errorType: 'SP_API_ERROR',
+        },
+      ],
+      brokenByType: {
+        SP_API_ERROR: 1,
+        NOT_FOUND: 0,
+        NO_VARIANTS: 0,
+      },
+    },
+  };
+
+  const merged = mergeDeferredNotFoundResults(countryResults, [
+    {
+      asin: 'B0GJCXCH6Q',
+      country: 'US',
+      variantGroupName: '测试分组',
+      asinName: '测试 ASIN',
+      notifyEnabled: true,
+      checkTime: new Date(),
+    },
+  ]);
+
+  assert.equal(merged.addedGroups, 0);
+  assert.equal(countryResults.US.brokenByType.SP_API_ERROR, 0);
+  assert.equal(countryResults.US.brokenByType.NOT_FOUND, 1);
+  assert.equal(countryResults.US.brokenASINs[0].errorType, 'NOT_FOUND');
 });

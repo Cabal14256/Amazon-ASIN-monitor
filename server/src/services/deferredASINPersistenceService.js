@@ -7,14 +7,22 @@ async function persistDeferredNotFoundResult(
   dependencies = {},
 ) {
   if (result?.errorType !== ASIN_NOT_FOUND_ERROR_TYPE) {
-    return false;
+    return null;
   }
 
-  const asinModel = dependencies.asinModel || require('../models/ASIN');
-  const monitorHistoryModel =
-    dependencies.monitorHistoryModel || require('../models/MonitorHistory');
-  const variantGroupModel =
-    dependencies.variantGroupModel || require('../models/VariantGroup');
+  const owner = deferred.owner === 'competitor' ? 'competitor' : 'primary';
+  const isCompetitor = owner === 'competitor';
+  const asinModel = isCompetitor
+    ? dependencies.competitorAsinModel || require('../models/CompetitorASIN')
+    : dependencies.asinModel || require('../models/ASIN');
+  const monitorHistoryModel = isCompetitor
+    ? dependencies.competitorMonitorHistoryModel ||
+      require('../models/CompetitorMonitorHistory')
+    : dependencies.monitorHistoryModel || require('../models/MonitorHistory');
+  const variantGroupModel = isCompetitor
+    ? dependencies.competitorVariantGroupModel ||
+      require('../models/CompetitorVariantGroup')
+    : dependencies.variantGroupModel || require('../models/VariantGroup');
 
   try {
     const asinRecord = await asinModel.findByASIN(
@@ -33,22 +41,21 @@ async function persistDeferredNotFoundResult(
 
     await asinModel.updateVariantStatusAndCheckTime(asinRecord.id, true);
 
+    let variantGroup = null;
     let variantGroupName = null;
     if (variantGroupId) {
       await variantGroupModel.updateVariantStatusAndCheckTime(
         variantGroupId,
         true,
       );
-      const variantGroup = await variantGroupModel.findById(variantGroupId);
+      variantGroup = await variantGroupModel.findById(variantGroupId);
       variantGroupName = variantGroup?.name || null;
     }
 
-    await monitorHistoryModel.create({
+    const historyEntry = {
       asinId: asinRecord.id,
       asinCode: asinRecord.asin || deferred.asin,
       asinName: asinRecord.name || null,
-      siteSnapshot: asinRecord.site || null,
-      brandSnapshot: asinRecord.brand || null,
       variantGroupId,
       variantGroupName,
       checkType: 'ASIN',
@@ -62,12 +69,43 @@ async function persistDeferredNotFoundResult(
           trigger: 'deferred_retry',
         },
       },
-    });
+    };
+    if (!isCompetitor) {
+      historyEntry.siteSnapshot = asinRecord.site || null;
+      historyEntry.brandSnapshot = asinRecord.brand || null;
+    }
+    await monitorHistoryModel.create(historyEntry);
+
+    const defaultNotifyEnabled = isCompetitor ? false : true;
+    const groupNotifyEnabled =
+      variantGroupId && variantGroup
+        ? variantGroup.feishuNotifyEnabled !== null &&
+          variantGroup.feishuNotifyEnabled !== undefined
+          ? variantGroup.feishuNotifyEnabled !== 0
+          : defaultNotifyEnabled
+        : defaultNotifyEnabled;
+    const asinNotifyEnabled =
+      asinRecord.feishuNotifyEnabled !== null &&
+      asinRecord.feishuNotifyEnabled !== undefined
+        ? asinRecord.feishuNotifyEnabled !== 0
+        : defaultNotifyEnabled;
 
     logger.info(
-      `[延后队列] ASIN ${deferred.asin} (${deferred.country}) NOT_FOUND 状态已持久化`,
+      `[延后队列] ${owner} ASIN ${deferred.asin} (${deferred.country}) NOT_FOUND 状态已持久化`,
     );
-    return true;
+    return {
+      owner,
+      asin: asinRecord.asin || deferred.asin,
+      asinId: asinRecord.id,
+      asinName: asinRecord.name || '',
+      brand: asinRecord.brand || '',
+      country: deferred.country,
+      variantGroupId,
+      variantGroupName,
+      checkTime,
+      notifyEnabled: groupNotifyEnabled && asinNotifyEnabled,
+      errorType: ASIN_NOT_FOUND_ERROR_TYPE,
+    };
   } catch (error) {
     error.preserveDeferred = true;
     throw error;
