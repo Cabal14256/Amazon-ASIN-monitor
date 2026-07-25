@@ -2,20 +2,21 @@ const VariantGroup = require('../models/VariantGroup');
 const {
   checkVariantGroup,
   checkASINVariants,
-  getDeferredASINs,
-  clearDeferredASINs,
+  clearDeferredASINCheck,
   markCountryCompleted,
   getCompletedCountries,
   clearCompletedCountries,
-  getRegionByCountry,
 } = require('./variantCheckService');
+const {
+  getASINCheckOutcome,
+  getASINClassificationKey,
+  mergeDeferredResults,
+  processDeferredASINs,
+} = require('./deferredASINRetryService');
 const cacheService = require('./cacheService');
 const { PRIORITY } = require('./rateLimiter');
 const logger = require('../utils/logger');
-const {
-  sendBatchNotifications,
-  sendSingleCountryNotification,
-} = require('./feishuService');
+const { sendSingleCountryNotification } = require('./feishuService');
 const MonitorHistory = require('../models/MonitorHistory');
 const { getMaxConcurrentGroupChecks } = require('../config/monitor-config');
 const Semaphore = require('./semaphore');
@@ -155,9 +156,19 @@ async function processCountry(
     brokenGroupNames: [],
     brokenGroupDetails: [],
     brokenASINs: [],
-    brokenByType: { SP_API_ERROR: 0, NO_VARIANTS: 0 }, // 按类型统计异常
+    brokenByType: { SP_API_ERROR: 0, NOT_FOUND: 0, NO_VARIANTS: 0 }, // 按类型统计异常
+    asinClassifications: {},
+    checkedGroupKeys: [],
     checkTime: taskCheckTime,
   });
+  countryResult.brokenByType = {
+    SP_API_ERROR: 0,
+    NOT_FOUND: 0,
+    NO_VARIANTS: 0,
+    ...(countryResult.brokenByType || {}),
+  };
+  countryResult.asinClassifications = countryResult.asinClassifications || {};
+  countryResult.checkedGroupKeys = countryResult.checkedGroupKeys || [];
 
   let checked = 0;
   let broken = 0;
@@ -235,6 +246,7 @@ async function processCountry(
 
     if (groupsList.length === 0) {
       logger.info(`[processCountry] ${country} 没有需要检查的变体组`);
+      markCountryCompleted(REGION_MAP[country] || 'US', country);
       return { checked: 0, broken: 0 };
     }
 
@@ -265,6 +277,10 @@ async function processCountry(
         const groupSnapshot = groupMap.get(group.id) || group;
         checked++;
         countryResult.totalGroups++;
+        const checkedGroupKey = `group:${group.id}`;
+        if (!countryResult.checkedGroupKeys.includes(checkedGroupKey)) {
+          countryResult.checkedGroupKeys.push(checkedGroupKey);
+        }
 
         // 每处理10个变体组后，检查并同步并发数（触发自动调整）
         if (checked % 10 === 0) {
@@ -304,6 +320,7 @@ async function processCountry(
         const brokenASINs = result?.brokenASINs || [];
         const brokenByType = result?.brokenByType || {
           SP_API_ERROR: 0,
+          NOT_FOUND: 0,
           NO_VARIANTS: 0,
         };
         const updatedGroup = result?.groupSnapshot || groupSnapshot;
@@ -314,6 +331,7 @@ async function processCountry(
           countryResult.brokenGroups++;
           countryResult.brokenGroupNames.push(group.name);
           countryResult.brokenGroupDetails.push({
+            variantGroupId: group.id,
             groupName: variantGroupName,
             statusSource: updatedGroup?.statusSource || 'NORMAL',
             manualBroken: updatedGroup?.manualBroken === 1 ? 1 : 0,
@@ -325,6 +343,7 @@ async function processCountry(
           // 累加错误类型统计
           countryResult.brokenByType.SP_API_ERROR +=
             brokenByType.SP_API_ERROR || 0;
+          countryResult.brokenByType.NOT_FOUND += brokenByType.NOT_FOUND || 0;
           countryResult.brokenByType.NO_VARIANTS +=
             brokenByType.NO_VARIANTS || 0;
         }
@@ -367,27 +386,31 @@ async function processCountry(
                 ? asinInfo.feishuNotifyEnabled !== 0
                 : true; // 默认为开启
 
+            const checkOutcome = getASINCheckOutcome(result, asinInfo);
+            const errorType =
+              asinInfo.isBroken === 1 ? checkOutcome.errorType : null;
+            const classificationKey = getASINClassificationKey({
+              asin: asinInfo.asin,
+              asinId: asinInfo.id,
+              variantGroupId: group.id,
+            });
+            if (checkOutcome.classificationErrorType) {
+              countryResult.asinClassifications[classificationKey] =
+                checkOutcome.classificationErrorType;
+            } else if (!checkOutcome.isDeferred) {
+              delete countryResult.asinClassifications[classificationKey];
+            }
+
             if (
               groupNotifyEnabled &&
               asinNotifyEnabled &&
               asinInfo.isBroken === 1
             ) {
-              // 从 brokenASINs 中查找对应的错误类型
-              const brokenASINItem = brokenASINs.find(
-                (item) =>
-                  (typeof item === 'string' ? item : item.asin) ===
-                  asinInfo.asin,
-              );
-              const errorType =
-                brokenASINItem && typeof brokenASINItem !== 'string'
-                  ? brokenASINItem.errorType
-                  : asinInfo.statusSource === 'MANUAL'
-                    ? 'MANUAL_MARKED'
-                    : 'NO_VARIANTS';
-
               countryResult.brokenASINs.push({
                 asin: asinInfo.asin,
+                asinId: asinInfo.id,
                 name: asinInfo.name || '',
+                variantGroupId: group.id,
                 groupName: group.name,
                 brand: asinInfo.brand || '',
                 errorType, // 添加错误类型
@@ -413,6 +436,9 @@ async function processCountry(
               checkResult: {
                 asin: asinInfo.asin,
                 isBroken: asinInfo.isBroken === 1,
+                ...(errorType ? { errorType } : {}),
+                isDeferred: checkOutcome.isDeferred,
+                currentResult: checkOutcome.currentResult,
                 statusSource: asinInfo.statusSource || 'NORMAL',
                 manualBrokenReason: asinInfo.manualBrokenReason || '',
               },
@@ -422,7 +448,23 @@ async function processCountry(
         }
 
         try {
-          await MonitorHistory.bulkCreate(historyEntries);
+          const historyResult = await MonitorHistory.bulkCreate(historyEntries);
+          if (historyResult.failedCount === 0) {
+            for (const brokenASIN of brokenASINs) {
+              if (brokenASIN?.errorType === 'NOT_FOUND') {
+                clearDeferredASINCheck(
+                  brokenASIN.asin,
+                  country,
+                  null,
+                  'primary',
+                );
+              }
+            }
+          } else {
+            logger.warn(
+              `[监控历史] ${country} 仍有 ${historyResult.failedCount} 条记录写入失败，保留对应延后队列`,
+            );
+          }
         } catch (historyError) {
           logger.error(`  ⚠️  批量记录监控历史失败:`, historyError.message);
         }
@@ -475,114 +517,6 @@ function checkRegionCountriesCompleted(region, completedCountries) {
   return regionCountries.every((country) =>
     completedCountries.includes(country),
   );
-}
-
-/**
- * 处理延后队列中的ASIN
- * @param {string} region - 区域代码
- * @param {string} country - 国家代码（用于日志）
- * @returns {Object} 处理结果统计
- */
-async function processDeferredASINs(region, country) {
-  const deferredASINs = getDeferredASINs(region);
-
-  if (deferredASINs.length === 0) {
-    logger.info(`[延后队列] ${region}区域没有需要处理的延后ASIN`);
-    return {
-      total: 0,
-      success: 0,
-      failed: 0,
-    };
-  }
-
-  logger.info(
-    `[延后队列] 开始处理 ${region}区域的 ${deferredASINs.length} 个延后ASIN`,
-  );
-
-  let successCount = 0;
-  let failedCount = 0;
-
-  // 按国家分组处理
-  const asinsByCountry = {};
-  for (const deferred of deferredASINs) {
-    if (!asinsByCountry[deferred.country]) {
-      asinsByCountry[deferred.country] = [];
-    }
-    asinsByCountry[deferred.country].push(deferred);
-  }
-
-  // 逐个处理延后ASIN
-  for (const [deferredCountry, asins] of Object.entries(asinsByCountry)) {
-    logger.info(
-      `[延后队列] 处理 ${deferredCountry} 的 ${asins.length} 个延后ASIN`,
-    );
-
-    for (const deferred of asins) {
-      // 检查重试次数，最多重试1次
-      if (deferred.retryCount >= 1) {
-        logger.warn(
-          `[延后队列] ASIN ${deferred.asin} (${deferred.country}) 已达到最大重试次数，跳过`,
-        );
-        failedCount++;
-        continue;
-      }
-
-      try {
-        // 重试检查ASIN
-        logger.info(
-          `[延后队列] 重试检查 ASIN ${deferred.asin} (${deferred.country})`,
-        );
-
-        const result = await checkASINVariants(
-          deferred.asin,
-          deferred.country,
-          true, // forceRefresh = true，强制刷新
-          PRIORITY.SCHEDULED,
-        );
-
-        // 检查是否成功
-        if (result && result.hasVariants !== undefined) {
-          successCount++;
-          logger.info(
-            `[延后队列] ASIN ${deferred.asin} (${deferred.country}) 重试成功`,
-          );
-        } else {
-          failedCount++;
-          logger.warn(
-            `[延后队列] ASIN ${deferred.asin} (${deferred.country}) 重试失败：结果无效`,
-          );
-        }
-      } catch (error) {
-        // 如果错误标记为已延后，说明再次失败，直接标记为失败，不再加入队列
-        if (error.isDeferred) {
-          failedCount++;
-          logger.warn(
-            `[延后队列] ASIN ${deferred.asin} (${deferred.country}) 重试再次失败，已标记为最终失败: ${error.message}`,
-          );
-        } else {
-          failedCount++;
-          logger.error(
-            `[延后队列] ASIN ${deferred.asin} (${deferred.country}) 重试失败:`,
-            error.message,
-          );
-        }
-      }
-    }
-  }
-
-  // 清除已处理的延后ASIN
-  clearDeferredASINs(region);
-  clearCompletedCountries(region);
-
-  logger.info(
-    `[延后队列] ${region}区域延后队列处理完成: 总计 ${deferredASINs.length}, 成功 ${successCount}, 失败 ${failedCount}`,
-  );
-
-  return {
-    total: deferredASINs.length,
-    success: successCount,
-    failed: failedCount,
-  };
 }
 
 async function runMonitorTask(countries, batchConfig = null) {
@@ -643,7 +577,7 @@ async function runMonitorTask(countries, batchConfig = null) {
   });
 
   try {
-    // 串行处理每个国家：检查完一个国家就发送该国家的飞书通知，然后继续下一个
+    // 先完成检查和延后重试，再发送通知，确保通知包含重试确认的异常。
     const notifyResults = {
       total: 0,
       success: 0,
@@ -654,6 +588,7 @@ async function runMonitorTask(countries, batchConfig = null) {
 
     // 处理延后队列的region集合
     const processedRegions = new Set();
+    const countryCheckRanges = {};
 
     // 串行处理每个国家
     for (const country of countries) {
@@ -666,8 +601,67 @@ async function runMonitorTask(countries, batchConfig = null) {
       );
       totalChecked += checked;
       totalBroken += broken;
+      countryCheckRanges[country] = checkTimeRange;
+    }
 
-      // 立即发送该国家的飞书通知
+    for (const country of countries) {
+      const region = REGION_MAP[country] || 'US';
+      if (processedRegions.has(region)) {
+        continue;
+      }
+
+      const completedCountries = getCompletedCountries(region);
+      const allCompleted = checkRegionCountriesCompleted(
+        region,
+        completedCountries,
+      );
+      if (!allCompleted && !(region === 'US' && country === 'US')) {
+        continue;
+      }
+
+      processedRegions.add(region);
+      logger.info(
+        `[延后队列] ${region}区域的所有国家都已完成，开始处理主监控延后队列`,
+      );
+      try {
+        const deferredResult = await processDeferredASINs(region, 'primary');
+        const { addedGroups, brokenDelta } = mergeDeferredResults(
+          countryResults,
+          deferredResult.deferredResults,
+        );
+        totalChecked += addedGroups;
+        totalBroken += brokenDelta;
+
+        for (const item of deferredResult.deferredResults) {
+          const range = countryCheckRanges[item.country] || {};
+          countryCheckRanges[item.country] = {
+            startTime:
+              range.startTime && range.startTime < item.checkTime
+                ? range.startTime
+                : item.checkTime,
+            endTime:
+              range.endTime && range.endTime > item.checkTime
+                ? range.endTime
+                : item.checkTime,
+          };
+        }
+
+        if (deferredResult.total > 0) {
+          logger.info(
+            `[延后队列] ${region}区域处理结果: 总计 ${deferredResult.total}, 成功 ${deferredResult.success}, 失败 ${deferredResult.failed}`,
+          );
+        }
+      } catch (deferredError) {
+        logger.error(
+          `[延后队列] 处理 ${region}区域主监控延后队列失败:`,
+          deferredError.message,
+        );
+      } finally {
+        clearCompletedCountries(region);
+      }
+    }
+
+    for (const country of Object.keys(countryResults)) {
       logger.info(`\n📨 开始发送 ${country} 的飞书通知...`);
       const countryNotifyResult = await sendSingleCountryNotification(
         country,
@@ -698,6 +692,7 @@ async function runMonitorTask(countries, batchConfig = null) {
         countryResults[country].brokenGroups > 0
       ) {
         try {
+          const checkTimeRange = countryCheckRanges[country];
           const updatedCount =
             checkTimeRange?.startTime && checkTimeRange?.endTime
               ? await MonitorHistory.updateNotificationStatusByRange(
@@ -723,50 +718,20 @@ async function runMonitorTask(countries, batchConfig = null) {
           );
         }
       }
-
-      // 处理延后队列：检查当前国家所属region的所有国家是否都已完成
-      const region = REGION_MAP[country] || 'US';
-
-      // 避免重复处理同一个region
-      if (!processedRegions.has(region)) {
-        const completedCountries = getCompletedCountries(region);
-        const allCompleted = checkRegionCountriesCompleted(
-          region,
-          completedCountries,
-        );
-
-        // 如果所有国家都已完成，或者US区域（只有一个国家），处理延后队列
-        if (allCompleted || (region === 'US' && country === 'US')) {
-          processedRegions.add(region);
-          logger.info(
-            `[延后队列] ${region}区域的所有国家都已完成，开始处理延后队列`,
-          );
-          try {
-            const deferredResult = await processDeferredASINs(region, country);
-            if (deferredResult.total > 0) {
-              logger.info(
-                `[延后队列] ${region}区域处理结果: 总计 ${deferredResult.total}, 成功 ${deferredResult.success}, 失败 ${deferredResult.failed}`,
-              );
-            }
-          } catch (deferredError) {
-            logger.error(
-              `[延后队列] 处理 ${region}区域延后队列失败:`,
-              deferredError.message,
-            );
-          }
-        }
-      }
     }
 
     // 汇总所有国家的异常类型统计
     const totalBrokenByType = {
       SP_API_ERROR: 0,
+      NOT_FOUND: 0,
       NO_VARIANTS: 0,
     };
     Object.values(countryResults).forEach((countryResult) => {
       if (countryResult.brokenByType) {
         totalBrokenByType.SP_API_ERROR +=
           countryResult.brokenByType.SP_API_ERROR || 0;
+        totalBrokenByType.NOT_FOUND +=
+          countryResult.brokenByType.NOT_FOUND || 0;
         totalBrokenByType.NO_VARIANTS +=
           countryResult.brokenByType.NO_VARIANTS || 0;
       }
@@ -783,6 +748,9 @@ async function runMonitorTask(countries, batchConfig = null) {
     const errorTypeInfo = [];
     if (totalBrokenByType.SP_API_ERROR > 0) {
       errorTypeInfo.push(`SP-API错误: ${totalBrokenByType.SP_API_ERROR} 个`);
+    }
+    if (totalBrokenByType.NOT_FOUND > 0) {
+      errorTypeInfo.push(`ASIN不存在: ${totalBrokenByType.NOT_FOUND} 个`);
     }
     if (totalBrokenByType.NO_VARIANTS > 0) {
       errorTypeInfo.push(`无父变体ASIN: ${totalBrokenByType.NO_VARIANTS} 个`);

@@ -151,9 +151,9 @@ function buildCompetitorFeishuCard(data) {
     country,
     totalGroups = 0,
     brokenGroups = 0,
-    brokenGroupNames = [],
+    brokenGroupDetails = [],
     brokenASINs = [],
-    brokenByType = { SP_API_ERROR: 0, NO_VARIANTS: 0 },
+    brokenByType = { SP_API_ERROR: 0, NOT_FOUND: 0, NO_VARIANTS: 0 },
     checkTime,
   } = data;
 
@@ -177,6 +177,7 @@ function buildCompetitorFeishuCard(data) {
 
   // 统计异常类型
   const spApiErrorCount = brokenByType?.SP_API_ERROR || 0;
+  const notFoundCount = brokenByType?.NOT_FOUND || 0;
   const noVariantsCount = brokenByType?.NO_VARIANTS || 0;
   const totalBrokenASINs = brokenASINs.length;
   const buildAmazonAsinUrl = (asin) => {
@@ -205,6 +206,9 @@ function buildCompetitorFeishuCard(data) {
     if (spApiErrorCount > 0) {
       contentText += `  ❌ SP-API错误：${spApiErrorCount} 个\n`;
     }
+    if (notFoundCount > 0) {
+      contentText += `  ⛔ ASIN不存在：${notFoundCount} 个\n`;
+    }
     if (noVariantsCount > 0) {
       contentText += `  ⚠️ 无父变体ASIN：${noVariantsCount} 个\n`;
     }
@@ -215,37 +219,49 @@ function buildCompetitorFeishuCard(data) {
 
   // 如果有异常，按变体组分组显示异常ASIN
   if (brokenGroups > 0 && brokenASINs.length > 0) {
-    // 按变体组名称分组
-    const asinsByGroup = {};
+    const getGroupKey = (item, groupName) =>
+      item?.variantGroupId
+        ? `id:${item.variantGroupId}`
+        : `name:${groupName || '未知变体组'}`;
+    const asinsByGroup = new Map();
     for (const asinItem of brokenASINs) {
       const groupName = asinItem.groupName || '未知变体组';
-      if (!asinsByGroup[groupName]) {
-        asinsByGroup[groupName] = [];
+      const groupKey = getGroupKey(asinItem, groupName);
+      if (!asinsByGroup.has(groupKey)) {
+        asinsByGroup.set(groupKey, {
+          groupName,
+          asins: [],
+        });
       }
-      asinsByGroup[groupName].push(asinItem);
+      asinsByGroup.get(groupKey).asins.push(asinItem);
     }
 
-    // 构建异常变体组和ASIN列表（按照brokenGroupNames的顺序，但只显示有异常ASIN的）
-    const displayedGroups = new Set();
-    for (const groupName of brokenGroupNames) {
-      if (
-        asinsByGroup[groupName] &&
-        asinsByGroup[groupName].length > 0 &&
-        !displayedGroups.has(groupName)
-      ) {
-        displayedGroups.add(groupName);
-        contentText += `\n⚠️ ${groupName}\n`;
-        for (const asinItem of asinsByGroup[groupName]) {
-          const asin = asinItem.asin || '';
-          const brand = asinItem.brand || '';
-          const asinUrl = buildAmazonAsinUrl(asin);
-          const asinLabel = asinUrl ? `[${asin}](${asinUrl})` : asin;
-          contentText += `- ${asinLabel}`;
-          if (brand) {
-            contentText += ` ⚠️ 品牌：${brand}`;
-          }
-          contentText += '\n';
+    const orderedGroupKeys = [];
+    for (const groupItem of brokenGroupDetails) {
+      const groupKey = getGroupKey(groupItem, groupItem?.groupName);
+      if (asinsByGroup.has(groupKey) && !orderedGroupKeys.includes(groupKey)) {
+        orderedGroupKeys.push(groupKey);
+      }
+    }
+    for (const groupKey of asinsByGroup.keys()) {
+      if (!orderedGroupKeys.includes(groupKey)) {
+        orderedGroupKeys.push(groupKey);
+      }
+    }
+
+    for (const groupKey of orderedGroupKeys) {
+      const { groupName, asins } = asinsByGroup.get(groupKey);
+      contentText += `\n⚠️ ${groupName}\n`;
+      for (const asinItem of asins) {
+        const asin = asinItem.asin || '';
+        const brand = asinItem.brand || '';
+        const asinUrl = buildAmazonAsinUrl(asin);
+        const asinLabel = asinUrl ? `[${asin}](${asinUrl})` : asin;
+        contentText += `- ${asinLabel}`;
+        if (brand) {
+          contentText += ` ⚠️ 品牌：${brand}`;
         }
+        contentText += '\n';
       }
     }
   }

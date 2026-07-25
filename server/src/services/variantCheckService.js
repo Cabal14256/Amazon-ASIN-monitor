@@ -17,6 +17,10 @@ const {
   buildEffectiveStatus,
   decorateVariantGroupStatus,
 } = require('../utils/variantStatus');
+const {
+  buildASINNotFoundResult,
+  isCatalogItemNotFoundError,
+} = require('../utils/spApiError');
 
 /**
  * 每次最多同时检查的 ASIN 数（降低并发以减少限流风险）
@@ -236,16 +240,25 @@ function getRegionByCountry(country) {
  * @param {string} country - 国家代码
  * @param {string} region - 区域代码（可选，如果不提供则根据country计算）
  * @param {Error|string} error - 错误信息
+ * @param {'primary'|'competitor'} owner - 记录所属监控类型
  */
-function deferASINCheck(asin, country, region = null, error = null) {
+function deferASINCheck(
+  asin,
+  country,
+  region = null,
+  error = null,
+  owner = 'primary',
+) {
   const cleanASIN = asin ? asin.trim().toUpperCase() : asin;
   const regionCode = region || getRegionByCountry(country);
-  const cacheKey = `deferred:${regionCode}:${country}:${cleanASIN}`;
+  const normalizedOwner = owner === 'competitor' ? 'competitor' : 'primary';
+  const cacheKey = `deferred:${regionCode}:${country}:${cleanASIN}:${normalizedOwner}`;
 
   const deferredData = {
     asin: cleanASIN,
     country,
     region: regionCode,
+    owner: normalizedOwner,
     error: error ? error.message || String(error) : 'Unknown error',
     deferredAt: Date.now(),
     retryCount: 0,
@@ -255,8 +268,29 @@ function deferASINCheck(asin, country, region = null, error = null) {
   cacheService.set(cacheKey, JSON.stringify(deferredData), 3600000);
 
   logger.info(
-    `[延后队列] ASIN ${cleanASIN} (${country}, region: ${regionCode}) 已加入延后队列: ${deferredData.error}`,
+    `[延后队列] ${normalizedOwner} ASIN ${cleanASIN} (${country}, region: ${regionCode}) 已加入延后队列: ${deferredData.error}`,
   );
+}
+
+/**
+ * 清除单个ASIN的延后记录。调用方应在状态持久化完成后再执行。
+ */
+function clearDeferredASINCheck(
+  asin,
+  country,
+  region = null,
+  owner = 'primary',
+) {
+  const cleanASIN = asin ? asin.trim().toUpperCase() : asin;
+  const regionCode = region || getRegionByCountry(country);
+  const normalizedOwner = owner === 'competitor' ? 'competitor' : 'primary';
+  const baseKey = `deferred:${regionCode}:${country}:${cleanASIN}`;
+  cacheService.delete(`${baseKey}:${normalizedOwner}`);
+
+  // 兼容本次变更前未携带 owner 的主监控延后记录。
+  if (normalizedOwner === 'primary') {
+    cacheService.delete(baseKey);
+  }
 }
 
 /**
@@ -283,7 +317,10 @@ function getDeferredASINs(region, country = null) {
     if (cached) {
       try {
         const data = JSON.parse(cached);
-        deferredASINs.push(data);
+        deferredASINs.push({
+          ...data,
+          owner: data.owner === 'competitor' ? 'competitor' : 'primary',
+        });
       } catch (e) {
         logger.warn(`[延后队列] 解析延后ASIN数据失败: ${key}`, e.message);
       }
@@ -370,8 +407,10 @@ async function doCheckASINVariants(
   country,
   forceRefresh = false,
   priority = PRIORITY.SCHEDULED,
+  options = {},
 ) {
   const startTime = Date.now();
+  const owner = options.owner === 'competitor' ? 'competitor' : 'primary';
   let isRateLimit = false;
   let isSpApiError = false;
   let success = false;
@@ -419,6 +458,33 @@ async function doCheckASINVariants(
     let lastError = null;
     const apiVersion = '2022-04-01';
     const path = `/catalog/${apiVersion}/items/${cleanASIN}`;
+    const resolveNotFoundResult = async (error, source) => {
+      if (!isCatalogItemNotFoundError(error)) {
+        return null;
+      }
+
+      const result = buildASINNotFoundResult({
+        asin: cleanASIN,
+        country,
+        apiVersion,
+        source,
+      });
+      await setVariantResultCache(cleanASIN, country, result);
+      success = true;
+      isSpApiError = false;
+      riskControlService.recordCheck({
+        success: true,
+        isRateLimit: false,
+        isSpApiError: false,
+        responseTime: (Date.now() - startTime) / 1000,
+      });
+      const sourceLabel =
+        source === 'legacy_spapi' ? 'Legacy SP-API' : 'SP-API';
+      logger.info(
+        `[checkASINVariants] ASIN ${cleanASIN} (${country}) 经 ${sourceLabel} 确认在目标 Marketplace 中不存在，直接标记异常`,
+      );
+      return result;
+    };
 
     // 识别operation
     const operation = operationIdentifier.identifyOperation('GET', path);
@@ -474,6 +540,11 @@ async function doCheckASINVariants(
       );
       lastError = error;
 
+      const notFoundResult = await resolveNotFoundResult(error, 'spapi');
+      if (notFoundResult) {
+        return notFoundResult;
+      }
+
       // 如果是 4xx 级别错误（如 400 InvalidInput），则不再重试，进入兜底逻辑
       if (
         error.statusCode &&
@@ -512,8 +583,19 @@ async function doCheckASINVariants(
         );
         logger.info('[checkASINVariants] 旧SP-API调用成功');
       } catch (legacyError) {
-        logger.error('[checkASINVariants] 旧客户端也失败:', legacyError);
+        logger.error('[checkASINVariants] 旧客户端也失败:', {
+          message: legacyError.message,
+          statusCode: legacyError.statusCode || null,
+        });
         lastError = legacyError;
+
+        const notFoundResult = await resolveNotFoundResult(
+          legacyError,
+          'legacy_spapi',
+        );
+        if (notFoundResult) {
+          return notFoundResult;
+        }
       }
     }
 
@@ -581,8 +663,13 @@ async function doCheckASINVariants(
         lastError || new Error('SP-API响应为空且未使用HTML兜底');
       const region = getRegionByCountry(country);
 
+      const notFoundResult = await resolveNotFoundResult(finalError, 'spapi');
+      if (notFoundResult) {
+        return notFoundResult;
+      }
+
       // 将ASIN加入延后队列
-      deferASINCheck(cleanASIN, country, region, finalError);
+      deferASINCheck(cleanASIN, country, region, finalError, owner);
 
       // 创建一个特殊的错误对象，标记为已延后
       const deferredError = new Error(
@@ -759,9 +846,11 @@ async function checkASINVariants(
   country,
   forceRefresh = false,
   priority = PRIORITY.SCHEDULED,
+  options = {},
 ) {
   const cleanASIN = asin ? asin.trim().toUpperCase() : asin;
-  const cacheKey = `${cleanASIN}:${country}`;
+  const owner = options.owner === 'competitor' ? 'competitor' : 'primary';
+  const cacheKey = `${cleanASIN}:${country}:${owner}`;
 
   if (pendingRequests.size > MAX_PENDING_REQUESTS) {
     const oldestKey = Array.from(pendingRequests.keys())[0];
@@ -779,7 +868,7 @@ async function checkASINVariants(
     );
   } else {
     requestPromise = runWithConcurrencyLimit(
-      () => doCheckASINVariants(asin, country, forceRefresh, priority),
+      () => doCheckASINVariants(asin, country, forceRefresh, priority, options),
       priority,
     );
     pendingRequests.set(cacheKey, requestPromise);
@@ -817,7 +906,7 @@ async function checkVariantGroup(
       return {
         isBroken: true,
         brokenASINs: [],
-        brokenByType: { SP_API_ERROR: 0, NO_VARIANTS: 0 },
+        brokenByType: { SP_API_ERROR: 0, NOT_FOUND: 0, NO_VARIANTS: 0 },
         groupSnapshot,
         details: { results: [] },
       };
@@ -825,7 +914,7 @@ async function checkVariantGroup(
 
     const country = groupSnapshot.country || 'US';
     const brokenASINs = [];
-    const brokenByType = { SP_API_ERROR: 0, NO_VARIANTS: 0 };
+    const brokenByType = { SP_API_ERROR: 0, NOT_FOUND: 0, NO_VARIANTS: 0 };
     const results = new Array(asins.length);
 
     const asinList = asins.map((asinEntry) => asinEntry.asin || asinEntry);
@@ -898,7 +987,6 @@ async function checkVariantGroup(
         if (childRef) {
           applyEffectiveStatusToChild(childRef, isBroken);
         }
-
         if (isBroken) {
           const normalizedErrorType = errorType || 'NO_VARIANTS';
           brokenASINs.push({
@@ -1024,12 +1112,22 @@ async function checkVariantGroup(
             String(entry.asin || '').toUpperCase() ===
               String(item.asin || '').toUpperCase(),
         );
+        const currentCheck = results.find(
+          (entry) =>
+            String(entry?.asin || '').toUpperCase() ===
+            String(item.asin || '').toUpperCase(),
+        );
 
         return {
           asin: item.asin,
           errorType:
             autoBrokenInfo?.errorType ||
-            (item.statusSource === 'MANUAL' ? 'MANUAL_MARKED' : 'NO_VARIANTS'),
+            (item.statusSource === 'MANUAL' ||
+            item.statusSource === 'AUTO+MANUAL'
+              ? 'MANUAL_MARKED'
+              : currentCheck?.isDeferred
+              ? undefined
+              : 'NO_VARIANTS'),
           statusSource: item.statusSource || 'NORMAL',
           manualBroken: item.manualBroken === 1 ? 1 : 0,
           manualBrokenReason: item.manualBrokenReason || '',
@@ -1141,6 +1239,15 @@ async function checkSingleASIN(asinId, forceRefresh = false) {
         manualBrokenReason: asinRecord.manualBrokenReason || '',
       },
     });
+    if (result?.errorType === 'NOT_FOUND') {
+      if (asinRecord.variantGroupId) {
+        await VariantGroup.updateVariantStatusAndCheckTime(
+          asinRecord.variantGroupId,
+          true,
+        );
+      }
+      clearDeferredASINCheck(asin, country);
+    }
 
     return {
       isBroken: effectiveStatus.isBroken === 1,
@@ -1151,7 +1258,7 @@ async function checkSingleASIN(asinId, forceRefresh = false) {
                 asin,
                 errorType:
                   autoBroken || effectiveStatus.statusSource === 'AUTO+MANUAL'
-                    ? 'NO_VARIANTS'
+                    ? result?.errorType || 'NO_VARIANTS'
                     : 'MANUAL_MARKED',
                 statusSource: effectiveStatus.statusSource,
                 manualBrokenReason: asinRecord.manualBrokenReason || '',
@@ -1349,6 +1456,7 @@ module.exports = {
   // 延后队列相关函数
   getDeferredASINs,
   clearDeferredASINs,
+  clearDeferredASINCheck,
   markCountryCompleted,
   getCompletedCountries,
   clearCompletedCountries,

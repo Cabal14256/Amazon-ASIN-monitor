@@ -2,6 +2,13 @@ const CompetitorVariantGroup = require('../models/CompetitorVariantGroup');
 const {
   checkCompetitorVariantGroup,
 } = require('./competitorVariantCheckService');
+const { clearDeferredASINCheck } = require('./variantCheckService');
+const {
+  getASINCheckOutcome,
+  getASINClassificationKey,
+  mergeDeferredResults,
+  processDeferredASINs,
+} = require('./deferredASINRetryService');
 const {
   sendCompetitorBatchNotifications,
 } = require('./competitorFeishuService');
@@ -73,10 +80,21 @@ async function processCompetitorCountry(
     totalGroups: 0,
     brokenGroups: 0,
     brokenGroupNames: [],
+    brokenGroupDetails: [],
     brokenASINs: [],
-    brokenByType: { SP_API_ERROR: 0, NO_VARIANTS: 0 },
+    brokenByType: { SP_API_ERROR: 0, NOT_FOUND: 0, NO_VARIANTS: 0 },
+    asinClassifications: {},
+    checkedGroupKeys: [],
     checkTime,
   });
+  countryResult.brokenByType = {
+    SP_API_ERROR: 0,
+    NOT_FOUND: 0,
+    NO_VARIANTS: 0,
+    ...(countryResult.brokenByType || {}),
+  };
+  countryResult.asinClassifications = countryResult.asinClassifications || {};
+  countryResult.checkedGroupKeys = countryResult.checkedGroupKeys || [];
 
   let checked = 0;
   let broken = 0;
@@ -156,6 +174,10 @@ async function processCompetitorCountry(
         const groupSnapshot = groupMap.get(group.id) || group;
         checked++;
         countryResult.totalGroups++;
+        const checkedGroupKey = `group:${group.id}`;
+        if (!countryResult.checkedGroupKeys.includes(checkedGroupKey)) {
+          countryResult.checkedGroupKeys.push(checkedGroupKey);
+        }
 
         websocketService.sendMonitorProgress({
           status: 'progress',
@@ -189,6 +211,7 @@ async function processCompetitorCountry(
         const brokenASINs = result?.brokenASINs || [];
         const brokenByType = result?.brokenByType || {
           SP_API_ERROR: 0,
+          NOT_FOUND: 0,
           NO_VARIANTS: 0,
         };
 
@@ -196,8 +219,13 @@ async function processCompetitorCountry(
           broken++;
           countryResult.brokenGroups++;
           countryResult.brokenGroupNames.push(group.name);
+          countryResult.brokenGroupDetails.push({
+            variantGroupId: group.id,
+            groupName: group.name,
+          });
           countryResult.brokenByType.SP_API_ERROR +=
             brokenByType.SP_API_ERROR || 0;
+          countryResult.brokenByType.NOT_FOUND += brokenByType.NOT_FOUND || 0;
           countryResult.brokenByType.NO_VARIANTS +=
             brokenByType.NO_VARIANTS || 0;
         }
@@ -231,25 +259,31 @@ async function processCompetitorCountry(
                 ? asinInfo.feishuNotifyEnabled !== 0
                 : false; // 默认为关闭（竞品）
 
+            const checkOutcome = getASINCheckOutcome(result, asinInfo);
+            const errorType =
+              asinInfo.isBroken === 1 ? checkOutcome.errorType : null;
+            const classificationKey = getASINClassificationKey({
+              asin: asinInfo.asin,
+              asinId: asinInfo.id,
+              variantGroupId: group.id,
+            });
+            if (checkOutcome.classificationErrorType) {
+              countryResult.asinClassifications[classificationKey] =
+                checkOutcome.classificationErrorType;
+            } else if (!checkOutcome.isDeferred) {
+              delete countryResult.asinClassifications[classificationKey];
+            }
+
             if (
               groupNotifyEnabled &&
               asinNotifyEnabled &&
               asinInfo.isBroken === 1
             ) {
-              // 从 brokenASINs 中查找对应的错误类型
-              const brokenASINItem = brokenASINs.find(
-                (item) =>
-                  (typeof item === 'string' ? item : item.asin) ===
-                  asinInfo.asin,
-              );
-              const errorType =
-                brokenASINItem && typeof brokenASINItem !== 'string'
-                  ? brokenASINItem.errorType
-                  : 'NO_VARIANTS';
-
               countryResult.brokenASINs.push({
                 asin: asinInfo.asin,
+                asinId: asinInfo.id,
                 name: asinInfo.name || '',
+                variantGroupId: group.id,
                 groupName: group.name,
                 brand: asinInfo.brand || '',
                 errorType,
@@ -268,6 +302,9 @@ async function processCompetitorCountry(
               checkResult: {
                 asin: asinInfo.asin,
                 isBroken: asinInfo.isBroken === 1,
+                ...(errorType ? { errorType } : {}),
+                isDeferred: checkOutcome.isDeferred,
+                currentResult: checkOutcome.currentResult,
               },
               checkTime,
             });
@@ -276,6 +313,16 @@ async function processCompetitorCountry(
 
         try {
           await CompetitorMonitorHistory.bulkCreate(historyEntries);
+          for (const brokenASIN of brokenASINs) {
+            if (brokenASIN?.errorType === 'NOT_FOUND') {
+              clearDeferredASINCheck(
+                brokenASIN.asin,
+                country,
+                null,
+                'competitor',
+              );
+            }
+          }
         } catch (historyError) {
           logger.error(`  ⚠️  批量记录竞品监控历史失败:`, historyError.message);
         }
@@ -375,14 +422,65 @@ async function runCompetitorMonitorTask(countries, batchConfig = null) {
       totalBroken += broken;
     });
 
+    const competitorNotificationRanges = {};
+    for (const country of countries) {
+      competitorNotificationRanges[country] = {
+        startTime: checkTime,
+        endTime: checkTime,
+      };
+    }
+
+    const regions = new Set(
+      countries.map((country) => REGION_MAP[country] || 'US'),
+    );
+    for (const region of regions) {
+      try {
+        const deferredResult = await processDeferredASINs(region, 'competitor');
+        const { addedGroups, brokenDelta } = mergeDeferredResults(
+          countryResults,
+          deferredResult.deferredResults,
+        );
+        totalChecked += addedGroups;
+        totalBroken += brokenDelta;
+
+        for (const item of deferredResult.deferredResults) {
+          const range = competitorNotificationRanges[item.country] || {};
+          competitorNotificationRanges[item.country] = {
+            startTime:
+              range.startTime && range.startTime < item.checkTime
+                ? range.startTime
+                : item.checkTime,
+            endTime:
+              range.endTime && range.endTime > item.checkTime
+                ? range.endTime
+                : item.checkTime,
+          };
+        }
+
+        if (deferredResult.total > 0) {
+          logger.info(
+            `[延后队列] ${region}区域竞品处理结果: 总计 ${deferredResult.total}, 成功 ${deferredResult.success}, 失败 ${deferredResult.failed}`,
+          );
+        }
+      } catch (deferredError) {
+        logger.error(
+          `[延后队列] 处理 ${region}区域竞品延后队列失败:`,
+          deferredError.message,
+        );
+      }
+    }
+
     const totalBrokenByType = {
       SP_API_ERROR: 0,
+      NOT_FOUND: 0,
       NO_VARIANTS: 0,
     };
     Object.values(countryResults).forEach((countryResult) => {
       if (countryResult.brokenByType) {
         totalBrokenByType.SP_API_ERROR +=
           countryResult.brokenByType.SP_API_ERROR || 0;
+        totalBrokenByType.NOT_FOUND +=
+          countryResult.brokenByType.NOT_FOUND || 0;
         totalBrokenByType.NO_VARIANTS +=
           countryResult.brokenByType.NO_VARIANTS || 0;
       }
@@ -397,7 +495,7 @@ async function runCompetitorMonitorTask(countries, batchConfig = null) {
     );
 
     if (notifyResults.countryResults) {
-      for (const country of countries) {
+      for (const country of Object.keys(countryResults)) {
         const countryNotifyResult = notifyResults.countryResults[country];
         const countryResult = countryResults[country];
 
@@ -409,12 +507,20 @@ async function runCompetitorMonitorTask(countries, batchConfig = null) {
           countryResult.brokenGroups > 0
         ) {
           try {
+            const notificationRange = competitorNotificationRanges[country];
             const updatedCount =
-              await CompetitorMonitorHistory.updateNotificationStatus(
-                country,
-                checkTime,
-                1,
-              );
+              notificationRange?.startTime && notificationRange?.endTime
+                ? await CompetitorMonitorHistory.updateNotificationStatusByRange(
+                    country,
+                    notificationRange.startTime,
+                    notificationRange.endTime,
+                    1,
+                  )
+                : await CompetitorMonitorHistory.updateNotificationStatus(
+                    country,
+                    checkTime,
+                    1,
+                  );
             if (updatedCount > 0) {
               logger.info(
                 `✅ 已更新 ${country} 的 ${updatedCount} 条竞品监控历史记录为已通知状态`,
@@ -436,6 +542,9 @@ async function runCompetitorMonitorTask(countries, batchConfig = null) {
     const errorTypeInfo = [];
     if (totalBrokenByType.SP_API_ERROR > 0) {
       errorTypeInfo.push(`SP-API错误: ${totalBrokenByType.SP_API_ERROR} 个`);
+    }
+    if (totalBrokenByType.NOT_FOUND > 0) {
+      errorTypeInfo.push(`ASIN不存在: ${totalBrokenByType.NOT_FOUND} 个`);
     }
     if (totalBrokenByType.NO_VARIANTS > 0) {
       errorTypeInfo.push(`无父变体ASIN: ${totalBrokenByType.NO_VARIANTS} 个`);
