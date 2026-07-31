@@ -950,7 +950,7 @@ function updateOperationRateLimit(region, operation, rateLimit) {
       normalizedRegion,
       operation,
       rateLimit,
-      DEFAULT_OPERATION_CONFIGS[operation]?.burst || 2,
+      operationConfig.burst,
       limitUpdatedAt,
     );
   }

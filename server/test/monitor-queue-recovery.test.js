@@ -2,6 +2,8 @@ process.env.LOG_LEVEL = 'ERROR';
 
 const assert = require('node:assert/strict');
 const { EventEmitter } = require('node:events');
+const fs = require('node:fs');
+const path = require('node:path');
 const test = require('node:test');
 
 const {
@@ -232,4 +234,20 @@ test('默认operation按显式分钟和小时上限应用安全系数', () => {
       process.env.SP_API_RATE_LIMIT_SAFETY_FACTOR = previous;
     }
   }
+});
+
+test('429错误只在错误对象创建后执行一次配额分析', () => {
+  const source = fs.readFileSync(
+    path.join(__dirname, '../src/config/sp-api.js'),
+    'utf8',
+  );
+  const analyzerCalls = source.match(
+    /responseAnalyzer\.analyzeError\(error, operation\)/g,
+  );
+
+  assert.equal(analyzerCalls?.length, 1);
+  assert.ok(
+    source.indexOf('const error = new Error(') <
+      source.indexOf('responseAnalyzer.analyzeError(error, operation)'),
+  );
 });

@@ -853,16 +853,6 @@ async function callSPAPIInternal(
               'Retry-After': retryAfter,
               errorCode: errorCode,
             });
-
-            // 分析错误响应头中的配额信息
-            try {
-              responseAnalyzer.analyzeError(error, operation);
-            } catch (analyzerError) {
-              logger.warn(
-                `[callSPAPI] 分析错误响应头失败:`,
-                analyzerError.message,
-              );
-            }
           }
 
           // 创建错误对象，包含状态码、错误信息和响应头
