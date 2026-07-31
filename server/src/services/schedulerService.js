@@ -119,6 +119,7 @@ function buildMonitorCronExpression(intervalMinutes) {
 function runUSMonitorSchedule() {
   const start = Date.now();
   const now = new Date();
+  const requestedAt = now.toISOString();
   const minute = now.getMinutes();
   const { usIntervalMinutes } = getMonitorScheduleConfig();
   const batchIndex = calculateScheduledBatchIndex(
@@ -129,6 +130,27 @@ function runUSMonitorSchedule() {
 
   // --- Standard Monitor Task ---
   const usCountries = getCountriesToCheck('US', minute);
+  const batchConfig =
+    TOTAL_BATCHES > 1
+      ? {
+          batchIndex,
+          totalBatches: TOTAL_BATCHES,
+        }
+      : null;
+  let competitorFollowUp = null;
+
+  if (isCompetitorMonitorEnabled() && usCountries.length > 0) {
+    updateLastRun('us', 'lastCompetitorRun');
+    competitorFollowUp = {
+      type: 'competitor',
+      countries: usCountries,
+      batchConfig,
+      source: 'scheduled',
+    };
+    logger.info('[定时任务] 竞品监控（US）将在本批标准监控结束后进入队列');
+  } else if (!isCompetitorMonitorEnabled()) {
+    logger.info('[定时任务] 竞品监控已关闭，跳过本次US任务');
+  }
 
   if (usCountries.length > 0) {
     updateLastRun('us', 'lastStandardRun');
@@ -136,39 +158,17 @@ function runUSMonitorSchedule() {
       logger.info(
         `[定时任务] 标准监控（US）当前批次: ${batchIndex + 1}/${TOTAL_BATCHES}`,
       );
-      monitorTaskQueue.enqueue(usCountries, {
-        batchIndex,
-        totalBatches: TOTAL_BATCHES,
+      monitorTaskQueue.enqueue(usCountries, batchConfig, {
+        requestedAt,
+        followUp: competitorFollowUp,
       });
     } else {
       // 不分批，直接处理所有国家
-      monitorTaskQueue.enqueue(usCountries);
+      monitorTaskQueue.enqueue(usCountries, null, {
+        requestedAt,
+        followUp: competitorFollowUp,
+      });
     }
-  }
-
-  // --- Competitor Monitor Task ---
-  // 竞品监控使用相同的时间表
-  if (isCompetitorMonitorEnabled()) {
-    const competitorUsCountries = getCountriesToCheck('US', minute);
-
-    if (competitorUsCountries.length > 0) {
-      updateLastRun('us', 'lastCompetitorRun');
-      if (TOTAL_BATCHES > 1) {
-        logger.info(
-          `[定时任务] 竞品监控（US）当前批次: ${
-            batchIndex + 1
-          }/${TOTAL_BATCHES}`,
-        );
-        competitorMonitorTaskQueue.enqueue(competitorUsCountries, {
-          batchIndex,
-          totalBatches: TOTAL_BATCHES,
-        });
-      } else {
-        competitorMonitorTaskQueue.enqueue(competitorUsCountries);
-      }
-    }
-  } else {
-    logger.info('[定时任务] 竞品监控已关闭，跳过本次US任务');
   }
 
   recordSchedulerRun('us', (Date.now() - start) / 1000);

@@ -1,10 +1,9 @@
 const Queue = require('bull');
 const monitorTaskRunner = require('./monitorTaskRunner');
+const competitorMonitorTaskQueue = require('./competitorMonitorTaskQueue');
 const logger = require('../utils/logger');
-const {
-  evaluateScheduledJobFreshness,
-  buildScheduledJobId,
-} = require('./monitorQueuePolicy');
+const { buildScheduledJobId } = require('./monitorQueuePolicy');
+const { processMonitorTaskJob } = require('./monitorTaskProcessor');
 
 // 构建 Redis 连接 URL
 // 支持两种方式：
@@ -83,26 +82,10 @@ function registerProcessor() {
 
   const concurrency = getWorkerConcurrency();
   monitorTaskQueue.process(concurrency, async (job) => {
-    const { countries, batchConfig } = job.data || {};
-    if (!countries || !countries.length) {
-      return;
-    }
-    const freshness = evaluateScheduledJobFreshness(job.data, job.timestamp);
-    if (freshness.stale) {
-      logger.warn('[监控任务队列] 跳过过期定时任务', {
-        jobId: String(job.id),
-        countries,
-        reason: freshness.reason,
-        ageMs: freshness.ageMs,
-        maxAgeMs: freshness.maxAgeMs,
-      });
-      return {
-        skipped: true,
-        reason: freshness.reason,
-        ageMs: freshness.ageMs,
-      };
-    }
-    await monitorTaskRunner.runMonitorTask(countries, batchConfig);
+    return processMonitorTaskJob(job, {
+      runMonitorTask: monitorTaskRunner.runMonitorTask,
+      enqueueCompetitor: competitorMonitorTaskQueue.enqueue,
+    });
   });
 
   processorRegistered = true;
@@ -138,6 +121,7 @@ function enqueue(countries, batchConfig = null, options = {}) {
     source: options.source || 'scheduled',
     requestedBy: options.requestedBy || null,
     requestedAt: options.requestedAt || new Date().toISOString(),
+    followUp: options.followUp || null,
   };
 
   const jobOptions = { ...(options.jobOptions || {}) };

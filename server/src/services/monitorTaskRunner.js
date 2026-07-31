@@ -34,6 +34,8 @@ const {
 let monitorSemaphore = new Semaphore(getMaxConcurrentGroupChecks());
 let isMonitorTaskRunning = false;
 let pendingRunCountries = null;
+let pendingRunBatchConfig = null;
+let pendingRunCompletion = null;
 
 // 单次任务限制处理的变体组数量（防止单次任务过大）
 const MAX_GROUPS_PER_TASK =
@@ -519,7 +521,35 @@ function checkRegionCountriesCompleted(region, completedCountries) {
   );
 }
 
-async function runMonitorTask(countries, batchConfig = null) {
+function areBatchConfigsEqual(first, second) {
+  if (!first && !second) {
+    return true;
+  }
+  if (!first || !second) {
+    return false;
+  }
+  return (
+    first.batchIndex === second.batchIndex &&
+    first.totalBatches === second.totalBatches
+  );
+}
+
+function getPendingRunCompletion() {
+  if (pendingRunCompletion) {
+    return pendingRunCompletion;
+  }
+
+  let resolve;
+  let reject;
+  const promise = new Promise((resolvePromise, rejectPromise) => {
+    resolve = resolvePromise;
+    reject = rejectPromise;
+  });
+  pendingRunCompletion = { promise, resolve, reject };
+  return pendingRunCompletion;
+}
+
+async function runMonitorTask(countries, batchConfig = null, options = {}) {
   if (!countries || countries.length === 0) {
     return {
       success: false,
@@ -531,14 +561,24 @@ async function runMonitorTask(countries, batchConfig = null) {
   }
 
   if (isMonitorTaskRunning) {
+    const alreadyHasPendingRun =
+      pendingRunCountries && pendingRunCountries.length > 0;
     pendingRunCountries = Array.from(
       new Set([...(pendingRunCountries || []), ...countries]),
     );
+    if (!alreadyHasPendingRun) {
+      pendingRunBatchConfig = batchConfig;
+    } else if (!areBatchConfigsEqual(pendingRunBatchConfig, batchConfig)) {
+      pendingRunBatchConfig = null;
+    }
     logger.info(
       `⏳ 上一个监控任务仍在运行，已缓存下一次执行的国家: ${pendingRunCountries.join(
         ', ',
       )}`,
     );
+    if (options.waitForDeferred) {
+      return getPendingRunCompletion().promise;
+    }
     return {
       success: false,
       error: '上一个监控任务仍在运行',
@@ -809,11 +849,21 @@ async function runMonitorTask(countries, batchConfig = null) {
     });
     if (pendingRunCountries && pendingRunCountries.length > 0) {
       const nextCountries = pendingRunCountries;
+      const nextBatchConfig = pendingRunBatchConfig;
+      const nextCompletion = pendingRunCompletion;
       pendingRunCountries = null;
+      pendingRunBatchConfig = null;
+      pendingRunCompletion = null;
       // 捕获错误，避免影响主任务的日志
       try {
-        await runMonitorTask(nextCountries);
+        const nextResult = await runMonitorTask(
+          nextCountries,
+          nextBatchConfig,
+          nextCompletion ? { waitForDeferred: true } : undefined,
+        );
+        nextCompletion?.resolve(nextResult);
       } catch (nextTaskError) {
+        nextCompletion?.reject(nextTaskError);
         const nextErrorMessage =
           nextTaskError?.message || nextTaskError?.toString() || '未知错误';
         logger.error(`❌ 执行待处理的监控任务失败: ${nextErrorMessage}`);
