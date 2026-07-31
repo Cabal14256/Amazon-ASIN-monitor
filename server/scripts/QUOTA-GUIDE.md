@@ -90,7 +90,7 @@ GET /api/v1/rate-limiter/status?region=EU&operation=getCatalogItem
 | `MONITOR_MAX_GROUPS_PER_TASK` | 每个国家、每个批次最多处理的变体组；超出部分不会进入当前计划覆盖 |
 | `MONITOR_BATCH_ASIN_THRESHOLD` | 主营实验性批量查询阈值，默认 0（关闭） |
 | `SP_API_RATE_LIMIT_PER_MINUTE` | 每个区域的本地分钟保护上限，不是 Amazon 配额 |
-| `SP_API_RATE_LIMIT_PER_HOUR` | 每个区域的本地小时保护上限，不是 Amazon 配额 |
+| `SP_API_RATE_LIMIT_PER_HOUR` | 每个区域的本地小时保护上限，默认 2700（与默认 45/分钟一致），不是 Amazon 配额 |
 | `QUOTA_MONITOR_INTERVAL` | 实时监控刷新间隔，单位毫秒，最小 1000 |
 
 已识别的请求会同时经过区域级和 operation 级限制。operation 启动默认值来自当前官方文档；收到有效 `x-amzn-RateLimit-Limit` 后，运行进程会更新对应限流器，并把非敏感的速率元数据写入 Redis 供监控读取。

@@ -17,6 +17,8 @@ const {
 } = require('../src/services/queueConnectionWatchdog');
 const {
   DEFAULT_OPERATION_CONFIGS,
+  DEFAULT_REGION_PER_HOUR,
+  DEFAULT_REGION_PER_MINUTE,
   applyRateLimitSafetyFactor,
   getSafeBurst,
   getSafeOperationLimits,
@@ -234,6 +236,10 @@ test('默认operation按显式分钟和小时上限应用安全系数', () => {
       process.env.SP_API_RATE_LIMIT_SAFETY_FACTOR = previous;
     }
   }
+});
+
+test('区域小时上限与分钟上限保持一致吞吐', () => {
+  assert.equal(DEFAULT_REGION_PER_HOUR, DEFAULT_REGION_PER_MINUTE * 60);
 });
 
 test('429错误只在错误对象创建后执行一次配额分析', () => {
