@@ -10,6 +10,7 @@ const {
   registerWorkerProcessors,
   getWorkerRegistrationStatus,
   getRegisteredQueueInstances,
+  stopWorkerQueueWatchdog,
 } = require('./services/workerProcessorRegistry');
 
 let isShuttingDown = false;
@@ -19,6 +20,7 @@ async function closeRegisteredQueues(signal) {
     return;
   }
   isShuttingDown = true;
+  stopWorkerQueueWatchdog();
 
   logger.info(`[Worker] 收到 ${signal}，开始优雅关闭队列消费者...`);
   const queueInstances = getRegisteredQueueInstances();

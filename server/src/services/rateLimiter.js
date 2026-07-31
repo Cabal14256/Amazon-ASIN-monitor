@@ -39,11 +39,66 @@ const DEFAULT_OPERATION_CONFIGS = {
   },
 };
 
+const DEFAULT_REGION_PER_MINUTE = 45;
+const DEFAULT_REGION_PER_HOUR = 750;
+const DEFAULT_RATE_LIMIT_SAFETY_FACTOR = 0.75;
 const RATE_LIMITER_KEY_PREFIX =
   process.env.RATE_LIMITER_KEY_PREFIX || 'spapi:ratelimiter';
 const DISTRIBUTED_RETRY_WAIT_CAP_MS = 5000;
 
 let redisFallbackWarned = false;
+
+function getRateLimitSafetyFactor() {
+  const configured = Number(process.env.SP_API_RATE_LIMIT_SAFETY_FACTOR);
+  if (!Number.isFinite(configured) || configured <= 0) {
+    return DEFAULT_RATE_LIMIT_SAFETY_FACTOR;
+  }
+  return Math.min(configured, 1);
+}
+
+function applyRateLimitSafetyFactor(rateLimit) {
+  const rate = Number(rateLimit);
+  if (!Number.isFinite(rate) || rate <= 0) {
+    return 0;
+  }
+  return rate * getRateLimitSafetyFactor();
+}
+
+function getSafeBurst(burst) {
+  const configuredBurst = Number(burst);
+  if (!Number.isFinite(configuredBurst) || configuredBurst <= 0) {
+    return 1;
+  }
+  return Math.max(Math.floor(configuredBurst * getRateLimitSafetyFactor()), 1);
+}
+
+function getSafeOperationLimits(operationConfig, rateLimit) {
+  const config = operationConfig || DEFAULT_OPERATION_CONFIGS.default;
+  const effectiveRate = applyRateLimitSafetyFactor(
+    rateLimit === undefined ? config.rate : rateLimit,
+  );
+  const factor = getRateLimitSafetyFactor();
+  const configuredPerMinute = Math.max(
+    Math.floor(Number(config.perMinute) * factor),
+    1,
+  );
+  const configuredPerHour = Math.max(
+    Math.floor(Number(config.perHour) * factor),
+    1,
+  );
+
+  return {
+    effectiveRate,
+    perMinute: Math.min(
+      Math.max(Math.floor(effectiveRate * 60), 1),
+      configuredPerMinute,
+    ),
+    perHour: Math.min(
+      Math.max(Math.floor(effectiveRate * 3600), 1),
+      configuredPerHour,
+    ),
+  };
+}
 
 const DISTRIBUTED_ACQUIRE_SCRIPT = `
 local now = tonumber(ARGV[1])
@@ -682,17 +737,21 @@ class MultiLevelRateLimiter {
       };
     }
 
-    const rate = Number(metadata.rate);
-    const burst = Number(metadata.burst);
+    const operationMatch = this.name.match(/^[^:]+:operation:(.+)$/);
+    const operationConfig =
+      DEFAULT_OPERATION_CONFIGS[operationMatch?.[1]] ||
+      DEFAULT_OPERATION_CONFIGS.default;
+    const safeLimits = getSafeOperationLimits(operationConfig, metadata.rate);
+    const burst = getSafeBurst(metadata.burst);
     for (const window of windows) {
       if (window.key.endsWith(':second')) {
         if (Number.isFinite(burst) && burst > 0) {
           window.limit = burst;
         }
       } else if (window.key.endsWith(':minute')) {
-        window.limit = Math.max(Math.floor(rate * 60), 1);
+        window.limit = safeLimits.perMinute;
       } else if (window.key.endsWith(':hour')) {
-        window.limit = Math.max(Math.floor(rate * 3600), 1);
+        window.limit = safeLimits.perHour;
       }
     }
 
@@ -780,8 +839,11 @@ const operationRateLimiters = {
 };
 
 function initializeRateLimiters() {
-  const perMinute = Number(process.env.SP_API_RATE_LIMIT_PER_MINUTE) || 60;
-  const perHour = Number(process.env.SP_API_RATE_LIMIT_PER_HOUR) || 1000;
+  const perMinute =
+    Number(process.env.SP_API_RATE_LIMIT_PER_MINUTE) ||
+    DEFAULT_REGION_PER_MINUTE;
+  const perHour =
+    Number(process.env.SP_API_RATE_LIMIT_PER_HOUR) || DEFAULT_REGION_PER_HOUR;
 
   rateLimiters.US = new MultiLevelRateLimiter({
     name: buildLimiterName('US'),
@@ -822,18 +884,20 @@ function getOperationRateLimiter(region, operation = null) {
   if (!operationRateLimiters[normalizedRegion][operation]) {
     const opConfig =
       DEFAULT_OPERATION_CONFIGS[operation] || DEFAULT_OPERATION_CONFIGS.default;
+    const safeLimits = getSafeOperationLimits(opConfig);
+    const safeBurst = getSafeBurst(opConfig.burst);
 
     operationRateLimiters[normalizedRegion][operation] =
       new MultiLevelRateLimiter({
         name: buildLimiterName(normalizedRegion, operation),
-        perMinute: opConfig.perMinute,
-        perHour: opConfig.perHour,
-        rate: opConfig.rate,
-        burst: opConfig.burst,
+        perMinute: safeLimits.perMinute,
+        perHour: safeLimits.perHour,
+        rate: safeLimits.effectiveRate,
+        burst: safeBurst,
       });
 
     logger.info(
-      `[RateLimiter] 创建operation限流器: ${normalizedRegion}/${operation} (rate: ${opConfig.rate}/s, burst: ${opConfig.burst})`,
+      `[RateLimiter] 创建operation限流器: ${normalizedRegion}/${operation} (配置: ${opConfig.rate}/s, 安全速率: ${safeLimits.effectiveRate}/s, burst: ${safeBurst})`,
     );
   }
 
@@ -847,8 +911,12 @@ function updateOperationRateLimit(region, operation, rateLimit) {
 
   const normalizedRegion = region === 'US' ? 'US' : 'EU';
   const limiter = getOperationRateLimiter(normalizedRegion, operation);
-  const newPerMinute = Math.floor(rateLimit * 60);
-  const newPerHour = Math.floor(rateLimit * 3600);
+  const operationConfig =
+    DEFAULT_OPERATION_CONFIGS[operation] || DEFAULT_OPERATION_CONFIGS.default;
+  const safeLimits = getSafeOperationLimits(operationConfig, rateLimit);
+  const safeBurst = getSafeBurst(operationConfig.burst);
+  const newPerMinute = safeLimits.perMinute;
+  const newPerHour = safeLimits.perHour;
   const currentPerMinute = limiter.minuteLimiter.capacity;
   const currentPerHour = limiter.hourLimiter.capacity;
   const limitUpdatedAt = new Date().toISOString();
@@ -867,8 +935,8 @@ function updateOperationRateLimit(region, operation, rateLimit) {
         name: buildLimiterName(normalizedRegion, operation),
         perMinute: newPerMinute,
         perHour: newPerHour,
-        rate: rateLimit,
-        burst: DEFAULT_OPERATION_CONFIGS[operation]?.burst || 2,
+        rate: safeLimits.effectiveRate,
+        burst: safeBurst,
         limitSource: 'response_header',
         limitUpdatedAt,
       });
@@ -882,7 +950,7 @@ function updateOperationRateLimit(region, operation, rateLimit) {
       normalizedRegion,
       operation,
       rateLimit,
-      DEFAULT_OPERATION_CONFIGS[operation]?.burst || 2,
+      operationConfig.burst,
       limitUpdatedAt,
     );
   }
@@ -1073,6 +1141,13 @@ module.exports = {
   MultiLevelRateLimiter,
   PriorityQueue,
   DEFAULT_OPERATION_CONFIGS,
+  DEFAULT_REGION_PER_MINUTE,
+  DEFAULT_REGION_PER_HOUR,
+  DEFAULT_RATE_LIMIT_SAFETY_FACTOR,
+  getRateLimitSafetyFactor,
+  applyRateLimitSafetyFactor,
+  getSafeBurst,
+  getSafeOperationLimits,
   DISTRIBUTED_ACQUIRE_SCRIPT,
   acquireDistributedWindows,
   tryConsumeMemoryWithLimiters,

@@ -13,6 +13,7 @@ const { resolveEffectiveConfig } = require('../../scripts/quota-analysis');
 const {
   DISTRIBUTED_ACQUIRE_SCRIPT,
   MultiLevelRateLimiter,
+  updateOperationRateLimit,
 } = require('../../src/services/rateLimiter');
 const {
   closeRedis,
@@ -251,7 +252,7 @@ integrationTest(
       ]);
       assert.deepEqual(
         apiConfig.windows.map(({ limit }) => limit),
-        [4, 210, 12600],
+        [3, 90, 5400],
       );
       assert.deepEqual(apiConfig.windows, workerConfig.windows);
       assert.equal(apiConfig.limitSource, 'response_header');
@@ -265,14 +266,30 @@ integrationTest(
       assert.deepEqual(apiSnapshot.limits, workerSnapshot.limits);
       assert.deepEqual(apiSnapshot.windows, workerSnapshot.windows);
       assert.deepEqual(apiSnapshot.limits, {
-        second: 4,
-        minute: 210,
-        hour: 12600,
+        second: 3,
+        minute: 90,
+        hour: 5400,
       });
       assert.equal(workerSnapshot.windows.second.used, 2);
       assert.equal(workerSnapshot.windows.minute.used, 2);
       assert.equal(workerSnapshot.windows.hour.used, 2);
       assert.equal(workerSnapshot.limitSource, 'response_header');
+
+      const genericOperation = 'reviewGenericOperation';
+      const genericMetadataKey = `${process.env.RATE_LIMITER_KEY_PREFIX}:metadata:US:operation:${genericOperation}`;
+      updateOperationRateLimit('US', genericOperation, 0.5);
+      let genericMetadata = null;
+      await waitFor(
+        async () => {
+          const rawMetadata = await directRedis.get(genericMetadataKey);
+          if (!rawMetadata) return false;
+          genericMetadata = JSON.parse(rawMetadata);
+          return true;
+        },
+        5000,
+        'Generic operation metadata was not persisted',
+      );
+      assert.equal(genericMetadata.burst, 1);
     });
 
     await context.test(

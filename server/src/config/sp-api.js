@@ -558,7 +558,7 @@ async function callSPAPIInternal(
   }
 
   const accessToken = await getAccessToken(region);
-  logger.info(
+  logger.debug(
     `[callSPAPI] ${region} 区域 Access Token 获取成功，长度: ${accessToken.length}`,
   );
 
@@ -631,11 +631,11 @@ async function callSPAPIInternal(
 
     const queryString = queryParts.join('&');
     url = `${endpoint}${path}${queryString ? '?' + queryString : ''}`;
-    logger.info(`[callSPAPI] 参数对象:`, JSON.stringify(params, null, 2));
-    logger.info(`[callSPAPI] 构建的查询字符串: ${queryString}`);
-    logger.info(`[callSPAPI] 完整请求URL: ${url}`);
+    logger.debug(`[callSPAPI] 参数对象:`, params);
+    logger.debug(`[callSPAPI] 构建的查询字符串: ${queryString}`);
+    logger.debug(`[callSPAPI] 完整请求URL: ${url}`);
     if (is2022Version) {
-      logger.info(
+      logger.debug(
         `[callSPAPI] 2022-04-01 版本特殊处理: 参数已按固定顺序排列并清理`,
       );
     }
@@ -643,8 +643,8 @@ async function callSPAPIInternal(
     url = `${endpoint}${path}`;
   }
 
-  logger.info(`[callSPAPI] 请求URL: ${url}`);
-  logger.info(
+  logger.debug(`[callSPAPI] 请求URL: ${url}`);
+  logger.debug(
     `[callSPAPI] 请求方法: ${method}, 国家: ${country}, 区域: ${region}`,
   );
   const urlObj = new URL(url);
@@ -659,7 +659,7 @@ async function callSPAPIInternal(
     headers['content-type'] = 'application/json';
   }
 
-  logger.info(`[callSPAPI] 请求头（签名前）:`, {
+  logger.debug(`[callSPAPI] 请求头（签名前）:`, {
     host: headers.host,
     'x-amz-access-token': headers['x-amz-access-token']
       ? `${headers['x-amz-access-token'].substring(0, 20)}...`
@@ -702,10 +702,10 @@ async function callSPAPIInternal(
     // 确保不包含 authorization 和 x-amz-date 字段
     delete finalHeaders.authorization;
     delete finalHeaders['x-amz-date'];
-    logger.info(`[callSPAPI] 使用简化模式（无需AWS签名）`);
+    logger.debug(`[callSPAPI] 使用简化模式（无需AWS签名）`);
   }
 
-  logger.info(`[callSPAPI] 最终请求头:`, {
+  logger.debug(`[callSPAPI] 最终请求头:`, {
     host: finalHeaders.host,
     'x-amz-access-token': finalHeaders['x-amz-access-token']
       ? `${finalHeaders['x-amz-access-token'].substring(0, 20)}...`
@@ -732,8 +732,8 @@ async function callSPAPIInternal(
         data += chunk;
       });
       res.on('end', () => {
-        logger.info(`[callSPAPI] 响应状态码: ${res.statusCode}`);
-        logger.info(`[callSPAPI] 响应数据长度: ${data ? data.length : 0}`);
+        logger.debug(`[callSPAPI] 响应状态码: ${res.statusCode}`);
+        logger.debug(`[callSPAPI] 响应数据长度: ${data ? data.length : 0}`);
 
         // 记录所有响应头（用于配额分析）
         const responseHeaders = res.headers || {};
@@ -747,7 +747,7 @@ async function callSPAPIInternal(
           responseHeaders['retry-after'] || responseHeaders['Retry-After'];
 
         // 记录关键响应头
-        logger.info(`[callSPAPI] 响应头信息:`, {
+        logger.debug(`[callSPAPI] 响应头信息:`, {
           'x-amzn-RateLimit-Limit': rateLimitLimit,
           'x-amzn-RequestId': requestId,
           'Retry-After': retryAfter || 'N/A',
@@ -773,7 +773,7 @@ async function callSPAPIInternal(
               region: region,
             };
 
-            logger.info(`[callSPAPI] 响应解析成功:`, {
+            logger.debug(`[callSPAPI] 响应解析成功:`, {
               hasItems: !!response.items,
               itemsCount: response.items ? response.items.length : 0,
               keys: Object.keys(response),
@@ -782,9 +782,9 @@ async function callSPAPIInternal(
             });
             const responseStr = JSON.stringify(response);
             if (responseStr.length < 1000) {
-              logger.info(`[callSPAPI] 完整响应内容:`, responseStr);
+              logger.debug(`[callSPAPI] 完整响应内容:`, responseStr);
             } else {
-              logger.info(
+              logger.debug(
                 `[callSPAPI] 响应内容（前500字符）:`,
                 responseStr.substring(0, 500),
               );
@@ -799,7 +799,7 @@ async function callSPAPIInternal(
 
             resolve(response);
           } catch (e) {
-            logger.info(`[callSPAPI] 响应解析失败，返回原始数据:`, e.message);
+            logger.debug(`[callSPAPI] 响应解析失败，返回原始数据:`, e.message);
             const fallbackResponse = data || {};
             if (typeof fallbackResponse === 'object') {
               fallbackResponse._spApiHeaders = {
@@ -819,7 +819,6 @@ async function callSPAPIInternal(
 
           // 解析错误body中的code字段（429错误通常是QuotaExceeded/TooManyRequests）
           let errorCode = null;
-          let errorDetails = null;
           if (data) {
             try {
               const errorBody = JSON.parse(data);
@@ -827,49 +826,42 @@ async function callSPAPIInternal(
                 ? errorBody.errors.find((item) => item?.code)?.code
                 : null;
               errorCode = errorBody.code || nestedErrorCode || null;
-              errorDetails = errorBody;
             } catch (e) {
               // 无法解析JSON，忽略
             }
           }
 
-          logger.error(`[callSPAPI] 请求失败:`, {
-            statusCode: res.statusCode,
-            errorMsg: errorMsg.substring(0, 500),
-            errorCode: errorCode,
-            rateLimitLimit: rateLimitLimit,
-            requestId: requestId,
-            retryAfter: retryAfter,
-          });
+          if (res.statusCode !== 429) {
+            logger.error(`[callSPAPI] 请求失败:`, {
+              statusCode: res.statusCode,
+              errorMsg: errorMsg.substring(0, 500),
+              errorCode: errorCode,
+              rateLimitLimit: rateLimitLimit,
+              requestId: requestId,
+              retryAfter: retryAfter,
+            });
+          }
 
           // 如果是429错误，特别记录
           if (res.statusCode === 429) {
-            logger.warn(`[callSPAPI] 429限流错误详情:`, {
+            logger.warn(`[callSPAPI] 429限流错误:`, {
               method: method,
-              path: path,
               country: country,
               region: region,
               'x-amzn-RateLimit-Limit': rateLimitLimit,
               'x-amzn-RequestId': requestId,
               'Retry-After': retryAfter,
               errorCode: errorCode,
-              errorDetails: errorDetails,
             });
-
-            // 分析错误响应头中的配额信息
-            try {
-              responseAnalyzer.analyzeError(error, operation);
-            } catch (analyzerError) {
-              logger.warn(
-                `[callSPAPI] 分析错误响应头失败:`,
-                analyzerError.message,
-              );
-            }
           }
 
           // 创建错误对象，包含状态码、错误信息和响应头
+          const safeErrorMessage =
+            res.statusCode === 429
+              ? errorCode || 'rate limited'
+              : errorMsg.substring(0, 500);
           const error = new Error(
-            `SP-API调用失败: ${res.statusCode} - ${errorMsg}`,
+            `SP-API调用失败: ${res.statusCode} - ${safeErrorMessage}`,
           );
           error.statusCode = res.statusCode;
           error.responseData = data;
@@ -949,7 +941,7 @@ async function callSPAPI(
       if (attempt > 0) {
         // 如果是重试，需要等待（等待时间由Retry-After或指数退避决定）
         // 注意：首次重试的等待时间在上一次循环的错误处理中已设置
-        logger.info(
+        logger.debug(
           `[callSPAPI] 第 ${attempt} 次重试（最多 ${maxRetries} 次）...`,
         );
       }
@@ -993,7 +985,7 @@ async function callSPAPI(
           if (!isNaN(retryAfterNum)) {
             // 数字格式：直接使用（秒转毫秒）
             waitTime = retryAfterNum * 1000;
-            logger.info(
+            logger.debug(
               `[callSPAPI] 429限流错误，Retry-After头指定等待 ${waitTime}ms 后重试 (${
                 attempt + 1
               }/${maxRetries})`,
@@ -1003,7 +995,7 @@ async function callSPAPI(
             const retryDate = new Date(retryAfter);
             if (!isNaN(retryDate.getTime())) {
               waitTime = Math.max(0, retryDate.getTime() - Date.now());
-              logger.info(
+              logger.debug(
                 `[callSPAPI] 429限流错误，Retry-After头指定等待 ${waitTime}ms 后重试 (${
                   attempt + 1
                 }/${maxRetries})`,
@@ -1015,7 +1007,7 @@ async function callSPAPI(
         // 如果没有Retry-After头或解析失败，使用指数退避作为兜底
         if (waitTime === null || waitTime <= 0) {
           waitTime = Math.min(initialDelay * Math.pow(2, attempt), 30000); // 最多30秒
-          logger.info(
+          logger.debug(
             `[callSPAPI] 429限流错误，使用指数退避等待 ${waitTime}ms 后重试 (${
               attempt + 1
             }/${maxRetries})`,
@@ -1025,7 +1017,7 @@ async function callSPAPI(
         // 限制最大等待时间为120秒
         waitTime = Math.min(waitTime, 120000);
 
-        logger.info(
+        logger.debug(
           `[callSPAPI] 遇到限流错误（429/QuotaExceeded），等待 ${waitTime}ms 后进行第 ${
             attempt + 1
           } 次重试（最多 ${maxRetries} 次）`,

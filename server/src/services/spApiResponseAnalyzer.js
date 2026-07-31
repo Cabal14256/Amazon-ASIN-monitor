@@ -89,7 +89,7 @@ function analyzeResponseHeaders(
     }
 
     // 记录到日志
-    logger.info(`[spApiResponseAnalyzer] 配额信息:`, quotaInfo);
+    logger.debug(`[spApiResponseAnalyzer] 配额信息:`, quotaInfo);
 
     return quotaInfo;
   } catch (error) {
