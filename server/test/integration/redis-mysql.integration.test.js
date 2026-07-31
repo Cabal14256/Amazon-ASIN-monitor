@@ -265,9 +265,9 @@ integrationTest(
       assert.deepEqual(apiSnapshot.limits, workerSnapshot.limits);
       assert.deepEqual(apiSnapshot.windows, workerSnapshot.windows);
       assert.deepEqual(apiSnapshot.limits, {
-        second: 4,
-        minute: 210,
-        hour: 12600,
+        second: 3,
+        minute: 157,
+        hour: 9450,
       });
       assert.equal(workerSnapshot.windows.second.used, 2);
       assert.equal(workerSnapshot.windows.minute.used, 2);
