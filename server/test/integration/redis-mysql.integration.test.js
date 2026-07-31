@@ -279,12 +279,16 @@ integrationTest(
       const genericMetadataKey = `${process.env.RATE_LIMITER_KEY_PREFIX}:metadata:US:operation:${genericOperation}`;
       updateOperationRateLimit('US', genericOperation, 0.5);
       let genericMetadata = null;
-      await waitFor(async () => {
-        const rawMetadata = await directRedis.get(genericMetadataKey);
-        if (!rawMetadata) return false;
-        genericMetadata = JSON.parse(rawMetadata);
-        return true;
-      }, 5000, 'Generic operation metadata was not persisted');
+      await waitFor(
+        async () => {
+          const rawMetadata = await directRedis.get(genericMetadataKey);
+          if (!rawMetadata) return false;
+          genericMetadata = JSON.parse(rawMetadata);
+          return true;
+        },
+        5000,
+        'Generic operation metadata was not persisted',
+      );
       assert.equal(genericMetadata.burst, 1);
     });
 
