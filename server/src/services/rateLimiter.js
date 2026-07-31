@@ -72,6 +72,23 @@ function getSafeBurst(burst) {
   return Math.max(Math.floor(configuredBurst * getRateLimitSafetyFactor()), 1);
 }
 
+function getOperationBurstLimit(burst) {
+  const configuredBurst = Number(burst);
+  if (!Number.isFinite(configuredBurst) || configuredBurst <= 0) {
+    return 1;
+  }
+
+  const configuredCap = Number(process.env.SP_API_RATE_LIMIT_BURST_CAP);
+  if (!Number.isFinite(configuredCap) || configuredCap <= 0) {
+    return getSafeBurst(configuredBurst);
+  }
+
+  return Math.max(
+    Math.min(Math.floor(configuredBurst), Math.floor(configuredCap)),
+    1,
+  );
+}
+
 function getSafeOperationLimits(operationConfig, rateLimit) {
   const config = operationConfig || DEFAULT_OPERATION_CONFIGS.default;
   const effectiveRate = applyRateLimitSafetyFactor(
@@ -742,7 +759,7 @@ class MultiLevelRateLimiter {
       DEFAULT_OPERATION_CONFIGS[operationMatch?.[1]] ||
       DEFAULT_OPERATION_CONFIGS.default;
     const safeLimits = getSafeOperationLimits(operationConfig, metadata.rate);
-    const burst = getSafeBurst(metadata.burst);
+    const burst = getOperationBurstLimit(metadata.burst);
     for (const window of windows) {
       if (window.key.endsWith(':second')) {
         if (Number.isFinite(burst) && burst > 0) {
@@ -885,7 +902,7 @@ function getOperationRateLimiter(region, operation = null) {
     const opConfig =
       DEFAULT_OPERATION_CONFIGS[operation] || DEFAULT_OPERATION_CONFIGS.default;
     const safeLimits = getSafeOperationLimits(opConfig);
-    const safeBurst = getSafeBurst(opConfig.burst);
+    const safeBurst = getOperationBurstLimit(opConfig.burst);
 
     operationRateLimiters[normalizedRegion][operation] =
       new MultiLevelRateLimiter({
@@ -914,7 +931,7 @@ function updateOperationRateLimit(region, operation, rateLimit) {
   const operationConfig =
     DEFAULT_OPERATION_CONFIGS[operation] || DEFAULT_OPERATION_CONFIGS.default;
   const safeLimits = getSafeOperationLimits(operationConfig, rateLimit);
-  const safeBurst = getSafeBurst(operationConfig.burst);
+  const safeBurst = getOperationBurstLimit(operationConfig.burst);
   const newPerMinute = safeLimits.perMinute;
   const newPerHour = safeLimits.perHour;
   const currentPerMinute = limiter.minuteLimiter.capacity;
@@ -1147,6 +1164,7 @@ module.exports = {
   getRateLimitSafetyFactor,
   applyRateLimitSafetyFactor,
   getSafeBurst,
+  getOperationBurstLimit,
   getSafeOperationLimits,
   DISTRIBUTED_ACQUIRE_SCRIPT,
   acquireDistributedWindows,

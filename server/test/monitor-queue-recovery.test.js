@@ -20,9 +20,13 @@ const {
   DEFAULT_REGION_PER_HOUR,
   DEFAULT_REGION_PER_MINUTE,
   applyRateLimitSafetyFactor,
+  getOperationBurstLimit,
   getSafeBurst,
   getSafeOperationLimits,
 } = require('../src/services/rateLimiter');
+const {
+  processMonitorTaskJob,
+} = require('../src/services/monitorTaskProcessor');
 
 test('定时监控任务超过最大排队时长后被判定为过期', () => {
   const requestedAt = Date.parse('2026-07-31T08:00:00.000Z');
@@ -215,6 +219,122 @@ test('响应头配额应用安全系数并压低突发量', () => {
       process.env.SP_API_RATE_LIMIT_SAFETY_FACTOR = previous;
     }
   }
+});
+
+test('显式突发上限独立于持续速率安全系数', () => {
+  const previousFactor = process.env.SP_API_RATE_LIMIT_SAFETY_FACTOR;
+  const previousCap = process.env.SP_API_RATE_LIMIT_BURST_CAP;
+  process.env.SP_API_RATE_LIMIT_SAFETY_FACTOR = '0.75';
+  process.env.SP_API_RATE_LIMIT_BURST_CAP = '2';
+  try {
+    assert.equal(getSafeBurst(2), 1);
+    assert.equal(getOperationBurstLimit(2), 2);
+    assert.equal(getOperationBurstLimit(1), 1);
+  } finally {
+    if (previousFactor === undefined) {
+      delete process.env.SP_API_RATE_LIMIT_SAFETY_FACTOR;
+    } else {
+      process.env.SP_API_RATE_LIMIT_SAFETY_FACTOR = previousFactor;
+    }
+    if (previousCap === undefined) {
+      delete process.env.SP_API_RATE_LIMIT_BURST_CAP;
+    } else {
+      process.env.SP_API_RATE_LIMIT_BURST_CAP = previousCap;
+    }
+  }
+});
+
+test('US标准任务结束后才入队竞品后继任务', async () => {
+  const calls = [];
+  const job = {
+    id: 'standard-us',
+    timestamp: Date.now(),
+    data: {
+      countries: ['US'],
+      batchConfig: null,
+      source: 'scheduled',
+      requestedAt: new Date().toISOString(),
+      followUp: {
+        type: 'competitor',
+        countries: ['US'],
+        batchConfig: null,
+        source: 'scheduled',
+        requestedAt: new Date().toISOString(),
+      },
+    },
+    async update(data) {
+      calls.push('persist-standard-completed');
+      this.data = data;
+    },
+  };
+
+  const result = await processMonitorTaskJob(job, {
+    runMonitorTask: async () => {
+      calls.push('standard-start');
+      await Promise.resolve();
+      calls.push('standard-complete');
+      return { success: true };
+    },
+    enqueueCompetitor: async (countries, batchConfig, options) => {
+      calls.push('competitor-enqueue');
+      assert.deepEqual(countries, ['US']);
+      assert.equal(batchConfig, null);
+      assert.equal(options.source, 'scheduled');
+    },
+  });
+
+  assert.deepEqual(calls, [
+    'standard-start',
+    'standard-complete',
+    'persist-standard-completed',
+    'competitor-enqueue',
+  ]);
+  assert.equal(result.competitorFollowUpEnqueued, true);
+});
+
+test('竞品入队失败重试时不会重复执行已完成的标准任务', async () => {
+  let standardRuns = 0;
+  let competitorEnqueues = 0;
+  const requestedAt = new Date().toISOString();
+  const job = {
+    id: 'standard-us-retry',
+    timestamp: Date.now(),
+    data: {
+      countries: ['US'],
+      source: 'scheduled',
+      requestedAt,
+      followUp: {
+        type: 'competitor',
+        countries: ['US'],
+        source: 'scheduled',
+        requestedAt,
+      },
+    },
+    async update(data) {
+      this.data = data;
+    },
+  };
+  const dependencies = {
+    runMonitorTask: async () => {
+      standardRuns += 1;
+      return { success: true };
+    },
+    enqueueCompetitor: async () => {
+      competitorEnqueues += 1;
+      if (competitorEnqueues === 1) {
+        throw new Error('Redis unavailable');
+      }
+    },
+  };
+
+  await assert.rejects(
+    processMonitorTaskJob(job, dependencies),
+    /Redis unavailable/,
+  );
+  await processMonitorTaskJob(job, dependencies);
+
+  assert.equal(standardRuns, 1);
+  assert.equal(competitorEnqueues, 2);
 });
 
 test('默认operation按显式分钟和小时上限应用安全系数', () => {
