@@ -44,7 +44,9 @@ async function processMonitorTaskJob(
   let result;
 
   if (!jobData.standardCompleted) {
-    result = await runMonitorTask(countries, batchConfig);
+    result = await runMonitorTask(countries, batchConfig, {
+      waitForDeferred: true,
+    });
 
     if (followUp) {
       await job.update({

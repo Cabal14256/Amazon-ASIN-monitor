@@ -269,8 +269,11 @@ test('US标准任务结束后才入队竞品后继任务', async () => {
   };
 
   const result = await processMonitorTaskJob(job, {
-    runMonitorTask: async () => {
+    runMonitorTask: async (countries, batchConfig, options) => {
       calls.push('standard-start');
+      assert.deepEqual(countries, ['US']);
+      assert.equal(batchConfig, null);
+      assert.equal(options.waitForDeferred, true);
       await Promise.resolve();
       calls.push('standard-complete');
       return { success: true };
@@ -315,8 +318,11 @@ test('竞品入队失败重试时不会重复执行已完成的标准任务', as
     },
   };
   const dependencies = {
-    runMonitorTask: async () => {
+    runMonitorTask: async (countries, batchConfig, options) => {
       standardRuns += 1;
+      assert.deepEqual(countries, ['US']);
+      assert.equal(batchConfig, undefined);
+      assert.equal(options.waitForDeferred, true);
       return { success: true };
     },
     enqueueCompetitor: async () => {
