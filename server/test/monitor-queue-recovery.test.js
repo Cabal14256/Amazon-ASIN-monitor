@@ -14,8 +14,10 @@ const {
   startQueueConnectionWatchdog,
 } = require('../src/services/queueConnectionWatchdog');
 const {
+  DEFAULT_OPERATION_CONFIGS,
   applyRateLimitSafetyFactor,
   getSafeBurst,
+  getSafeOperationLimits,
 } = require('../src/services/rateLimiter');
 
 test('定时监控任务超过最大排队时长后被判定为过期', () => {
@@ -124,12 +126,105 @@ test('worker看门狗识别有等待任务但没有消费者活动', async () =>
   );
 });
 
+test('worker看门狗识别有积压且active任务执行超时', async () => {
+  const queue = {
+    client: { ping: async () => 'PONG' },
+    isPaused: async () => false,
+    getJobCounts: async () => ({ waiting: 2, active: 1 }),
+    getActive: async () => [{ processedOn: 1000 }],
+  };
+
+  await assert.rejects(
+    checkQueueConnection(queue, {
+      checkBacklogProgress: true,
+      activeJobMaxAgeMs: 1000,
+      now: () => 5000,
+    }),
+    /active_job_stalled/,
+  );
+});
+
+test('worker看门狗限制积压状态查询耗时', async () => {
+  const queue = {
+    client: { ping: async () => 'PONG' },
+    isPaused: async () => new Promise(() => {}),
+    getJobCounts: async () => ({ waiting: 1, active: 0 }),
+  };
+
+  await assert.rejects(
+    checkQueueConnection(queue, {
+      checkBacklogProgress: true,
+      pingTimeoutMs: 10,
+    }),
+    /Redis backlog health check timed out/,
+  );
+});
+
+test('看门狗停止后忽略尚未完成检查的失败回调', async () => {
+  const queue = new EventEmitter();
+  queue.name = 'monitor-task-queue';
+  let nowMs = 0;
+  let checkCount = 0;
+  let rejectPendingCheck;
+  let recoveryCount = 0;
+  const watchdog = startQueueConnectionWatchdog([queue], {
+    runImmediately: false,
+    unhealthyMs: 60000,
+    now: () => nowMs,
+    checkQueue: async () => {
+      checkCount += 1;
+      if (checkCount === 1) {
+        throw new Error('ECONNRESET');
+      }
+      return new Promise((resolve, reject) => {
+        rejectPendingCheck = reject;
+      });
+    },
+    setIntervalFn: () => ({ unref() {} }),
+    clearIntervalFn: () => {},
+    onUnhealthy: () => {
+      recoveryCount += 1;
+    },
+  });
+
+  await watchdog.runCheck();
+  nowMs = 60001;
+  const pendingCheck = watchdog.runCheck();
+  await Promise.resolve();
+  watchdog.stop();
+  rejectPendingCheck(new Error('ECONNRESET'));
+  await pendingCheck;
+
+  assert.equal(recoveryCount, 0);
+});
+
 test('响应头配额应用安全系数并压低突发量', () => {
   const previous = process.env.SP_API_RATE_LIMIT_SAFETY_FACTOR;
   process.env.SP_API_RATE_LIMIT_SAFETY_FACTOR = '0.75';
   try {
     assert.equal(applyRateLimitSafetyFactor(2), 1.5);
     assert.equal(getSafeBurst(2), 1);
+  } finally {
+    if (previous === undefined) {
+      delete process.env.SP_API_RATE_LIMIT_SAFETY_FACTOR;
+    } else {
+      process.env.SP_API_RATE_LIMIT_SAFETY_FACTOR = previous;
+    }
+  }
+});
+
+test('默认operation按显式分钟和小时上限应用安全系数', () => {
+  const previous = process.env.SP_API_RATE_LIMIT_SAFETY_FACTOR;
+  process.env.SP_API_RATE_LIMIT_SAFETY_FACTOR = '0.75';
+  try {
+    assert.deepEqual(
+      getSafeOperationLimits(DEFAULT_OPERATION_CONFIGS.default),
+      {
+        effectiveRate: 0.375,
+        perMinute: 22,
+        perHour: 375,
+      },
+    );
   } finally {
     if (previous === undefined) {
       delete process.env.SP_API_RATE_LIMIT_SAFETY_FACTOR;

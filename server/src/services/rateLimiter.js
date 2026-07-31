@@ -72,6 +72,34 @@ function getSafeBurst(burst) {
   return Math.max(Math.floor(configuredBurst * getRateLimitSafetyFactor()), 1);
 }
 
+function getSafeOperationLimits(operationConfig, rateLimit) {
+  const config = operationConfig || DEFAULT_OPERATION_CONFIGS.default;
+  const effectiveRate = applyRateLimitSafetyFactor(
+    rateLimit === undefined ? config.rate : rateLimit,
+  );
+  const factor = getRateLimitSafetyFactor();
+  const configuredPerMinute = Math.max(
+    Math.floor(Number(config.perMinute) * factor),
+    1,
+  );
+  const configuredPerHour = Math.max(
+    Math.floor(Number(config.perHour) * factor),
+    1,
+  );
+
+  return {
+    effectiveRate,
+    perMinute: Math.min(
+      Math.max(Math.floor(effectiveRate * 60), 1),
+      configuredPerMinute,
+    ),
+    perHour: Math.min(
+      Math.max(Math.floor(effectiveRate * 3600), 1),
+      configuredPerHour,
+    ),
+  };
+}
+
 const DISTRIBUTED_ACQUIRE_SCRIPT = `
 local now = tonumber(ARGV[1])
 local memberPrefix = ARGV[2]
@@ -709,7 +737,11 @@ class MultiLevelRateLimiter {
       };
     }
 
-    const rate = applyRateLimitSafetyFactor(metadata.rate);
+    const operationMatch = this.name.match(/^[^:]+:operation:(.+)$/);
+    const operationConfig =
+      DEFAULT_OPERATION_CONFIGS[operationMatch?.[1]] ||
+      DEFAULT_OPERATION_CONFIGS.default;
+    const safeLimits = getSafeOperationLimits(operationConfig, metadata.rate);
     const burst = getSafeBurst(metadata.burst);
     for (const window of windows) {
       if (window.key.endsWith(':second')) {
@@ -717,9 +749,9 @@ class MultiLevelRateLimiter {
           window.limit = burst;
         }
       } else if (window.key.endsWith(':minute')) {
-        window.limit = Math.max(Math.floor(rate * 60), 1);
+        window.limit = safeLimits.perMinute;
       } else if (window.key.endsWith(':hour')) {
-        window.limit = Math.max(Math.floor(rate * 3600), 1);
+        window.limit = safeLimits.perHour;
       }
     }
 
@@ -852,20 +884,20 @@ function getOperationRateLimiter(region, operation = null) {
   if (!operationRateLimiters[normalizedRegion][operation]) {
     const opConfig =
       DEFAULT_OPERATION_CONFIGS[operation] || DEFAULT_OPERATION_CONFIGS.default;
-    const effectiveRate = applyRateLimitSafetyFactor(opConfig.rate);
+    const safeLimits = getSafeOperationLimits(opConfig);
     const safeBurst = getSafeBurst(opConfig.burst);
 
     operationRateLimiters[normalizedRegion][operation] =
       new MultiLevelRateLimiter({
         name: buildLimiterName(normalizedRegion, operation),
-        perMinute: Math.max(Math.floor(effectiveRate * 60), 1),
-        perHour: Math.max(Math.floor(effectiveRate * 3600), 1),
-        rate: effectiveRate,
+        perMinute: safeLimits.perMinute,
+        perHour: safeLimits.perHour,
+        rate: safeLimits.effectiveRate,
         burst: safeBurst,
       });
 
     logger.info(
-      `[RateLimiter] 创建operation限流器: ${normalizedRegion}/${operation} (配置: ${opConfig.rate}/s, 安全速率: ${effectiveRate}/s, burst: ${safeBurst})`,
+      `[RateLimiter] 创建operation限流器: ${normalizedRegion}/${operation} (配置: ${opConfig.rate}/s, 安全速率: ${safeLimits.effectiveRate}/s, burst: ${safeBurst})`,
     );
   }
 
@@ -879,12 +911,12 @@ function updateOperationRateLimit(region, operation, rateLimit) {
 
   const normalizedRegion = region === 'US' ? 'US' : 'EU';
   const limiter = getOperationRateLimiter(normalizedRegion, operation);
-  const effectiveRateLimit = applyRateLimitSafetyFactor(rateLimit);
-  const safeBurst = getSafeBurst(
-    DEFAULT_OPERATION_CONFIGS[operation]?.burst || 2,
-  );
-  const newPerMinute = Math.max(Math.floor(effectiveRateLimit * 60), 1);
-  const newPerHour = Math.max(Math.floor(effectiveRateLimit * 3600), 1);
+  const operationConfig =
+    DEFAULT_OPERATION_CONFIGS[operation] || DEFAULT_OPERATION_CONFIGS.default;
+  const safeLimits = getSafeOperationLimits(operationConfig, rateLimit);
+  const safeBurst = getSafeBurst(operationConfig.burst);
+  const newPerMinute = safeLimits.perMinute;
+  const newPerHour = safeLimits.perHour;
   const currentPerMinute = limiter.minuteLimiter.capacity;
   const currentPerHour = limiter.hourLimiter.capacity;
   const limitUpdatedAt = new Date().toISOString();
@@ -903,7 +935,7 @@ function updateOperationRateLimit(region, operation, rateLimit) {
         name: buildLimiterName(normalizedRegion, operation),
         perMinute: newPerMinute,
         perHour: newPerHour,
-        rate: effectiveRateLimit,
+        rate: safeLimits.effectiveRate,
         burst: safeBurst,
         limitSource: 'response_header',
         limitUpdatedAt,
@@ -1115,6 +1147,7 @@ module.exports = {
   getRateLimitSafetyFactor,
   applyRateLimitSafetyFactor,
   getSafeBurst,
+  getSafeOperationLimits,
   DISTRIBUTED_ACQUIRE_SCRIPT,
   acquireDistributedWindows,
   tryConsumeMemoryWithLimiters,

@@ -1027,7 +1027,7 @@ async function callSPAPI(
         // 限制最大等待时间为120秒
         waitTime = Math.min(waitTime, 120000);
 
-        logger.warn(
+        logger.debug(
           `[callSPAPI] 遇到限流错误（429/QuotaExceeded），等待 ${waitTime}ms 后进行第 ${
             attempt + 1
           } 次重试（最多 ${maxRetries} 次）`,

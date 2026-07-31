@@ -251,7 +251,7 @@ integrationTest(
       ]);
       assert.deepEqual(
         apiConfig.windows.map(({ limit }) => limit),
-        [3, 157, 9450],
+        [3, 90, 5400],
       );
       assert.deepEqual(apiConfig.windows, workerConfig.windows);
       assert.equal(apiConfig.limitSource, 'response_header');
@@ -266,8 +266,8 @@ integrationTest(
       assert.deepEqual(apiSnapshot.windows, workerSnapshot.windows);
       assert.deepEqual(apiSnapshot.limits, {
         second: 3,
-        minute: 157,
-        hour: 9450,
+        minute: 90,
+        hour: 5400,
       });
       assert.equal(workerSnapshot.windows.second.used, 2);
       assert.equal(workerSnapshot.windows.minute.used, 2);
