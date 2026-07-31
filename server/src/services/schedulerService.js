@@ -146,7 +146,6 @@ function runUSMonitorSchedule() {
       countries: usCountries,
       batchConfig,
       source: 'scheduled',
-      requestedAt,
     };
     logger.info('[定时任务] 竞品监控（US）将在本批标准监控结束后进入队列');
   } else if (!isCompetitorMonitorEnabled()) {

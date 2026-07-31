@@ -246,6 +246,7 @@ test('显式突发上限独立于持续速率安全系数', () => {
 
 test('US标准任务结束后才入队竞品后继任务', async () => {
   const calls = [];
+  const followUpRequestedAt = '2026-07-31T14:05:00.000Z';
   const job = {
     id: 'standard-us',
     timestamp: Date.now(),
@@ -283,7 +284,9 @@ test('US标准任务结束后才入队竞品后继任务', async () => {
       assert.deepEqual(countries, ['US']);
       assert.equal(batchConfig, null);
       assert.equal(options.source, 'scheduled');
+      assert.equal(options.requestedAt, followUpRequestedAt);
     },
+    getCurrentTimestamp: () => followUpRequestedAt,
   });
 
   assert.deepEqual(calls, [
@@ -293,12 +296,41 @@ test('US标准任务结束后才入队竞品后继任务', async () => {
     'competitor-enqueue',
   ]);
   assert.equal(result.competitorFollowUpEnqueued, true);
+  assert.equal(job.data.followUpRequestedAt, followUpRequestedAt);
+});
+
+test('没有竞品后继的手动队列任务保持立即返回调用方式', async () => {
+  const job = {
+    id: 'manual-us',
+    timestamp: Date.now(),
+    data: {
+      countries: ['US'],
+      source: 'manual',
+      requestedAt: new Date().toISOString(),
+    },
+  };
+  let argumentCount = 0;
+
+  const result = await processMonitorTaskJob(job, {
+    runMonitorTask: async function runManualTask() {
+      argumentCount = arguments.length;
+      return { success: false, error: '上一个监控任务仍在运行' };
+    },
+    enqueueCompetitor: async () => {
+      assert.fail('手动任务不应入队竞品后继任务');
+    },
+  });
+
+  assert.equal(argumentCount, 2);
+  assert.equal(result.success, false);
 });
 
 test('竞品入队失败重试时不会重复执行已完成的标准任务', async () => {
   let standardRuns = 0;
   let competitorEnqueues = 0;
+  const competitorRequestedAt = [];
   const requestedAt = new Date().toISOString();
+  const followUpRequestedAt = '2026-07-31T14:10:00.000Z';
   const job = {
     id: 'standard-us-retry',
     timestamp: Date.now(),
@@ -325,12 +357,14 @@ test('竞品入队失败重试时不会重复执行已完成的标准任务', as
       assert.equal(options.waitForDeferred, true);
       return { success: true };
     },
-    enqueueCompetitor: async () => {
+    enqueueCompetitor: async (countries, batchConfig, options) => {
       competitorEnqueues += 1;
+      competitorRequestedAt.push(options.requestedAt);
       if (competitorEnqueues === 1) {
         throw new Error('Redis unavailable');
       }
     },
+    getCurrentTimestamp: () => followUpRequestedAt,
   };
 
   await assert.rejects(
@@ -341,6 +375,47 @@ test('竞品入队失败重试时不会重复执行已完成的标准任务', as
 
   assert.equal(standardRuns, 1);
   assert.equal(competitorEnqueues, 2);
+  assert.deepEqual(competitorRequestedAt, [
+    followUpRequestedAt,
+    followUpRequestedAt,
+  ]);
+});
+
+test('已完成标准任务的重试使用后继时间而不被父任务年龄跳过', async () => {
+  const followUpRequestedAt = new Date().toISOString();
+  let competitorEnqueues = 0;
+  const job = {
+    id: 'standard-us-old-parent',
+    timestamp: Date.now() - DEFAULT_SCHEDULED_JOB_MAX_AGE_MS - 1000,
+    data: {
+      countries: ['US'],
+      source: 'scheduled',
+      requestedAt: new Date(
+        Date.now() - DEFAULT_SCHEDULED_JOB_MAX_AGE_MS - 1000,
+      ).toISOString(),
+      standardCompleted: true,
+      followUpRequestedAt,
+      followUp: {
+        type: 'competitor',
+        countries: ['US'],
+        source: 'scheduled',
+      },
+    },
+  };
+
+  const result = await processMonitorTaskJob(job, {
+    runMonitorTask: async () => {
+      assert.fail('标准任务已完成时不应重复执行');
+    },
+    enqueueCompetitor: async (countries, batchConfig, options) => {
+      competitorEnqueues += 1;
+      assert.deepEqual(countries, ['US']);
+      assert.equal(options.requestedAt, followUpRequestedAt);
+    },
+  });
+
+  assert.equal(competitorEnqueues, 1);
+  assert.equal(result.competitorFollowUpEnqueued, true);
 });
 
 test('默认operation按显式分钟和小时上限应用安全系数', () => {

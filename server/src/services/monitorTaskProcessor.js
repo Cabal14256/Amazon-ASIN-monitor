@@ -16,7 +16,11 @@ function getCompetitorFollowUp(jobData) {
 
 async function processMonitorTaskJob(
   job,
-  { runMonitorTask, enqueueCompetitor },
+  {
+    runMonitorTask,
+    enqueueCompetitor,
+    getCurrentTimestamp = () => new Date().toISOString(),
+  },
 ) {
   const jobData = job?.data || {};
   const { countries, batchConfig } = jobData;
@@ -24,8 +28,10 @@ async function processMonitorTaskJob(
     return undefined;
   }
 
+  const followUp =
+    jobData.source === 'scheduled' ? getCompetitorFollowUp(jobData) : null;
   const freshness = evaluateScheduledJobFreshness(jobData, job.timestamp);
-  if (freshness.stale) {
+  if (!jobData.standardCompleted && freshness.stale) {
     logger.warn('[监控任务队列] 跳过过期定时任务', {
       jobId: String(job.id),
       countries,
@@ -40,18 +46,23 @@ async function processMonitorTaskJob(
     };
   }
 
-  const followUp = getCompetitorFollowUp(jobData);
+  const shouldWaitForDeferred = Boolean(followUp);
+  let followUpRequestedAt = jobData.followUpRequestedAt || null;
   let result;
 
   if (!jobData.standardCompleted) {
-    result = await runMonitorTask(countries, batchConfig, {
-      waitForDeferred: true,
-    });
+    result = shouldWaitForDeferred
+      ? await runMonitorTask(countries, batchConfig, {
+          waitForDeferred: true,
+        })
+      : await runMonitorTask(countries, batchConfig);
 
     if (followUp) {
+      followUpRequestedAt = getCurrentTimestamp();
       await job.update({
         ...jobData,
         standardCompleted: true,
+        followUpRequestedAt,
       });
     }
   }
@@ -60,9 +71,18 @@ async function processMonitorTaskJob(
     return result;
   }
 
+  if (!followUpRequestedAt) {
+    followUpRequestedAt = getCurrentTimestamp();
+    await job.update({
+      ...jobData,
+      standardCompleted: true,
+      followUpRequestedAt,
+    });
+  }
+
   await enqueueCompetitor(followUp.countries, followUp.batchConfig || null, {
     source: followUp.source || jobData.source || 'scheduled',
-    requestedAt: followUp.requestedAt || jobData.requestedAt,
+    requestedAt: followUpRequestedAt,
   });
 
   logger.info('[监控任务队列] 标准监控已结束，竞品监控已进入队列', {
