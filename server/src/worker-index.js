@@ -11,14 +11,22 @@ const {
   getWorkerRegistrationStatus,
   getRegisteredQueueInstances,
 } = require('./services/workerProcessorRegistry');
+const {
+  startQueueConnectionWatchdog,
+} = require('./services/queueConnectionWatchdog');
 
 let isShuttingDown = false;
+let queueConnectionWatchdog = null;
 
 async function closeRegisteredQueues(signal) {
   if (isShuttingDown) {
     return;
   }
   isShuttingDown = true;
+  if (queueConnectionWatchdog) {
+    queueConnectionWatchdog.stop();
+    queueConnectionWatchdog = null;
+  }
 
   logger.info(`[Worker] 收到 ${signal}，开始优雅关闭队列消费者...`);
   const queueInstances = getRegisteredQueueInstances();
@@ -76,6 +84,17 @@ async function startWorkerProcess() {
 
   const registrationResult = registerWorkerProcessors();
   const registrationStatus = getWorkerRegistrationStatus();
+  const queueInstances = getRegisteredQueueInstances();
+
+  queueConnectionWatchdog = startQueueConnectionWatchdog(queueInstances, {
+    scope: 'Worker',
+    checkBacklogProgress: true,
+    onUnhealthy: () => {
+      if (!isShuttingDown) {
+        process.exit(1);
+      }
+    },
+  });
 
   installSignalHandlers();
 

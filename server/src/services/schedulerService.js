@@ -21,6 +21,7 @@ const {
   getMonitorScheduleConfig,
   reloadMonitorScheduleConfig,
 } = require('../config/monitor-schedule-config');
+const { startQueueConnectionWatchdog } = require('./queueConnectionWatchdog');
 
 // 分批处理配置
 const TOTAL_BATCHES = Number(process.env.MONITOR_BATCH_COUNT) || 1; // 默认不分批
@@ -59,6 +60,7 @@ const schedulerStatus = {
   },
 };
 let schedulerEnabled = false;
+let schedulerQueueWatchdog = null;
 
 function recordSchedulerRun(type, durationSec) {
   metricsService.recordSchedulerRun({ type, durationSec });
@@ -322,6 +324,18 @@ function initScheduler() {
     });
 
   logger.info('✅ 定时任务已启动');
+
+  if (!schedulerQueueWatchdog) {
+    schedulerQueueWatchdog = startQueueConnectionWatchdog(
+      [monitorTaskQueue.queue, competitorMonitorTaskQueue.queue],
+      {
+        scope: 'Scheduler',
+        onUnhealthy: () => {
+          process.exit(1);
+        },
+      },
+    );
+  }
 
   // 数据分析聚合刷新（默认开启，可通过 ANALYTICS_AGG_ENABLED=0 关闭）
   if (process.env.ANALYTICS_AGG_ENABLED !== '0') {

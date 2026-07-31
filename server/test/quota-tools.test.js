@@ -501,18 +501,18 @@ test('Redis 快照清理窗口并采用响应头限额元数据', async () => {
   const acquireArgs = evalCall.payload.slice(evalCall.keyCount);
   assert.deepEqual(
     [acquireArgs[4], acquireArgs[7], acquireArgs[10]],
-    [3, 60, 3600],
+    [2, 45, 2700],
   );
 
   const snapshot = await limiter.getStatusSnapshot();
   assert.equal(snapshot.mode, 'redis-distributed');
   assert.equal(snapshot.limitSource, 'response_header');
-  assert.equal(snapshot.windows.second.limit, 3);
-  assert.equal(snapshot.windows.second.remaining, 1);
-  assert.equal(snapshot.windows.minute.limit, 60);
-  assert.equal(snapshot.windows.minute.remaining, 55);
-  assert.equal(snapshot.windows.hour.limit, 3600);
-  assert.equal(snapshot.windows.hour.remaining, 3580);
+  assert.equal(snapshot.windows.second.limit, 2);
+  assert.equal(snapshot.windows.second.remaining, 0);
+  assert.equal(snapshot.windows.minute.limit, 45);
+  assert.equal(snapshot.windows.minute.remaining, 40);
+  assert.equal(snapshot.windows.hour.limit, 2700);
+  assert.equal(snapshot.windows.hour.remaining, 2680);
   assert.equal(removed.length, 3);
 });
 
@@ -589,7 +589,7 @@ test('独立 limiter 实例从 Redis 元数据解析出相同执行容量', asyn
   assert.deepEqual(apiConfig, workerConfig);
   assert.deepEqual(
     apiConfig.windows.map((window) => window.limit),
-    [4, 90, 5400],
+    [3, 67, 4050],
   );
 });
 

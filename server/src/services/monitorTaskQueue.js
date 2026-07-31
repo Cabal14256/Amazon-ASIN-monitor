@@ -1,6 +1,10 @@
 const Queue = require('bull');
 const monitorTaskRunner = require('./monitorTaskRunner');
 const logger = require('../utils/logger');
+const {
+  evaluateScheduledJobFreshness,
+  buildScheduledJobId,
+} = require('./monitorQueuePolicy');
 
 // 构建 Redis 连接 URL
 // 支持两种方式：
@@ -83,6 +87,21 @@ function registerProcessor() {
     if (!countries || !countries.length) {
       return;
     }
+    const freshness = evaluateScheduledJobFreshness(job.data, job.timestamp);
+    if (freshness.stale) {
+      logger.warn('[监控任务队列] 跳过过期定时任务', {
+        jobId: String(job.id),
+        countries,
+        reason: freshness.reason,
+        ageMs: freshness.ageMs,
+        maxAgeMs: freshness.maxAgeMs,
+      });
+      return {
+        skipped: true,
+        reason: freshness.reason,
+        ageMs: freshness.ageMs,
+      };
+    }
     await monitorTaskRunner.runMonitorTask(countries, batchConfig);
   });
 
@@ -121,7 +140,13 @@ function enqueue(countries, batchConfig = null, options = {}) {
     requestedAt: options.requestedAt || new Date().toISOString(),
   };
 
-  return monitorTaskQueue.add(taskData, options.jobOptions || {});
+  const jobOptions = { ...(options.jobOptions || {}) };
+  const scheduledJobId = buildScheduledJobId(monitorTaskQueue.name, taskData);
+  if (scheduledJobId && !jobOptions.jobId) {
+    jobOptions.jobId = scheduledJobId;
+  }
+
+  return monitorTaskQueue.add(taskData, jobOptions);
 }
 
 module.exports = {
