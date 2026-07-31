@@ -83,8 +83,13 @@ function buildScheduledJobId(queueName, taskData) {
   const batchIndex = Number.isInteger(taskData?.batchConfig?.batchIndex)
     ? taskData.batchConfig.batchIndex
     : 0;
+  const totalBatches =
+    Number.isInteger(taskData?.batchConfig?.totalBatches) &&
+    taskData.batchConfig.totalBatches > 0
+      ? taskData.batchConfig.totalBatches
+      : 1;
 
-  return `${queueName}-scheduled-${slot}-${countries}-b${batchIndex}`;
+  return `${queueName}-scheduled-${slot}-${countries}-b${batchIndex}of${totalBatches}`;
 }
 
 module.exports = {

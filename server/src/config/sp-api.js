@@ -831,22 +831,21 @@ async function callSPAPIInternal(
             }
           }
 
-          const failureLog =
-            res.statusCode === 429 ? logger.warn : logger.error;
-          failureLog(`[callSPAPI] 请求失败:`, {
-            statusCode: res.statusCode,
-            errorMsg: errorMsg.substring(0, 500),
-            errorCode: errorCode,
-            rateLimitLimit: rateLimitLimit,
-            requestId: requestId,
-            retryAfter: retryAfter,
-          });
+          if (res.statusCode !== 429) {
+            logger.error(`[callSPAPI] 请求失败:`, {
+              statusCode: res.statusCode,
+              errorMsg: errorMsg.substring(0, 500),
+              errorCode: errorCode,
+              rateLimitLimit: rateLimitLimit,
+              requestId: requestId,
+              retryAfter: retryAfter,
+            });
+          }
 
           // 如果是429错误，特别记录
           if (res.statusCode === 429) {
-            logger.warn(`[callSPAPI] 429限流错误详情:`, {
+            logger.warn(`[callSPAPI] 429限流错误:`, {
               method: method,
-              path: path,
               country: country,
               region: region,
               'x-amzn-RateLimit-Limit': rateLimitLimit,
@@ -867,8 +866,12 @@ async function callSPAPIInternal(
           }
 
           // 创建错误对象，包含状态码、错误信息和响应头
+          const safeErrorMessage =
+            res.statusCode === 429
+              ? errorCode || 'rate limited'
+              : errorMsg.substring(0, 500);
           const error = new Error(
-            `SP-API调用失败: ${res.statusCode} - ${errorMsg}`,
+            `SP-API调用失败: ${res.statusCode} - ${safeErrorMessage}`,
           );
           error.statusCode = res.statusCode;
           error.responseData = data;

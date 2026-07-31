@@ -7,6 +7,9 @@ const batchCheckTaskQueue = require('./batchCheckTaskQueue');
 const batchDeleteTaskQueue = require('./batchDeleteTaskQueue');
 const backupTaskQueue = require('./backupTaskQueue');
 const variantCheckTaskQueue = require('./variantCheckTaskQueue');
+const { startQueueConnectionWatchdog } = require('./queueConnectionWatchdog');
+
+let workerQueueWatchdog = null;
 
 const queueRegistrations = [
   {
@@ -171,12 +174,14 @@ function registerWorkerProcessors() {
       )}`,
     );
   }
+  const watchdogStarted = startWorkerQueueWatchdog();
 
   return {
     registeredQueues,
     newlyRegisteredQueues,
     skippedQueues,
     enabledQueues: config.enabledQueues,
+    watchdogStarted,
   };
 }
 
@@ -216,10 +221,41 @@ function getRegisteredQueueInstances() {
     .map(({ module }) => module.queue);
 }
 
+function startWorkerQueueWatchdog() {
+  if (workerQueueWatchdog) {
+    return false;
+  }
+
+  const queueInstances = getRegisteredQueueInstances();
+  if (queueInstances.length === 0) {
+    return false;
+  }
+
+  workerQueueWatchdog = startQueueConnectionWatchdog(queueInstances, {
+    scope: 'Worker',
+    checkBacklogProgress: true,
+    onUnhealthy: () => {
+      process.exit(1);
+    },
+  });
+  return true;
+}
+
+function stopWorkerQueueWatchdog() {
+  if (!workerQueueWatchdog) {
+    return false;
+  }
+  workerQueueWatchdog.stop();
+  workerQueueWatchdog = null;
+  return true;
+}
+
 module.exports = {
   registerWorkerProcessors,
   getRegisteredQueueNames,
   getWorkerRegistrationStatus,
   getRegisteredQueueInstances,
   getWorkerQueueConfig,
+  startWorkerQueueWatchdog,
+  stopWorkerQueueWatchdog,
 };

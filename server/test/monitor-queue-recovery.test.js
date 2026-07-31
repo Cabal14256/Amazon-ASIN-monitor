@@ -64,6 +64,23 @@ test('同一调度分钟和国家生成稳定的Bull任务ID', () => {
   assert.equal(first.includes(':'), false);
 });
 
+test('不同总批次数不会被稳定任务ID误判为重复', () => {
+  const twoBatches = buildScheduledJobId('monitor-task-queue', {
+    source: 'scheduled',
+    requestedAt: '2026-07-31T10:00:05.000Z',
+    countries: ['US'],
+    batchConfig: { batchIndex: 0, totalBatches: 2 },
+  });
+  const threeBatches = buildScheduledJobId('monitor-task-queue', {
+    source: 'scheduled',
+    requestedAt: '2026-07-31T10:00:05.000Z',
+    countries: ['US'],
+    batchConfig: { batchIndex: 0, totalBatches: 3 },
+  });
+
+  assert.notEqual(twoBatches, threeBatches);
+});
+
 test('连接看门狗在持续异常达到阈值后只触发一次恢复', async () => {
   const queue = new EventEmitter();
   queue.name = 'monitor-task-queue';
