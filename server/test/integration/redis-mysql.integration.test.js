@@ -251,7 +251,7 @@ integrationTest(
       ]);
       assert.deepEqual(
         apiConfig.windows.map(({ limit }) => limit),
-        [4, 210, 12600],
+        [3, 157, 9450],
       );
       assert.deepEqual(apiConfig.windows, workerConfig.windows);
       assert.equal(apiConfig.limitSource, 'response_header');
