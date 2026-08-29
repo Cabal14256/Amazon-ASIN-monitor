@@ -48,7 +48,9 @@ GROUP BY asin, country HAVING COUNT(*) > 1;
 SELECT COUNT(*) AS missing_identity_snapshot
 FROM amazon_asin_monitor.monitor_history
 WHERE (variant_group_id IS NOT NULL AND variant_group_name IS NULL)
-   OR (asin_id IS NOT NULL AND asin_code IS NULL);
+   OR (asin_id IS NOT NULL AND asin_code IS NULL)
+   OR (asin_id IS NOT NULL AND site_snapshot IS NULL)
+   OR (asin_id IS NOT NULL AND brand_snapshot IS NULL);
 
 SELECT COUNT(*) AS missing_identity_snapshot
 FROM amazon_competitor_monitor.competitor_monitor_history

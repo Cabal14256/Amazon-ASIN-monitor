@@ -9,18 +9,41 @@ DELIMITER $$
 CREATE PROCEDURE `_ensure_index`(
   IN p_table VARCHAR(64),
   IN p_index VARCHAR(64),
-  IN p_columns TEXT
+  IN p_columns TEXT,
+  IN p_signature TEXT
 )
 BEGIN
-  IF NOT EXISTS (
-    SELECT 1
-    FROM information_schema.`STATISTICS`
-    WHERE `TABLE_SCHEMA` = DATABASE()
-      AND `TABLE_NAME` = p_table
-      AND `INDEX_NAME` = p_index
-  ) THEN
+  DECLARE v_signature TEXT DEFAULT NULL;
+  DECLARE v_non_unique INT DEFAULT NULL;
+
+  SELECT GROUP_CONCAT(
+           CONCAT(
+             COALESCE(s.`COLUMN_NAME`, CONCAT('(', s.`EXPRESSION`, ')')),
+             IF(s.`SUB_PART` IS NULL, '', CONCAT('(', s.`SUB_PART`, ')')),
+             IF(s.`COLLATION` = 'D', ' DESC', '')
+           )
+           ORDER BY s.`SEQ_IN_INDEX`
+           SEPARATOR ','
+         ),
+         MIN(s.`NON_UNIQUE`)
+  INTO v_signature, v_non_unique
+  FROM information_schema.`STATISTICS` s
+  WHERE s.`TABLE_SCHEMA` = DATABASE()
+    AND s.`TABLE_NAME` = p_table
+    AND s.`INDEX_NAME` = p_index;
+
+  IF v_signature IS NULL THEN
     SET @ddl = CONCAT(
       'ALTER TABLE `', p_table, '` ADD INDEX `', p_index, '` ', p_columns,
+      ', ALGORITHM=INPLACE, LOCK=NONE'
+    );
+    PREPARE stmt FROM @ddl;
+    EXECUTE stmt;
+    DEALLOCATE PREPARE stmt;
+  ELSEIF v_non_unique <> 1 OR v_signature <> p_signature THEN
+    SET @ddl = CONCAT(
+      'ALTER TABLE `', p_table, '` DROP INDEX `', p_index,
+      '`, ADD INDEX `', p_index, '` ', p_columns,
       ', ALGORITHM=INPLACE, LOCK=NONE'
     );
     PREPARE stmt FROM @ddl;
@@ -61,16 +84,16 @@ PREPARE stmt FROM @drop_idx_asins_group;
 EXECUTE stmt;
 DEALLOCATE PREPARE stmt;
 
-CALL `_ensure_index`('asins', 'ix_asins_parent_lookup', '(`country`, `parent_asin`)');
-CALL `_ensure_index`('monitor_history', 'idx_month_country_asin', '(`month_ts`, `country`, `asin_id`, `asin_code`, `is_broken`)');
-CALL `_ensure_index`('monitor_history', 'idx_check_type_hour_country_asin', '(`check_type`, `hour_ts`, `country`, `asin_id`, `asin_code`, `is_broken`)');
-CALL `_ensure_index`('monitor_history', 'idx_check_type_day_country_asin', '(`check_type`, `day_ts`, `country`, `asin_id`, `asin_code`, `is_broken`)');
-CALL `_ensure_index`('monitor_history', 'idx_check_type_time_country_asin_broken', '(`check_type`, `check_time`, `country`, `asin_id`, `asin_code`, `is_broken`)');
-CALL `_ensure_index`('monitor_history', 'idx_country_check_time_type_asin', '(`country`, `check_time`, `check_type`, `asin_id`, `asin_code`)');
-CALL `_ensure_index`('monitor_history', 'idx_variant_group_time_asin_broken', '(`variant_group_id`, `check_time`, `asin_id`, `asin_code`, `is_broken`)');
-CALL `_ensure_index`('monitor_history_agg', 'idx_agg_covering_query', '(`granularity`, `time_slot`, `country`, `asin_key`, `check_count`, `broken_count`, `has_peak`)');
-CALL `_ensure_index`('monitor_history_agg_dim', 'idx_agg_dim_covering_query', '(`granularity`, `time_slot`, `country`, `site`, `brand`, `asin_key`, `check_count`, `broken_count`)');
-CALL `_ensure_index`('users', 'idx_status', '(`status`)');
+CALL `_ensure_index`('asins', 'ix_asins_parent_lookup', '(`country`, `parent_asin`)', 'country,parent_asin');
+CALL `_ensure_index`('monitor_history', 'idx_month_country_asin', '(`month_ts`, `country`, `asin_id`, `asin_code`, `is_broken`)', 'month_ts,country,asin_id,asin_code,is_broken');
+CALL `_ensure_index`('monitor_history', 'idx_check_type_hour_country_asin', '(`check_type`, `hour_ts`, `country`, `asin_id`, `asin_code`, `is_broken`)', 'check_type,hour_ts,country,asin_id,asin_code,is_broken');
+CALL `_ensure_index`('monitor_history', 'idx_check_type_day_country_asin', '(`check_type`, `day_ts`, `country`, `asin_id`, `asin_code`, `is_broken`)', 'check_type,day_ts,country,asin_id,asin_code,is_broken');
+CALL `_ensure_index`('monitor_history', 'idx_check_type_time_country_asin_broken', '(`check_type`, `check_time`, `country`, `asin_id`, `asin_code`, `is_broken`)', 'check_type,check_time,country,asin_id,asin_code,is_broken');
+CALL `_ensure_index`('monitor_history', 'idx_country_check_time_type_asin', '(`country`, `check_time`, `check_type`, `asin_id`, `asin_code`)', 'country,check_time,check_type,asin_id,asin_code');
+CALL `_ensure_index`('monitor_history', 'idx_variant_group_time_asin_broken', '(`variant_group_id`, `check_time`, `asin_id`, `asin_code`, `is_broken`)', 'variant_group_id,check_time,asin_id,asin_code,is_broken');
+CALL `_ensure_index`('monitor_history_agg', 'idx_agg_covering_query', '(`granularity`, `time_slot`, `country`, `asin_key`, `check_count`, `broken_count`, `has_peak`)', 'granularity,time_slot,country,asin_key,check_count,broken_count,has_peak');
+CALL `_ensure_index`('monitor_history_agg_dim', 'idx_agg_dim_covering_query', '(`granularity`, `time_slot`, `country`, `site`, `brand`, `asin_key`, `check_count`, `broken_count`)', 'granularity,time_slot,country,site,brand,asin_key,check_count,broken_count');
+CALL `_ensure_index`('users', 'idx_status', '(`status`)', 'status');
 
 -- 清理由旧 init 产生的等价索引，保留 canonical 名称。
 SET @drop_agg_slot = IF(

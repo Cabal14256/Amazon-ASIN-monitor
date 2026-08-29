@@ -7,6 +7,7 @@ const { closeRedis } = require('../src/config/redis');
 const {
   ASIN_INSERT_COLUMNS,
   ASIN_SCHEMA_CONTRACT_ERROR_CODE,
+  VARIANT_GROUP_INSERT_COLUMNS,
   assertAsinInsertSchemaCompatible,
   batchCreateASINs,
 } = require('../src/services/asinBatchCreateService');
@@ -15,8 +16,9 @@ test.after(async () => {
   await closeRedis();
 });
 
-function column(name, overrides = {}) {
+function column(name, tableName = 'asins', overrides = {}) {
   return {
+    TABLE_NAME: tableName,
     COLUMN_NAME: name,
     IS_NULLABLE: 'YES',
     COLUMN_DEFAULT: null,
@@ -28,7 +30,10 @@ function column(name, overrides = {}) {
 function compatibleMainColumns(extra = []) {
   return [
     ...ASIN_INSERT_COLUMNS.asin.map((name) =>
-      column(name, { IS_NULLABLE: 'NO' }),
+      column(name, 'asins', { IS_NULLABLE: 'NO' }),
+    ),
+    ...VARIANT_GROUP_INSERT_COLUMNS.asin.map((name) =>
+      column(name, 'variant_groups', { IS_NULLABLE: 'NO' }),
     ),
     ...extra,
   ];
@@ -52,7 +57,7 @@ test('schema 契约接受兼容结构并忽略生成列', async () => {
     {
       query: async () =>
         compatibleMainColumns([
-          column('derived_key', {
+          column('derived_key', 'asins', {
             IS_NULLABLE: 'NO',
             EXTRA: 'VIRTUAL GENERATED',
           }),
@@ -71,8 +76,8 @@ test('schema 契约拒绝 INSERT 未提供的必填无默认字段', async () =>
     {
       query: async () =>
         compatibleMainColumns([
-          column('asin_note', { IS_NULLABLE: 'NO' }),
-          column('parent_title', { IS_NULLABLE: 'NO' }),
+          column('asin_note', 'asins', { IS_NULLABLE: 'NO' }),
+          column('parent_title', 'asins', { IS_NULLABLE: 'NO' }),
         ]),
     },
     async () => {
@@ -115,6 +120,47 @@ test('schema 契约单独报告缺失的 INSERT 列', async () => {
           assert.equal(error.code, ASIN_SCHEMA_CONTRACT_ERROR_CODE);
           assert.equal(error.details.tableMissing, false);
           assert.deepEqual(error.fields, ['brand']);
+          return true;
+        },
+      );
+    },
+  );
+});
+
+test('schema 契约拒绝被错误改为生成列的 INSERT 字段', async () => {
+  const columns = compatibleMainColumns();
+  columns.find(
+    (currentColumn) =>
+      currentColumn.TABLE_NAME === 'asins' &&
+      currentColumn.COLUMN_NAME === 'brand',
+  ).EXTRA = 'STORED GENERATED';
+  await withMainDatabaseStubs({ query: async () => columns }, async () => {
+    await assert.rejects(assertAsinInsertSchemaCompatible('asin'), (error) => {
+      assert.equal(error.code, ASIN_SCHEMA_CONTRACT_ERROR_CODE);
+      assert.equal(error.table, 'asins');
+      assert.deepEqual(error.details.generatedInsertColumns, ['brand']);
+      return true;
+    });
+  });
+});
+
+test('schema 契约在创建变体组前拒绝组表额外必填字段', async () => {
+  await withMainDatabaseStubs(
+    {
+      query: async () =>
+        compatibleMainColumns([
+          column('external_owner', 'variant_groups', {
+            IS_NULLABLE: 'NO',
+          }),
+        ]),
+    },
+    async () => {
+      await assert.rejects(
+        assertAsinInsertSchemaCompatible('asin'),
+        (error) => {
+          assert.equal(error.code, ASIN_SCHEMA_CONTRACT_ERROR_CODE);
+          assert.equal(error.table, 'variant_groups');
+          assert.deepEqual(error.fields, ['external_owner']);
           return true;
         },
       );
@@ -182,11 +228,15 @@ test('重复键分块失败时逐行降级并保留其他成功行', async () =>
               if (params.length > ASIN_INSERT_COLUMNS.asin.length) {
                 const error = new Error('duplicate chunk');
                 error.code = 'ER_DUP_ENTRY';
+                error.sqlMessage =
+                  "Duplicate entry 'B000000001-US' for key 'asins.uk_asin_country'";
                 throw error;
               }
               if (params[1] === 'B000000002') {
                 const error = new Error('duplicate row');
                 error.code = 'ER_DUP_ENTRY';
+                error.sqlMessage =
+                  "Duplicate entry 'B000000002-US' for key 'asins.uk_asin_country'";
                 throw error;
               }
             }
@@ -208,6 +258,51 @@ test('重复键分块失败时逐行降级并保留其他成功行', async () =>
       assert.equal(insertAttempts, 3);
       assert.equal(result.successCount, 1);
       assert.equal(result.failedCount, 1);
+    },
+  );
+});
+
+test('非 ASIN 业务唯一键冲突属于系统性错误并立即中止', async () => {
+  let insertAttempts = 0;
+  await withMainDatabaseStubs(
+    {
+      query: async () => compatibleMainColumns(),
+      withTransaction: async (handler) =>
+        handler({
+          query: async (sql) => {
+            if (sql.startsWith('SELECT id, country')) {
+              return [{ id: 'group-1', country: 'US' }];
+            }
+            if (sql.startsWith('SELECT asin, country')) return [];
+            if (sql.startsWith('INSERT INTO asins')) {
+              insertAttempts += 1;
+              const error = new Error('unexpected unique key');
+              error.code = 'ER_DUP_ENTRY';
+              error.sqlMessage =
+                "Duplicate entry 'Brand' for key 'asins.uk_brand'";
+              throw error;
+            }
+            return [];
+          },
+        }),
+    },
+    async () => {
+      await assert.rejects(
+        batchCreateASINs({
+          items: [
+            {
+              asin: 'B000000001',
+              country: 'US',
+              site: '12',
+              brand: 'Brand',
+              parentId: 'group-1',
+            },
+          ],
+          clearCache: false,
+        }),
+        { code: 'ER_DUP_ENTRY' },
+      );
+      assert.equal(insertAttempts, 1);
     },
   );
 });

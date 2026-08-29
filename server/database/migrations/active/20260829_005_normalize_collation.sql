@@ -57,6 +57,17 @@ BEGIN
       ON t.`TABLE_SCHEMA` = c.`schema_name`
      AND t.`TABLE_NAME` = c.`table_name`
     WHERE t.`TABLE_COLLATION` <> 'utf8mb4_0900_ai_ci'
+       OR EXISTS (
+         SELECT 1
+         FROM information_schema.`COLUMNS` col
+         WHERE col.`TABLE_SCHEMA` = c.`schema_name`
+           AND col.`TABLE_NAME` = c.`table_name`
+           AND col.`CHARACTER_SET_NAME` IS NOT NULL
+           AND (
+             col.`CHARACTER_SET_NAME` <> 'utf8mb4'
+             OR col.`COLLATION_NAME` <> 'utf8mb4_0900_ai_ci'
+           )
+       )
     ORDER BY c.`schema_name`, c.`table_name`;
   DECLARE CONTINUE HANDLER FOR NOT FOUND SET done = 1;
 

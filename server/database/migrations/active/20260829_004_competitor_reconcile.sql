@@ -11,7 +11,10 @@ BEGIN
   DECLARE v_missing BIGINT DEFAULT 0;
   DECLARE v_duplicates BIGINT DEFAULT 0;
   DECLARE v_single_unique VARCHAR(64) DEFAULT NULL;
+  DECLARE v_existing_composite VARCHAR(64) DEFAULT NULL;
+  DECLARE v_duplicate_composite VARCHAR(64) DEFAULT NULL;
   DECLARE v_named_signature VARCHAR(1000) DEFAULT NULL;
+  DECLARE v_named_non_unique INT DEFAULT NULL;
 
   IF NOT EXISTS (
     SELECT 1 FROM information_schema.`COLUMNS`
@@ -72,18 +75,101 @@ BEGIN
       SET MESSAGE_TEXT = 'competitor_asins存在ASIN+国家重复数据，拒绝修改唯一键';
   END IF;
 
-  SELECT s.`INDEX_NAME`
-  INTO v_single_unique
+  SELECT GROUP_CONCAT(
+           CONCAT(
+             COALESCE(s.`COLUMN_NAME`, CONCAT('(', s.`EXPRESSION`, ')')),
+             IF(s.`SUB_PART` IS NULL, '', CONCAT('(', s.`SUB_PART`, ')')),
+             IF(s.`COLLATION` = 'D', ' DESC', '')
+           )
+           ORDER BY s.`SEQ_IN_INDEX`
+           SEPARATOR ','
+         ),
+         MIN(s.`NON_UNIQUE`)
+  INTO v_named_signature, v_named_non_unique
   FROM information_schema.`STATISTICS` s
   WHERE s.`TABLE_SCHEMA` = DATABASE()
     AND s.`TABLE_NAME` = 'competitor_asins'
-    AND s.`NON_UNIQUE` = 0
-    AND s.`INDEX_NAME` <> 'PRIMARY'
-  GROUP BY s.`INDEX_NAME`
-  HAVING COUNT(*) = 1 AND MAX(s.`COLUMN_NAME`) = 'asin'
-  LIMIT 1;
+    AND s.`INDEX_NAME` = 'uk_asin_country';
 
-  IF v_single_unique IS NOT NULL THEN
+  IF v_named_signature IS NOT NULL
+     AND (v_named_signature <> 'asin,country' OR v_named_non_unique <> 0) THEN
+    -- 同名旧索引以单个原子 ALTER 替换，ADD 失败时不会留下无业务唯一键的中间状态。
+    ALTER TABLE `competitor_asins`
+      DROP INDEX `uk_asin_country`,
+      ADD UNIQUE INDEX `uk_asin_country` (`asin`, `country`),
+      ALGORITHM=INPLACE,
+      LOCK=NONE;
+    SET v_named_signature = 'asin,country';
+    SET v_named_non_unique = 0;
+  END IF;
+
+  IF v_named_signature IS NULL THEN
+    SELECT MIN(candidate.`INDEX_NAME`)
+    INTO v_existing_composite
+    FROM (
+      SELECT s.`INDEX_NAME`
+      FROM information_schema.`STATISTICS` s
+      WHERE s.`TABLE_SCHEMA` = DATABASE()
+        AND s.`TABLE_NAME` = 'competitor_asins'
+        AND s.`INDEX_NAME` <> 'PRIMARY'
+      GROUP BY s.`INDEX_NAME`
+      HAVING MIN(s.`NON_UNIQUE`) = 0
+         AND GROUP_CONCAT(
+               CONCAT(
+                 COALESCE(s.`COLUMN_NAME`, CONCAT('(', s.`EXPRESSION`, ')')),
+                 IF(s.`SUB_PART` IS NULL, '', CONCAT('(', s.`SUB_PART`, ')')),
+                 IF(s.`COLLATION` = 'D', ' DESC', '')
+               )
+               ORDER BY s.`SEQ_IN_INDEX`
+               SEPARATOR ','
+             ) = 'asin,country'
+    ) candidate;
+
+    IF v_existing_composite IS NOT NULL THEN
+      SET @ddl = CONCAT(
+        'ALTER TABLE `competitor_asins` RENAME INDEX `',
+        REPLACE(v_existing_composite, '`', '``'),
+        '` TO `uk_asin_country`, ALGORITHM=INPLACE, LOCK=NONE'
+      );
+      PREPARE stmt FROM @ddl;
+      EXECUTE stmt;
+      DEALLOCATE PREPARE stmt;
+    ELSE
+      -- 先创建并验证复合唯一键，再清理单列旧键。
+      ALTER TABLE `competitor_asins`
+        ADD UNIQUE INDEX `uk_asin_country` (`asin`, `country`),
+        ALGORITHM=INPLACE,
+        LOCK=NONE;
+    END IF;
+  END IF;
+
+  SELECT GROUP_CONCAT(s.`COLUMN_NAME` ORDER BY s.`SEQ_IN_INDEX`),
+         MIN(s.`NON_UNIQUE`)
+  INTO v_named_signature, v_named_non_unique
+  FROM information_schema.`STATISTICS` s
+  WHERE s.`TABLE_SCHEMA` = DATABASE()
+    AND s.`TABLE_NAME` = 'competitor_asins'
+    AND s.`INDEX_NAME` = 'uk_asin_country';
+
+  IF v_named_signature <> 'asin,country' OR v_named_non_unique <> 0 THEN
+    SIGNAL SQLSTATE '45000'
+      SET MESSAGE_TEXT = '未能建立唯一的uk_asin_country，拒绝删除旧唯一键';
+  END IF;
+
+  SELECT MIN(candidate.`INDEX_NAME`)
+  INTO v_single_unique
+  FROM (
+    SELECT s.`INDEX_NAME`
+    FROM information_schema.`STATISTICS` s
+    WHERE s.`TABLE_SCHEMA` = DATABASE()
+      AND s.`TABLE_NAME` = 'competitor_asins'
+      AND s.`INDEX_NAME` NOT IN ('PRIMARY', 'uk_asin_country')
+    GROUP BY s.`INDEX_NAME`
+    HAVING MIN(s.`NON_UNIQUE`) = 0
+       AND GROUP_CONCAT(s.`COLUMN_NAME` ORDER BY s.`SEQ_IN_INDEX`) = 'asin'
+  ) candidate;
+
+  WHILE v_single_unique IS NOT NULL DO
     SET @ddl = CONCAT(
       'ALTER TABLE `competitor_asins` DROP INDEX `',
       REPLACE(v_single_unique, '`', '``'),
@@ -92,27 +178,58 @@ BEGIN
     PREPARE stmt FROM @ddl;
     EXECUTE stmt;
     DEALLOCATE PREPARE stmt;
-  END IF;
 
-  SELECT GROUP_CONCAT(s.`COLUMN_NAME` ORDER BY s.`SEQ_IN_INDEX`)
-  INTO v_named_signature
-  FROM information_schema.`STATISTICS` s
-  WHERE s.`TABLE_SCHEMA` = DATABASE()
-    AND s.`TABLE_NAME` = 'competitor_asins'
-    AND s.`INDEX_NAME` = 'uk_asin_country';
+    SELECT MIN(candidate.`INDEX_NAME`)
+    INTO v_single_unique
+    FROM (
+      SELECT s.`INDEX_NAME`
+      FROM information_schema.`STATISTICS` s
+      WHERE s.`TABLE_SCHEMA` = DATABASE()
+        AND s.`TABLE_NAME` = 'competitor_asins'
+        AND s.`INDEX_NAME` NOT IN ('PRIMARY', 'uk_asin_country')
+      GROUP BY s.`INDEX_NAME`
+      HAVING MIN(s.`NON_UNIQUE`) = 0
+         AND GROUP_CONCAT(s.`COLUMN_NAME` ORDER BY s.`SEQ_IN_INDEX`) = 'asin'
+    ) candidate;
+  END WHILE;
 
-  IF v_named_signature IS NOT NULL AND v_named_signature <> 'asin,country' THEN
-    ALTER TABLE `competitor_asins`
-      DROP INDEX `uk_asin_country`, ALGORITHM=INPLACE, LOCK=NONE;
-    SET v_named_signature = NULL;
-  END IF;
+  -- 清理复合唯一键的重复签名，只保留 canonical 名称。
+  SELECT MIN(candidate.`INDEX_NAME`)
+  INTO v_duplicate_composite
+  FROM (
+    SELECT s.`INDEX_NAME`
+    FROM information_schema.`STATISTICS` s
+    WHERE s.`TABLE_SCHEMA` = DATABASE()
+      AND s.`TABLE_NAME` = 'competitor_asins'
+      AND s.`INDEX_NAME` NOT IN ('PRIMARY', 'uk_asin_country')
+    GROUP BY s.`INDEX_NAME`
+    HAVING MIN(s.`NON_UNIQUE`) = 0
+       AND GROUP_CONCAT(s.`COLUMN_NAME` ORDER BY s.`SEQ_IN_INDEX`) = 'asin,country'
+  ) candidate;
 
-  IF v_named_signature IS NULL THEN
-    ALTER TABLE `competitor_asins`
-      ADD UNIQUE INDEX `uk_asin_country` (`asin`, `country`),
-      ALGORITHM=INPLACE,
-      LOCK=NONE;
-  END IF;
+  WHILE v_duplicate_composite IS NOT NULL DO
+    SET @ddl = CONCAT(
+      'ALTER TABLE `competitor_asins` DROP INDEX `',
+      REPLACE(v_duplicate_composite, '`', '``'),
+      '`, ALGORITHM=INPLACE, LOCK=NONE'
+    );
+    PREPARE stmt FROM @ddl;
+    EXECUTE stmt;
+    DEALLOCATE PREPARE stmt;
+
+    SELECT MIN(candidate.`INDEX_NAME`)
+    INTO v_duplicate_composite
+    FROM (
+      SELECT s.`INDEX_NAME`
+      FROM information_schema.`STATISTICS` s
+      WHERE s.`TABLE_SCHEMA` = DATABASE()
+        AND s.`TABLE_NAME` = 'competitor_asins'
+        AND s.`INDEX_NAME` NOT IN ('PRIMARY', 'uk_asin_country')
+      GROUP BY s.`INDEX_NAME`
+      HAVING MIN(s.`NON_UNIQUE`) = 0
+         AND GROUP_CONCAT(s.`COLUMN_NAME` ORDER BY s.`SEQ_IN_INDEX`) = 'asin,country'
+    ) candidate;
+  END WHILE;
 END$$
 DELIMITER ;
 

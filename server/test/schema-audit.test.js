@@ -5,6 +5,7 @@ const test = require('node:test');
 const {
   auditSchemas,
   compareSchemas,
+  getFreshSchemaAuditStatus,
   getSchemaAuditStatus,
   isOperationalTable,
   parseInitSchema,
@@ -12,6 +13,10 @@ const {
 
 const initPath = path.join(__dirname, '../database/init.sql');
 const initSql = fs.readFileSync(initPath, 'utf8');
+const competitorInitSql = fs.readFileSync(
+  path.join(__dirname, '../database/competitor-init.sql'),
+  'utf8',
+);
 
 function metadataQuery(schema) {
   return async (sql) => {
@@ -35,9 +40,12 @@ function metadataQuery(schema) {
           COLUMN_TYPE: column.type,
           IS_NULLABLE: column.nullable,
           COLUMN_DEFAULT: column.default,
+          GENERATION_EXPRESSION: column.generationExpression,
+          CHARACTER_SET_NAME: column.characterSet,
+          COLLATION_NAME: column.collation,
           EXTRA: [
             column.autoIncrement ? 'auto_increment' : '',
-            column.generated ? 'STORED GENERATED' : '',
+            column.generated ? `${column.generationStorage} GENERATED` : '',
             column.onUpdate ? 'on update CURRENT_TIMESTAMP' : '',
           ]
             .filter(Boolean)
@@ -48,13 +56,16 @@ function metadataQuery(schema) {
     if (sql.includes('information_schema.STATISTICS')) {
       return [...schema.tables.values()].flatMap((table) =>
         table.indexes.flatMap((index, indexNumber) =>
-          index.columns.map((columnName, sequence) => ({
+          index.parts.map((part, sequence) => ({
             TABLE_NAME: table.name,
             INDEX_NAME:
               index.kind === 'primary' ? 'PRIMARY' : `idx_${indexNumber}`,
             NON_UNIQUE: index.kind === 'index' ? 1 : 0,
             SEQ_IN_INDEX: sequence + 1,
-            COLUMN_NAME: columnName,
+            COLUMN_NAME: part.column,
+            SUB_PART: part.prefixLength,
+            COLLATION: part.order === 'DESC' ? 'D' : 'A',
+            EXPRESSION: part.expression,
           })),
         ),
       );
@@ -67,6 +78,7 @@ function metadataQuery(schema) {
             CONSTRAINT_NAME: `fk_${keyNumber}`,
             COLUMN_NAME: columnName,
             ORDINAL_POSITION: sequence + 1,
+            REFERENCED_TABLE_SCHEMA: foreignKey.referencedSchema,
             REFERENCED_TABLE_NAME: foreignKey.referencedTable,
             REFERENCED_COLUMN_NAME: foreignKey.referencedColumns[sequence],
             DELETE_RULE: foreignKey.deleteRule,
@@ -89,6 +101,15 @@ test('审计比较列、索引、外键并忽略运维备份表', () => {
   const expected = parseInitSchema(initSql);
   const actual = parseInitSchema(initSql);
   actual.tables.get('asins').columns.get('asin_note').nullable = 'NO';
+  actual.tables.get('asins').columns.get('asin').collation = 'utf8mb4_bin';
+  actual.tables
+    .get('monitor_history')
+    .columns.get('hour_ts').generationExpression = 'date(check_time)';
+  actual.tables
+    .get('monitor_history')
+    .columns.get('day_ts').generationStorage = 'VIRTUAL';
+  actual.tables.get('asins').indexes[1].parts[0].prefixLength = 5;
+  actual.tables.get('asins').foreignKeys[0].referencedSchema = 'other_schema';
   actual.tables.set('op_schema_job', {
     name: 'op_schema_job',
     columns: new Map(),
@@ -114,6 +135,25 @@ test('审计比较列、索引、外键并忽略运维备份表', () => {
       (item) => item.kind === 'column_nullable' && item.name === 'asin_note',
     ),
   );
+  assert.ok(
+    differences.some(
+      (item) => item.kind === 'column_collation' && item.name === 'asin',
+    ),
+  );
+  assert.ok(
+    differences.some(
+      (item) =>
+        item.kind === 'column_generationExpression' && item.name === 'hour_ts',
+    ),
+  );
+  assert.ok(
+    differences.some(
+      (item) =>
+        item.kind === 'column_generationStorage' && item.name === 'day_ts',
+    ),
+  );
+  assert.ok(differences.some((item) => item.kind === 'index_signature'));
+  assert.ok(differences.some((item) => item.kind === 'foreign_key_signature'));
   assert.ok(
     differences.some(
       (item) =>
@@ -158,6 +198,16 @@ test('审计缓存 clean、degraded、error 三种启动/健康状态', async ()
   assert.equal(failed.status, 'error');
   assert.equal(failed.main.error, 'ECONNREFUSED');
   assert.doesNotMatch(JSON.stringify(failed), /sensitive-hostname/);
+
+  const competitorSchema = parseInitSchema(competitorInitSql);
+  const refreshed = await getFreshSchemaAuditStatus({
+    maxAgeMs: 0,
+    queryOverrides: {
+      main: metadataQuery(cleanSchema),
+      competitor: metadataQuery(competitorSchema),
+    },
+  });
+  assert.equal(refreshed.status, 'ok');
 });
 
 test('API/worker 启动和竞品查询层不包含自动 DDL，健康接口暴露缓存审计', () => {
@@ -180,6 +230,9 @@ test('API/worker 启动和竞品查询层不包含自动 DDL，健康接口暴�
   assert.match(startupAndQuerySources, /runStartupSchemaAudit/);
 
   const healthSource = readSource('controllers/healthController.js');
-  assert.match(healthSource, /health\.schema = getSchemaAuditStatus\(\)/);
+  assert.match(
+    healthSource,
+    /health\.schema = await getFreshSchemaAuditStatus\(\)/,
+  );
   assert.match(healthSource, /health\.schema\.status !== 'ok'/);
 });

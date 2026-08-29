@@ -3,6 +3,10 @@ const mainDatabase = require('../config/database');
 const competitorDatabase = require('../config/competitor-database');
 const VariantGroup = require('../models/VariantGroup');
 const CompetitorVariantGroup = require('../models/CompetitorVariantGroup');
+const {
+  ASIN_INSERT_COLUMNS: INSERT_COLUMNS,
+  VARIANT_GROUP_INSERT_COLUMNS,
+} = require('../config/asinInsertContracts');
 const logger = require('../utils/logger');
 
 const DEFAULT_CHUNK_SIZE = 100;
@@ -12,37 +16,9 @@ const ROW_ISOLATABLE_INSERT_ERROR_CODES = new Set([
   'ER_BAD_NULL_ERROR',
   'ER_CHECK_CONSTRAINT_VIOLATED',
   'ER_DATA_TOO_LONG',
-  'ER_DUP_ENTRY',
   'ER_TRUNCATED_WRONG_VALUE_FOR_FIELD',
   'ER_WARN_DATA_OUT_OF_RANGE',
 ]);
-
-const INSERT_COLUMNS = Object.freeze({
-  asin: Object.freeze([
-    'id',
-    'asin',
-    'name',
-    'asin_type',
-    'country',
-    'site',
-    'brand',
-    'variant_group_id',
-    'is_broken',
-    'variant_status',
-  ]),
-  competitor: Object.freeze([
-    'id',
-    'asin',
-    'name',
-    'asin_type',
-    'country',
-    'brand',
-    'variant_group_id',
-    'is_broken',
-    'variant_status',
-    'feishu_notify_enabled',
-  ]),
-});
 
 function getChunkSize() {
   const configured = Number(process.env.ASIN_BATCH_CREATE_CHUNK_SIZE);
@@ -102,6 +78,8 @@ function getDomainConfig(domain) {
       hasSite: false,
       defaultFeishuNotifyEnabled: 0,
       insertColumns: INSERT_COLUMNS.competitor,
+      groupInsertColumns: VARIANT_GROUP_INSERT_COLUMNS.competitor,
+      expectedDuplicateKeys: new Set(['PRIMARY', 'uk_asin_country']),
       clearCache: () => CompetitorVariantGroup.clearCache(),
     };
   }
@@ -114,23 +92,26 @@ function getDomainConfig(domain) {
     hasSite: true,
     defaultFeishuNotifyEnabled: 1,
     insertColumns: INSERT_COLUMNS.asin,
+    groupInsertColumns: VARIANT_GROUP_INSERT_COLUMNS.asin,
+    expectedDuplicateKeys: new Set(['PRIMARY', 'uk_asin_country']),
     clearCache: () => VariantGroup.clearCache(),
   };
 }
 
-function createSchemaContractError(config, details) {
+function createSchemaContractError(config, table, details) {
   const fieldNames = [
     ...(details.missingInsertColumns || []),
     ...(details.requiredOmittedColumns || []),
+    ...(details.generatedInsertColumns || []),
   ];
   const error = new Error(
-    `ASIN导入schema契约不兼容: ${config.asinTable}${
+    `ASIN导入schema契约不兼容: ${table}${
       fieldNames.length > 0 ? ` (${fieldNames.join(', ')})` : ''
     }`,
   );
   error.code = SCHEMA_CONTRACT_ERROR_CODE;
   error.statusCode = 500;
-  error.table = config.asinTable;
+  error.table = table;
   error.fields = fieldNames;
   error.details = details;
   return error;
@@ -146,58 +127,98 @@ function isGeneratedColumn(extra) {
 
 async function assertAsinInsertSchemaCompatible(domain = 'asin') {
   const config = getDomainConfig(domain);
+  const tableContracts = [
+    { table: config.asinTable, insertColumns: config.insertColumns },
+    { table: config.groupTable, insertColumns: config.groupInsertColumns },
+  ];
   const columns = await config.database.query(
-    `SELECT COLUMN_NAME, IS_NULLABLE, COLUMN_DEFAULT, EXTRA
+    `SELECT TABLE_NAME, COLUMN_NAME, IS_NULLABLE, COLUMN_DEFAULT, EXTRA
      FROM information_schema.COLUMNS
-     WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = ?
-     ORDER BY ORDINAL_POSITION`,
-    [config.asinTable],
+     WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME IN (?, ?)
+     ORDER BY TABLE_NAME, ORDINAL_POSITION`,
+    [config.asinTable, config.groupTable],
   );
-  const actualColumns = new Map(
-    columns.map((column) => [column.COLUMN_NAME, column]),
-  );
-  const missingInsertColumns = config.insertColumns.filter(
-    (columnName) => !actualColumns.has(columnName),
-  );
-  const insertColumnSet = new Set(config.insertColumns);
-  const requiredOmittedColumns = columns
-    .filter(
-      (column) =>
-        !insertColumnSet.has(column.COLUMN_NAME) &&
-        column.IS_NULLABLE === 'NO' &&
-        column.COLUMN_DEFAULT === null &&
-        !String(column.EXTRA || '')
-          .toLowerCase()
-          .includes('auto_increment') &&
-        !isGeneratedColumn(column.EXTRA),
-    )
-    .map((column) => column.COLUMN_NAME);
+  const columnsByTable = new Map();
+  for (const column of columns) {
+    if (!columnsByTable.has(column.TABLE_NAME)) {
+      columnsByTable.set(column.TABLE_NAME, []);
+    }
+    columnsByTable.get(column.TABLE_NAME).push(column);
+  }
 
-  if (
-    columns.length === 0 ||
-    missingInsertColumns.length > 0 ||
-    requiredOmittedColumns.length > 0
-  ) {
-    const error = createSchemaContractError(config, {
-      tableMissing: columns.length === 0,
-      missingInsertColumns,
-      requiredOmittedColumns,
-    });
-    logger.error('[ASIN导入] schema契约检查失败', {
-      code: error.code,
-      domain: config.domain,
-      table: error.table,
-      fields: error.fields,
-      tableMissing: error.details.tableMissing,
-    });
-    throw error;
+  for (const contract of tableContracts) {
+    const tableColumns = columnsByTable.get(contract.table) || [];
+    const actualColumns = new Map(
+      tableColumns.map((currentColumn) => [
+        currentColumn.COLUMN_NAME,
+        currentColumn,
+      ]),
+    );
+    const missingInsertColumns = contract.insertColumns.filter(
+      (columnName) => !actualColumns.has(columnName),
+    );
+    const generatedInsertColumns = contract.insertColumns.filter((columnName) =>
+      isGeneratedColumn(actualColumns.get(columnName)?.EXTRA),
+    );
+    const insertColumnSet = new Set(contract.insertColumns);
+    const requiredOmittedColumns = tableColumns
+      .filter(
+        (column) =>
+          !insertColumnSet.has(column.COLUMN_NAME) &&
+          column.IS_NULLABLE === 'NO' &&
+          column.COLUMN_DEFAULT === null &&
+          !String(column.EXTRA || '')
+            .toLowerCase()
+            .includes('auto_increment') &&
+          !isGeneratedColumn(column.EXTRA),
+      )
+      .map((column) => column.COLUMN_NAME);
+
+    if (
+      tableColumns.length === 0 ||
+      missingInsertColumns.length > 0 ||
+      generatedInsertColumns.length > 0 ||
+      requiredOmittedColumns.length > 0
+    ) {
+      const error = createSchemaContractError(config, contract.table, {
+        tableMissing: tableColumns.length === 0,
+        missingInsertColumns,
+        generatedInsertColumns,
+        requiredOmittedColumns,
+      });
+      logger.error('[ASIN导入] schema契约检查失败', {
+        code: error.code,
+        domain: config.domain,
+        table: error.table,
+        fields: error.fields,
+        tableMissing: error.details.tableMissing,
+      });
+      throw error;
+    }
   }
 
   return {
     domain: config.domain,
     table: config.asinTable,
     insertColumns: [...config.insertColumns],
+    groupInsertColumns: [...config.groupInsertColumns],
   };
+}
+
+function getDuplicateKeyName(error) {
+  const message = String(error?.sqlMessage || error?.message || '');
+  const match = message.match(/for key ['`](?:[^.'`]+[.])?([^'`]+)['`]/i);
+  return match ? match[1] : null;
+}
+
+function isRowIsolatableInsertError(error, config) {
+  if (error?.code !== 'ER_DUP_ENTRY') {
+    return ROW_ISOLATABLE_INSERT_ERROR_CODES.has(error?.code);
+  }
+  const duplicateKey = getDuplicateKeyName(error);
+  return (
+    duplicateKey !== null && config.expectedDuplicateKeys.has(duplicateKey)
+  );
 }
 
 function createEmptyResult(total = 0) {
@@ -457,7 +478,7 @@ async function batchCreateASINs({
           await insertAsinChunk(query, config, chunk);
           createdItems.push(...chunk);
         } catch (error) {
-          if (!ROW_ISOLATABLE_INSERT_ERROR_CODES.has(error.code)) {
+          if (!isRowIsolatableInsertError(error, config)) {
             throw error;
           }
           logger.warn('[ASIN批量新增] 分块插入失败，回退到逐条插入', {
@@ -471,7 +492,7 @@ async function batchCreateASINs({
               await insertAsinChunk(query, config, [item]);
               createdItems.push(item);
             } catch (itemError) {
-              if (!ROW_ISOLATABLE_INSERT_ERROR_CODES.has(itemError.code)) {
+              if (!isRowIsolatableInsertError(itemError, config)) {
                 throw itemError;
               }
               addFailure(
@@ -517,6 +538,7 @@ async function batchCreateASINs({
 module.exports = {
   ASIN_INSERT_COLUMNS: INSERT_COLUMNS,
   ASIN_SCHEMA_CONTRACT_ERROR_CODE: SCHEMA_CONTRACT_ERROR_CODE,
+  VARIANT_GROUP_INSERT_COLUMNS,
   assertAsinInsertSchemaCompatible,
   batchCreateASINs,
   getAsinBatchCreateChunkSize: getChunkSize,

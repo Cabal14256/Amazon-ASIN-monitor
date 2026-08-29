@@ -46,6 +46,8 @@ SELECT GROUP_CONCAT(
     WHEN LOWER(c.`COLUMN_TYPE`) <> d.`expected_type`
       OR c.`IS_NULLABLE` <> d.`expected_nullable`
       OR NOT (c.`COLUMN_DEFAULT` <=> d.`expected_default`)
+      OR c.`EXTRA` LIKE '%VIRTUAL GENERATED%'
+      OR c.`EXTRA` LIKE '%STORED GENERATED%'
       THEN CONCAT('MODIFY COLUMN ', d.`definition_sql`)
     ELSE NULL
   END

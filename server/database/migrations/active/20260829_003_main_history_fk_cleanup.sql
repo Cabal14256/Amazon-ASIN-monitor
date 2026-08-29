@@ -33,6 +33,8 @@ BEGIN
         FROM `monitor_history`
         WHERE (`variant_group_id` IS NOT NULL AND `variant_group_name` IS NULL)
            OR (`asin_id` IS NOT NULL AND `asin_code` IS NULL)
+           OR (`asin_id` IS NOT NULL AND `site_snapshot` IS NULL)
+           OR (`asin_id` IS NOT NULL AND `brand_snapshot` IS NULL)
         ORDER BY `id`
         LIMIT 10000
       ) pending
@@ -51,7 +53,9 @@ BEGIN
   INTO v_missing
   FROM `monitor_history`
   WHERE (`variant_group_id` IS NOT NULL AND `variant_group_name` IS NULL)
-     OR (`asin_id` IS NOT NULL AND `asin_code` IS NULL);
+     OR (`asin_id` IS NOT NULL AND `asin_code` IS NULL)
+     OR (`asin_id` IS NOT NULL AND `site_snapshot` IS NULL)
+     OR (`asin_id` IS NOT NULL AND `brand_snapshot` IS NULL);
 
   IF v_missing > 0 THEN
     SIGNAL SQLSTATE '45000'

@@ -5,6 +5,7 @@ const competitorDatabase = require('../config/competitor-database');
 const logger = require('../utils/logger');
 
 const MAX_REPORTED_DIFFERENCES = 20;
+const DEFAULT_CACHE_TTL_MS = 60 * 1000;
 const OPERATIONAL_TABLE_PATTERNS = [/_bak_/i, /^op_/i];
 const SCHEMA_TARGETS = {
   main: {
@@ -23,6 +24,7 @@ let cachedAudit = {
   main: { status: 'unknown', differenceCount: 0, differences: [] },
   competitor: { status: 'unknown', differenceCount: 0, differences: [] },
 };
+let refreshPromise = null;
 
 function normalizeWhitespace(value) {
   return String(value || '')
@@ -55,6 +57,49 @@ function parseIdentifierList(value) {
     .split(',')
     .map((item) => unquoteIdentifier(item.replace(/\s+(ASC|DESC)$/i, '')))
     .filter(Boolean);
+}
+
+function normalizeExpression(value) {
+  if (value === undefined || value === null || value === '') return null;
+  let normalized = String(value)
+    .replace(/`/g, '')
+    .replace(/_utf8mb4\\?(?=')/gi, '')
+    .replace(/\\'/g, "'")
+    .replace(/\s+/g, '')
+    .toLowerCase();
+  normalized = normalized.replace(
+    /^timestamp\(date_format\(([\s\S]*)\)\)$/,
+    'cast(date_format($1)asdatetime)',
+  );
+  normalized = normalized.replace(
+    /^timestamp\(date\(([^()]*)\)\)$/,
+    'cast(cast($1asdate)asdatetime)',
+  );
+  return normalized;
+}
+
+function parseIndexParts(value) {
+  return splitTopLevelDefinitions(value).map((rawPart) => {
+    const part = rawPart.trim();
+    const columnMatch = part.match(
+      /^`([^`]+)`(?:\((\d+)\))?(?:\s+(ASC|DESC))?$/i,
+    );
+    if (columnMatch) {
+      return {
+        column: columnMatch[1],
+        prefixLength: columnMatch[2] ? Number(columnMatch[2]) : null,
+        order: (columnMatch[3] || 'ASC').toUpperCase(),
+        expression: null,
+      };
+    }
+    const orderMatch = part.match(/^(.*?)(?:\s+(ASC|DESC))?$/i);
+    return {
+      column: null,
+      prefixLength: null,
+      order: (orderMatch[2] || 'ASC').toUpperCase(),
+      expression: normalizeExpression(orderMatch[1]),
+    };
+  });
 }
 
 function splitTopLevelDefinitions(body) {
@@ -136,6 +181,9 @@ function parseColumnDefinition(definition) {
   const defaultMatch = options.match(
     /\bDEFAULT\s+(NULL|CURRENT_TIMESTAMP(?:\(\))?|'(?:''|[^'])*'|[^\s,]+)/i,
   );
+  const generationMatch = options.match(
+    /\bGENERATED\s+ALWAYS\s+AS\s*\(([\s\S]*)\)\s+(VIRTUAL|STORED)\b/i,
+  );
 
   return {
     name,
@@ -144,14 +192,54 @@ function parseColumnDefinition(definition) {
     default: defaultMatch ? normalizeDefault(defaultMatch[1]) : null,
     autoIncrement: /\bAUTO_INCREMENT\b/i.test(options),
     generated: /\bGENERATED\s+ALWAYS\b/i.test(options),
+    generationExpression: generationMatch
+      ? normalizeExpression(generationMatch[1])
+      : null,
+    generationStorage: generationMatch
+      ? generationMatch[2].toUpperCase()
+      : null,
     onUpdate: /\bON\s+UPDATE\s+CURRENT_TIMESTAMP/i.test(options),
     inlinePrimary: /\bPRIMARY\s+KEY\b/i.test(options),
     inlineUnique: /\bUNIQUE\b/i.test(options),
   };
 }
 
-function buildIndexSignature(kind, columns) {
-  return `${kind}:${columns.join(',')}`;
+function buildIndexSignature(index) {
+  const parts =
+    index.parts ||
+    index.columns.map((column) => ({
+      column,
+      prefixLength: null,
+      order: 'ASC',
+      expression: null,
+    }));
+  return `${index.kind}:${parts
+    .map((part) =>
+      part.expression
+        ? `expression(${normalizeExpression(part.expression)}):${part.order}`
+        : `${part.column}${
+            part.prefixLength === null ? '' : `(${part.prefixLength})`
+          }:${part.order}`,
+    )
+    .join(',')}`;
+}
+
+function buildForeignKeySignature(foreignKey, localSchema) {
+  const referencedSchema =
+    foreignKey.referencedSchema === localSchema
+      ? '<local>'
+      : foreignKey.referencedSchema;
+  return `${foreignKey.columns.join(',')}->${referencedSchema}.${
+    foreignKey.referencedTable
+  }(${foreignKey.referencedColumns.join(',')}):${foreignKey.deleteRule}:${
+    foreignKey.updateRule
+  }`;
+}
+
+function isCharacterColumnType(type) {
+  return /^(?:char|varchar|text|tinytext|mediumtext|longtext|enum|set)\b/i.test(
+    type,
+  );
 }
 
 function parseInitSchema(sql) {
@@ -186,12 +274,29 @@ function parseInitSchema(sql) {
     for (const definition of splitTopLevelDefinitions(body)) {
       const column = parseColumnDefinition(definition);
       if (column) {
+        column.characterSet = isCharacterColumnType(column.type)
+          ? table.charset
+          : null;
+        const explicitColumnCollation = definition.match(
+          /\bCOLLATE\s+([a-zA-Z0-9_]+)/i,
+        );
+        column.collation = isCharacterColumnType(column.type)
+          ? explicitColumnCollation?.[1] || table.collation
+          : null;
         table.columns.set(column.name, column);
         if (column.inlinePrimary) primaryColumns.add(column.name);
         if (column.inlinePrimary) {
-          table.indexes.push({ kind: 'primary', columns: [column.name] });
+          table.indexes.push({
+            kind: 'primary',
+            columns: [column.name],
+            parts: parseIndexParts(`\`${column.name}\``),
+          });
         } else if (column.inlineUnique) {
-          table.indexes.push({ kind: 'unique', columns: [column.name] });
+          table.indexes.push({
+            kind: 'unique',
+            columns: [column.name],
+            parts: parseIndexParts(`\`${column.name}\``),
+          });
         }
         continue;
       }
@@ -200,17 +305,22 @@ function parseInitSchema(sql) {
       if (primaryMatch) {
         const columns = parseIdentifierList(primaryMatch[1]);
         columns.forEach((name) => primaryColumns.add(name));
-        table.indexes.push({ kind: 'primary', columns });
+        table.indexes.push({
+          kind: 'primary',
+          columns,
+          parts: parseIndexParts(primaryMatch[1]),
+        });
         continue;
       }
 
       const indexMatch = definition.match(
-        /^(UNIQUE\s+)?(?:INDEX|KEY)(?:\s+`[^`]+`)?\s*\(([^)]+)\)/i,
+        /^(UNIQUE\s+)?(?:INDEX|KEY)(?:\s+`[^`]+`)?\s*\(([\s\S]+)\)(?:\s|$)/i,
       );
       if (indexMatch) {
         table.indexes.push({
           kind: indexMatch[1] ? 'unique' : 'index',
           columns: parseIdentifierList(indexMatch[2]),
+          parts: parseIndexParts(indexMatch[2]),
         });
         continue;
       }
@@ -222,6 +332,7 @@ function parseInitSchema(sql) {
         table.foreignKeys.push({
           columns: parseIdentifierList(foreignKeyMatch[1]),
           referencedTable: foreignKeyMatch[2],
+          referencedSchema: schema.databaseName,
           referencedColumns: parseIdentifierList(foreignKeyMatch[3]),
           deleteRule: (foreignKeyMatch[4] || 'NO ACTION').toUpperCase(),
           updateRule: (foreignKeyMatch[5] || 'NO ACTION').toUpperCase(),
@@ -262,10 +373,14 @@ function compareSignatureCounts(
   tableName,
   expectedItems,
   actualItems,
-  signatureBuilder,
+  expectedSignatureBuilder,
+  actualSignatureBuilder = expectedSignatureBuilder,
 ) {
-  const expectedCounts = countSignatures(expectedItems, signatureBuilder);
-  const actualCounts = countSignatures(actualItems, signatureBuilder);
+  const expectedCounts = countSignatures(
+    expectedItems,
+    expectedSignatureBuilder,
+  );
+  const actualCounts = countSignatures(actualItems, actualSignatureBuilder);
   const signatures = new Set([
     ...expectedCounts.keys(),
     ...actualCounts.keys(),
@@ -295,20 +410,23 @@ async function loadActualSchema(query) {
       ),
       query(
         `SELECT TABLE_NAME, COLUMN_NAME, COLUMN_TYPE, IS_NULLABLE,
-                COLUMN_DEFAULT, EXTRA
+                COLUMN_DEFAULT, EXTRA, GENERATION_EXPRESSION,
+                CHARACTER_SET_NAME, COLLATION_NAME
          FROM information_schema.COLUMNS
          WHERE TABLE_SCHEMA = DATABASE()
          ORDER BY TABLE_NAME, ORDINAL_POSITION`,
       ),
       query(
-        `SELECT TABLE_NAME, INDEX_NAME, NON_UNIQUE, SEQ_IN_INDEX, COLUMN_NAME
+        `SELECT TABLE_NAME, INDEX_NAME, NON_UNIQUE, SEQ_IN_INDEX, COLUMN_NAME,
+                SUB_PART, COLLATION, EXPRESSION
          FROM information_schema.STATISTICS
          WHERE TABLE_SCHEMA = DATABASE()
          ORDER BY TABLE_NAME, INDEX_NAME, SEQ_IN_INDEX`,
       ),
       query(
         `SELECT k.TABLE_NAME, k.CONSTRAINT_NAME, k.COLUMN_NAME,
-                k.ORDINAL_POSITION, k.REFERENCED_TABLE_NAME,
+                k.ORDINAL_POSITION, k.REFERENCED_TABLE_SCHEMA,
+                k.REFERENCED_TABLE_NAME,
                 k.REFERENCED_COLUMN_NAME, r.DELETE_RULE, r.UPDATE_RULE
          FROM information_schema.KEY_COLUMN_USAGE k
          JOIN information_schema.REFERENTIAL_CONSTRAINTS r
@@ -350,6 +468,14 @@ async function loadActualSchema(query) {
       generated:
         extra.includes('virtual generated') ||
         extra.includes('stored generated'),
+      generationExpression: normalizeExpression(row.GENERATION_EXPRESSION),
+      generationStorage: extra.includes('stored generated')
+        ? 'STORED'
+        : extra.includes('virtual generated')
+        ? 'VIRTUAL'
+        : null,
+      characterSet: row.CHARACTER_SET_NAME,
+      collation: row.COLLATION_NAME,
       onUpdate: extra.includes('on update'),
     });
   });
@@ -367,9 +493,16 @@ async function loadActualSchema(query) {
             ? 'unique'
             : 'index',
         columns: [],
+        parts: [],
       });
     }
     indexes.get(key).columns.push(row.COLUMN_NAME);
+    indexes.get(key).parts.push({
+      column: row.COLUMN_NAME,
+      prefixLength: row.SUB_PART === null ? null : Number(row.SUB_PART),
+      order: row.COLLATION === 'D' ? 'DESC' : 'ASC',
+      expression: normalizeExpression(row.EXPRESSION),
+    });
   });
   indexes.forEach((index) => {
     actual.tables.get(index.tableName)?.indexes.push(index);
@@ -383,6 +516,7 @@ async function loadActualSchema(query) {
         tableName: row.TABLE_NAME,
         columns: [],
         referencedTable: row.REFERENCED_TABLE_NAME,
+        referencedSchema: row.REFERENCED_TABLE_SCHEMA,
         referencedColumns: [],
         deleteRule: row.DELETE_RULE,
         updateRule: row.UPDATE_RULE,
@@ -468,6 +602,10 @@ function compareSchemas(expected, actual) {
         'default',
         'autoIncrement',
         'generated',
+        'generationExpression',
+        'generationStorage',
+        'characterSet',
+        'collation',
         'onUpdate',
       ]) {
         if (expectedColumn[property] !== actualColumn[property]) {
@@ -501,7 +639,7 @@ function compareSchemas(expected, actual) {
       tableName,
       expectedTable.indexes,
       actualTable.indexes,
-      (index) => buildIndexSignature(index.kind, index.columns),
+      buildIndexSignature,
     );
     compareSignatureCounts(
       differences,
@@ -510,11 +648,8 @@ function compareSchemas(expected, actual) {
       expectedTable.foreignKeys,
       actualTable.foreignKeys,
       (foreignKey) =>
-        `${foreignKey.columns.join(',')}->${
-          foreignKey.referencedTable
-        }(${foreignKey.referencedColumns.join(',')}):${foreignKey.deleteRule}:${
-          foreignKey.updateRule
-        }`,
+        buildForeignKeySignature(foreignKey, expected.databaseName),
+      (foreignKey) => buildForeignKeySignature(foreignKey, actual.databaseName),
     );
   });
 
@@ -599,9 +734,37 @@ function getSchemaAuditStatus() {
   return JSON.parse(JSON.stringify(cachedAudit));
 }
 
+async function getFreshSchemaAuditStatus({
+  maxAgeMs = Number(process.env.SCHEMA_AUDIT_CACHE_TTL_MS) ||
+    DEFAULT_CACHE_TTL_MS,
+  queryOverrides,
+} = {}) {
+  const checkedAtMs = cachedAudit.checkedAt
+    ? Date.parse(cachedAudit.checkedAt)
+    : 0;
+  if (
+    checkedAtMs > 0 &&
+    Number.isFinite(maxAgeMs) &&
+    maxAgeMs > 0 &&
+    Date.now() - checkedAtMs < maxAgeMs
+  ) {
+    return getSchemaAuditStatus();
+  }
+
+  if (!refreshPromise) {
+    refreshPromise = auditSchemas({ target: 'all', queryOverrides }).finally(
+      () => {
+        refreshPromise = null;
+      },
+    );
+  }
+  return refreshPromise;
+}
+
 module.exports = {
   auditSchemas,
   compareSchemas,
+  getFreshSchemaAuditStatus,
   getSchemaAuditStatus,
   isOperationalTable,
   parseInitSchema,

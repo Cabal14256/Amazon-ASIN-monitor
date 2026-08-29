@@ -439,8 +439,11 @@ integrationTest(
              MODIFY COLUMN asin_note TEXT NOT NULL,
              MODIFY COLUMN parent_title TEXT NOT NULL,
              DROP INDEX ix_asins_parent_lookup,
+             ADD INDEX ix_asins_parent_lookup (parent_asin, country),
              ADD INDEX idx_asins_asin (asin),
-             ADD INDEX idx_asins_variant_group_id (variant_group_id)`,
+             ADD INDEX idx_asins_variant_group_id (variant_group_id),
+             MODIFY COLUMN asin VARCHAR(20)
+               CHARACTER SET utf8mb4 COLLATE utf8mb4_bin NOT NULL`,
         );
         await mysqlConnection.query(
           `ALTER TABLE \`${mainDatabase}\`.monitor_history
@@ -486,7 +489,8 @@ integrationTest(
         await mysqlConnection.query(
           `ALTER TABLE \`${competitorDatabase}\`.competitor_asins
              DROP INDEX uk_asin_country,
-             ADD UNIQUE INDEX uk_asin (asin)`,
+             ADD UNIQUE INDEX uk_asin (asin),
+             ADD INDEX uk_asin_country (asin, country)`,
         );
         await mysqlConnection.query(
           `ALTER TABLE \`${competitorDatabase}\`.competitor_monitor_history
@@ -574,7 +578,7 @@ integrationTest(
            WHERE id = 'migration-competitor-group'`,
         );
         const [[mainHistory]] = await mysqlConnection.query(
-          `SELECT variant_group_name, asin_code
+          `SELECT variant_group_name, asin_code, site_snapshot, brand_snapshot
            FROM \`${mainDatabase}\`.monitor_history
            WHERE variant_group_id = 'migration-main-group'`,
         );
@@ -584,8 +588,13 @@ integrationTest(
            WHERE variant_group_id = 'migration-competitor-group'`,
         );
         assert.deepEqual(
-          [mainHistory.variant_group_name, mainHistory.asin_code],
-          ['Main group', 'B000000001'],
+          [
+            mainHistory.variant_group_name,
+            mainHistory.asin_code,
+            mainHistory.site_snapshot,
+            mainHistory.brand_snapshot,
+          ],
+          ['Main group', 'B000000001', '12', 'Brand'],
         );
         assert.deepEqual(
           [competitorHistory.variant_group_name, competitorHistory.asin_code],
