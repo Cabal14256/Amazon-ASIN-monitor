@@ -54,10 +54,13 @@ test('legacy manifest 收录全部 SQL 且 SHA-256 与归档内容一致', () =>
 
   assert.deepEqual(entries.map((entry) => entry.filename).sort(), actualFiles);
   for (const entry of entries) {
-    const content = fs.readFileSync(
-      path.join(legacyMigrationDirectory, entry.filename),
-    );
-    const checksum = crypto.createHash('sha256').update(content).digest('hex');
+    const content = fs
+      .readFileSync(path.join(legacyMigrationDirectory, entry.filename), 'utf8')
+      .replace(/\r\n/g, '\n');
+    const checksum = crypto
+      .createHash('sha256')
+      .update(content, 'utf8')
+      .digest('hex');
     assert.equal(checksum, entry.checksum, entry.filename);
   }
 });
