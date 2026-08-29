@@ -20,6 +20,7 @@ const {
   initRedis,
   isRedisAvailable,
 } = require('../../src/config/redis');
+const { auditSchemas } = require('../../src/services/schemaAuditService');
 
 const runIntegrationTests = process.env.RUN_INTEGRATION_TESTS === 'true';
 const integrationTest = runIntegrationTests ? test : test.skip;
@@ -46,6 +47,41 @@ function rewriteDatabaseName(sql, sourceName, targetName) {
   return sql
     .replaceAll(`\`${sourceName}\``, `\`${targetName}\``)
     .replace(new RegExp(`\\b${sourceName}\\b`, 'g'), targetName);
+}
+
+function splitMysqlClientScript(sql) {
+  const statements = [];
+  let delimiter = ';';
+  let buffer = '';
+
+  for (const line of sql.split(/\r?\n/)) {
+    const delimiterMatch = line.trim().match(/^DELIMITER\s+(.+)$/i);
+    if (delimiterMatch) {
+      assert.equal(buffer.trim(), '');
+      delimiter = delimiterMatch[1];
+      continue;
+    }
+
+    buffer += `${line}\n`;
+    if (buffer.trimEnd().endsWith(delimiter)) {
+      const statement = buffer.trimEnd().slice(0, -delimiter.length).trim();
+      if (statement) statements.push(statement);
+      buffer = '';
+    }
+  }
+
+  assert.equal(
+    buffer.trim(),
+    '',
+    'migration contains an unterminated statement',
+  );
+  return statements;
+}
+
+async function executeMysqlClientScript(connection, sql) {
+  for (const statement of splitMysqlClientScript(sql)) {
+    await connection.query(statement);
+  }
 }
 
 function sleep(milliseconds) {
@@ -315,6 +351,7 @@ integrationTest(
         await mysqlConnection.query(mainSql);
         await mysqlConnection.query(competitorSql);
         await mysqlConnection.query(mainSql);
+        await mysqlConnection.query(competitorSql);
 
         const [[mainTableCount]] = await mysqlConnection.query(
           'SELECT COUNT(*) AS count FROM information_schema.tables WHERE table_schema = ?',
@@ -324,8 +361,8 @@ integrationTest(
           'SELECT COUNT(*) AS count FROM information_schema.tables WHERE table_schema = ?',
           [competitorDatabase],
         );
-        assert.ok(Number(mainTableCount.count) >= 15);
-        assert.ok(Number(competitorTableCount.count) >= 4);
+        assert.equal(Number(mainTableCount.count), 21);
+        assert.equal(Number(competitorTableCount.count), 4);
 
         const [[backupConfigCount]] = await mysqlConnection.query(
           `SELECT COUNT(*) AS count FROM \`${mainDatabase}\`.backup_config`,
@@ -374,6 +411,195 @@ integrationTest(
         assert.equal(defaults.usIntervalMinutes, 30);
         assert.equal(defaults.euIntervalMinutes, 60);
         assert.equal(defaults.competitorEnabled, true);
+      },
+    );
+
+    await context.test(
+      '生产旧结构 fixture 连续迁移两次后与 canonical metadata 一致',
+      { timeout: 120000 },
+      async (migrationContext) => {
+        await mysqlConnection.query(
+          `INSERT INTO \`${mainDatabase}\`.variant_groups
+             (id, name, country, site, brand)
+           VALUES ('migration-main-group', 'Main group', 'US', '12', 'Brand')`,
+        );
+        await mysqlConnection.query(
+          `INSERT INTO \`${mainDatabase}\`.asins
+             (id, asin, country, site, brand, variant_group_id, asin_note, parent_title)
+           VALUES ('migration-main-asin', 'B000000001', 'US', '12', 'Brand',
+                   'migration-main-group', '', '')`,
+        );
+        await mysqlConnection.query(
+          `INSERT INTO \`${mainDatabase}\`.monitor_history
+             (variant_group_id, asin_id, country, check_time)
+           VALUES ('migration-main-group', 'migration-main-asin', 'US', NOW())`,
+        );
+        await mysqlConnection.query(
+          `ALTER TABLE \`${mainDatabase}\`.asins
+             MODIFY COLUMN asin_note TEXT NOT NULL,
+             MODIFY COLUMN parent_title TEXT NOT NULL,
+             DROP INDEX ix_asins_parent_lookup,
+             ADD INDEX ix_asins_parent_lookup (parent_asin, country),
+             ADD INDEX idx_asins_asin (asin),
+             ADD INDEX idx_asins_variant_group_id (variant_group_id),
+             MODIFY COLUMN asin VARCHAR(20)
+               CHARACTER SET utf8mb4 COLLATE utf8mb4_bin NOT NULL`,
+        );
+        await mysqlConnection.query(
+          `ALTER TABLE \`${mainDatabase}\`.monitor_history
+             DROP INDEX idx_month_country_asin,
+             DROP INDEX idx_check_type_hour_country_asin,
+             DROP INDEX idx_check_type_day_country_asin,
+             DROP INDEX idx_check_type_time_country_asin_broken,
+             DROP INDEX idx_country_check_time_type_asin,
+             DROP INDEX idx_variant_group_time_asin_broken,
+             ADD CONSTRAINT fk_fixture_history_group
+               FOREIGN KEY (variant_group_id) REFERENCES \`${mainDatabase}\`.variant_groups(id),
+             ADD CONSTRAINT fk_fixture_history_asin
+               FOREIGN KEY (asin_id) REFERENCES \`${mainDatabase}\`.asins(id)`,
+        );
+        await mysqlConnection.query(
+          `ALTER TABLE \`${mainDatabase}\`.monitor_history_agg
+             DROP INDEX idx_agg_covering_query`,
+        );
+        await mysqlConnection.query(
+          `ALTER TABLE \`${mainDatabase}\`.monitor_history_agg_dim
+             DROP INDEX idx_agg_dim_covering_query`,
+        );
+        await mysqlConnection.query(
+          `ALTER TABLE \`${mainDatabase}\`.users DROP INDEX idx_status`,
+        );
+
+        await mysqlConnection.query(
+          `INSERT INTO \`${competitorDatabase}\`.competitor_variant_groups
+             (id, name, country, brand)
+           VALUES ('migration-competitor-group', 'Competitor group', 'US', 'Brand')`,
+        );
+        await mysqlConnection.query(
+          `INSERT INTO \`${competitorDatabase}\`.competitor_asins
+             (id, asin, country, brand, variant_group_id)
+           VALUES ('migration-competitor-asin', 'B000000002', 'US', 'Brand',
+                   'migration-competitor-group')`,
+        );
+        await mysqlConnection.query(
+          `INSERT INTO \`${competitorDatabase}\`.competitor_monitor_history
+             (variant_group_id, asin_id, country, check_time)
+           VALUES ('migration-competitor-group', 'migration-competitor-asin', 'US', NOW())`,
+        );
+        await mysqlConnection.query(
+          `ALTER TABLE \`${competitorDatabase}\`.competitor_asins
+             DROP INDEX uk_asin_country,
+             ADD UNIQUE INDEX uk_asin (asin),
+             ADD INDEX uk_asin_country (asin, country)`,
+        );
+        await mysqlConnection.query(
+          `ALTER TABLE \`${competitorDatabase}\`.competitor_monitor_history
+             ADD CONSTRAINT fk_fixture_competitor_history_group
+               FOREIGN KEY (variant_group_id)
+               REFERENCES \`${competitorDatabase}\`.competitor_variant_groups(id),
+             ADD CONSTRAINT fk_fixture_competitor_history_asin
+               FOREIGN KEY (asin_id)
+               REFERENCES \`${competitorDatabase}\`.competitor_asins(id)`,
+        );
+
+        const activeDirectory = path.join(
+          __dirname,
+          '../../database/migrations/active',
+        );
+        const activeFiles = fs
+          .readdirSync(activeDirectory)
+          .filter((filename) => filename.endsWith('.sql'))
+          .sort();
+        const timings = [];
+        for (let pass = 1; pass <= 2; pass += 1) {
+          for (const filename of activeFiles) {
+            let sql = fs.readFileSync(
+              path.join(activeDirectory, filename),
+              'utf8',
+            );
+            sql = rewriteDatabaseName(sql, 'amazon_asin_monitor', mainDatabase);
+            sql = rewriteDatabaseName(
+              sql,
+              'amazon_competitor_monitor',
+              competitorDatabase,
+            );
+            const startedAt = Date.now();
+            await executeMysqlClientScript(mysqlConnection, sql);
+            timings.push({
+              pass,
+              filename,
+              durationMs: Date.now() - startedAt,
+            });
+          }
+        }
+        migrationContext.diagnostic(
+          `migration timings: ${JSON.stringify(timings)}`,
+        );
+
+        const mainAuditConnection = await mysql.createConnection({
+          host: mysqlHost,
+          port: Number(process.env.INTEGRATION_MYSQL_PORT) || 3306,
+          user: process.env.INTEGRATION_MYSQL_USER || 'root',
+          password: '',
+          database: mainDatabase,
+        });
+        const competitorAuditConnection = await mysql.createConnection({
+          host: mysqlHost,
+          port: Number(process.env.INTEGRATION_MYSQL_PORT) || 3306,
+          user: process.env.INTEGRATION_MYSQL_USER || 'root',
+          password: '',
+          database: competitorDatabase,
+        });
+        migrationContext.after(async () => {
+          await mainAuditConnection.end();
+          await competitorAuditConnection.end();
+        });
+        const audit = await auditSchemas({
+          target: 'all',
+          queryOverrides: {
+            main: async (sql, params) => {
+              const [rows] = await mainAuditConnection.query(sql, params);
+              return rows;
+            },
+            competitor: async (sql, params) => {
+              const [rows] = await competitorAuditConnection.query(sql, params);
+              return rows;
+            },
+          },
+        });
+        assert.equal(audit.status, 'ok', JSON.stringify(audit, null, 2));
+
+        await mysqlConnection.query(
+          `DELETE FROM \`${mainDatabase}\`.variant_groups
+           WHERE id = 'migration-main-group'`,
+        );
+        await mysqlConnection.query(
+          `DELETE FROM \`${competitorDatabase}\`.competitor_variant_groups
+           WHERE id = 'migration-competitor-group'`,
+        );
+        const [[mainHistory]] = await mysqlConnection.query(
+          `SELECT variant_group_name, asin_code, site_snapshot, brand_snapshot
+           FROM \`${mainDatabase}\`.monitor_history
+           WHERE variant_group_id = 'migration-main-group'`,
+        );
+        const [[competitorHistory]] = await mysqlConnection.query(
+          `SELECT variant_group_name, asin_code
+           FROM \`${competitorDatabase}\`.competitor_monitor_history
+           WHERE variant_group_id = 'migration-competitor-group'`,
+        );
+        assert.deepEqual(
+          [
+            mainHistory.variant_group_name,
+            mainHistory.asin_code,
+            mainHistory.site_snapshot,
+            mainHistory.brand_snapshot,
+          ],
+          ['Main group', 'B000000001', '12', 'Brand'],
+        );
+        assert.deepEqual(
+          [competitorHistory.variant_group_name, competitorHistory.asin_code],
+          ['Competitor group', 'B000000002'],
+        );
       },
     );
 

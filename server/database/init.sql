@@ -1,7 +1,7 @@
 -- 创建数据库
 CREATE DATABASE IF NOT EXISTS `amazon_asin_monitor` 
 DEFAULT CHARACTER SET utf8mb4 
-COLLATE utf8mb4_unicode_ci;
+COLLATE utf8mb4_0900_ai_ci;
 
 USE `amazon_asin_monitor`;
 
@@ -33,7 +33,7 @@ CREATE TABLE IF NOT EXISTS `variant_groups` (
   INDEX `idx_feishu_notify_enabled` (`feishu_notify_enabled`),
   INDEX `idx_country_broken` (`country`, `is_broken`),
   INDEX `idx_variant_groups_name` (`name`) COMMENT '变体组名称索引，优化LIKE查询性能'
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='变体组表';
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci COMMENT='变体组表';
 
 -- ASIN表
 CREATE TABLE IF NOT EXISTS `asins` (
@@ -59,6 +59,24 @@ CREATE TABLE IF NOT EXISTS `asins` (
   `update_time` DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT '更新时间',
   `last_check_time` DATETIME DEFAULT NULL COMMENT '监控更新时间（上一次检查的时间）',
   `feishu_notify_enabled` TINYINT(1) DEFAULT 1 COMMENT '飞书通知开关: 0-关闭, 1-开启',
+  `variant_group` VARCHAR(200) NOT NULL DEFAULT '未分组' COMMENT '采集系统变体组标签',
+  `asin_note` TEXT NULL DEFAULT NULL COMMENT 'ASIN备注',
+  `latest_rating` DOUBLE DEFAULT NULL COMMENT '最新评分',
+  `latest_rating_count` INT DEFAULT NULL COMMENT '最新评分数量',
+  `previous_rating` DOUBLE DEFAULT NULL COMMENT '上一次评分',
+  `previous_rating_count` INT DEFAULT NULL COMMENT '上一次评分数量',
+  `last_collection_status` VARCHAR(30) NOT NULL DEFAULT 'PENDING' COMMENT '最近采集状态',
+  `last_error_code` VARCHAR(50) DEFAULT NULL COMMENT '最近采集错误码',
+  `last_error_message` TEXT DEFAULT NULL COMMENT '最近采集错误信息',
+  `last_collected_at` DATETIME DEFAULT NULL COMMENT '最近采集时间',
+  `enabled` TINYINT(1) NOT NULL DEFAULT 1 COMMENT '采集启用状态: 0-禁用, 1-启用',
+  `deleted` TINYINT(1) NOT NULL DEFAULT 0 COMMENT '软删除状态: 0-正常, 1-删除',
+  `created_by` BIGINT DEFAULT NULL COMMENT '创建人ID',
+  `parent_asin` VARCHAR(20) DEFAULT NULL COMMENT '父体ASIN',
+  `parent_title` TEXT NULL DEFAULT NULL COMMENT '父体标题',
+  `parent_query_status` VARCHAR(30) NOT NULL DEFAULT 'PENDING' COMMENT '父体查询状态',
+  `parent_query_error` TEXT DEFAULT NULL COMMENT '父体查询错误信息',
+  `parent_queried_at` DATETIME DEFAULT NULL COMMENT '父体最近查询时间',
   INDEX `idx_variant_group_id` (`variant_group_id`),
   INDEX `idx_country` (`country`),
   INDEX `idx_site` (`site`),
@@ -71,9 +89,10 @@ CREATE TABLE IF NOT EXISTS `asins` (
   INDEX `idx_last_check_time` (`last_check_time`),
   INDEX `idx_feishu_notify_enabled` (`feishu_notify_enabled`),
   INDEX `idx_variant_group_country_broken` (`variant_group_id`, `country`, `is_broken`),
+  INDEX `ix_asins_parent_lookup` (`country`, `parent_asin`),
   UNIQUE INDEX `uk_asin_country` (`asin`, `country`) COMMENT 'ASIN和国家复合唯一索引，允许同一ASIN在不同国家存在',
   FOREIGN KEY (`variant_group_id`) REFERENCES `variant_groups`(`id`) ON DELETE CASCADE
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='ASIN表';
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci COMMENT='ASIN表';
 
 -- 监控历史表
 CREATE TABLE IF NOT EXISTS `monitor_history` (
@@ -112,8 +131,14 @@ CREATE TABLE IF NOT EXISTS `monitor_history` (
   INDEX `idx_country_month_site_brand` (`country`, `month_ts`, `site_snapshot`, `brand_snapshot`),
   INDEX `idx_hour_country_asin` (`hour_ts`, `country`, `asin_id`, `asin_code`, `is_broken`),
   INDEX `idx_day_country_asin` (`day_ts`, `country`, `asin_id`, `asin_code`, `is_broken`),
+  INDEX `idx_month_country_asin` (`month_ts`, `country`, `asin_id`, `asin_code`, `is_broken`),
+  INDEX `idx_check_type_hour_country_asin` (`check_type`, `hour_ts`, `country`, `asin_id`, `asin_code`, `is_broken`),
+  INDEX `idx_check_type_day_country_asin` (`check_type`, `day_ts`, `country`, `asin_id`, `asin_code`, `is_broken`),
+  INDEX `idx_check_type_time_country_asin_broken` (`check_type`, `check_time`, `country`, `asin_id`, `asin_code`, `is_broken`),
+  INDEX `idx_country_check_time_type_asin` (`country`, `check_time`, `check_type`, `asin_id`, `asin_code`),
+  INDEX `idx_variant_group_time_asin_broken` (`variant_group_id`, `check_time`, `asin_id`, `asin_code`, `is_broken`),
   INDEX `idx_status_interval_refresh` (`check_type`, `check_time`, `id`)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='监控历史表';
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci COMMENT='监控历史表';
 
 -- 监控历史聚合表（用于数据分析加速）
 CREATE TABLE IF NOT EXISTS `monitor_history_agg` (
@@ -131,8 +156,9 @@ CREATE TABLE IF NOT EXISTS `monitor_history_agg` (
   PRIMARY KEY (`granularity`, `time_slot`, `country`, `asin_key`),
   INDEX `idx_time_slot` (`time_slot`),
   INDEX `idx_country_time_slot` (`country`, `time_slot`),
-  INDEX `idx_granularity_time_slot` (`granularity`, `time_slot`)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='监控历史聚合表（按时间槽/国家/ASIN）';
+  INDEX `idx_granularity_time_slot` (`granularity`, `time_slot`),
+  INDEX `idx_agg_covering_query` (`granularity`, `time_slot`, `country`, `asin_key`, `check_count`, `broken_count`, `has_peak`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci COMMENT='监控历史聚合表（按时间槽/国家/ASIN）';
 
 -- 监控历史聚合表（按时间槽/国家/站点/品牌/ASIN，用于周期汇总加速）
 CREATE TABLE IF NOT EXISTS `monitor_history_agg_dim` (
@@ -153,8 +179,9 @@ CREATE TABLE IF NOT EXISTS `monitor_history_agg_dim` (
   INDEX `idx_agg_dim_time_slot` (`time_slot`),
   INDEX `idx_agg_dim_country_time_slot` (`country`, `time_slot`),
   INDEX `idx_agg_dim_granularity_time_slot` (`granularity`, `time_slot`),
-  INDEX `idx_agg_dim_country_site_brand_slot` (`country`, `site`, `brand`, `time_slot`)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='监控历史聚合表（按时间槽/国家/站点/品牌/ASIN）';
+  INDEX `idx_agg_dim_country_site_brand_slot` (`country`, `site`, `brand`, `time_slot`),
+  INDEX `idx_agg_dim_covering_query` (`granularity`, `time_slot`, `country`, `site`, `brand`, `asin_key`, `check_count`, `broken_count`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci COMMENT='监控历史聚合表（按时间槽/国家/站点/品牌/ASIN）';
 
 -- 监控历史聚合表（按时间槽/国家/变体组/ASIN，用于变体组统计加速）
 CREATE TABLE IF NOT EXISTS `monitor_history_agg_variant_group` (
@@ -172,14 +199,12 @@ CREATE TABLE IF NOT EXISTS `monitor_history_agg_variant_group` (
   `last_check_time` DATETIME NOT NULL COMMENT '该时间槽内最晚检查时间',
   `updated_at` DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT '更新时间',
   PRIMARY KEY (`granularity`, `time_slot`, `country`, `variant_group_id`, `asin_key`),
-  INDEX `idx_agg_variant_group_slot` (`time_slot`),
-  INDEX `idx_agg_variant_group_country_slot` (`country`, `time_slot`),
   INDEX `idx_agg_variant_group_lookup` (`granularity`, `country`, `variant_group_id`, `time_slot`),
   INDEX `idx_agg_variant_group_time_slot` (`time_slot`),
   INDEX `idx_agg_variant_group_country_time_slot` (`country`, `time_slot`),
   INDEX `idx_agg_variant_group_group_slot` (`variant_group_id`, `time_slot`),
   INDEX `idx_agg_variant_group_granularity_time_slot` (`granularity`, `time_slot`)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='监控历史聚合表（按时间槽/国家/变体组/ASIN）';
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci COMMENT='监控历史聚合表（按时间槽/国家/变体组/ASIN）';
 
 -- 分析刷新水位表
 CREATE TABLE IF NOT EXISTS `analytics_refresh_watermark` (
@@ -188,7 +213,7 @@ CREATE TABLE IF NOT EXISTS `analytics_refresh_watermark` (
   `last_check_time` DATETIME DEFAULT NULL COMMENT '最后处理的检查时间',
   `updated_at` DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT '更新时间',
   PRIMARY KEY (`processor_name`)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='分析刷新水位表';
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci COMMENT='分析刷新水位表';
 
 -- 监控历史状态区间表（用于精确异常时长计算）
 CREATE TABLE IF NOT EXISTS `monitor_history_status_interval` (
@@ -209,7 +234,7 @@ CREATE TABLE IF NOT EXISTS `monitor_history_status_interval` (
   INDEX `idx_interval_range` (`interval_start`, `interval_end`),
   INDEX `idx_interval_broken_range` (`is_broken`, `interval_start`, `interval_end`),
   INDEX `idx_interval_open_lookup` (`asin_key`, `country`, `interval_end`)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='监控历史状态区间表（用于精确异常时长计算）';
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci COMMENT='监控历史状态区间表（用于精确异常时长计算）';
 
 -- 飞书通知配置表（按区域配置：US和EU）
 CREATE TABLE IF NOT EXISTS `feishu_config` (
@@ -219,7 +244,7 @@ CREATE TABLE IF NOT EXISTS `feishu_config` (
   `enabled` TINYINT(1) DEFAULT 1 COMMENT '是否启用: 0-否, 1-是',
   `create_time` DATETIME DEFAULT CURRENT_TIMESTAMP,
   `update_time` DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='飞书通知配置表';
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci COMMENT='飞书通知配置表';
 
 -- SP-API配置表
 CREATE TABLE IF NOT EXISTS `sp_api_config` (
@@ -230,7 +255,7 @@ CREATE TABLE IF NOT EXISTS `sp_api_config` (
   `create_time` DATETIME DEFAULT CURRENT_TIMESTAMP,
   `update_time` DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
   INDEX `idx_config_key` (`config_key`)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='SP-API配置表';
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci COMMENT='SP-API配置表';
 
 -- 自动备份配置表
 CREATE TABLE IF NOT EXISTS `backup_config` (
@@ -241,7 +266,7 @@ CREATE TABLE IF NOT EXISTS `backup_config` (
   `backup_time` VARCHAR(10) DEFAULT '02:00' COMMENT '备份时间 HH:mm',
   `create_time` DATETIME DEFAULT CURRENT_TIMESTAMP,
   `update_time` DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='自动备份配置表';
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci COMMENT='自动备份配置表';
 
 -- 默认关闭自动备份；已有配置时不覆盖
 INSERT INTO `backup_config` (`enabled`, `schedule_type`, `backup_time`)
@@ -267,7 +292,7 @@ CREATE TABLE IF NOT EXISTS `users` (
   `update_time` DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT '更新时间',
   INDEX `idx_username` (`username`),
   INDEX `idx_status` (`status`)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='用户表';
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci COMMENT='用户表';
 
 -- 密码历史表（存储用户最近5个密码）
 CREATE TABLE IF NOT EXISTS `password_history` (
@@ -278,7 +303,7 @@ CREATE TABLE IF NOT EXISTS `password_history` (
   INDEX `idx_user_id` (`user_id`),
   INDEX `idx_user_created` (`user_id`, `created_at`),
   FOREIGN KEY (`user_id`) REFERENCES `users`(`id`) ON DELETE CASCADE
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='密码历史表';
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci COMMENT='密码历史表';
 
 -- 登录尝试记录表
 CREATE TABLE IF NOT EXISTS `login_attempts` (
@@ -290,7 +315,7 @@ CREATE TABLE IF NOT EXISTS `login_attempts` (
   INDEX `idx_username_time` (`username`, `created_at`),
   INDEX `idx_ip_time` (`ip_address`, `created_at`),
   INDEX `idx_created_at` (`created_at`)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='登录尝试记录表';
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci COMMENT='登录尝试记录表';
 
 -- 用户状态变更历史表
 CREATE TABLE IF NOT EXISTS `user_status_history` (
@@ -304,7 +329,7 @@ CREATE TABLE IF NOT EXISTS `user_status_history` (
   INDEX `idx_user_id` (`user_id`),
   INDEX `idx_created_at` (`created_at`),
   FOREIGN KEY (`user_id`) REFERENCES `users`(`id`) ON DELETE CASCADE
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='用户状态变更历史表';
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci COMMENT='用户状态变更历史表';
 
 -- 会话表（多设备登录）
 CREATE TABLE IF NOT EXISTS `sessions` (
@@ -335,7 +360,7 @@ CREATE TABLE IF NOT EXISTS `roles` (
   `create_time` DATETIME DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
   `update_time` DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT '更新时间',
   INDEX `idx_code` (`code`)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='角色表';
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci COMMENT='角色表';
 
 -- 权限表
 CREATE TABLE IF NOT EXISTS `permissions` (
@@ -348,7 +373,7 @@ CREATE TABLE IF NOT EXISTS `permissions` (
   `create_time` DATETIME DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
   INDEX `idx_code` (`code`),
   INDEX `idx_resource` (`resource`)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='权限表';
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci COMMENT='权限表';
 
 -- 用户角色关联表
 CREATE TABLE IF NOT EXISTS `user_roles` (
@@ -361,7 +386,7 @@ CREATE TABLE IF NOT EXISTS `user_roles` (
   INDEX `idx_role_id` (`role_id`),
   FOREIGN KEY (`user_id`) REFERENCES `users`(`id`) ON DELETE CASCADE,
   FOREIGN KEY (`role_id`) REFERENCES `roles`(`id`) ON DELETE CASCADE
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='用户角色关联表';
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci COMMENT='用户角色关联表';
 
 -- 角色权限关联表
 CREATE TABLE IF NOT EXISTS `role_permissions` (
@@ -374,7 +399,7 @@ CREATE TABLE IF NOT EXISTS `role_permissions` (
   INDEX `idx_permission_id` (`permission_id`),
   FOREIGN KEY (`role_id`) REFERENCES `roles`(`id`) ON DELETE CASCADE,
   FOREIGN KEY (`permission_id`) REFERENCES `permissions`(`id`) ON DELETE CASCADE
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='角色权限关联表';
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci COMMENT='角色权限关联表';
 
 -- 操作审计日志表
 CREATE TABLE IF NOT EXISTS `audit_logs` (
@@ -399,7 +424,7 @@ CREATE TABLE IF NOT EXISTS `audit_logs` (
   INDEX `idx_resource` (`resource`),
   INDEX `idx_create_time` (`create_time`),
   INDEX `idx_resource_id` (`resource_id`)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='操作审计日志表';
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci COMMENT='操作审计日志表';
 
 -- 插入默认角色
 INSERT INTO `roles` (`id`, `code`, `name`, `description`) VALUES

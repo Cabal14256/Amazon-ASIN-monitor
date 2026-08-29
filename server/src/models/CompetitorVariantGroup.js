@@ -1,5 +1,8 @@
 const { query, withTransaction } = require('../config/competitor-database');
 const { v4: uuidv4 } = require('uuid');
+const {
+  VARIANT_GROUP_INSERT_COLUMNS,
+} = require('../config/asinInsertContracts');
 const cacheService = require('../services/cacheService');
 const logger = require('../utils/logger');
 
@@ -468,7 +471,9 @@ class CompetitorVariantGroup {
     const { name, brand } = data;
     const country = normalizeCountryCode(data.country);
     await query(
-      `INSERT INTO competitor_variant_groups (id, name, country, brand, is_broken, variant_status, feishu_notify_enabled)
+      `INSERT INTO competitor_variant_groups (${VARIANT_GROUP_INSERT_COLUMNS.competitor.join(
+        ', ',
+      )})
        VALUES (?, ?, ?, ?, 0, 'NORMAL', 0)`,
       [id, name, country, brand],
     );
