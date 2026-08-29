@@ -105,9 +105,8 @@ test('审计比较列、索引、外键并忽略运维备份表', () => {
   actual.tables
     .get('monitor_history')
     .columns.get('hour_ts').generationExpression = 'date(check_time)';
-  actual.tables
-    .get('monitor_history')
-    .columns.get('day_ts').generationStorage = 'VIRTUAL';
+  actual.tables.get('monitor_history').columns.get('day_ts').generationStorage =
+    'VIRTUAL';
   actual.tables.get('asins').indexes[1].parts[0].prefixLength = 5;
   actual.tables.get('asins').foreignKeys[0].referencedSchema = 'other_schema';
   actual.tables.set('op_schema_job', {
