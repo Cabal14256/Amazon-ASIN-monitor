@@ -1,7 +1,7 @@
 -- 创建竞品监控数据库
 CREATE DATABASE IF NOT EXISTS `amazon_competitor_monitor` 
 DEFAULT CHARACTER SET utf8mb4 
-COLLATE utf8mb4_unicode_ci;
+COLLATE utf8mb4_0900_ai_ci;
 
 USE `amazon_competitor_monitor`;
 
@@ -23,7 +23,7 @@ CREATE TABLE IF NOT EXISTS `competitor_variant_groups` (
   INDEX `idx_create_time` (`create_time`),
   INDEX `idx_last_check_time` (`last_check_time`),
   INDEX `idx_feishu_notify_enabled` (`feishu_notify_enabled`)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='竞品变体组表';
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci COMMENT='竞品变体组表';
 
 -- 竞品ASIN表
 CREATE TABLE IF NOT EXISTS `competitor_asins` (
@@ -50,7 +50,7 @@ CREATE TABLE IF NOT EXISTS `competitor_asins` (
   INDEX `idx_feishu_notify_enabled` (`feishu_notify_enabled`),
   UNIQUE INDEX `uk_asin_country` (`asin`, `country`) COMMENT 'ASIN和国家复合唯一索引，允许同一ASIN在不同国家存在',
   FOREIGN KEY (`variant_group_id`) REFERENCES `competitor_variant_groups`(`id`) ON DELETE CASCADE
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='竞品ASIN表';
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci COMMENT='竞品ASIN表';
 
 -- 竞品监控历史表
 CREATE TABLE IF NOT EXISTS `competitor_monitor_history` (
@@ -71,7 +71,7 @@ CREATE TABLE IF NOT EXISTS `competitor_monitor_history` (
   INDEX `idx_asin_id` (`asin_id`),
   INDEX `idx_check_time` (`check_time`),
   INDEX `idx_country` (`country`)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='竞品监控历史表';
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci COMMENT='竞品监控历史表';
 
 -- 竞品飞书通知配置表（按区域配置：US和EU）
 CREATE TABLE IF NOT EXISTS `competitor_feishu_config` (
@@ -81,5 +81,5 @@ CREATE TABLE IF NOT EXISTS `competitor_feishu_config` (
   `enabled` TINYINT(1) DEFAULT 1 COMMENT '是否启用: 0-否, 1-是',
   `create_time` DATETIME DEFAULT CURRENT_TIMESTAMP,
   `update_time` DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='竞品飞书通知配置表';
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci COMMENT='竞品飞书通知配置表';
 

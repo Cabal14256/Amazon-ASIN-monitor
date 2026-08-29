@@ -1,48 +1,38 @@
-# 数据库初始化
+# 数据库结构基线
 
-本目录提供全新环境的数据库初始化脚本，以及已有数据库使用的历史迁移脚本。运行环境要求 MySQL 8.0+。
+本目录是主营库与竞品库唯一的 DDL 定义来源，要求 MySQL 8.0+。采集器和其他应用只能读写数据，不得自行 `CREATE TABLE`、`ALTER TABLE` 或补索引。
 
 ## 文件职责
 
 | 路径 | 用途 |
 | --- | --- |
-| `init.sql` | 创建主营数据库 `amazon_asin_monitor` 及当前完整 schema |
-| `competitor-init.sql` | 创建竞品数据库 `amazon_competitor_monitor` 及当前完整 schema |
-| `migrations/` | 已有数据库的历史人工迁移脚本，不是可自动连续执行的迁移链 |
-| `MIGRATION.md` | 已有数据库的备份、选取迁移、执行和验证指南 |
+| `init.sql` | 主营库 `amazon_asin_monitor` 的 21 张 canonical 表 |
+| `competitor-init.sql` | 竞品库 `amazon_competitor_monitor` 的 4 张 canonical 表 |
+| `migrations/active/` | 现有环境按固定顺序人工审查执行的当前迁移 |
+| `migrations/legacy/` | 原历史迁移的只读归档；不得作为连续迁移链执行 |
+| `PRODUCTION-BASELINE.md` | 脱敏生产结构对比、取舍和 DDL 所有权记录 |
+| `MIGRATION.md` | 备份、预检、执行、验证和回滚手册 |
 
-两个初始化脚本都写死了上表中的数据库名，并在脚本内部执行 `USE`。仅修改 `.env` 中的 `DB_NAME` 或 `COMPETITOR_DB_NAME` 不会改变 SQL 的执行目标；如需自定义数据库名，应先复制并审查 SQL，再同步修改运行配置。
+两个 init 均固定使用 `utf8mb4_0900_ai_ci`，并在脚本内 `USE` 固定数据库名。环境变量不会改写 SQL 目标库；自定义库名必须复制并人工审查脚本，同时更新运行配置。
 
-## 全新安装
-
-在仓库根目录执行：
-
-```bash
-mysql --default-character-set=utf8mb4 -u root -p < server/database/init.sql
-mysql --default-character-set=utf8mb4 -u root -p < server/database/competitor-init.sql
-```
-
-运行配置应与初始化结果一致：
-
-| 数据库 | 后端配置 |
-| --- | --- |
-| `amazon_asin_monitor` | `DB_HOST`、`DB_PORT`、`DB_USER`、`DB_PASSWORD`、`DB_NAME` |
-| `amazon_competitor_monitor` | `COMPETITOR_DB_HOST`、`COMPETITOR_DB_PORT`、`COMPETITOR_DB_USER`、`COMPETITOR_DB_PASSWORD`、`COMPETITOR_DB_NAME` |
-
-若明确设置 `COMPETITOR_MONITOR_ENABLED=false`，可以不初始化竞品库。启用竞品监控时，必须保证 `COMPETITOR_DB_*` 指向已初始化的竞品 schema；数据库中的系统配置可能覆盖同名环境变量。
-
-## 初始化验证
+## 全新初始化
 
 ```bash
-mysql -u root -p -e "USE amazon_asin_monitor; SHOW TABLES;"
-mysql -u root -p -e "USE amazon_competitor_monitor; SHOW TABLES;"
-npm run test:init-schema
+mysql --show-warnings --default-character-set=utf8mb4 -u root -p < server/database/init.sql
+mysql --show-warnings --default-character-set=utf8mb4 -u root -p < server/database/competitor-init.sql
 ```
 
-随后按根目录 README 创建管理员并启动后端，确认 `/health` 中数据库状态正常。
+两个 init 使用 `CREATE TABLE IF NOT EXISTS` 和幂等种子写入，可在空库连续执行两次。不要对已有数据库重新执行初始化脚本来代替升级：已有表会被跳过，旧列、索引和外键不会被修正。
 
-## 已有数据库
+## 只读审计
 
-不要对已有数据库重新执行初始化脚本来代替升级。`CREATE TABLE IF NOT EXISTS` 只会跳过已经存在的表，不会为旧表补列、改索引或回填数据，因而可能留下代码无法使用的混合 schema。
+```bash
+npm --prefix server run db:schema:audit -- --target=all
+npm --prefix server run db:schema:audit -- --target=all --json
+```
 
-已有数据库必须先备份，再按 [`MIGRATION.md`](./MIGRATION.md) 比对实际结构并逐个选择迁移。当前 schema 的唯一完整参考是 `init.sql` 与 `competitor-init.sql`，不要依赖手工维护的版本号或表清单。
+npm 11 在部分 Windows 环境需要在参数前再加一个分隔符：`npm --prefix server run db:schema:audit -- -- --target=all --json`。
+
+退出码：无差异为 `0`，结构漂移为 `1`，参数、配置或连接错误为 `2`。API 与 worker 启动时各审计一次并缓存结果，应用绝不自动执行 DDL；`/health` 会返回 `schema.status`、`schema.checkedAt`、主营/竞品状态及限量差异摘要。
+
+已有数据库必须遵循 [MIGRATION.md](./MIGRATION.md)。生产 DDL 只能在独立维护窗口人工执行，本仓库合并或应用启动不会自动执行迁移。

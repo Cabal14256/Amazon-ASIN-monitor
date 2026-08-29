@@ -12,6 +12,7 @@ const { getRateLimitStats } = require('../middleware/rateLimit');
 const cacheService = require('../services/cacheService');
 const errorStatsService = require('../services/errorStatsService');
 const riskControlService = require('../services/riskControlService');
+const { getSchemaAuditStatus } = require('../services/schemaAuditService');
 const { getUTC8ISOString } = require('../utils/dateTime');
 const v8 = require('v8');
 
@@ -202,13 +203,15 @@ exports.getHealth = async (req, res) => {
     const rssMb = Number(health.memory.rss || 0);
     const memoryRssDegraded =
       MEMORY_RSS_DEGRADED_MB > 0 && rssMb > MEMORY_RSS_DEGRADED_MB;
+    health.schema = getSchemaAuditStatus();
 
     if (
       !health.database.connected ||
       (health.database.pool &&
         databaseUsagePercent > DB_POOL_DEGRADED_THRESHOLD * 100) ||
       heapLimitUsagePercent > MEMORY_HEAP_LIMIT_DEGRADED_THRESHOLD * 100 ||
-      memoryRssDegraded
+      memoryRssDegraded ||
+      health.schema.status !== 'ok'
     ) {
       health.status = 'degraded';
     }

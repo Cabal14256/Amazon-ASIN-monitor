@@ -1,88 +1,79 @@
-# 已有数据库升级指南
+# 数据库迁移操作手册
 
-本仓库没有自动迁移执行器，也没有记录已执行版本的 `schema_migrations` 表。`migrations/` 中的文件是历史补丁，存在编号重用、一次性 DDL 和数据回填，不能按文件名通配或仅按编号全部执行。
+本仓库没有自动 migration runner，也没有 `schema_migrations` 表。`active/` 必须按下列顺序逐个、人工审查执行；`legacy/` 仅供追溯，完整清单和原文件 SHA-256 见 [`migrations/legacy/MANIFEST.md`](./migrations/legacy/MANIFEST.md)。
 
-## 升级流程
+## 固定顺序
 
-1. 记录当前部署提交，并分别备份主营库和竞品库。
+| 顺序 | 文件 | 目标 | 主要变更与风险 |
+| --- | --- | --- | --- |
+| 1 | `20260829_001_main_asin_extensions.sql` | 主营 | 条件化纳入 18 个字段，单次 ALTER 规范 `asin_note`、`parent_title` 为 NULL |
+| 2 | `20260829_002_main_indexes.sql` | 主营 | 清理重复签名并在线补父体、历史、聚合和用户索引；大表建索引耗时较长 |
+| 3 | `20260829_003_main_history_fk_cleanup.sql` | 主营 | 每批 10000 行回填身份快照，完整性通过后删除历史实体外键 |
+| 4 | `20260829_004_competitor_reconcile.sql` | 竞品 | 回填快照、移除历史外键；无重复数据时把唯一键改为 `(asin,country)` |
+| 5 | `20260829_005_normalize_collation.sql` | 两库 | 只转换 21+4 张 canonical 表到 `utf8mb4_0900_ai_ci`；可能重建表 |
+
+所有 active 脚本使用 `information_schema` 判断并可重复执行。索引和约束 DDL 明确请求 `LOCK=NONE`；当前 MySQL/表结构不支持在线执行时应直接失败，禁止删除在线选项后在生产静默重试。字符集转换通常需要重建表，不承诺无锁执行，只能在已验证时长的维护窗口运行。
+
+## 维护窗口流程
+
+1. 固定部署提交并确认目标库名，暂停会修改相关表的写入任务。
+2. 分别执行一致性备份，并验证备份可以恢复。
 
    ```bash
    git rev-parse HEAD
-   mysqldump --single-transaction --routines --triggers -u root -p amazon_asin_monitor > amazon_asin_monitor_before_upgrade.sql
-   mysqldump --single-transaction --routines --triggers -u root -p amazon_competitor_monitor > amazon_competitor_monitor_before_upgrade.sql
+   mysqldump --single-transaction --routines --triggers -u <user> -p amazon_asin_monitor > main_before_schema.sql
+   mysqldump --single-transaction --routines --triggers -u <user> -p amazon_competitor_monitor > competitor_before_schema.sql
    ```
 
-2. 把备份恢复到测试实例。所有候选迁移先在测试实例执行并记录耗时、锁表影响和行数变化。
-3. 若已知当前部署提交，用以下命令找出候选文件；候选文件仍需结合实际 schema 审查。
+3. 把备份恢复到隔离的 MySQL 8 测试实例。先执行下方预检，再依序执行五个文件两次，记录每个 ALTER 的耗时、metadata lock 等待、临时磁盘、复制延迟和业务查询影响。
+4. 生产维护窗口逐文件执行；任一语句失败立即停止，不把重复列/索引等错误视为成功。MySQL DDL 通常隐式提交，不能依赖事务整体回滚。
 
    ```bash
-   git diff --name-only <deployed-commit>..origin/main -- server/database/migrations
+   mysql --show-warnings --default-character-set=utf8mb4 -u <user> -p < server/database/migrations/active/<specific-file.sql>
    ```
 
-4. 使用 `SHOW CREATE TABLE`、`SHOW INDEX` 和 `INFORMATION_SCHEMA` 对照初始化 SQL 及候选迁移。确认目标列、索引或表不存在，并检查迁移依赖的前置结构。
-5. 每次只执行一个经过确认的文件。脚本内含固定 `USE`，执行前必须核对目标数据库名。
+5. 执行只读审计与应用回归。审计为 `ok` 后再恢复写入任务。
 
-   ```bash
-   mysql --show-warnings --default-character-set=utf8mb4 -u root -p < server/database/migrations/<specific-file.sql>
-   ```
+## 必做预检
 
-6. 任一语句报错都应立即停止并检查实际 schema。不要把“重复列/索引”错误当作成功后继续执行后续文件；MySQL DDL 通常会隐式提交，不能依赖事务整体回滚。
-7. 复核表结构、索引、关键数据量和应用日志，再运行项目基线检查。聚合结构发生变化后，按维护窗口执行：
+```sql
+SELECT TABLE_SCHEMA, TABLE_NAME, ENGINE, TABLE_COLLATION, TABLE_ROWS
+FROM information_schema.TABLES
+WHERE TABLE_SCHEMA IN ('amazon_asin_monitor', 'amazon_competitor_monitor');
 
-   ```bash
-   npm --prefix server run rebuild:agg -- --yes --backup
-   ```
+SELECT asin, country, COUNT(*) AS duplicates
+FROM amazon_competitor_monitor.competitor_asins
+GROUP BY asin, country HAVING COUNT(*) > 1;
 
-## 编号与兼容性警告
+SELECT COUNT(*) AS missing_identity_snapshot
+FROM amazon_asin_monitor.monitor_history
+WHERE (variant_group_id IS NOT NULL AND variant_group_name IS NULL)
+   OR (asin_id IS NOT NULL AND asin_code IS NULL);
 
-- `013`、`021`、`030` 均被不同迁移重复使用，编号不是唯一版本标识；始终使用完整文件名。
-- 当前 `021` 聚合建表脚本已经包含 `has_peak`。只有旧库的聚合表缺少该列时才执行 `022`；把当前两个文件连续执行会触发重复列错误。
-- 标记为“一次性”的脚本通常含无条件 `ADD COLUMN` 或 `ADD INDEX`，部分执行后再次运行也可能失败。
-- 删除、约束调整和大表回填必须在备份及测试实例验证后执行，并预留锁表和重建索引时间。
+SELECT COUNT(*) AS missing_identity_snapshot
+FROM amazon_competitor_monitor.competitor_monitor_history
+WHERE (variant_group_id IS NOT NULL AND variant_group_name IS NULL)
+   OR (asin_id IS NOT NULL AND asin_code IS NULL);
+```
 
-## 迁移目录
+还必须使用 `SHOW INDEX` 检查同签名索引、使用 `information_schema.KEY_COLUMN_USAGE` 检查历史外键，并确认大表有足够磁盘空间。迁移 003/004 在无法从当前实体补齐身份快照时会主动失败，必须先定位孤儿历史，不得绕过验证。
 
-| 文件 | 目标数据库 | 用途 | 重复执行与主要风险 |
-| --- | --- | --- | --- |
-| `001_add_asin_type.sql` | 主营 | 移除旧类型列并添加 `asin_type` | 一次性；删除旧列 |
-| `002_add_monitor_fields.sql` | 主营 | 添加 ASIN 检查时间和通知字段 | 一次性 DDL |
-| `003_add_site_and_brand.sql` | 主营 | 为变体组和 ASIN 添加站点、品牌 | 一次性；旧数据与非空列需先验证 |
-| `004_add_user_auth_tables.sql` | 主营 | 创建用户、角色和权限基础表 | 基本幂等；需核对旧用户表结构 |
-| `005_remove_batch_tables.sql` | 主营 | 删除旧批次表 | 可重复执行但会永久删除表和数据 |
-| `006_add_audit_log_table.sql` | 主营 | 创建审计日志表 | 幂等建表 |
-| `008_add_monitor_history_index.sql` | 主营 | 添加国家与检查时间索引 | 一次性索引 |
-| `009_remove_user_email_and_reset_table.sql` | 主营 | 删除邮箱列与密码重置表 | 一次性且会删除数据 |
-| `010_add_sessions_table.sql` | 主营 | 创建登录会话表 | 幂等建表 |
-| `011_add_variant_group_fields.sql` | 主营 | 添加变体组检查时间和通知字段 | 一次性 DDL |
-| `012_add_composite_indexes.sql` | 主营 | 添加业务查询复合索引 | 一次性索引 |
-| `013_add_competitor_variant_group_fields.sql` | 竞品 | 添加竞品变体组检查时间 | 一次性 DDL |
-| `013_add_password_security_tables.sql` | 主营 | 创建密码安全表并补用户安全字段 | 条件化补列；先核对 `users.status` |
-| `014_add_granular_permissions.sql` | 主营 | 补充细粒度权限与角色授权 | 幂等 upsert |
-| `015_change_asin_unique_to_composite.sql` | 主营 | 把 ASIN 唯一键改为 ASIN+国家 | 一次性；重复数据会导致建索引失败 |
-| `016_add_snapshot_fields_to_monitor_history.sql` | 主营 | 添加历史快照列并回填 | 一次性；大表更新 |
-| `017_optimize_monitor_history_indexes.sql` | 主营 | 添加历史查询索引 | 一次性索引 |
-| `018_add_analytics_query_index.sql` | 主营 | 添加分析查询索引 | 一次性索引 |
-| `019_add_backup_config_table.sql` | 主营 | 创建自动备份配置 | 幂等建表与默认数据 |
-| `020_add_status_change_indexes.sql` | 主营 | 添加状态变化查询索引 | 一次性索引 |
-| `021_add_monitor_history_agg_table.sql` | 主营 | 创建基础历史聚合表 | 幂等建表；当前定义已含 `has_peak` |
-| `021_optimize_variant_group_indexes.sql` | 主营 | 添加变体组和 ASIN 查询索引 | 一次性索引 |
-| `022_add_monitor_history_agg_peak.sql` | 主营 | 为旧聚合表补 `has_peak` | 一次性；当前 `021` 后不可再执行 |
-| `023_add_analytics_fastpath.sql` | 主营 | 添加历史维度快照、生成列和维度聚合表 | 一次性；历史回填和索引重建 |
-| `024_fix_missing_password_security_schema.sql` | 主营 | 幂等补齐密码安全 schema | 可重复执行；仍需确认外键前置表 |
-| `025_add_manual_variant_flags.sql` | 主营 | 添加人工异常标记 | 一次性 DDL |
-| `026_normalize_user_status_and_audit_permissions.sql` | 主营 | 规范用户状态并补角色、审计权限 | 条件化迁移；会改写用户状态 |
-| `027_normalize_competitor_schema.sql` | 竞品 | 创建或补齐旧竞品 schema | 基本幂等；会规范状态数据 |
-| `028_add_variant_group_agg_table.sql` | 主营 | 创建变体组维度聚合表 | 幂等建表；完成后重建聚合数据 |
-| `029_add_asin_group_manual_exclusion.sql` | 主营 | 添加人工排除父变体字段 | 一次性 DDL |
-| `030_add_analytics_rollup_and_status_interval.sql` | 主营 | 增加月聚合、水位和状态区间表 | 一次性；依赖此前聚合表 |
-| `030_optimize_batch_delete_history_fks.sql` | 主营与竞品 | 回填竞品历史快照并移除历史外键 | 条件化；大表回填和约束变更 |
-| `031_optimize_analytics_refresh_indexes.sql` | 主营 | 补充分析刷新索引 | 幂等条件索引 |
+## 验证
 
-## 验证清单
+```bash
+npm --prefix server run db:schema:audit -- --target=all --json
+npm run test:contracts
+npm --prefix server run test:unit
+npx --no-install tsc --noEmit --pretty false
+npm run build
+git diff --check
+```
 
-- `SHOW TABLES` 与当前初始化 SQL 中的目标表一致。
-- `SHOW CREATE TABLE` 确认新增列类型、默认值、生成列和外键符合预期。
-- `SHOW INDEX` 确认候选索引存在且没有意外重复索引。
-- 登录、定时监控、竞品监控、数据分析和备份配置可正常访问。
-- 服务端日志没有 `Unknown column`、`Table doesn't exist` 或聚合刷新失败。
-- 完成 `npm run test:contracts`、TypeScript 检查、构建和 `git diff --check`。
+同时验证 init 在空库连续执行两次、active 五个迁移在恢复库连续执行两次、历史记录在删除当前 ASIN/变体组后仍可查询，并检查应用启动日志未出现 DDL。
+
+## 回滚
+
+- 001/002/005 属于结构重建或索引变更，回滚以已验证备份恢复或经审查的反向 DDL 为准。
+- 003/004 删除外键前已保留身份快照；如业务必须恢复外键，先清理孤儿引用，再用 `SHOW CREATE TABLE` 记录的名称和规则重新创建。
+- 004 唯一键回滚为单列 `asin` 前，必须先证明跨国家没有重复 ASIN，否则会失败或丢失合法数据。
+- 任何失败都保留日志、耗时与 `SHOW CREATE TABLE` 结果；不要直接执行 `legacy/` 猜测修复。

@@ -36,52 +36,11 @@ const SLOW_QUERY_MS =
 
 const pool = mysql.createPool(dbConfig);
 
-const COMPATIBILITY_COLUMNS = new Set([
-  'is_broken',
-  'variant_status',
-  'feishu_notify_enabled',
-  'create_time',
-  'update_time',
-  'last_check_time',
-  'notification_sent',
-  'variant_group_name',
-  'asin_code',
-  'asin_name',
-  'enabled',
-]);
-
-function shouldAttemptSchemaRepair(error) {
-  if (!error?.code) {
-    return false;
-  }
-
-  const errorMessage = error.sqlMessage || error.message || '';
-  if (error.code === 'ER_NO_SUCH_TABLE') {
-    return errorMessage.includes('competitor_');
-  }
-
-  if (error.code !== 'ER_BAD_FIELD_ERROR') {
-    return false;
-  }
-
-  const match = errorMessage.match(/Unknown column '([^']+)'/);
-  if (!match) {
-    return false;
-  }
-
-  const columnName = match[1].split('.').pop();
-  return COMPATIBILITY_COLUMNS.has(columnName);
-}
-
-async function executeWithSchemaRepair(sql, params = [], hasRetried = false) {
-  return executeWithRunner(pool, sql, params, hasRetried);
-}
-
 function compactSql(sql) {
   return String(sql).replace(/\s+/g, ' ').trim().slice(0, 240);
 }
 
-async function executeWithRunner(runner, sql, params = [], hasRetried = false) {
+async function executeWithRunner(runner, sql, params = []) {
   const start = Date.now();
   try {
     const [results] = await runner.query({
@@ -99,23 +58,6 @@ async function executeWithRunner(runner, sql, params = [], hasRetried = false) {
     }
     return results;
   } catch (error) {
-    if (!hasRetried && shouldAttemptSchemaRepair(error)) {
-      logger.warn(
-        '[CompetitorDB] 检测到旧版竞品库 schema，尝试自动补齐后重试',
-        {
-          code: error.code,
-          message: error.message,
-        },
-      );
-
-      const {
-        ensureCompetitorSchemaCompatibility,
-      } = require('../services/competitorSchemaService');
-
-      await ensureCompetitorSchemaCompatibility({ force: true });
-      return executeWithRunner(runner, sql, params, true);
-    }
-
     logger.error('竞品数据库查询错误:', {
       code: error.code,
       message: error.message,
@@ -144,7 +86,7 @@ async function testConnection() {
 }
 
 async function query(sql, params = []) {
-  return executeWithSchemaRepair(sql, params);
+  return executeWithRunner(pool, sql, params);
 }
 
 async function getConnection() {

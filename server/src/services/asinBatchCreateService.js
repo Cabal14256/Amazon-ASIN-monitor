@@ -7,6 +7,42 @@ const logger = require('../utils/logger');
 
 const DEFAULT_CHUNK_SIZE = 100;
 const ASIN_CODE_PATTERN = /^[A-Z0-9]{10}$/;
+const SCHEMA_CONTRACT_ERROR_CODE = 'ASIN_SCHEMA_CONTRACT_MISMATCH';
+const ROW_ISOLATABLE_INSERT_ERROR_CODES = new Set([
+  'ER_BAD_NULL_ERROR',
+  'ER_CHECK_CONSTRAINT_VIOLATED',
+  'ER_DATA_TOO_LONG',
+  'ER_DUP_ENTRY',
+  'ER_TRUNCATED_WRONG_VALUE_FOR_FIELD',
+  'ER_WARN_DATA_OUT_OF_RANGE',
+]);
+
+const INSERT_COLUMNS = Object.freeze({
+  asin: Object.freeze([
+    'id',
+    'asin',
+    'name',
+    'asin_type',
+    'country',
+    'site',
+    'brand',
+    'variant_group_id',
+    'is_broken',
+    'variant_status',
+  ]),
+  competitor: Object.freeze([
+    'id',
+    'asin',
+    'name',
+    'asin_type',
+    'country',
+    'brand',
+    'variant_group_id',
+    'is_broken',
+    'variant_status',
+    'feishu_notify_enabled',
+  ]),
+});
 
 function getChunkSize() {
   const configured = Number(process.env.ASIN_BATCH_CREATE_CHUNK_SIZE);
@@ -65,6 +101,7 @@ function getDomainConfig(domain) {
       groupTable: 'competitor_variant_groups',
       hasSite: false,
       defaultFeishuNotifyEnabled: 0,
+      insertColumns: INSERT_COLUMNS.competitor,
       clearCache: () => CompetitorVariantGroup.clearCache(),
     };
   }
@@ -76,7 +113,90 @@ function getDomainConfig(domain) {
     groupTable: 'variant_groups',
     hasSite: true,
     defaultFeishuNotifyEnabled: 1,
+    insertColumns: INSERT_COLUMNS.asin,
     clearCache: () => VariantGroup.clearCache(),
+  };
+}
+
+function createSchemaContractError(config, details) {
+  const fieldNames = [
+    ...(details.missingInsertColumns || []),
+    ...(details.requiredOmittedColumns || []),
+  ];
+  const error = new Error(
+    `ASIN导入schema契约不兼容: ${config.asinTable}${
+      fieldNames.length > 0 ? ` (${fieldNames.join(', ')})` : ''
+    }`,
+  );
+  error.code = SCHEMA_CONTRACT_ERROR_CODE;
+  error.statusCode = 500;
+  error.table = config.asinTable;
+  error.fields = fieldNames;
+  error.details = details;
+  return error;
+}
+
+function isGeneratedColumn(extra) {
+  const normalized = String(extra || '').toLowerCase();
+  return (
+    normalized.includes('virtual generated') ||
+    normalized.includes('stored generated')
+  );
+}
+
+async function assertAsinInsertSchemaCompatible(domain = 'asin') {
+  const config = getDomainConfig(domain);
+  const columns = await config.database.query(
+    `SELECT COLUMN_NAME, IS_NULLABLE, COLUMN_DEFAULT, EXTRA
+     FROM information_schema.COLUMNS
+     WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = ?
+     ORDER BY ORDINAL_POSITION`,
+    [config.asinTable],
+  );
+  const actualColumns = new Map(
+    columns.map((column) => [column.COLUMN_NAME, column]),
+  );
+  const missingInsertColumns = config.insertColumns.filter(
+    (columnName) => !actualColumns.has(columnName),
+  );
+  const insertColumnSet = new Set(config.insertColumns);
+  const requiredOmittedColumns = columns
+    .filter(
+      (column) =>
+        !insertColumnSet.has(column.COLUMN_NAME) &&
+        column.IS_NULLABLE === 'NO' &&
+        column.COLUMN_DEFAULT === null &&
+        !String(column.EXTRA || '')
+          .toLowerCase()
+          .includes('auto_increment') &&
+        !isGeneratedColumn(column.EXTRA),
+    )
+    .map((column) => column.COLUMN_NAME);
+
+  if (
+    columns.length === 0 ||
+    missingInsertColumns.length > 0 ||
+    requiredOmittedColumns.length > 0
+  ) {
+    const error = createSchemaContractError(config, {
+      tableMissing: columns.length === 0,
+      missingInsertColumns,
+      requiredOmittedColumns,
+    });
+    logger.error('[ASIN导入] schema契约检查失败', {
+      code: error.code,
+      domain: config.domain,
+      table: error.table,
+      fields: error.fields,
+      tableMissing: error.details.tableMissing,
+    });
+    throw error;
+  }
+
+  return {
+    domain: config.domain,
+    table: config.asinTable,
+    insertColumns: [...config.insertColumns],
   };
 }
 
@@ -216,31 +336,7 @@ async function insertAsinChunk(queryExecutor, config, items) {
     return;
   }
 
-  const columns = config.hasSite
-    ? [
-        'id',
-        'asin',
-        'name',
-        'asin_type',
-        'country',
-        'site',
-        'brand',
-        'variant_group_id',
-        'is_broken',
-        'variant_status',
-      ]
-    : [
-        'id',
-        'asin',
-        'name',
-        'asin_type',
-        'country',
-        'brand',
-        'variant_group_id',
-        'is_broken',
-        'variant_status',
-        'feishu_notify_enabled',
-      ];
+  const columns = config.insertColumns;
 
   const placeholders = buildPlaceholders(items.length, columns.length);
   const params = items.flatMap((item) =>
@@ -307,6 +403,7 @@ async function batchCreateASINs({
   const normalizedItems = normalizeItems(items, config, result);
 
   if (normalizedItems.length > 0) {
+    await assertAsinInsertSchemaCompatible(config.domain);
     await config.database.withTransaction(async ({ query }) => {
       const groupIds = Array.from(
         new Set(normalizedItems.map((item) => item.parentId)),
@@ -360,6 +457,9 @@ async function batchCreateASINs({
           await insertAsinChunk(query, config, chunk);
           createdItems.push(...chunk);
         } catch (error) {
+          if (!ROW_ISOLATABLE_INSERT_ERROR_CODES.has(error.code)) {
+            throw error;
+          }
           logger.warn('[ASIN批量新增] 分块插入失败，回退到逐条插入', {
             domain: config.domain,
             chunkSize: chunk.length,
@@ -371,6 +471,9 @@ async function batchCreateASINs({
               await insertAsinChunk(query, config, [item]);
               createdItems.push(item);
             } catch (itemError) {
+              if (!ROW_ISOLATABLE_INSERT_ERROR_CODES.has(itemError.code)) {
+                throw itemError;
+              }
               addFailure(
                 result,
                 item,
@@ -412,6 +515,9 @@ async function batchCreateASINs({
 }
 
 module.exports = {
+  ASIN_INSERT_COLUMNS: INSERT_COLUMNS,
+  ASIN_SCHEMA_CONTRACT_ERROR_CODE: SCHEMA_CONTRACT_ERROR_CODE,
+  assertAsinInsertSchemaCompatible,
   batchCreateASINs,
   getAsinBatchCreateChunkSize: getChunkSize,
 };
