@@ -13,6 +13,7 @@ const rateLimiter = require('./rateLimiter');
 const operationIdentifier = require('./spApiOperationIdentifier');
 const logger = require('../utils/logger');
 const { parseVariantRelationships } = require('../utils/variantParser');
+const { applyParentTitleGate } = require('../utils/variantTitle');
 
 // searchCatalogItems的rate limit: 2 req/s, burst = 2
 const BATCH_SEARCH_RATE_LIMIT_PER_SECOND = 2;
@@ -121,16 +122,30 @@ async function batchCheckASINsBySearch(asins, country) {
           }
 
           const parentAsin = parentAsinFromRel || parentAsinFromSummaries;
-          const hasVariants =
+          const baseHasVariants =
             variantASINs.length > 0 ||
             isChild ||
             isParent ||
             !!parentAsinFromSummaries;
+          const currentTitle = String(
+            item.summaries?.[0]?.itemName ||
+              item.summaries?.[0]?.title ||
+              item.attributes?.item_name?.[0]?.value ||
+              '',
+          );
+          const parentTitle = parentAsin === asin ? currentTitle : '';
+          const hasVariants = applyParentTitleGate(
+            baseHasVariants,
+            parentAsin,
+            parentTitle,
+          );
 
           results.set(asin, {
             asin: asin,
             hasVariants,
             parentAsin,
+            parentTitle,
+            requiresDetailedCheck: baseHasVariants,
             source: 'batch_search',
           });
         }
@@ -203,21 +218,29 @@ async function batchCheckASINsHybrid(asins, country) {
       continue;
     }
 
-    if (searchResult.errorType === 'SP_API_ERROR' || searchResult.hasVariants) {
+    if (
+      searchResult.errorType === 'SP_API_ERROR' ||
+      searchResult.hasVariants ||
+      searchResult.requiresDetailedCheck
+    ) {
       // 需要详细信息，调用getCatalogItem
       try {
         const detailed = await checkASINVariants(cleanASIN, country, false);
         detailedResults.push(detailed);
       } catch (error) {
         // 如果详细查询也失败，使用批量查询的结果
+        const fallbackHasVariants = searchResult.parentAsin
+          ? false
+          : searchResult.hasVariants;
         detailedResults.push({
           asin: cleanASIN,
-          hasVariants: searchResult.hasVariants,
+          hasVariants: fallbackHasVariants,
           variantCount: 0,
           errorType: searchResult.errorType || 'SP_API_ERROR',
           details: {
             asin: cleanASIN,
             parentAsin: searchResult.parentAsin,
+            parentTitle: searchResult.parentTitle || '',
             source: 'batch_search_fallback',
             error: '详细查询失败',
             errorMessage: error.message,

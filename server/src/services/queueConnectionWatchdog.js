@@ -10,6 +10,15 @@ function readPositiveNumber(value, fallback) {
   return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
 }
 
+function readBoolean(value, fallback = false) {
+  if (value === undefined || value === null || value === '') {
+    return fallback;
+  }
+  return ['1', 'true', 'yes', 'on'].includes(
+    String(value).trim().toLowerCase(),
+  );
+}
+
 function withTimeout(
   promise,
   timeoutMs,
@@ -55,6 +64,14 @@ async function checkQueueConnection(queue, options = {}) {
     return;
   }
 
+  // A legitimate SP-API/DB task can run longer than the watchdog interval.
+  // Only enable age-based failure checks when a caller has a reliable job
+  // heartbeat or explicitly accepts the risk of killing long-running work.
+  const checkActiveJobAge =
+    options.checkActiveJobAge === undefined
+      ? false
+      : readBoolean(options.checkActiveJobAge);
+
   const activeJobMaxAgeMs = readPositiveNumber(
     options.activeJobMaxAgeMs || process.env.QUEUE_ACTIVE_JOB_MAX_AGE_MS,
     DEFAULT_ACTIVE_JOB_MAX_AGE_MS,
@@ -67,6 +84,7 @@ async function checkQueueConnection(queue, options = {}) {
         queue.getJobCounts('waiting', 'active'),
       ]);
       const shouldInspectActiveJobs =
+        checkActiveJobAge &&
         !isPaused &&
         Number(jobCounts.waiting) > 0 &&
         Number(jobCounts.active) > 0;
@@ -85,7 +103,12 @@ async function checkQueueConnection(queue, options = {}) {
       `queue_not_consuming waiting=${counts.waiting} active=${counts.active}`,
     );
   }
-  if (!paused && Number(counts.waiting) > 0 && Number(counts.active) > 0) {
+  if (
+    checkActiveJobAge &&
+    !paused &&
+    Number(counts.waiting) > 0 &&
+    Number(counts.active) > 0
+  ) {
     const processedTimes = activeJobs
       .map((job) => Number(job?.processedOn))
       .filter((processedOn) => Number.isFinite(processedOn) && processedOn > 0);
@@ -200,6 +223,7 @@ function startQueueConnectionWatchdog(queues, options = {}) {
               pingTimeoutMs: options.pingTimeoutMs,
               setTimeoutFn: options.setTimeoutFn,
               checkBacklogProgress: options.checkBacklogProgress,
+              checkActiveJobAge: options.checkActiveJobAge,
               activeJobMaxAgeMs: options.activeJobMaxAgeMs,
               now,
             });

@@ -16,6 +16,10 @@ const logger = require('../utils/logger');
 const rateLimiter = require('./rateLimiter');
 const spApiScheduler = require('./spApiScheduler');
 const operationIdentifier = require('./spApiOperationIdentifier');
+const {
+  attachHttpRequestTimeout,
+  getHttpRequestTimeoutMs,
+} = require('../utils/httpRequestTimeout');
 
 /**
  * 使用旧客户端方式调用 SP-API
@@ -109,6 +113,7 @@ async function callLegacySPAPI(
 
     const executeRequest = () =>
       new Promise((resolve, reject) => {
+        let stopTimeout = () => {};
         const requestOptions = {
           hostname: urlObj.hostname,
           path: urlObj.pathname + (urlObj.search || ''),
@@ -122,6 +127,7 @@ async function callLegacySPAPI(
             data += chunk;
           });
           res.on('end', () => {
+            stopTimeout();
             logger.info(`[Legacy SP-API] 响应状态码: ${res.statusCode}`);
             logger.info(
               `[Legacy SP-API] 响应数据长度: ${data ? data.length : 0}`,
@@ -160,7 +166,16 @@ async function callLegacySPAPI(
           });
         });
 
+        stopTimeout = attachHttpRequestTimeout(req, {
+          timeoutMs: getHttpRequestTimeoutMs(),
+          label: `Legacy SP-API ${method} ${path}`,
+          onTimeout: (error) => {
+            req.destroy(error);
+            reject(error);
+          },
+        });
         req.on('error', (error) => {
+          stopTimeout();
           reject(error);
         });
 

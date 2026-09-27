@@ -1,5 +1,6 @@
 const Queue = require('bull');
 const logger = require('../utils/logger');
+const { getBullQueueSettings } = require('./bullQueueSettings');
 
 function buildRedisUrl() {
   if (process.env.REDIS_URL || process.env.REDIS_URI) {
@@ -32,6 +33,7 @@ const DEFAULT_WORKER_CONCURRENCY = 1;
 
 const variantCheckTaskQueue = new Queue('variant-check-task-queue', redisUrl, {
   prefix: bullPrefix,
+  settings: getBullQueueSettings(),
   defaultJobOptions: {
     attempts: 2,
     backoff: {

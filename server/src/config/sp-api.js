@@ -6,6 +6,10 @@ const logger = require('../utils/logger');
 const responseAnalyzer = require('../services/spApiResponseAnalyzer');
 const rateLimiter = require('../services/rateLimiter');
 const spApiScheduler = require('../services/spApiScheduler');
+const {
+  attachHttpRequestTimeout,
+  getHttpRequestTimeoutMs,
+} = require('../utils/httpRequestTimeout');
 
 // 创建全局HTTP连接池（keep-alive）
 const httpsAgent = new https.Agent({
@@ -307,12 +311,14 @@ async function requestAccessTokenOnce(normalizedRegion, regionConfig) {
   logger.info(`[getAccessToken] 正在获取 ${normalizedRegion} 区域访问令牌...`);
 
   return new Promise((resolve, reject) => {
+    let stopTimeout = () => {};
     const req = https.request(options, (res) => {
       let data = '';
       res.on('data', (chunk) => {
         data += chunk;
       });
       res.on('end', () => {
+        stopTimeout();
         if (res.statusCode === 200) {
           try {
             const response = JSON.parse(data);
@@ -355,7 +361,16 @@ async function requestAccessTokenOnce(normalizedRegion, regionConfig) {
       });
     });
 
+    stopTimeout = attachHttpRequestTimeout(req, {
+      timeoutMs: getHttpRequestTimeoutMs(),
+      label: `LWA ${normalizedRegion} token request`,
+      onTimeout: (error) => {
+        req.destroy(error);
+        reject(error);
+      },
+    });
     req.on('error', (error) => {
+      stopTimeout();
       reject(error);
     });
 
@@ -718,6 +733,7 @@ async function callSPAPIInternal(
   });
 
   return new Promise((resolve, reject) => {
+    let stopTimeout = () => {};
     const options = {
       hostname: urlObj.hostname,
       path: urlObj.pathname + (urlObj.search || ''),
@@ -732,6 +748,7 @@ async function callSPAPIInternal(
         data += chunk;
       });
       res.on('end', () => {
+        stopTimeout();
         logger.debug(`[callSPAPI] 响应状态码: ${res.statusCode}`);
         logger.debug(`[callSPAPI] 响应数据长度: ${data ? data.length : 0}`);
 
@@ -885,7 +902,16 @@ async function callSPAPIInternal(
       });
     });
 
+    stopTimeout = attachHttpRequestTimeout(req, {
+      timeoutMs: getHttpRequestTimeoutMs(),
+      label: `SP-API ${method} ${path}`,
+      onTimeout: (error) => {
+        req.destroy(error);
+        reject(error);
+      },
+    });
     req.on('error', (error) => {
+      stopTimeout();
       reject(error);
     });
 
