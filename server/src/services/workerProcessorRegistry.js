@@ -234,6 +234,13 @@ function startWorkerQueueWatchdog() {
   workerQueueWatchdog = startQueueConnectionWatchdog(queueInstances, {
     scope: 'Worker',
     checkBacklogProgress: true,
+    // Queue age is not a liveness signal: SP-API retries and quota waits can
+    // legitimately keep a job active for longer than the old 20-minute limit.
+    checkActiveJobAge: ['1', 'true', 'yes', 'on'].includes(
+      String(process.env.QUEUE_WATCHDOG_CHECK_ACTIVE_JOB_AGE || '')
+        .trim()
+        .toLowerCase(),
+    ),
     onUnhealthy: () => {
       process.exit(1);
     },

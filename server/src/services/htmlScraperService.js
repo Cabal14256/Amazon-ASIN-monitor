@@ -155,6 +155,25 @@ function extractVariantAsins(html) {
   return variantAsins;
 }
 
+function extractProductTitle(html) {
+  if (!html || typeof html !== 'string') {
+    return '';
+  }
+
+  const match = html.match(
+    /<([a-z0-9]+)\b[^>]*\bid=["']productTitle["'][^>]*>([\s\S]*?)<\/\1>/i,
+  );
+  if (!match || !match[2]) {
+    return '';
+  }
+
+  return match[2]
+    .replace(/<[^>]+>/g, ' ')
+    .replace(/&nbsp;/gi, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
 /**
  * 通过 HTML 抓取检查 ASIN 的变体关系
  * @param {string} asin - ASIN 编码
@@ -196,6 +215,8 @@ async function checkASINVariantsByHTML(asin, country) {
 
     logger.debug(`[HTML抓取] 获取到 HTML，长度: ${html.length} 字符`);
 
+    const title = extractProductTitle(html);
+
     // 提取 parentAsin
     const parentAsin = extractParentAsin(html);
 
@@ -221,6 +242,7 @@ async function checkASINVariantsByHTML(asin, country) {
       variantCount,
       details: {
         asin,
+        title,
         parentAsin: parentAsin || null,
         variantAsins,
         source: 'html_scraper',
@@ -250,5 +272,6 @@ module.exports = {
   checkASINVariantsByHTML,
   buildProductUrl,
   extractParentAsin,
+  extractProductTitle,
   extractVariantAsins,
 };

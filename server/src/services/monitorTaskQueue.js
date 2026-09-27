@@ -4,6 +4,7 @@ const competitorMonitorTaskQueue = require('./competitorMonitorTaskQueue');
 const logger = require('../utils/logger');
 const { buildScheduledJobId } = require('./monitorQueuePolicy');
 const { processMonitorTaskJob } = require('./monitorTaskProcessor');
+const { getBullQueueSettings } = require('./bullQueueSettings');
 
 // 构建 Redis 连接 URL
 // 支持两种方式：
@@ -48,6 +49,7 @@ const DEFAULT_WORKER_CONCURRENCY = 1;
 
 const monitorTaskQueue = new Queue('monitor-task-queue', redisUrl, {
   prefix: bullPrefix,
+  settings: getBullQueueSettings(),
   defaultJobOptions: {
     attempts: 3,
     backoff: {

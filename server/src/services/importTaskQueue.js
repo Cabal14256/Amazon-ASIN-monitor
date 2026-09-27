@@ -1,5 +1,6 @@
 const Queue = require('bull');
 const logger = require('../utils/logger');
+const { getBullQueueSettings } = require('./bullQueueSettings');
 
 // 构建 Redis 连接 URL
 function buildRedisUrl() {
@@ -32,6 +33,7 @@ const bullPrefix = String(process.env.BULL_PREFIX || 'bull').trim() || 'bull';
 
 const importTaskQueue = new Queue('import-task-queue', redisUrl, {
   prefix: bullPrefix,
+  settings: getBullQueueSettings(),
   defaultJobOptions: {
     attempts: 2,
     backoff: {

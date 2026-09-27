@@ -1,5 +1,6 @@
 const Queue = require('bull');
 const logger = require('../utils/logger');
+const { getBullQueueSettings } = require('./bullQueueSettings');
 
 // 构建 Redis 连接 URL（复用监控任务的逻辑）
 function buildRedisUrl() {
@@ -33,6 +34,7 @@ const DEFAULT_WORKER_CONCURRENCY = 1;
 
 const exportTaskQueue = new Queue('export-task-queue', redisUrl, {
   prefix: bullPrefix,
+  settings: getBullQueueSettings(),
   defaultJobOptions: {
     attempts: 2,
     backoff: {

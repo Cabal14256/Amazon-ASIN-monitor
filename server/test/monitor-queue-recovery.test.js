@@ -145,11 +145,34 @@ test('worker看门狗识别有积压且active任务执行超时', async () => {
   await assert.rejects(
     checkQueueConnection(queue, {
       checkBacklogProgress: true,
+      checkActiveJobAge: true,
       activeJobMaxAgeMs: 1000,
       now: () => 5000,
     }),
     /active_job_stalled/,
   );
+});
+
+test('看门狗默认不因合法长任务的active时长触发失败', async () => {
+  let getActiveCalls = 0;
+  const queue = {
+    client: { ping: async () => 'PONG' },
+    isPaused: async () => false,
+    getJobCounts: async () => ({ waiting: 2, active: 1 }),
+    getActive: async () => {
+      getActiveCalls += 1;
+      return [{ processedOn: 1000 }];
+    },
+  };
+
+  await assert.doesNotReject(
+    checkQueueConnection(queue, {
+      checkBacklogProgress: true,
+      activeJobMaxAgeMs: 1000,
+      now: () => 5000,
+    }),
+  );
+  assert.equal(getActiveCalls, 0);
 });
 
 test('worker看门狗限制积压状态查询耗时', async () => {
