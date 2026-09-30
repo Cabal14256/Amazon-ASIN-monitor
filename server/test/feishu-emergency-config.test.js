@@ -227,7 +227,7 @@ test('窗口统计使用国家加 ASIN 去重，包含边界并排除关闭通�
   const call = calls[0];
   assert.match(
     call.sql,
-    /COUNT\(DISTINCT mh.country, COALESCE\(NULLIF\(mh.asin_code, ''\), mh.asin_id\)\)/,
+    /COUNT\(DISTINCT mh.country, COALESCE\(NULLIF\(mh.asin_code, ''\), NULLIF\(a.asin, ''\), mh.asin_id\)\)/,
   );
   assert.match(call.sql, /mh.check_type = 'ASIN'/);
   assert.match(call.sql, /mh.is_broken = 1/);

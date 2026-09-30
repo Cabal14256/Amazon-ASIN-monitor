@@ -5,7 +5,7 @@ const logger = require('../utils/logger');
 // 配置包含 webhook 与联系人，数据库错误不得输出带绑定参数的原始 SQL。
 async function query(sql, params = []) {
   try {
-    const [rows] = await pool.execute({ sql, timeout: 10000 }, params);
+    const [rows] = await pool.query({ sql, values: params, timeout: 10000 });
     return rows;
   } catch (error) {
     logger.error('飞书配置数据库操作失败', {
@@ -170,7 +170,7 @@ class FeishuConfig {
   static async countEmergencyASINs(region, startTimeSql, endTimeSql) {
     const countries = requireRegion(region);
     const [result] = await query(
-      `SELECT COUNT(DISTINCT mh.country, COALESCE(NULLIF(mh.asin_code, ''), mh.asin_id)) AS broken_count
+      `SELECT COUNT(DISTINCT mh.country, COALESCE(NULLIF(mh.asin_code, ''), NULLIF(a.asin, ''), mh.asin_id)) AS broken_count
        FROM monitor_history mh
        INNER JOIN asins a ON a.id = mh.asin_id
        INNER JOIN variant_groups vg ON vg.id = a.variant_group_id

@@ -6,8 +6,12 @@
 - API/Worker 两个 limiter 实例共享 response-header 元数据与窗口用量；
 - Redis 服务重启后现有客户端恢复连接；
 - MySQL 8 初始化 SQL 可重复执行，并能从真实 `sp_api_config` 行验证数据库值与空配置回退。
+- 飞书电话加急迁移可升级缺列的旧配置表并重复执行，保留已有通知配置；
+- 真实 `FeishuConfig` 模型在隔离库中按国家和 ASIN 去重统计异常，验证通知开关、窗口边界、并发抢占与各区域独立的 UTC 冷却。
 
 测试要求 `RUN_INTEGRATION_TESTS=true`、回环地址 Redis/MySQL、动态测试库名以及 `INTEGRATION_ALLOW_DROP_DATABASES=true`。不满足这些保护条件时不会连接或删除数据库。测试不会启动 API/Worker，不调用 Amazon、飞书或其他外部服务。
+
+应用数据库连接池仅在验证上述条件并初始化 CI 数据库后加载，强制使用该隔离库的连接参数。迁移测试对本次测试创建的配置表模拟旧结构；测试结束时关闭应用连接池并删除两个 CI 数据库。
 
 ## 必需检查晋级
 
