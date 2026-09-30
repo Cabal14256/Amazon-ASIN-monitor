@@ -12,6 +12,7 @@ const AUTOMATIC_ERROR_TYPES = new Set([
   'NOT_FOUND',
   'NO_VARIANTS',
   'PARENT_CHANGED',
+  'PARENT_TITLE_EMPTY',
 ]);
 
 function normalizeOwner(owner) {

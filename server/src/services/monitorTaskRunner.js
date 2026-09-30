@@ -351,6 +351,9 @@ async function processCountry(
           countryResult.brokenByType.PARENT_CHANGED =
             (countryResult.brokenByType.PARENT_CHANGED || 0) +
             (brokenByType.PARENT_CHANGED || 0);
+          countryResult.brokenByType.PARENT_TITLE_EMPTY =
+            (countryResult.brokenByType.PARENT_TITLE_EMPTY || 0) +
+            (brokenByType.PARENT_TITLE_EMPTY || 0);
         }
 
         const recordCheckTime = new Date();

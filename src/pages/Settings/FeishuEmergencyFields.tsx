@@ -101,7 +101,7 @@ const FeishuEmergencyFields: React.FC<{ region: 'US' | 'EU' }> = ({
             type="info"
             showIcon
             message="首次完整监控建立原父体基准"
-            description="升级后，每组首次完整监控只建立基准，不触发电话。此后原父体丢失或变为其他父体时识别为拆分异常，恢复原父体后解除。持续异常、人工标记、API 失败和仅父体标题获取失败不算新增；新增成员时需重新完成整组基准。"
+            description="每组首次完整监控只建立基准，不触发电话。正常组此后原父体丢失、改挂其他父体，或成功查询确认父 ASIN 标题为空时计为新增异常。标题首次确认只建立基准，不追溯存量空标题；查询失败或超时暂不判定，也不解除已有异常。持续异常、人工标记、API 失败不算新增；新增成员时需重新完成整组基准。"
             style={{ marginBottom: 24 }}
           />
           <ProFormRadio.Group

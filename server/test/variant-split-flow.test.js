@@ -52,6 +52,7 @@ test('主监控组检查、单 ASIN 检查持久化父体变化并传递原父/�
   let state = null;
   let events = 0;
   let parent = 'B000PARENT';
+  let parentTitleMode = 'present';
   let timestamp = 0;
   const history = [];
   const snapshots = () => ({
@@ -85,9 +86,38 @@ test('主监控组检查、单 ASIN 检查持久化父体变化并传递原父/�
       getMarketplaceId: () => 'market',
       callSPAPI: async (_method, path) => {
         const asin = path.split('/').pop();
+        const isChild = asin === 'B000000001' || asin === 'B000000002';
+        if (!isChild && parentTitleMode === 'timeout') {
+          throw Object.assign(new Error('request timed out'), {
+            code: 'ETIMEDOUT',
+          });
+        }
+        if (!isChild && parentTitleMode === 'not-found') {
+          throw Object.assign(new Error('not found'), {
+            statusCode: 404,
+            responseData: JSON.stringify({ errors: [{ code: 'NOT_FOUND' }] }),
+          });
+        }
+        if (!isChild && parentTitleMode === 'malformed') return {};
+        const invalidTitles = {
+          'bad-object': {},
+          'bad-array': [],
+          'bad-number': 0,
+          'bad-boolean': false,
+        };
         return {
-          asin,
-          summaries: [{ itemName: 'Title' }],
+          asin:
+            !isChild && parentTitleMode === 'wrong-asin' ? 'B000WRONG1' : asin,
+          summaries: [
+            {
+              itemName:
+                !isChild && Object.hasOwn(invalidTitles, parentTitleMode)
+                  ? invalidTitles[parentTitleMode]
+                  : !isChild && parentTitleMode === 'empty'
+                  ? '  \n '
+                  : 'Title',
+            },
+          ],
           relationships: [
             {
               relationships:
@@ -123,6 +153,9 @@ test('主监控组检查、单 ASIN 检查持久化父体变化并传递原父/�
     './cacheService': {
       getAsync: async () => null,
       setAsync: async () => {},
+      get() {},
+      set() {},
+      getKeys: () => [],
       delete() {},
     },
     './htmlScraperService': {},
@@ -144,6 +177,61 @@ test('主监控组检查、单 ASIN 检查持久化父体变化并传递原父/�
   });
   assert.equal(baseline.isBroken, false);
   assert.equal(events, 0);
+  const checkGroup = () =>
+    service.checkVariantGroup('g1', true, {
+      group: snapshots(),
+      skipGroupStatus: true,
+    });
+  parentTitleMode = 'timeout';
+  const unknown = await checkGroup();
+  assert.ok(
+    unknown.details.results.every(
+      (item) => item.details.details.parentTitleStatus === 'UNKNOWN',
+    ),
+  );
+  assert.equal(state.status, 'NORMAL');
+  assert.equal(events, 0);
+  parentTitleMode = 'empty';
+  const empty = await checkGroup();
+  assert.equal(empty.brokenByType.PARENT_TITLE_EMPTY, 2);
+  assert.equal(empty.brokenByType.NO_VARIANTS, 0);
+  assert.ok(
+    empty.details.results.every(
+      (item) =>
+        item.details.details.parentTitleStatus === 'EMPTY' &&
+        item.details.details.parentTitle === '',
+    ),
+  );
+  assert.equal(events, 1);
+  for (const mode of [
+    'timeout',
+    'not-found',
+    'malformed',
+    'wrong-asin',
+    'bad-object',
+    'bad-array',
+    'bad-number',
+    'bad-boolean',
+  ]) {
+    parentTitleMode = mode;
+    const failed = await checkGroup();
+    assert.ok(
+      failed.details.results.every(
+        (item) => item.details.details.parentTitleStatus === 'UNKNOWN',
+      ),
+      mode,
+    );
+    assert.equal(state.status, 'BROKEN', mode);
+    assert.equal(events, 1, mode);
+  }
+  parentTitleMode = 'present';
+  await checkGroup();
+  assert.equal(state.status, 'NORMAL');
+  parentTitleMode = 'empty';
+  await checkGroup();
+  assert.equal(events, 2);
+  parentTitleMode = 'present';
+  await checkGroup();
   parent = 'B000NEWPAR';
   const split = await service.checkVariantGroup('g1', true, {
     group: snapshots(),
@@ -151,7 +239,7 @@ test('主监控组检查、单 ASIN 检查持久化父体变化并传递原父/�
   });
   assert.equal(split.isBroken, true);
   assert.equal(split.brokenByType.PARENT_CHANGED, 2);
-  assert.equal(events, 1);
+  assert.equal(events, 3);
   assert.ok(split.brokenASINs.every((c) => c.errorType === 'PARENT_CHANGED'));
   assert.equal(
     split.brokenASINs[0].splitDetection.baselineParentAsin,
@@ -165,7 +253,7 @@ test('主监控组检查、单 ASIN 检查持久化父体变化并传递原父/�
     group: snapshots(),
     skipGroupStatus: true,
   });
-  assert.equal(events, 1);
+  assert.equal(events, 3);
   parent = 'B000PARENT';
   await service.checkVariantGroup('g1', true, {
     group: snapshots(),
@@ -180,7 +268,7 @@ test('主监控组检查、单 ASIN 检查持久化父体变化并传递原父/�
     history[0].checkResult.splitDetection.baselineParentAsin,
     'B000PARENT',
   );
-  assert.equal(events, 2);
+  assert.equal(events, 4);
 });
 
 test('延后复查应用相同父体检测，竞品不写主营拆分状态', async () => {
@@ -240,7 +328,11 @@ test('延后复查应用相同父体检测，竞品不写主营拆分状态', as
   const raw = {
     hasVariants: true,
     variantCount: 1,
-    details: { parentAsin: 'B000NEWPAR', hasVariantRelationships: true },
+    details: {
+      parentAsin: 'B000NEWPAR',
+      hasVariantRelationships: true,
+      parentTitleStatus: 'PRESENT',
+    },
     meta: {
       source: 'spapi',
       relationshipsObserved: true,
@@ -281,7 +373,11 @@ function retrySplitFixture() {
   const raw = (parent = 'B000PARENT', offset = 0) => ({
     hasVariants: true,
     variantCount: 1,
-    details: { parentAsin: parent, hasVariantRelationships: true },
+    details: {
+      parentAsin: parent,
+      hasVariantRelationships: true,
+      parentTitleStatus: 'PRESENT',
+    },
     meta: {
       source: 'spapi',
       relationshipsObserved: true,

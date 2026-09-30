@@ -42,6 +42,8 @@ function applySplitState(result, state) {
       errorType:
         state.reason === 'PARENT_CHANGED'
           ? 'PARENT_CHANGED'
+          : state.reason === 'PARENT_TITLE_EMPTY'
+          ? result.errorType || 'PARENT_TITLE_EMPTY'
           : result.errorType || 'NO_VARIANTS',
       splitDetection,
     };

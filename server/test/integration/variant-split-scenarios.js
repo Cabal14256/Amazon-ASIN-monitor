@@ -31,10 +31,23 @@ module.exports = async function testVariantSplit({
     details: {
       hasVariantRelationships: relationships,
       parentAsin: relationships ? parent : null,
+      parentTitle: relationships && parent ? 'Title' : null,
+      parentTitleStatus: relationships && parent ? 'PRESENT' : 'NOT_APPLICABLE',
     },
     meta: { source: 'spapi', relationshipsObserved: true },
     ...overrides,
   });
+  const titleResult = (status, overrides = {}) =>
+    raw(true, originalParent, {
+      hasVariants: status === 'PRESENT',
+      details: {
+        hasVariantRelationships: true,
+        parentAsin: originalParent,
+        parentTitle: status === 'PRESENT' ? 'Title' : '',
+        parentTitleStatus: status,
+      },
+      ...overrides,
+    });
   let nextAsin = 100;
   async function group(
     id,
@@ -165,12 +178,12 @@ module.exports = async function testVariantSplit({
   );
 
   await context.test(
-    '真实事务排除标题/API/人工异常、过期观测和成员变化，并发拆分只写一个事件',
+    '真实事务排除标题查询失败/API/人工异常、过期观测和成员变化，并发拆分只写一个事件',
     async () => {
       const fixture = await group('split-noise', 'UK');
       await observe(fixture, 0);
       for (const [index, result] of [
-        raw(true, originalParent, { hasVariants: false }),
+        titleResult('UNKNOWN'),
         raw(false, null, { errorType: 'SP_API_ERROR' }),
         raw(false, null, { statusSource: 'MANUAL' }),
         raw(false, null, {
@@ -441,6 +454,105 @@ module.exports = async function testVariantSplit({
         count: 0,
         maxEventId: null,
       });
+    },
+  );
+
+  await context.test(
+    '真实空父标题仅正常转异常产生一个组事件，未知查询不恢复且窗口内反复异常按组去重',
+    async () => {
+      const fixture = await group('split-empty-title');
+      assert.equal((await observe(fixture, 119)).status, 'NORMAL');
+      const first = await observe(fixture, 120, titleResult('EMPTY'));
+      assert.equal(first.status, 'BROKEN');
+      assert.equal(first.newEvent.reason, 'PARENT_TITLE_EMPTY');
+      assert.equal(first.newEvent.details.triggerAsinIds.length, 2);
+      assert.equal(first.newEvent.details.changes.length, 2);
+      for (const change of first.newEvent.details.changes) {
+        assert.equal(change.reason, 'PARENT_TITLE_EMPTY');
+        assert.equal(change.baselineParentAsin, originalParent);
+        assert.equal(change.currentParentAsin, originalParent);
+      }
+      assert.equal(await eventCount(fixture.id), 1);
+      assert.equal(
+        (await observe(fixture, 121, titleResult('EMPTY'))).newEvent,
+        null,
+      );
+      const legacyResult = titleResult('UNKNOWN');
+      delete legacyResult.details.parentTitleStatus;
+      for (const [index, result] of [
+        titleResult('UNKNOWN'),
+        titleResult('UNKNOWN', { errorType: 'NOT_FOUND' }),
+        titleResult('UNKNOWN', { errorType: 'SP_API_ERROR' }),
+        titleResult('UNKNOWN', { error: 'parent title lookup timed out' }),
+        legacyResult,
+      ].entries()) {
+        const uncertain = await observe(fixture, 122 + index, result);
+        assert.equal(uncertain.status, 'BROKEN');
+        assert.equal(uncertain.newEvent, null);
+      }
+      const partiallyRecovered = await VariantSplitState.observeGroup(
+        fixture.id,
+        [
+          {
+            asinId: fixture.members[0].id,
+            result: titleResult('PRESENT'),
+            observedAt: timestamp(130),
+          },
+        ],
+      );
+      assert.equal(partiallyRecovered.status, 'BROKEN');
+      assert.equal(partiallyRecovered.newEvent, null);
+      assert.equal((await observe(fixture, 131)).status, 'NORMAL');
+      const repeated = await observe(fixture, 132, titleResult('EMPTY'));
+      assert.equal(repeated.newEvent.reason, 'PARENT_TITLE_EMPTY');
+      assert.equal(await eventCount(fixture.id), 2);
+      assert.equal(
+        (await assessment('US', '2026-09-30 10:00:00', '2026-09-30 10:30:00'))
+          .count,
+        1,
+        'Multiple members and repeated empty-title events count as one group',
+      );
+    },
+  );
+
+  await context.test(
+    '首次空父标题和升级前未记录标题状态的存量异常只建立基线',
+    async () => {
+      const existing = await group('split-initial-empty-title');
+      const initial = await observe(existing, 120, titleResult('EMPTY'));
+      assert.equal(initial.status, 'BROKEN');
+      assert.equal(initial.newEvent, null);
+      assert.equal(
+        (await observe(existing, 121, titleResult('EMPTY'))).newEvent,
+        null,
+      );
+      assert.equal(await eventCount(existing.id), 0);
+
+      const legacy = await group('split-legacy-title-state');
+      await observe(legacy, 119);
+      const [state] = await query(
+        `SELECT members FROM ${db}.variant_group_split_state WHERE group_id = ?`,
+        [legacy.id],
+      );
+      const members =
+        typeof state.members === 'string'
+          ? JSON.parse(state.members)
+          : state.members;
+      for (const member of Object.values(members)) {
+        delete member.parentTitleStatus;
+      }
+      await query(
+        `UPDATE ${db}.variant_group_split_state SET members = ? WHERE group_id = ?`,
+        [JSON.stringify(members), legacy.id],
+      );
+      const upgraded = await observe(legacy, 120, titleResult('EMPTY'));
+      assert.equal(upgraded.status, 'BROKEN');
+      assert.equal(upgraded.newEvent, null);
+      assert.equal(
+        (await observe(legacy, 121, titleResult('EMPTY'))).newEvent,
+        null,
+      );
+      assert.equal(await eventCount(legacy.id), 0);
     },
   );
 };

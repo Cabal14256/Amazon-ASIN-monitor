@@ -27,6 +27,8 @@ function raw(
     details: {
       hasVariantRelationships: hasRelationships,
       parentAsin: hasRelationships ? parent : null,
+      parentTitleStatus:
+        hasRelationships && parent ? 'PRESENT' : 'NOT_APPLICABLE',
     },
     meta: { source: 'spapi', relationshipsObserved: true },
     ...overrides,
@@ -160,14 +162,139 @@ test('忽略 API 错误、延后重试、HTML、人工结果及未观测原始�
   }
 });
 
-test('父体标题失败导致 hasVariants=false 时以原始关系为准', () => {
+test('父体标题未知或旧缓存缺少标题状态时不建立正常状态，也不恢复已有异常', () => {
   const result = raw(true, ORIGINAL_PARENT, { hasVariants: false });
   result.details.parentTitle = '';
-  assert.equal(classifySplitObservation(result).status, 'NORMAL');
+  for (const titleStatus of ['UNKNOWN', undefined, 'NOT_APPLICABLE']) {
+    result.details.parentTitleStatus = titleStatus;
+    assert.equal(classifySplitObservation(result), null);
+    const initial = reduce(null, [observation('a', result)]);
+    assert.equal(initial.status, 'UNKNOWN');
+    assert.equal(initial.members.a.observedAt, null);
+    assert.equal(initial.members.a.pending, true);
+    const after = reduce(normalState(), [observation('a', result, 1)]);
+    assert.equal(after.status, 'NORMAL');
+    assert.equal(after.members.a.observedAt, time(0));
+    assert.equal(after.members.a.parentTitleStatus, 'PRESENT');
+    assert.equal(after.newEvent, null);
+    const broken = reduce(normalState(), [observation('a', raw(false), 1)]);
+    const unresolved = reduce(broken, [observation('a', result, 2)]);
+    assert.equal(unresolved.status, 'BROKEN');
+    assert.equal(unresolved.members.a.reason, 'RELATIONSHIP_LOST');
+    assert.equal(unresolved.members.a.observedAt, time(1));
+    assert.equal(unresolved.members.a.pending, true);
+  }
+});
+
+function emptyTitle(parent = ORIGINAL_PARENT) {
+  const result = raw(true, parent, { hasVariants: false });
+  result.details.parentTitle = '';
+  result.details.parentTitleStatus = 'EMPTY';
+  return result;
+}
+
+test('确认父标题由非空转空计入新增拆分，同组多个成员只产生一个事件', () => {
+  const initial = normalState();
+  assert.equal(initial.members.a.parentTitleStatus, 'PRESENT');
+  const broken = reduce(initial, [
+    observation('a', emptyTitle(), 1),
+    observation('b', emptyTitle(), 1),
+  ]);
+  assert.equal(broken.status, 'BROKEN');
+  assert.equal(broken.newEvent.reason, 'PARENT_TITLE_EMPTY');
+  assert.deepEqual(broken.newEvent.details.triggerAsinIds, ['a', 'b']);
+  assert.equal(broken.newEvent.details.changes.length, 2);
+  assert.equal(broken.members.a.parentTitleStatus, 'EMPTY');
+  assert.equal(broken.members.a.baselineParentAsin, ORIGINAL_PARENT);
+  const repeated = reduce(broken, [observation('a', emptyTitle(), 2)]);
+  assert.equal(repeated.newEvent, null);
+  const recovered = reduce(repeated, [
+    observation('a', raw(), 3),
+    observation('b', raw(), 3),
+  ]);
+  assert.equal(recovered.status, 'NORMAL');
+  assert.equal(recovered.members.a.parentTitleStatus, 'PRESENT');
+  assert.ok(reduce(recovered, [observation('a', emptyTitle(), 4)]).newEvent);
+});
+
+test('首次空标题和旧状态首次确认空标题只登记存量；关系丢失仍可触发', () => {
+  const initial = reduce(null, [
+    observation('a', emptyTitle()),
+    observation('b'),
+  ]);
+  assert.equal(initial.status, 'BROKEN');
+  assert.equal(initial.newEvent, null);
+  const legacy = normalState();
+  delete legacy.members.a.parentTitleStatus;
+  delete legacy.members.b.parentTitleStatus;
+  const seeded = reduce(legacy, [observation('a', emptyTitle(), 1)]);
+  assert.equal(seeded.status, 'BROKEN');
+  assert.equal(seeded.members.a.parentTitleStatus, 'EMPTY');
+  assert.equal(seeded.newEvent, null);
   assert.equal(
-    reduce(normalState(), [observation('a', result, 1)]).newEvent,
+    reduce(seeded, [observation('a', emptyTitle(), 2)]).newEvent,
     null,
   );
+  const mixed = reduce(legacy, [
+    observation('a', emptyTitle(), 1),
+    observation('b', raw(false), 1),
+  ]);
+  assert.equal(mixed.newEvent.reason, 'RELATIONSHIP_LOST');
+  assert.deepEqual(mixed.newEvent.details.triggerAsinIds, ['b']);
+  const changed = reduce(legacy, [observation('a', emptyTitle(NEW_PARENT), 1)]);
+  assert.equal(changed.newEvent.reason, 'PARENT_CHANGED');
+});
+
+test('空标题后查询失败不恢复，另一成员未知标题也阻止组短暂恢复', () => {
+  const broken = reduce(normalState(), [observation('a', emptyTitle(), 1)]);
+  for (const result of [
+    raw(true, ORIGINAL_PARENT, { errorType: 'SP_API_ERROR' }),
+    raw(true, ORIGINAL_PARENT, { error: 'timeout' }),
+  ]) {
+    const failed = reduce(broken, [observation('a', result, 2)]);
+    assert.equal(failed.status, 'BROKEN');
+    assert.equal(failed.members.a.reason, 'PARENT_TITLE_EMPTY');
+    assert.equal(failed.members.a.parentTitleStatus, 'EMPTY');
+    assert.equal(failed.members.a.observedAt, time(1));
+  }
+  const unknown = raw();
+  unknown.details.parentTitleStatus = 'UNKNOWN';
+  const waiting = reduce(broken, [
+    observation('a', raw(), 2),
+    observation('b', unknown, 2),
+  ]);
+  assert.equal(waiting.status, 'BROKEN');
+  assert.equal(waiting.members.b.pending, true);
+  assert.equal(
+    reduce(waiting, [observation('b', emptyTitle(), 3)]).newEvent,
+    null,
+  );
+  const confirmed = reduce(waiting, [observation('b', raw(), 3)]);
+  assert.equal(confirmed.status, 'NORMAL');
+  assert.equal(confirmed.members.b.pending, false);
+});
+
+test('原父恢复但标题为空时保持异常，父体变更与关系丢失优先于标题未知', () => {
+  const changed = reduce(normalState(), [
+    observation('a', raw(true, NEW_PARENT), 1),
+  ]);
+  const emptyOriginal = reduce(changed, [observation('a', emptyTitle(), 2)]);
+  assert.equal(emptyOriginal.status, 'BROKEN');
+  assert.equal(emptyOriginal.members.a.reason, 'PARENT_TITLE_EMPTY');
+  assert.equal(emptyOriginal.newEvent, null);
+  assert.equal(
+    reduce(emptyOriginal, [observation('a', raw(), 3)]).status,
+    'NORMAL',
+  );
+  for (const [result, reason] of [
+    [raw(true, NEW_PARENT), 'PARENT_CHANGED'],
+    [raw(false), 'RELATIONSHIP_LOST'],
+  ]) {
+    result.details.parentTitleStatus = 'UNKNOWN';
+    const classified = reduce(normalState(), [observation('a', result, 1)]);
+    assert.equal(classified.status, 'BROKEN');
+    assert.equal(classified.newEvent.reason, reason);
+  }
 });
 
 test('父体迁移触发拆分且固定原父体，直到恢复原父体才恢复正常', () => {

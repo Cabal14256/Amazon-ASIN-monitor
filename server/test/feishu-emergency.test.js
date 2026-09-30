@@ -205,7 +205,11 @@ test('同一区域并发评估仅一次加急，冷却不泄露联系人', async
   assert.equal(outcomes.filter((item) => item.status === 'cooldown').length, 4);
   assert.equal(service.calls.phone.length, 1);
   assert.match(service.calls.phone[0].text, /新增异常变体组数：11/);
-  assert.match(service.calls.phone[0].text, /原父体变化或关系丢失/);
+  assert.match(
+    service.calls.phone[0].text,
+    /原父体变化、关系丢失或成功查询确认父 ASIN 标题为空/,
+  );
+  assert.match(service.calls.phone[0].text, /标题查询失败或超时暂不判定/);
   assert.deepEqual(service.calls.claim[0], [
     'EU',
     60,
@@ -377,7 +381,7 @@ test('普通通知失败仍执行电话加急，电话失败仍保留普通通�
   }
 });
 
-test('群卡片显示原父体变化和关系丢失的诊断信息', () => {
+test('群卡片区分父体变化、关系丢失和成功确认父标题为空的诊断信息', () => {
   const service = loadWithStubs('../src/services/feishuService', {
     axios: {},
     '../models/FeishuConfig': {},
@@ -387,6 +391,12 @@ test('群卡片显示原父体变化和关系丢失的诊断信息', () => {
   const card = service.buildFeishuCard({
     country: 'US',
     brokenGroups: 1,
+    brokenByType: {
+      PARENT_CHANGED: 1,
+      NO_VARIANTS: 1,
+      PARENT_TITLE_EMPTY: 1,
+      SP_API_ERROR: 1,
+    },
     brokenASINs: [
       {
         asin: 'B000000001',
@@ -406,10 +416,32 @@ test('群卡片显示原父体变化和关系丢失的诊断信息', () => {
           currentParentAsin: null,
         },
       },
+      {
+        asin: 'B000000003',
+        groupName: 'group',
+        splitDetection: {
+          reason: 'PARENT_TITLE_EMPTY',
+          baselineParentAsin: 'B000PARENT',
+          currentParentAsin: 'B000PARENT',
+        },
+      },
+      {
+        asin: 'B000000004',
+        groupName: 'group',
+        statusSource: 'AUTO',
+      },
     ],
   });
   assert.match(JSON.stringify(card), /父体变化：B000PARENT → B000NEWPAR/);
   assert.match(JSON.stringify(card), /关系丢失，原父体：B000PARENT/);
+  assert.match(JSON.stringify(card), /父 ASIN 标题确认为空：1 个/);
+  assert.match(JSON.stringify(card), /父 ASIN 标题确认为空：B000PARENT/);
+  assert.match(JSON.stringify(card), /SP-API错误：1 个/);
+  const errorLine = card.elements[0].text.content
+    .split('\n')
+    .find((line) => line.includes('[B000000004]'));
+  assert.ok(errorLine);
+  assert.doesNotMatch(errorLine, /标题确认为空/);
 });
 
 test('缺少凭据时不占用冷却，电话服务异常时不会向监控任务抛错', async (t) => {

@@ -4,6 +4,30 @@ const SPLIT_STATUS = Object.freeze({
   BROKEN: 'BROKEN',
 });
 
+const PARENT_TITLE_STATUS = Object.freeze({
+  PRESENT: 'PRESENT',
+  EMPTY: 'EMPTY',
+  UNKNOWN: 'UNKNOWN',
+  NOT_APPLICABLE: 'NOT_APPLICABLE',
+});
+
+function parentTitleStatus(result, currentParentAsin) {
+  if (!currentParentAsin) return PARENT_TITLE_STATUS.NOT_APPLICABLE;
+  const status = result.details?.parentTitleStatus;
+  return status === PARENT_TITLE_STATUS.PRESENT ||
+    status === PARENT_TITLE_STATUS.EMPTY
+    ? status
+    : PARENT_TITLE_STATUS.UNKNOWN;
+}
+
+function isRelationshipSource(result) {
+  return (
+    result?.meta?.source === 'spapi' &&
+    result.meta.relationshipsObserved === true &&
+    result.statusSource !== 'MANUAL'
+  );
+}
+
 function normalizeParentAsin(value) {
   if (typeof value !== 'string') return null;
   const normalized = value.trim().toUpperCase();
@@ -19,30 +43,28 @@ function observationTime(value) {
   return Number.isFinite(date.getTime()) ? date.toISOString() : null;
 }
 
-// A title lookup failure must not erase the successful raw relationship lookup.
 // Null means that the observation is not sufficient to change the split state.
+// A title lookup failure cannot establish or restore a normal state.
 function classifySplitObservation(result, previous = {}) {
   if (
-    !result ||
-    result.meta?.source !== 'spapi' ||
-    result.meta?.relationshipsObserved !== true ||
+    !isRelationshipSource(result) ||
     result.errorType ||
     result.error ||
-    result.isDeferred ||
-    result.statusSource === 'MANUAL' ||
-    result.meta?.source === 'manual'
+    result.isDeferred
   ) {
     return null;
   }
 
   const baselineParentAsin = normalizeParentAsin(previous.baselineParentAsin);
   const currentParentAsin = normalizeParentAsin(result.details?.parentAsin);
+  const titleStatus = parentTitleStatus(result, currentParentAsin);
   if (result.details?.hasVariantRelationships === false) {
     return {
       status: SPLIT_STATUS.BROKEN,
       reason: 'RELATIONSHIP_LOST',
       baselineParentAsin,
       currentParentAsin,
+      parentTitleStatus: titleStatus,
     };
   }
   if (result.details?.hasVariantRelationships !== true) return null;
@@ -54,11 +76,22 @@ function classifySplitObservation(result, previous = {}) {
   const parentChanged = Boolean(
     baselineParentAsin && currentParentAsin !== baselineParentAsin,
   );
+  // Proven relationship changes take precedence over unknown title evidence.
+  // Legacy cached results have no title status and must not recover a split.
+  if (!parentChanged && titleStatus === PARENT_TITLE_STATUS.UNKNOWN)
+    return null;
+  const titleEmpty = titleStatus === PARENT_TITLE_STATUS.EMPTY;
   return {
-    status: parentChanged ? SPLIT_STATUS.BROKEN : SPLIT_STATUS.NORMAL,
-    reason: parentChanged ? 'PARENT_CHANGED' : null,
+    status:
+      parentChanged || titleEmpty ? SPLIT_STATUS.BROKEN : SPLIT_STATUS.NORMAL,
+    reason: parentChanged
+      ? 'PARENT_CHANGED'
+      : titleEmpty
+      ? 'PARENT_TITLE_EMPTY'
+      : null,
     baselineParentAsin: baselineParentAsin || currentParentAsin,
     currentParentAsin,
+    parentTitleStatus: titleStatus,
   };
 }
 
@@ -74,6 +107,7 @@ function unknownMember(member) {
     currentParentAsin: null,
     status: SPLIT_STATUS.UNKNOWN,
     reason: null,
+    parentTitleStatus: null,
     observedAt: null,
   };
 }
@@ -140,7 +174,22 @@ function reduceGroupSplitState(
     if (member.observedAt && observation.observedAt <= member.observedAt)
       continue;
     const classification = classifySplitObservation(observation.result, member);
-    if (!classification) continue;
+    if (!classification) {
+      // Preserve the last confirmed member state while blocking group recovery
+      // until this newer inconclusive observation has been resolved.
+      if (
+        isRelationshipSource(observation.result) &&
+        (!member.pendingObservedAt ||
+          observation.observedAt > member.pendingObservedAt)
+      ) {
+        members[asinId] = {
+          ...member,
+          pending: true,
+          pendingObservedAt: observation.observedAt,
+        };
+      }
+      continue;
+    }
     members[asinId] = {
       ...member,
       ...classification,
@@ -162,15 +211,22 @@ function reduceGroupSplitState(
     ? SPLIT_STATUS.NORMAL
     : SPLIT_STATUS.UNKNOWN;
   let newEvent = null;
+  // Existing deployments have no title baseline. Seed their first empty title
+  // as an existing condition; only a confirmed PRESENT -> EMPTY can page.
+  const eventMembers = currentMembers.filter(
+    ({ id }) =>
+      members[id].status === SPLIT_STATUS.BROKEN &&
+      (members[id].reason !== 'PARENT_TITLE_EMPTY' ||
+        (oldMembers[id]?.status === SPLIT_STATUS.NORMAL &&
+          oldMembers[id]?.parentTitleStatus === PARENT_TITLE_STATUS.PRESENT)),
+  );
   if (
     !membershipChanged &&
     previous?.status === SPLIT_STATUS.NORMAL &&
-    status === SPLIT_STATUS.BROKEN
+    status === SPLIT_STATUS.BROKEN &&
+    eventMembers.length > 0
   ) {
-    const brokenMembers = currentMembers.filter(
-      (member) => members[member.id].status === SPLIT_STATUS.BROKEN,
-    );
-    const changes = brokenMembers.map(({ id }) => ({
+    const changes = eventMembers.map(({ id }) => ({
       asinId: id,
       reason: members[id].reason,
       baselineParentAsin: members[id].baselineParentAsin,
@@ -179,19 +235,21 @@ function reduceGroupSplitState(
     newEvent = {
       variantGroupId: group.id,
       country: group.country,
-      occurredAt: brokenMembers
+      occurredAt: eventMembers
         .map(({ id }) => members[id].observedAt)
         .sort()[0],
       reason: changes.some((change) => change.reason === 'PARENT_CHANGED')
         ? 'PARENT_CHANGED'
+        : changes.some((change) => change.reason === 'PARENT_TITLE_EMPTY')
+        ? 'PARENT_TITLE_EMPTY'
         : 'RELATIONSHIP_LOST',
       details: {
-        triggerAsinIds: brokenMembers.map(({ id }) => id),
+        triggerAsinIds: eventMembers.map(({ id }) => id),
         changes,
       },
       notifyEnabled:
         enabled(group.feishu_notify_enabled) &&
-        brokenMembers.some((member) => enabled(member.feishu_notify_enabled)),
+        eventMembers.some((member) => enabled(member.feishu_notify_enabled)),
     };
   }
   return {
@@ -205,6 +263,7 @@ function reduceGroupSplitState(
       reason: members[id].reason,
       baselineParentAsin: members[id].baselineParentAsin,
       currentParentAsin: members[id].currentParentAsin,
+      parentTitleStatus: members[id].parentTitleStatus,
     })),
   };
 }

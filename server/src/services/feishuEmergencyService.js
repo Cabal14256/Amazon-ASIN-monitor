@@ -69,8 +69,8 @@ async function notifyEmergency(assessment) {
       `【紧急】${region} 区域新增异常变体组，请尽快处理`,
       `统计时间（北京时间）：${startTime} 至 ${endTime}`,
       `新增异常变体组数：${count}，超过阈值：${threshold}`,
-      '按国家 + 变体组去重，仅统计由正常转为原父体变化或关系丢失的新增事件。',
-      '持续异常、人工标记、API 错误和已尝试电话通知的事件不重复计入。',
+      '按国家 + 变体组去重，仅统计由正常转为原父体变化、关系丢失或成功查询确认父 ASIN 标题为空的新增事件。',
+      '标题查询失败或超时暂不判定；持续异常、人工标记、API 错误和已尝试电话通知的事件不重复计入。',
     ].join('\n');
     const result = await sendUrgentPhoneNotifications({
       userIds: config.userIds,

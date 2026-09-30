@@ -165,22 +165,32 @@ async function resolveParentTitle({
   parentAsin,
   currentAsin,
   currentTitle,
+  currentTitleObserved,
   country,
   priority,
   options = {},
 }) {
   if (!parentAsin) {
-    return '';
+    return { title: '', status: 'NOT_APPLICABLE' };
   }
 
   if (parentAsin === currentAsin) {
-    return typeof currentTitle === 'string'
-      ? currentTitle
-      : String(currentTitle || '');
+    const title =
+      typeof currentTitle === 'string'
+        ? currentTitle
+        : String(currentTitle || '');
+    return {
+      title,
+      status: currentTitleObserved
+        ? hasConcreteTitle(title)
+          ? 'PRESENT'
+          : 'EMPTY'
+        : 'UNKNOWN',
+    };
   }
 
   if (options.skipParentTitleLookup) {
-    return '';
+    return { title: '', status: 'UNKNOWN' };
   }
 
   const owner = options.owner === 'competitor' ? 'competitor' : 'primary';
@@ -207,17 +217,37 @@ async function resolveParentTitle({
     }
 
     const parentResult = await parentRequest;
-    const parentTitle = parentResult?.details?.title;
-    return typeof parentTitle === 'string'
-      ? parentTitle
-      : String(parentTitle || '');
+    const parentTitle =
+      typeof parentResult?.details?.title === 'string'
+        ? parentResult.details.title
+        : String(parentResult?.details?.title || '');
+    const successfulLookup =
+      parentResult?.meta?.source === 'spapi' &&
+      parentResult.meta.titleObserved === true &&
+      String(parentResult?.details?.asin || '')
+        .trim()
+        .toUpperCase() === String(parentAsin).trim().toUpperCase() &&
+      Object.prototype.hasOwnProperty.call(
+        parentResult?.details || {},
+        'title',
+      ) &&
+      !parentResult?.error &&
+      !parentResult?.errorType;
+    return {
+      title: parentTitle,
+      status: successfulLookup
+        ? hasConcreteTitle(parentTitle)
+          ? 'PRESENT'
+          : 'EMPTY'
+        : 'UNKNOWN',
+    };
   } catch (error) {
     logger.warn(
       `[checkASINVariants] 获取父体标题失败: ${parentAsin}: ${
         error.message || error
       }`,
     );
-    return '';
+    return { title: '', status: 'UNKNOWN' };
   } finally {
     if (pendingParentTitleRequests.get(parentRequestKey) === parentRequest) {
       pendingParentTitleRequests.delete(parentRequestKey);
@@ -229,6 +259,13 @@ function isVariantResultCacheCompatible(result) {
   const details = result?.details;
   const parentAsin = details?.parentAsin;
 
+  if (
+    result?.meta?.source === 'spapi' &&
+    !result.errorType &&
+    result.meta.titleObserved !== true
+  )
+    return false;
+
   // Results created before parent-title validation do not contain this field.
   // Parentless results do not use the new gate and remain compatible.
   if (!parentAsin) {
@@ -239,9 +276,12 @@ function isVariantResultCacheCompatible(result) {
     return false;
   }
 
-  // Parent-title validation is required for every cached parent result,
-  // including cached negative results created while the title was empty.
-  return hasConcreteTitle(details.parentTitle);
+  // Old caches cannot distinguish a failed request from a successful empty
+  // title. Refresh them once; uncertain lookups must also be retried.
+  return (
+    details.parentTitleStatus === 'PRESENT' ||
+    details.parentTitleStatus === 'EMPTY'
+  );
 }
 
 /**
@@ -880,22 +920,27 @@ async function doCheckASINVariants(
         hasVariantASINs ||
         variationRelations.length > 0 ||
         hasParentFromSummaries;
-      const currentTitle = String(
-        item.summaries?.[0]?.itemName ||
-          item.summaries?.[0]?.title ||
-          item.attributes?.item_name?.[0]?.value ||
-          '',
+      const titleCandidates = [
+        item.summaries?.[0]?.itemName,
+        item.summaries?.[0]?.title,
+        item.attributes?.item_name?.[0]?.value,
+      ];
+      const currentTitleObserved = titleCandidates.every(
+        (value) => value == null || typeof value === 'string',
       );
-      const parentTitle = (
-        await resolveParentTitle({
-          parentAsin: finalParentASIN,
-          currentAsin: cleanASIN,
-          currentTitle,
-          country,
-          priority,
-          options,
-        })
-      ).trim();
+      const currentTitle = currentTitleObserved
+        ? titleCandidates.find(hasConcreteTitle) || ''
+        : '';
+      const parentTitleLookup = await resolveParentTitle({
+        parentAsin: finalParentASIN,
+        currentAsin: cleanASIN,
+        currentTitle,
+        currentTitleObserved,
+        country,
+        priority,
+        options,
+      });
+      const parentTitle = parentTitleLookup.title.trim();
       const finalHasVariants = applyParentTitleGate(
         baseHasVariants,
         finalParentASIN,
@@ -952,6 +997,7 @@ async function doCheckASINVariants(
           parentAsin: finalParentASIN || null,
           parentTitle,
           hasVariantRelationships: baseHasVariants,
+          parentTitleStatus: parentTitleLookup.status,
           variations: variantASINs.map((asin) => ({
             asin,
             title: '',
@@ -964,6 +1010,7 @@ async function doCheckASINVariants(
           relationshipsObserved:
             Array.isArray(item.relationships) || Array.isArray(item.variations),
           observedAt: relationshipObservedAt,
+          titleObserved: currentTitleObserved,
         },
       };
 
@@ -1463,7 +1510,8 @@ async function checkSingleASIN(asinId, forceRefresh = false) {
     });
     if (
       result?.errorType === 'NOT_FOUND' ||
-      result?.errorType === 'PARENT_CHANGED'
+      result?.errorType === 'PARENT_CHANGED' ||
+      result?.errorType === 'PARENT_TITLE_EMPTY'
     ) {
       if (asinRecord.variantGroupId) {
         await VariantGroup.updateVariantStatusAndCheckTime(
