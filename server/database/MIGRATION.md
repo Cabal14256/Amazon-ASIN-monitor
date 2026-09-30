@@ -77,6 +77,7 @@
 | `030_add_analytics_rollup_and_status_interval.sql` | 主营 | 增加月聚合、水位和状态区间表 | 一次性；依赖此前聚合表 |
 | `030_optimize_batch_delete_history_fks.sql` | 主营与竞品 | 回填竞品历史快照并移除历史外键 | 条件化；大表回填和约束变更 |
 | `031_optimize_analytics_refresh_indexes.sql` | 主营 | 补充分析刷新索引 | 幂等条件索引 |
+| `032_add_feishu_emergency.sql` | 主营 | 添加飞书电话加急配置和 UTC 冷却时间 | 幂等条件补列；上线应用前执行，不覆盖已有通知规则 |
 
 ## 验证清单
 

@@ -217,6 +217,8 @@ CREATE TABLE IF NOT EXISTS `feishu_config` (
   `country` VARCHAR(10) NOT NULL UNIQUE COMMENT '区域代码（US或EU）',
   `webhook_url` VARCHAR(500) NOT NULL COMMENT '飞书Webhook URL',
   `enabled` TINYINT(1) DEFAULT 1 COMMENT '是否启用: 0-否, 1-是',
+  `emergency_config` JSON DEFAULT NULL COMMENT '电话加急规则、时间范围、阈值和联系人',
+  `last_emergency_at` DATETIME DEFAULT NULL COMMENT '最近一次电话加急抢占时间（UTC）',
   `create_time` DATETIME DEFAULT CURRENT_TIMESTAMP,
   `update_time` DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='飞书通知配置表';

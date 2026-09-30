@@ -2,6 +2,10 @@ const axios = require('axios');
 const FeishuConfig = require('../models/FeishuConfig');
 const { getUTC8LocaleString } = require('../utils/dateTime');
 const logger = require('../utils/logger');
+const {
+  assessEmergency,
+  notifyEmergency,
+} = require('./feishuEmergencyService');
 
 const RATE_LIMIT_CODE = 11232;
 const REQUEST_INTERVAL_MS = 500;
@@ -194,8 +198,13 @@ function buildFeishuCard(data) {
   } = data;
 
   // 状态颜色和文本
-  const statusColor = brokenGroups > 0 ? 'red' : 'green';
-  const statusText = brokenGroups > 0 ? '⚠️ 发现异常' : '✅ 全部正常';
+  const isEmergency = data.emergency?.status === 'emergency';
+  const statusColor = isEmergency || brokenGroups > 0 ? 'red' : 'green';
+  const statusText = isEmergency
+    ? '🚨 紧急状态'
+    : brokenGroups > 0
+    ? '⚠️ 发现异常'
+    : '✅ 全部正常';
 
   // 国家/区域名称映射
   const countryMap = {
@@ -205,12 +214,9 @@ function buildFeishuCard(data) {
 
   // 如果有countryDisplay（包含多个国家），使用它；否则使用区域名称
   const countryName = data.countryDisplay || countryMap[country] || country;
-  const headerTitle = buildNotificationTitle(
-    title,
-    country,
-    countryName,
-    brokenGroups,
-  );
+  const headerTitle = isEmergency
+    ? `${title}-${country}紧急`
+    : buildNotificationTitle(title, country, countryName, brokenGroups);
   // 确保时间格式为 UTC+8，如果 checkTime 是 Date 对象则转换，否则使用当前时间
   const timeStr = checkTime
     ? checkTime instanceof Date
@@ -247,6 +253,12 @@ function buildFeishuCard(data) {
 
   // 构建通知内容主体
   let contentText = `【${timeStr}】【${countryName}】\n\n`;
+  if (isEmergency) {
+    const { region, count, threshold, startTime, endTime } = data.emergency;
+    contentText += `🚨 ${region} 区域进入紧急状态：统计时段内异常变体 ${count} 个，超过阈值 ${threshold} 个。\n`;
+    contentText += `统计时段（北京时间）：${startTime} 至 ${endTime}\n`;
+    contentText += '请相关负责人尽快检查并处理。\n\n';
+  }
   contentText += `已检查分组数量：${totalGroups}，异常分组数量：${brokenGroups}，异常ASIN数量：${totalBrokenASINs}\n\n`;
 
   // 显示异常分类统计
@@ -409,19 +421,27 @@ async function sendSingleCountryNotification(country, countryData) {
 
   const region = countryToRegionMap[country] || country;
   const countryName = countryNameMap[country] || country;
+  const assessment = await assessEmergency(region);
+  const { config: emergencyConfig, ...emergency } = assessment;
   const notificationData = {
     ...countryData,
     country,
     countryDisplay: `${countryName}(${country})`,
     region,
+    emergency,
   };
 
   // 无论是否有异常都发送通知（无异常时显示"全部正常"）
-  const result = await sendNotificationWithRetry(region, notificationData);
+  const [result, phoneResult] = await Promise.all([
+    sendNotificationWithRetry(region, notificationData),
+    notifyEmergency(assessment),
+  ]);
+  const emergencyResult = { ...emergency, phone: phoneResult };
   if (result.success) {
     return {
       success: true,
       skipped: false,
+      emergency: emergencyResult,
     };
   } else {
     if (result.errorCode === RATE_LIMIT_CODE) {
@@ -432,6 +452,7 @@ async function sendSingleCountryNotification(country, countryData) {
       success: false,
       skipped: false,
       errorCode: result.errorCode,
+      emergency: emergencyResult,
     };
   }
 }
@@ -450,26 +471,6 @@ async function sendBatchNotifications(countryResults) {
     countryResults: {}, // 记录每个国家的通知发送结果
   };
 
-  // 国家到区域的映射（用于查找webhook配置）
-  const countryToRegionMap = {
-    US: 'US',
-    UK: 'EU',
-    DE: 'EU',
-    FR: 'EU',
-    IT: 'EU',
-    ES: 'EU',
-  };
-
-  // 国家名称映射
-  const countryNameMap = {
-    US: '美国',
-    UK: '英国',
-    DE: '德国',
-    FR: '法国',
-    IT: '意大利',
-    ES: '西班牙',
-  };
-
   const countries = Object.keys(countryResults).filter((country) =>
     Object.prototype.hasOwnProperty.call(countryResults, country),
   );
@@ -479,36 +480,10 @@ async function sendBatchNotifications(countryResults) {
     const batch = countries.slice(i, i + BATCH_SIZE);
     const tasks = batch.map(async (country) => {
       const countryData = countryResults[country];
-      const region = countryToRegionMap[country] || country;
       results.total++;
-      const countryName = countryNameMap[country] || country;
-      const notificationData = {
-        ...countryData,
-        country,
-        countryDisplay: `${countryName}(${country})`,
-        region,
-      };
-
-      // 无论是否有异常都发送通知（无异常时显示"全部正常"）
-      const result = await sendNotificationWithRetry(region, notificationData);
-      if (result.success) {
-        results.success++;
-        results.countryResults[country] = {
-          success: true,
-          skipped: false,
-        };
-      } else {
-        results.failed++;
-        results.countryResults[country] = {
-          success: false,
-          skipped: false,
-          errorCode: result.errorCode,
-        };
-        if (result.errorCode === RATE_LIMIT_CODE) {
-          logger.warn(`[feishu] 国家 ${country} 限频重试失败`);
-          recordRateLimit(country);
-        }
-      }
+      const result = await sendSingleCountryNotification(country, countryData);
+      results[result.success ? 'success' : 'failed']++;
+      results.countryResults[country] = result;
     });
 
     await Promise.all(tasks);
