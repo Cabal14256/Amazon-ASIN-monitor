@@ -17,14 +17,20 @@ async function assessEmergency(region, now = new Date()) {
     if (!config.enabled) return { status: 'disabled' };
     const window = getEmergencyWindow(config, now);
     if (!window) return { status: 'outside_time_range' };
-    const count = await FeishuConfig.countEmergencyASINs(
+    const { count, maxEventId } = await FeishuConfig.getEmergencyGroups(
       region,
       window.startTime,
       window.endTime,
     );
-    const summary = { region, count, threshold: config.threshold, ...window };
+    const summary = {
+      region,
+      count,
+      threshold: config.threshold,
+      maxEventId,
+      ...window,
+    };
     if (count <= config.threshold) return { ...summary, status: 'normal' };
-    logger.warn('飞书异常数量超过紧急阈值', summary);
+    logger.warn('飞书新增异常变体组数量超过紧急阈值', summary);
     return { ...summary, status: 'emergency', config };
   } catch {
     // Database driver errors can contain SQL values, including contact IDs.
@@ -37,7 +43,8 @@ async function notifyEmergency(assessment) {
   if (assessment.status !== 'emergency') {
     return { status: assessment.status };
   }
-  const { config, region, count, threshold, startTime, endTime } = assessment;
+  const { config, region, count, threshold, startTime, endTime, maxEventId } =
+    assessment;
   try {
     if (
       !process.env.FEISHU_APP_ID?.trim() ||
@@ -48,14 +55,22 @@ async function notifyEmergency(assessment) {
     }
     // Reserve before any outbound request. Ambiguous timeouts also consume the
     // cooldown, so concurrent workers and retries cannot repeatedly dial users.
-    if (!(await FeishuConfig.claimEmergency(region, config.cooldownMinutes))) {
+    if (
+      !(await FeishuConfig.claimEmergency(region, config.cooldownMinutes, {
+        startTime,
+        endTime,
+        maxEventId,
+        rule: config,
+      }))
+    ) {
       return { status: 'cooldown' };
     }
     const text = [
-      `【紧急】${region} 区域 ASIN 变体异常，请尽快处理`,
+      `【紧急】${region} 区域新增异常变体组，请尽快处理`,
       `统计时间（北京时间）：${startTime} 至 ${endTime}`,
-      `异常变体数：${count}，超过阈值：${threshold}`,
-      '按国家 + ASIN 去重，包含统计时间内曾出现异常且开启通知的变体。',
+      `新增异常变体组数：${count}，超过阈值：${threshold}`,
+      '按国家 + 变体组去重，仅统计由正常转为原父体变化或关系丢失的新增事件。',
+      '持续异常、人工标记、API 错误和已尝试电话通知的事件不重复计入。',
     ].join('\n');
     const result = await sendUrgentPhoneNotifications({
       userIds: config.userIds,

@@ -17,6 +17,12 @@ function loadModel(runQuery, logs = []) {
         pool: {
           query: (options) => runQuery(options, options.values),
         },
+        withTransaction: async (handler) =>
+          handler({
+            connection: {
+              query: (options) => runQuery(options, options.values),
+            },
+          }),
       };
     }
     if (parent?.filename === filename && request === '../utils/logger') {
@@ -214,29 +220,32 @@ test('显式更新规则使用绑定 JSON，不重置冷却时间', async () => 
   assert.equal(JSON.parse(update.params[2]).threshold, 0);
 });
 
-test('窗口统计使用国家加 ASIN 去重，包含边界并排除关闭通知的 ASIN 与变体组', async () => {
+test('新发拆分按国家加变体组去重，只统计未尝试电话的有效通知事件', async () => {
   const calls = [];
   const model = loadModel(async (options, params) => {
     calls.push({ ...options, params });
-    return [[{ broken_count: '12' }]];
+    return [[{ group_count: '12', max_event_id: '9007199254740993' }]];
   });
-  assert.equal(
-    await model.countEmergencyASINs(
+  assert.deepEqual(
+    await model.getEmergencyGroups(
       'EU',
       '2026-09-30 08:00:00',
       '2026-09-30 08:30:00',
     ),
-    12,
+    { count: 12, maxEventId: '9007199254740993' },
   );
   const call = calls[0];
+  assert.match(call.sql, /COUNT\(DISTINCT e.country, e.variant_group_id\)/);
+  assert.match(call.sql, /FROM variant_group_split_events e/);
+  assert.match(call.sql, /e.phone_attempted_at IS NULL/);
+  assert.match(call.sql, /e.notify_enabled = 1/);
+  assert.match(call.sql, /e.occurred_at >= \?/);
+  assert.match(call.sql, /e.occurred_at <= \?/);
+  assert.match(call.sql, /a.variant_group_id = e.variant_group_id/);
   assert.match(
     call.sql,
-    /COUNT\(DISTINCT mh.country, COALESCE\(NULLIF\(mh.asin_code, ''\), NULLIF\(a.asin, ''\), mh.asin_id\)\)/,
+    /JSON_CONTAINS\(e.details, JSON_QUOTE\(a.id\), '\$.triggerAsinIds'\)/,
   );
-  assert.match(call.sql, /mh.check_type = 'ASIN'/);
-  assert.match(call.sql, /mh.is_broken = 1/);
-  assert.match(call.sql, /mh.check_time >= \?/);
-  assert.match(call.sql, /mh.check_time <= \?/);
   assert.match(call.sql, /COALESCE\(a.feishu_notify_enabled, 1\) <> 0/);
   assert.match(call.sql, /COALESCE\(vg.feishu_notify_enabled, 1\) <> 0/);
   assert.deepEqual(call.params, [
@@ -248,34 +257,122 @@ test('窗口统计使用国家加 ASIN 去重，包含边界并排除关闭通�
     '2026-09-30 08:00:00',
     '2026-09-30 08:30:00',
   ]);
-  await assert.rejects(model.countEmergencyASINs('invalid', '', ''), {
+  await assert.rejects(model.getEmergencyGroups('invalid', '', ''), {
     status: 400,
   });
   assert.equal(calls.length, 1);
 });
 
-test('电话冷却使用单次 UTC 条件 UPDATE 抢占，只把实际更新一行判为成功', async () => {
+const claimRule = normalizeEmergencyConfig({
+  enabled: true,
+  userIds: ['ou_test'],
+});
+const claimOptions = {
+  startTime: '2026-09-30 08:00:00.000',
+  endTime: '2026-09-30 08:30:00.750',
+  maxEventId: '45',
+  rule: claimRule,
+};
+
+function claimFixture({ row = {}, count = 11 } = {}) {
   const calls = [];
   const model = loadModel(async (options, params) => {
     calls.push({ ...options, params });
-    return [{ affectedRows: calls.length === 1 ? 1 : 0 }];
+    if (options.sql.includes('FROM feishu_config'))
+      return [
+        [
+          makeRow({
+            cooldown_ready: 1,
+            emergency_config: claimRule,
+            ...row,
+          }),
+        ],
+      ];
+    if (options.sql.includes('SELECT COUNT')) return [[{ group_count: count }]];
+    return [{ affectedRows: 1 }];
   });
-  assert.equal(await model.claimEmergency('EU', 60), true);
-  assert.equal(await model.claimEmergency('EU', 60), false);
-  assert.match(calls[0].sql, /SET last_emergency_at = UTC_TIMESTAMP\(\)/);
-  assert.match(calls[0].sql, /last_emergency_at IS NULL/);
+  return { model, calls };
+}
+
+test('原子抢占锁定区域配置，重算水位内数量并仅消费本批次，冷却使用数据库 UTC', async () => {
+  const { model, calls } = claimFixture();
+  assert.equal(await model.claimEmergency('EU', 60, claimOptions), true);
+  assert.equal(calls.length, 4);
+  assert.match(calls[0].sql, /FOR UPDATE/);
   assert.match(
     calls[0].sql,
     /last_emergency_at <= DATE_SUB\(UTC_TIMESTAMP\(\), INTERVAL \? MINUTE\)/,
   );
-  assert.match(calls[0].sql, /enabled = 1/);
-  assert.match(
-    calls[0].sql,
-    /JSON_EXTRACT\(emergency_config, '\$.enabled'\) = TRUE/,
+  assert.deepEqual(calls[0].params, [60, 'EU']);
+  for (const call of [calls[1], calls[2]]) {
+    assert.match(call.sql, /e.id <= \?/);
+    assert.match(call.sql, /e.phone_attempted_at IS NULL/);
+    assert.match(call.sql, /e.occurred_at >= \? AND e.occurred_at <= \?/);
+    assert.match(call.sql, /JSON_CONTAINS/);
+    assert.deepEqual(call.params, [
+      'UK',
+      'DE',
+      'FR',
+      'IT',
+      'ES',
+      claimOptions.startTime,
+      claimOptions.endTime,
+      '45',
+    ]);
+  }
+  assert.match(calls[2].sql, /SET e.phone_attempted_at = UTC_TIMESTAMP\(\)/);
+  assert.match(calls[3].sql, /SET last_emergency_at = UTC_TIMESTAMP\(\)/);
+});
+
+test('规则修改、关闭、冷却中、未消费组数不足时不消费事件或抢占电话', async () => {
+  for (const scenario of [
+    { row: { enabled: 0 } },
+    { row: { cooldown_ready: 0 } },
+    { row: { emergency_config: { ...claimRule, enabled: false } } },
+    { row: { emergency_config: { ...claimRule, threshold: 9 } } },
+    { row: { emergency_config: { ...claimRule, userIds: ['ou_new'] } } },
+    { row: { emergency_config: { ...claimRule, cooldownMinutes: 5 } } },
+    { count: 10 },
+    { count: 0 },
+  ]) {
+    const { model, calls } = claimFixture(scenario);
+    assert.equal(await model.claimEmergency('US', 60, claimOptions), false);
+    assert.ok(calls.every((call) => !call.sql.startsWith('UPDATE')));
+  }
+});
+
+test('没有完整事件评估不消费，非法冷却值拒绝，不再支持仅按冷却直接拨打', async () => {
+  const { model, calls } = claimFixture();
+  for (const options of [
+    undefined,
+    {},
+    { ...claimOptions, maxEventId: null },
+    { ...claimOptions, maxEventId: '1.1' },
+    { ...claimOptions, rule: null },
+  ]) {
+    assert.equal(await model.claimEmergency('US', 60, options), false);
+  }
+  await assert.rejects(model.claimEmergency('US', 0, claimOptions), {
+    status: 400,
+  });
+  assert.equal(calls.length, 0);
+});
+
+test('事务内数据库失败仍只记录脱敏错误码', async () => {
+  const logs = [];
+  const model = loadModel(async () => {
+    const error = new Error('bound SQL ou_private and private_webhook');
+    error.code = 'ER_LOCK_DEADLOCK';
+    throw error;
+  }, logs);
+  await assert.rejects(model.claimEmergency('US', 60, claimOptions), {
+    message: '飞书配置数据库操作失败',
+  });
+  assert.match(JSON.stringify(logs), /ER_LOCK_DEADLOCK/);
+  assert.doesNotMatch(
+    JSON.stringify(logs),
+    /ou_private|private_webhook|bound SQL/,
   );
-  assert.deepEqual(calls[0].params, ['EU', 60]);
-  await assert.rejects(model.claimEmergency('EU', 0), { status: 400 });
-  assert.equal(calls.length, 2);
 });
 
 test('数据库失败不传播 SQL、webhook 或联系人到日志和错误消息', async () => {

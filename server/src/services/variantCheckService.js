@@ -12,6 +12,11 @@ const { PRIORITY } = rateLimiter;
 const operationIdentifier = require('./spApiOperationIdentifier');
 const { batchCheckASINsHybrid } = require('./batchVariantCheckService');
 const logger = require('../utils/logger');
+const {
+  isRelationshipObservation,
+  observeVariantGroupSplit,
+  applySplitState,
+} = require('./variantSplitService');
 const { parseVariantRelationships } = require('../utils/variantParser');
 const {
   buildEffectiveStatus,
@@ -828,6 +833,7 @@ async function doCheckASINVariants(
     }
 
     if (item) {
+      const relationshipObservedAt = new Date().toISOString();
       logger.debug(`[checkASINVariants] 解析到的item:`, {
         asin: item.asin,
         hasVariations: !!item.variations,
@@ -945,6 +951,7 @@ async function doCheckASINVariants(
             null,
           parentAsin: finalParentASIN || null,
           parentTitle,
+          hasVariantRelationships: baseHasVariants,
           variations: variantASINs.map((asin) => ({
             asin,
             title: '',
@@ -954,6 +961,9 @@ async function doCheckASINVariants(
         meta: {
           source: 'spapi',
           apiVersion,
+          relationshipsObserved:
+            Array.isArray(item.relationships) || Array.isArray(item.variations),
+          observedAt: relationshipObservedAt,
         },
       };
 
@@ -1131,10 +1141,14 @@ async function checkVariantGroup(
       const childRef = asinId ? asinIdToChild.get(asinId) : null;
 
       try {
-        const result =
+        let result =
           batchResults && batchResults[index]
             ? batchResults[index]
             : await checkASINVariants(asin, country, forceRefresh);
+        // Search results alone cannot confirm a missing or changed relationship.
+        if (batchResults && !isRelationshipObservation(result)) {
+          result = await checkASINVariants(asin, country, forceRefresh);
+        }
         const isBroken = !result?.hasVariants;
         const errorType = result?.errorType || (isBroken ? 'NO_VARIANTS' : '');
 
@@ -1219,6 +1233,43 @@ async function checkVariantGroup(
 
     await Promise.all(asins.map(processEntry));
 
+    const split = await observeVariantGroupSplit(
+      variantGroupId,
+      results.map((entry, index) => ({
+        asinId: asins[index].id,
+        result: entry?.details,
+        observedAt:
+          entry?.details?.meta?.observedAt || new Date().toISOString(),
+        uncertain: !isRelationshipObservation(entry?.details),
+      })),
+    );
+    for (let index = 0; index < results.length; index++) {
+      const entry = results[index];
+      if (!entry?.details || entry.isDeferred) continue;
+      const state = split.asins.find((item) => item.asinId === asins[index].id);
+      const adjusted = applySplitState(entry.details, state);
+      entry.details = adjusted;
+      entry.splitDetection = adjusted.splitDetection;
+      if (state?.status !== 'BROKEN') continue;
+      const previousType = entry.errorType;
+      const nextType = adjusted.errorType;
+      entry.isBroken = true;
+      entry.errorType = nextType;
+      const existing = brokenASINs.find((item) => item.asin === entry.asin);
+      if (existing) existing.errorType = nextType;
+      else brokenASINs.push({ asin: entry.asin, errorType: nextType });
+      if (previousType !== nextType) {
+        if (previousType)
+          brokenByType[previousType] = Math.max(
+            0,
+            (brokenByType[previousType] || 0) - 1,
+          );
+        brokenByType[nextType] = (brokenByType[nextType] || 0) + 1;
+      }
+      await ASIN.updateVariantStatusAndCheckTime(asins[index].id, true);
+      applyEffectiveStatusToChild(asins[index], true);
+    }
+
     const autoIsBroken = brokenASINs.length > 0;
 
     await VariantGroup.updateVariantStatusAndCheckTime(
@@ -1279,6 +1330,7 @@ async function checkVariantGroup(
 
         return {
           asin: item.asin,
+          splitDetection: currentCheck?.splitDetection,
           errorType:
             autoBrokenInfo?.errorType ||
             (item.statusSource === 'MANUAL' ||
@@ -1352,7 +1404,18 @@ async function checkSingleASIN(asinId, forceRefresh = false) {
     const asin = asinRecord.asin;
     const country = asinRecord.country || 'US';
 
-    const result = await checkASINVariants(asin, country, forceRefresh);
+    const rawResult = await checkASINVariants(asin, country, forceRefresh);
+    const split = await observeVariantGroupSplit(asinRecord.variantGroupId, [
+      {
+        asinId,
+        result: rawResult,
+        observedAt: rawResult.meta?.observedAt,
+      },
+    ]);
+    const result = applySplitState(
+      rawResult,
+      split.asins.find((item) => item.asinId === asinId),
+    );
 
     const autoBroken = !result.hasVariants;
     const effectiveStatus = buildEffectiveStatus({
@@ -1398,7 +1461,10 @@ async function checkSingleASIN(asinId, forceRefresh = false) {
         manualBrokenReason: asinRecord.manualBrokenReason || '',
       },
     });
-    if (result?.errorType === 'NOT_FOUND') {
+    if (
+      result?.errorType === 'NOT_FOUND' ||
+      result?.errorType === 'PARENT_CHANGED'
+    ) {
       if (asinRecord.variantGroupId) {
         await VariantGroup.updateVariantStatusAndCheckTime(
           asinRecord.variantGroupId,
@@ -1415,6 +1481,7 @@ async function checkSingleASIN(asinId, forceRefresh = false) {
           ? [
               {
                 asin,
+                splitDetection: result.splitDetection,
                 errorType:
                   autoBroken || effectiveStatus.statusSource === 'AUTO+MANUAL'
                     ? result?.errorType || 'NO_VARIANTS'

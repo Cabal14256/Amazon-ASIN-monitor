@@ -4,11 +4,11 @@ const UTC8_MS = 8 * 60 * MINUTE_MS;
 
 // ISO formatting avoids ICU locales that render midnight as 24:xx on Node 20.
 const toBeijingSql = (time) =>
-  new Date(time + UTC8_MS).toISOString().slice(0, 19).replace('T', ' ');
+  new Date(time + UTC8_MS).toISOString().slice(0, 23).replace('T', ' ');
 
 // All daily boundaries are Beijing time, independent of the worker's timezone.
 function getEmergencyWindow(config, now = new Date()) {
-  const end = Math.floor(now.getTime() / 1000) * 1000;
+  const end = now.getTime();
   if (!Number.isFinite(end)) throw new Error('Invalid evaluation time');
   let start = end - config.windowMinutes * MINUTE_MS;
   if (config.timeMode !== 'rolling') {

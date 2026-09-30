@@ -32,12 +32,12 @@ const config = {
 };
 const now = new Date('2026-09-30T14:15:00.750Z');
 
-test('滚动窗口以秒精度使用北京时间，跨日不受服务器时区影响', () => {
+test('滚动窗口保留毫秒精度并使用北京时间，跨日不受服务器时区影响', () => {
   assert.deepEqual(
     getEmergencyWindow(config, new Date('2026-09-30T16:05:00Z')),
     {
-      startTime: '2026-09-30 23:35:00',
-      endTime: '2026-10-01 00:05:00',
+      startTime: '2026-09-30 23:35:00.000',
+      endTime: '2026-10-01 00:05:00.000',
     },
   );
 });
@@ -51,15 +51,15 @@ test('每日时段支持跨午夜，开始包含、结束排除', () => {
   assert.deepEqual(
     getEmergencyWindow(daily, new Date('2026-09-30T14:00:00Z')),
     {
-      startTime: '2026-09-30 22:00:00',
-      endTime: '2026-09-30 22:00:00',
+      startTime: '2026-09-30 22:00:00.000',
+      endTime: '2026-09-30 22:00:00.000',
     },
   );
   assert.deepEqual(
     getEmergencyWindow(daily, new Date('2026-09-30T23:59:59Z')),
     {
-      startTime: '2026-09-30 22:00:00',
-      endTime: '2026-10-01 07:59:59',
+      startTime: '2026-09-30 22:00:00.000',
+      endTime: '2026-10-01 07:59:59.000',
     },
   );
   assert.equal(
@@ -82,8 +82,8 @@ test('普通每日时段只统计今天开始后的记录', () => {
   assert.deepEqual(
     getEmergencyWindow(daily, new Date('2026-09-30T05:30:00Z')),
     {
-      startTime: '2026-09-30 09:00:00',
-      endTime: '2026-09-30 13:30:00',
+      startTime: '2026-09-30 09:00:00.000',
+      endTime: '2026-09-30 13:30:00.000',
     },
   );
   assert.equal(
@@ -95,28 +95,29 @@ test('普通每日时段只统计今天开始后的记录', () => {
 test('组合模式取固定时段与滚动窗口交集', () => {
   const combined = { ...config, timeMode: 'combined' };
   assert.deepEqual(getEmergencyWindow(combined, now), {
-    startTime: '2026-09-30 22:00:00',
-    endTime: '2026-09-30 22:15:00',
+    startTime: '2026-09-30 22:00:00.000',
+    endTime: '2026-09-30 22:15:00.750',
   });
   assert.deepEqual(
     getEmergencyWindow(combined, new Date('2026-09-30T18:00:00Z')),
     {
-      startTime: '2026-10-01 01:30:00',
-      endTime: '2026-10-01 02:00:00',
+      startTime: '2026-10-01 01:30:00.000',
+      endTime: '2026-10-01 02:00:00.000',
     },
   );
 });
 
 function fixture(overrides = {}, sender = null) {
-  const calls = { query: [], phone: [], logs: [] };
+  const calls = { query: [], claim: [], phone: [], logs: [] };
   let claimed = false;
   const model = {
     findByRegion: async () => ({ enabled: 1, emergency_config: config }),
-    countEmergencyASINs: async (...args) => {
+    getEmergencyGroups: async (...args) => {
       calls.query.push(args);
-      return 11;
+      return { count: 11, maxEventId: '41' };
     },
-    claimEmergency: async () => {
+    claimEmergency: async (...args) => {
+      calls.claim.push(args);
       if (claimed) return false;
       claimed = true;
       return true;
@@ -143,7 +144,9 @@ function fixture(overrides = {}, sender = null) {
 
 test('只在数量严格超过阈值时进入紧急状态，区域和窗口传给统计查询', async () => {
   for (const count of [9, 10, 11]) {
-    const service = fixture({ countEmergencyASINs: async () => count });
+    const service = fixture({
+      getEmergencyGroups: async () => ({ count, maxEventId: '41' }),
+    });
     assert.equal(
       (await service.assessEmergency('EU', now)).status,
       count > 10 ? 'emergency' : 'normal',
@@ -152,7 +155,7 @@ test('只在数量严格超过阈值时进入紧急状态，区域和窗口传�
   const service = fixture();
   await service.assessEmergency('EU', now);
   assert.deepEqual(service.calls.query, [
-    ['EU', '2026-09-30 21:45:00', '2026-09-30 22:15:00'],
+    ['EU', '2026-09-30 21:45:00.750', '2026-09-30 22:15:00.750'],
   ]);
 });
 
@@ -201,7 +204,18 @@ test('同一区域并发评估仅一次加急，冷却不泄露联系人', async
   assert.equal(outcomes.filter((item) => item.status === 'sent').length, 1);
   assert.equal(outcomes.filter((item) => item.status === 'cooldown').length, 4);
   assert.equal(service.calls.phone.length, 1);
-  assert.match(service.calls.phone[0].text, /异常变体数：11/);
+  assert.match(service.calls.phone[0].text, /新增异常变体组数：11/);
+  assert.match(service.calls.phone[0].text, /原父体变化或关系丢失/);
+  assert.deepEqual(service.calls.claim[0], [
+    'EU',
+    60,
+    {
+      startTime: '2026-09-30 21:45:00.750',
+      endTime: '2026-09-30 22:15:00.750',
+      maxEventId: '41',
+      rule: config,
+    },
+  ]);
   assert.doesNotMatch(JSON.stringify(service.calls.logs), /ou_test/);
 });
 
@@ -263,6 +277,55 @@ test('部分成功或发送异常后仍保留冷却，后续评估不会重复�
   }
 });
 
+test('每日时段已消费事件退出统计，新一批独立事件达到阈值才再次加急', async (t) => {
+  const oldId = process.env.FEISHU_APP_ID;
+  const oldSecret = process.env.FEISHU_APP_SECRET;
+  process.env.FEISHU_APP_ID = 'test';
+  process.env.FEISHU_APP_SECRET = 'test';
+  t.after(() => {
+    if (oldId === undefined) delete process.env.FEISHU_APP_ID;
+    else process.env.FEISHU_APP_ID = oldId;
+    if (oldSecret === undefined) delete process.env.FEISHU_APP_SECRET;
+    else process.env.FEISHU_APP_SECRET = oldSecret;
+  });
+  let pendingCount = 11;
+  let maxEventId = '41';
+  const service = fixture({
+    findByRegion: async () => ({
+      enabled: 1,
+      emergency_config: { ...config, timeMode: 'daily' },
+    }),
+    getEmergencyGroups: async () => ({ count: pendingCount, maxEventId }),
+    claimEmergency: async (_region, _cooldown, options) => {
+      assert.equal(options.maxEventId, maxEventId);
+      pendingCount = 0;
+      return true;
+    },
+  });
+  assert.equal(
+    (await service.notifyEmergency(await service.assessEmergency('US', now)))
+      .status,
+    'sent',
+  );
+  const later = new Date('2026-09-30T15:30:00Z');
+  assert.equal(
+    (await service.notifyEmergency(await service.assessEmergency('US', later)))
+      .status,
+    'normal',
+  );
+  pendingCount = 10;
+  maxEventId = '51';
+  assert.equal((await service.assessEmergency('US', later)).status, 'normal');
+  pendingCount = 11;
+  maxEventId = '52';
+  assert.equal(
+    (await service.notifyEmergency(await service.assessEmergency('US', later)))
+      .status,
+    'sent',
+  );
+  assert.equal(service.calls.phone.length, 2);
+});
+
 test('普通通知失败仍执行电话加急，电话失败仍保留普通通知成功', async () => {
   for (const webhookSuccess of [true, false]) {
     let phoneCalls = 0;
@@ -310,7 +373,43 @@ test('普通通知失败仍执行电话加急，电话失败仍保留普通通�
     assert.match(card.header.title.content, /紧急/);
     assert.equal(card.header.template, 'red');
     assert.doesNotMatch(JSON.stringify(card), /全部正常/);
+    assert.match(JSON.stringify(card), /新增异常变体组 11 个/);
   }
+});
+
+test('群卡片显示原父体变化和关系丢失的诊断信息', () => {
+  const service = loadWithStubs('../src/services/feishuService', {
+    axios: {},
+    '../models/FeishuConfig': {},
+    './feishuEmergencyService': {},
+    '../utils/logger': { info() {}, warn() {}, error() {} },
+  });
+  const card = service.buildFeishuCard({
+    country: 'US',
+    brokenGroups: 1,
+    brokenASINs: [
+      {
+        asin: 'B000000001',
+        groupName: 'group',
+        splitDetection: {
+          reason: 'PARENT_CHANGED',
+          baselineParentAsin: 'B000PARENT',
+          currentParentAsin: 'B000NEWPAR',
+        },
+      },
+      {
+        asin: 'B000000002',
+        groupName: 'group',
+        splitDetection: {
+          reason: 'RELATIONSHIP_LOST',
+          baselineParentAsin: 'B000PARENT',
+          currentParentAsin: null,
+        },
+      },
+    ],
+  });
+  assert.match(JSON.stringify(card), /父体变化：B000PARENT → B000NEWPAR/);
+  assert.match(JSON.stringify(card), /关系丢失，原父体：B000PARENT/);
 });
 
 test('缺少凭据时不占用冷却，电话服务异常时不会向监控任务抛错', async (t) => {

@@ -1,11 +1,11 @@
-const { pool } = require('../config/database');
+const { pool, withTransaction } = require('../config/database');
 const { normalizeEmergencyConfig } = require('../utils/feishuEmergencyConfig');
 const logger = require('../utils/logger');
 
 // 配置包含 webhook 与联系人，数据库错误不得输出带绑定参数的原始 SQL。
-async function query(sql, params = []) {
+async function query(sql, params = [], runner = pool) {
   try {
-    const [rows] = await pool.query({ sql, values: params, timeout: 10000 });
+    const [rows] = await runner.query({ sql, values: params, timeout: 10000 });
     return rows;
   } catch (error) {
     logger.error('飞书配置数据库操作失败', {
@@ -55,6 +55,22 @@ function toPublicConfig(row) {
     createTime: row.create_time,
     updateTime: row.update_time,
   };
+}
+
+function emergencyEventFilter(countries, bounded = false) {
+  return `e.country IN (${countries.map(() => '?').join(', ')})
+    AND e.occurred_at >= ? AND e.occurred_at <= ?
+    ${bounded ? 'AND e.id <= ?' : ''}
+    AND e.phone_attempted_at IS NULL
+    AND e.notify_enabled = 1
+    AND COALESCE(vg.feishu_notify_enabled, 1) <> 0
+    AND EXISTS (
+      SELECT 1 FROM asins a
+      WHERE a.variant_group_id = e.variant_group_id
+        AND a.country = e.country
+        AND COALESCE(a.feishu_notify_enabled, 1) <> 0
+        AND JSON_CONTAINS(e.details, JSON_QUOTE(a.id), '$.triggerAsinIds') = 1
+    )`;
 }
 
 class FeishuConfig {
@@ -167,41 +183,101 @@ class FeishuConfig {
     return this.findByCountry(country);
   }
 
-  static async countEmergencyASINs(region, startTimeSql, endTimeSql) {
+  static async getEmergencyGroups(region, startTimeSql, endTimeSql) {
     const countries = requireRegion(region);
     const [result] = await query(
-      `SELECT COUNT(DISTINCT mh.country, COALESCE(NULLIF(mh.asin_code, ''), NULLIF(a.asin, ''), mh.asin_id)) AS broken_count
-       FROM monitor_history mh
-       INNER JOIN asins a ON a.id = mh.asin_id
-       INNER JOIN variant_groups vg ON vg.id = a.variant_group_id
-       WHERE mh.country IN (${countries.map(() => '?').join(', ')})
-         AND mh.check_type = 'ASIN'
-         AND mh.is_broken = 1
-         AND mh.check_time >= ?
-         AND mh.check_time <= ?
-         AND COALESCE(a.feishu_notify_enabled, 1) <> 0
-         AND COALESCE(vg.feishu_notify_enabled, 1) <> 0`,
+      `SELECT COUNT(DISTINCT e.country, e.variant_group_id) AS group_count,
+              CAST(MAX(e.id) AS CHAR) AS max_event_id
+       FROM variant_group_split_events e
+       INNER JOIN variant_groups vg
+         ON vg.id = e.variant_group_id AND vg.country = e.country
+       WHERE ${emergencyEventFilter(countries)}`,
       [...countries, startTimeSql, endTimeSql],
     );
-    return Number(result?.broken_count) || 0;
+    return {
+      count: Number(result?.group_count) || 0,
+      maxEventId:
+        result?.max_event_id == null ? null : String(result.max_event_id),
+    };
   }
 
-  static async claimEmergency(region, cooldownMinutes) {
-    requireRegion(region);
+  static async countEmergencyGroups(region, startTimeSql, endTimeSql) {
+    const result = await this.getEmergencyGroups(
+      region,
+      startTimeSql,
+      endTimeSql,
+    );
+    return result.count;
+  }
+
+  static async claimEmergency(region, cooldownMinutes, options = {}) {
+    const countries = requireRegion(region);
     const { cooldownMinutes: validatedCooldown } = normalizeEmergencyConfig({
       cooldownMinutes,
     });
-    const result = await query(
-      `UPDATE feishu_config
-       SET last_emergency_at = UTC_TIMESTAMP()
-       WHERE country = ?
-         AND enabled = 1
-         AND JSON_EXTRACT(emergency_config, '$.enabled') = TRUE
-         AND (last_emergency_at IS NULL
-           OR last_emergency_at <= DATE_SUB(UTC_TIMESTAMP(), INTERVAL ? MINUTE))`,
-      [region, validatedCooldown],
-    );
-    return result.affectedRows === 1;
+    // An incomplete assessment must never consume events or reserve a call.
+    if (
+      !options.startTime ||
+      !options.endTime ||
+      !options.rule ||
+      !/^[1-9]\d*$/.test(String(options.maxEventId ?? ''))
+    )
+      return false;
+    const expectedRule = normalizeEmergencyConfig(options.rule);
+    const eventParams = [
+      ...countries,
+      options.startTime,
+      options.endTime,
+      String(options.maxEventId),
+    ];
+
+    return withTransaction(async ({ connection }) => {
+      // Use the sanitized query wrapper even inside a transaction: configuration
+      // driver errors can contain webhook URLs or contact IDs in bound values.
+      const execute = (sql, params) => query(sql, params, connection);
+      const [row] = await execute(
+        `SELECT *, (last_emergency_at IS NULL OR
+          last_emergency_at <= DATE_SUB(UTC_TIMESTAMP(), INTERVAL ? MINUTE)) AS cooldown_ready
+         FROM feishu_config WHERE country = ? FOR UPDATE`,
+        [validatedCooldown, region],
+      );
+      if (!row || Number(row.enabled) !== 1 || !Number(row.cooldown_ready))
+        return false;
+      const currentRule = getEmergencyConfig(row);
+      if (
+        !currentRule.enabled ||
+        currentRule.cooldownMinutes !== validatedCooldown ||
+        JSON.stringify(currentRule) !== JSON.stringify(expectedRule)
+      )
+        return false;
+
+      // Serialize claims on the region config row, then recheck the same event
+      // watermark with current notification switches. Later events stay pending.
+      const [countRow] = await execute(
+        `SELECT COUNT(DISTINCT e.country, e.variant_group_id) AS group_count
+         FROM variant_group_split_events e
+         INNER JOIN variant_groups vg
+           ON vg.id = e.variant_group_id AND vg.country = e.country
+         WHERE ${emergencyEventFilter(countries, true)}`,
+        eventParams,
+      );
+      if (Number(countRow?.group_count || 0) <= currentRule.threshold)
+        return false;
+
+      await execute(
+        `UPDATE variant_group_split_events e
+         INNER JOIN variant_groups vg
+           ON vg.id = e.variant_group_id AND vg.country = e.country
+         SET e.phone_attempted_at = UTC_TIMESTAMP()
+         WHERE ${emergencyEventFilter(countries, true)}`,
+        eventParams,
+      );
+      await execute(
+        `UPDATE feishu_config SET last_emergency_at = UTC_TIMESTAMP() WHERE country = ?`,
+        [region],
+      );
+      return true;
+    });
   }
 }
 

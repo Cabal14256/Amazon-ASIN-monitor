@@ -348,6 +348,9 @@ async function processCountry(
           countryResult.brokenByType.NOT_FOUND += brokenByType.NOT_FOUND || 0;
           countryResult.brokenByType.NO_VARIANTS +=
             brokenByType.NO_VARIANTS || 0;
+          countryResult.brokenByType.PARENT_CHANGED =
+            (countryResult.brokenByType.PARENT_CHANGED || 0) +
+            (brokenByType.PARENT_CHANGED || 0);
         }
 
         const recordCheckTime = new Date();
@@ -416,6 +419,7 @@ async function processCountry(
                 groupName: group.name,
                 brand: asinInfo.brand || '',
                 errorType, // 添加错误类型
+                splitDetection: checkOutcome.currentResult?.splitDetection,
                 statusSource: asinInfo.statusSource || 'NORMAL',
                 manualBroken: asinInfo.manualBroken === 1 ? 1 : 0,
                 manualBrokenReason: asinInfo.manualBrokenReason || '',
@@ -441,6 +445,7 @@ async function processCountry(
                 ...(errorType ? { errorType } : {}),
                 isDeferred: checkOutcome.isDeferred,
                 currentResult: checkOutcome.currentResult,
+                splitDetection: checkOutcome.currentResult?.splitDetection,
                 statusSource: asinInfo.statusSource || 'NORMAL',
                 manualBrokenReason: asinInfo.manualBrokenReason || '',
               },

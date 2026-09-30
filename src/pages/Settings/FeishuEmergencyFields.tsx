@@ -93,8 +93,15 @@ const FeishuEmergencyFields: React.FC<{ region: 'US' | 'EU' }> = ({
           <Alert
             type="info"
             showIcon
-            message="异常变体超过阈值时触发"
-            description="统计指定窗口内曾出现异常的不同 ASIN，按国家 + ASIN 去重，仅包含开启通知的 ASIN 及所属组。数量严格大于阈值时，在飞书通知的同时向指定联系人发送电话加急。"
+            message="新增异常变体组超过阈值时触发"
+            description="统计指定窗口内从正常转为拆分异常、且尚未尝试电话加急的不同变体组。同组多个 ASIN 只计 1 组，仅包含开启通知的 ASIN 及所属组。数量严格大于阈值时，在飞书通知的同时向指定联系人发送电话加急。"
+            style={{ marginBottom: 24 }}
+          />
+          <Alert
+            type="info"
+            showIcon
+            message="首次完整监控建立原父体基准"
+            description="升级后，每组首次完整监控只建立基准，不触发电话。此后原父体丢失或变为其他父体时识别为拆分异常，恢复原父体后解除。持续异常、人工标记、API 失败和仅父体标题获取失败不算新增；新增成员时需重新完成整组基准。"
             style={{ marginBottom: 24 }}
           />
           <ProFormRadio.Group
@@ -126,7 +133,7 @@ const FeishuEmergencyFields: React.FC<{ region: 'US' | 'EU' }> = ({
               extra={
                 timeMode === 'combined'
                   ? '仅在固定时段内判断，统计最近 N 分钟与当前固定时段的重叠部分。'
-                  : '每次监控结束时，统计此前 N 分钟内出现过异常的变体。'
+                  : '每次监控结束时，统计此前 N 分钟内新增且尚未尝试电话加急的异常变体组。'
               }
             />
           )}
@@ -162,7 +169,7 @@ const FeishuEmergencyFields: React.FC<{ region: 'US' | 'EU' }> = ({
                 ]}
                 extra={
                   timeMode === 'daily'
-                    ? '支持跨午夜，例如 22:00–08:00。仅在此时段内判断，累计本次时段开始后出现过异常的变体。'
+                    ? '支持跨午夜，例如 22:00–08:00。仅在此时段内判断，累计本次时段内新增且尚未尝试电话加急的异常变体组。'
                     : '支持跨午夜，例如 22:00–08:00；固定时段之外不触发电话加急。'
                 }
               />
@@ -170,12 +177,12 @@ const FeishuEmergencyFields: React.FC<{ region: 'US' | 'EU' }> = ({
           )}
           <ProFormDigit
             name={fieldName('threshold')}
-            label="异常变体数阈值"
+            label="新增异常变体组数阈值"
             min={0}
             max={1000000}
             fieldProps={{ precision: 0 }}
             rules={[
-              { required: true, message: '请输入异常变体数阈值' },
+              { required: true, message: '请输入新增异常变体组数阈值' },
               {
                 type: 'integer',
                 min: 0,
@@ -183,7 +190,7 @@ const FeishuEmergencyFields: React.FC<{ region: 'US' | 'EU' }> = ({
                 message: '阈值须为 0–1000000 的整数',
               },
             ]}
-            extra="严格超过此数量才触发。例如阈值为 10，至少 11 个异常变体才会电话加急。"
+            extra="单位为组，原有阈值不自动换算。严格超过此数量才触发，例如阈值为 10，至少 11 个新增异常变体组才会电话加急。"
           />
           <ProFormDigit
             name={fieldName('cooldownMinutes')}
@@ -200,7 +207,7 @@ const FeishuEmergencyFields: React.FC<{ region: 'US' | 'EU' }> = ({
                 message: '冷却时间须为 5–10080 的整数',
               },
             ]}
-            extra="每个区域独立计时；冷却结束后，若再次判断仍超过阈值，将再次通知。"
+            extra="每个区域独立计时；已尝试电话加急的事件不再重复拨打。冷却结束后，仅在统计窗口内尚未通知的新增异常变体组再次超过阈值时通知。"
           />
           <ProFormSelect
             name={fieldName('userIds')}

@@ -29,7 +29,7 @@ function normalizeEmergencyConfig(value = {}) {
   }
   for (const [field, min, max, label] of [
     ['windowMinutes', 1, 1440, '统计窗口分钟数'],
-    ['threshold', 0, 1000000, '异常变体阈值'],
+    ['threshold', 0, 1000000, '新增异常变体组阈值'],
     ['cooldownMinutes', 5, 10080, '电话加急冷却分钟数'],
   ]) {
     if (

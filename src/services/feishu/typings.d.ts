@@ -5,6 +5,7 @@ declare namespace API {
     windowMinutes: number;
     startTime: string;
     endTime: string;
+    /** 窗口内未尝试电话加急的新增异常变体组数，严格超过时触发。 */
     threshold: number;
     cooldownMinutes: number;
     userIds: string[];

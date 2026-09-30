@@ -228,6 +228,7 @@ function buildFeishuCard(data) {
   const spApiErrorCount = brokenByType?.SP_API_ERROR || 0;
   const notFoundCount = brokenByType?.NOT_FOUND || 0;
   const noVariantsCount = brokenByType?.NO_VARIANTS || 0;
+  const parentChangedCount = brokenByType?.PARENT_CHANGED || 0;
   const totalBrokenASINs = brokenASINs.length;
   const manualBrokenASINCount = brokenASINs.filter((item) =>
     includesManualSource(item?.statusSource),
@@ -255,8 +256,10 @@ function buildFeishuCard(data) {
   let contentText = `【${timeStr}】【${countryName}】\n\n`;
   if (isEmergency) {
     const { region, count, threshold, startTime, endTime } = data.emergency;
-    contentText += `🚨 ${region} 区域进入紧急状态：统计时段内异常变体 ${count} 个，超过阈值 ${threshold} 个。\n`;
+    contentText += `🚨 ${region} 区域进入紧急状态：统计时段内新增异常变体组 ${count} 个，超过阈值 ${threshold} 个。\n`;
     contentText += `统计时段（北京时间）：${startTime} 至 ${endTime}\n`;
+    contentText +=
+      '按国家 + 变体组去重，仅计正常转异常且原父体变化或关系丢失的新发事件。\n';
     contentText += '请相关负责人尽快检查并处理。\n\n';
   }
   contentText += `已检查分组数量：${totalGroups}，异常分组数量：${brokenGroups}，异常ASIN数量：${totalBrokenASINs}\n\n`;
@@ -272,6 +275,9 @@ function buildFeishuCard(data) {
     }
     if (noVariantsCount > 0) {
       contentText += `  ⚠️ 无父变体ASIN：${noVariantsCount} 个\n`;
+    }
+    if (parentChangedCount > 0) {
+      contentText += `  🔀 原父体发生变化：${parentChangedCount} 个\n`;
     }
     if (manualBrokenASINCount > 0) {
       contentText += `  🏷️ 含人工标记：${manualBrokenASINCount} 个\n`;
@@ -358,6 +364,18 @@ function buildFeishuCard(data) {
         }
         if (asinItem.manualBrokenReason) {
           extraParts.push(`说明：${asinItem.manualBrokenReason}`);
+        }
+        const split = asinItem.splitDetection;
+        if (split?.reason === 'PARENT_CHANGED') {
+          extraParts.push(
+            `父体变化：${split.baselineParentAsin || '未知'} → ${
+              split.currentParentAsin || '无父体'
+            }`,
+          );
+        } else if (split?.reason === 'RELATIONSHIP_LOST') {
+          extraParts.push(
+            `关系丢失，原父体：${split.baselineParentAsin || '未知'}`,
+          );
         }
 
         contentText += `- ${asinLabel}`;

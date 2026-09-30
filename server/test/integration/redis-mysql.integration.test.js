@@ -20,6 +20,7 @@ const {
   initRedis,
   isRedisAvailable,
 } = require('../../src/config/redis');
+const testVariantSplit = require('./variant-split-scenarios');
 
 const runIntegrationTests = process.env.RUN_INTEGRATION_TESTS === 'true';
 const integrationTest = runIntegrationTests ? test : test.skip;
@@ -463,10 +464,12 @@ integrationTest(
       Object.keys(safeEnvironment).map((key) => [key, process.env[key]]),
     );
     let FeishuConfig;
+    let VariantSplitState;
     try {
       Object.assign(process.env, safeEnvironment);
       applicationPool = require('../../src/config/database').pool;
       FeishuConfig = require('../../src/models/FeishuConfig');
+      VariantSplitState = require('../../src/models/VariantSplitState');
     } finally {
       for (const [key, value] of Object.entries(previousEnvironment)) {
         if (value === undefined) delete process.env[key];
@@ -474,179 +477,13 @@ integrationTest(
       }
     }
 
-    await context.test(
-      '真实异常窗口按国家和 ASIN 去重，遵守通知开关及闭区间边界',
-      async () => {
-        const groups = [
-          ['emergency-us', 'US', 1],
-          ['emergency-uk', 'UK', 1],
-          ['emergency-de', 'DE', 1],
-          ['emergency-fr-muted', 'FR', 0],
-          ['emergency-es-default', 'ES', null],
-        ];
-        await mysqlConnection.query(
-          `INSERT INTO \`${mainDatabase}\`.variant_groups (id, name, country, site, brand, feishu_notify_enabled) VALUES ?`,
-          [
-            groups.map(([id, country, enabled]) => [
-              id,
-              id,
-              country,
-              'ci',
-              'ci',
-              enabled,
-            ]),
-          ],
-        );
-        const asins = [
-          ['us-common', 'B000COMMON', 'US', 'emergency-us', 1],
-          ['uk-common', 'B000COMMON', 'UK', 'emergency-uk', 1],
-          ['de-common', 'B000COMMON', 'DE', 'emergency-de', 1],
-          ['uk-start', 'B000START', 'UK', 'emergency-uk', 1],
-          ['uk-end', 'B000END', 'UK', 'emergency-uk', 1],
-          ['uk-before', 'B000BEFORE', 'UK', 'emergency-uk', 1],
-          ['uk-after', 'B000AFTER', 'UK', 'emergency-uk', 1],
-          ['uk-muted', 'B000MUTED', 'UK', 'emergency-uk', 0],
-          ['fr-muted', 'B000FRMUTED', 'FR', 'emergency-fr-muted', 1],
-          ['uk-normal', 'B000NORMAL', 'UK', 'emergency-uk', 1],
-          ['uk-group', 'B000GROUP', 'UK', 'emergency-uk', 1],
-          ['es-fallback', 'B000FALLBACK', 'ES', 'emergency-es-default', null],
-          ['uk-recovered', 'B000RECOVER', 'UK', 'emergency-uk', 1],
-        ];
-        await mysqlConnection.query(
-          `INSERT INTO \`${mainDatabase}\`.asins (id, asin, country, variant_group_id, site, brand, feishu_notify_enabled) VALUES ?`,
-          [
-            asins.map(([id, asin, country, groupId, enabled]) => [
-              id,
-              asin,
-              country,
-              groupId,
-              'ci',
-              'ci',
-              enabled,
-            ]),
-          ],
-        );
-        const asinMap = new Map(asins.map((asin) => [asin[0], asin]));
-        const history = [
-          ['us-common', '08:15:00'],
-          ['uk-common', '08:05:00'],
-          ['uk-common', '08:10:00'],
-          ['de-common', '08:15:00'],
-          ['uk-start', '08:00:00'],
-          ['uk-end', '08:30:00'],
-          ['uk-before', '07:59:59'],
-          ['uk-after', '08:30:01'],
-          ['uk-muted', '08:15:00'],
-          ['fr-muted', '08:15:00'],
-          ['uk-normal', '08:15:00', 0],
-          ['uk-group', '08:15:00', 1, 'GROUP'],
-          ['es-fallback', '08:15:00', 1, 'ASIN', null],
-          ['es-fallback', '08:20:00', 1, 'ASIN', ''],
-          ['es-fallback', '08:25:00', 1, 'ASIN', 'B000FALLBACK'],
-          ['uk-recovered', '08:15:00'],
-          ['uk-recovered', '08:20:00', 0],
-        ].map(([id, time, broken = 1, type = 'ASIN', snapshot]) => {
-          const [, asin, country, groupId] = asinMap.get(id);
-          return [
-            groupId,
-            id,
-            snapshot === undefined ? asin : snapshot,
-            country,
-            type,
-            broken,
-            `2026-09-30 ${time}`,
-          ];
-        });
-        await mysqlConnection.query(
-          `INSERT INTO \`${mainDatabase}\`.monitor_history (variant_group_id, asin_id, asin_code, country, check_type, is_broken, check_time) VALUES ?`,
-          [history],
-        );
-
-        assert.equal(
-          await FeishuConfig.countEmergencyASINs(
-            'US',
-            '2026-09-30 08:00:00',
-            '2026-09-30 08:30:00',
-          ),
-          1,
-        );
-        assert.equal(
-          await FeishuConfig.countEmergencyASINs(
-            'EU',
-            '2026-09-30 08:00:00',
-            '2026-09-30 08:30:00',
-          ),
-          6,
-        );
-        assert.equal(
-          await FeishuConfig.countEmergencyASINs(
-            'EU',
-            '2026-09-30 08:00:00',
-            '2026-09-30 08:00:00',
-          ),
-          1,
-        );
-        assert.equal(
-          await FeishuConfig.countEmergencyASINs(
-            'EU',
-            '2026-09-30 08:30:00',
-            '2026-09-30 08:30:00',
-          ),
-          1,
-        );
-        assert.equal(
-          await FeishuConfig.countEmergencyASINs(
-            'EU',
-            '2026-09-30 08:00:01',
-            '2026-09-30 08:29:59',
-          ),
-          4,
-        );
-      },
-    );
-
-    await context.test(
-      '真实连接池并发抢占每区域仅成功一次，UTC 冷却与开关独立生效',
-      async () => {
-        const emergency = JSON.stringify({
-          enabled: true,
-          userIds: ['ou_ci_contact'],
-        });
-        await mysqlConnection.query(
-          `UPDATE \`${mainDatabase}\`.feishu_config SET emergency_config = ?, last_emergency_at = NULL`,
-          [emergency],
-        );
-        const claims = await Promise.all(
-          Array.from({ length: 10 }, () =>
-            FeishuConfig.claimEmergency('EU', 60),
-          ),
-        );
-        assert.equal(claims.filter(Boolean).length, 1);
-        assert.equal(await FeishuConfig.claimEmergency('US', 60), true);
-        assert.equal(await FeishuConfig.claimEmergency('EU', 60), false);
-        assert.equal(await FeishuConfig.claimEmergency('US', 60), false);
-        const [[row]] = await mysqlConnection.query(
-          `SELECT ABS(TIMESTAMPDIFF(SECOND, last_emergency_at, UTC_TIMESTAMP())) AS age
-         FROM \`${mainDatabase}\`.feishu_config WHERE country = 'EU'`,
-        );
-        assert.ok(Number(row.age) < 10, 'Cooldown must be stored in UTC');
-
-        await mysqlConnection.query(
-          `UPDATE \`${mainDatabase}\`.feishu_config
-         SET last_emergency_at = DATE_SUB(UTC_TIMESTAMP(), INTERVAL 61 MINUTE)
-         WHERE country = 'EU'`,
-        );
-        assert.equal(await FeishuConfig.claimEmergency('EU', 60), true);
-        await mysqlConnection.query(
-          `UPDATE \`${mainDatabase}\`.feishu_config SET last_emergency_at = NULL, enabled = 0 WHERE country = 'EU'`,
-        );
-        assert.equal(await FeishuConfig.claimEmergency('EU', 60), false);
-        await mysqlConnection.query(
-          `UPDATE \`${mainDatabase}\`.feishu_config SET enabled = 1, emergency_config = JSON_OBJECT('enabled', FALSE) WHERE country = 'EU'`,
-        );
-        assert.equal(await FeishuConfig.claimEmergency('EU', 60), false);
-      },
-    );
+    await testVariantSplit({
+      context,
+      mysqlConnection,
+      mainDatabase,
+      FeishuConfig,
+      VariantSplitState,
+    });
 
     await context.test('Redis 重启后现有客户端恢复连接', async () => {
       const containerId = String(
