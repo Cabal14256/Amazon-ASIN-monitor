@@ -1,8 +1,10 @@
-const { getUTC8LocaleString } = require('./dateTime');
-
 const MINUTE_MS = 60 * 1000;
 const DAY_MS = 24 * 60 * MINUTE_MS;
 const UTC8_MS = 8 * 60 * MINUTE_MS;
+
+// ISO formatting avoids ICU locales that render midnight as 24:xx on Node 20.
+const toBeijingSql = (time) =>
+  new Date(time + UTC8_MS).toISOString().slice(0, 19).replace('T', ' ');
 
 // All daily boundaries are Beijing time, independent of the worker's timezone.
 function getEmergencyWindow(config, now = new Date()) {
@@ -29,8 +31,8 @@ function getEmergencyWindow(config, now = new Date()) {
       config.timeMode === 'combined' ? Math.max(start, dailyStart) : dailyStart;
   }
   return {
-    startTime: getUTC8LocaleString(new Date(start)),
-    endTime: getUTC8LocaleString(new Date(end)),
+    startTime: toBeijingSql(start),
+    endTime: toBeijingSql(end),
   };
 }
 
