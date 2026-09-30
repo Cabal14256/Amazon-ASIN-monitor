@@ -6,14 +6,18 @@ const {
   normalizeEmergencyConfig,
 } = require('../src/utils/feishuEmergencyConfig');
 
-function loadModel(execute, logs = []) {
+function loadModel(runQuery, logs = []) {
   const filename = require.resolve('../src/models/FeishuConfig');
   const cachedModule = require.cache[filename];
   const originalLoad = Module._load;
   delete require.cache[filename];
   Module._load = function load(request, parent, isMain) {
     if (parent?.filename === filename && request === '../config/database') {
-      return { pool: { execute } };
+      return {
+        pool: {
+          query: (options) => runQuery(options, options.values),
+        },
+      };
     }
     if (parent?.filename === filename && request === '../utils/logger') {
       return { error: (...args) => logs.push(args) };
