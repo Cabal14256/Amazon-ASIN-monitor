@@ -207,8 +207,9 @@ test('同一区域并发评估仅一次加急，冷却不泄露联系人', async
   assert.match(service.calls.phone[0].text, /新增异常变体组数：11/);
   assert.match(
     service.calls.phone[0].text,
-    /原父体变化、关系丢失或成功查询确认父 ASIN 标题为空/,
+    /关系丢失或成功查询确认父 ASIN 标题为空/,
   );
+  assert.doesNotMatch(service.calls.phone[0].text, /原父体变化/);
   assert.match(service.calls.phone[0].text, /标题查询失败或超时暂不判定/);
   assert.deepEqual(service.calls.claim[0], [
     'EU',
@@ -381,7 +382,7 @@ test('普通通知失败仍执行电话加急，电话失败仍保留普通通�
   }
 });
 
-test('群卡片区分父体变化、关系丢失和成功确认父标题为空的诊断信息', () => {
+test('群卡片区分历史父体变化、关系丢失和成功确认父标题为空的诊断信息', () => {
   const service = loadWithStubs('../src/services/feishuService', {
     axios: {},
     '../models/FeishuConfig': {},
@@ -392,21 +393,11 @@ test('群卡片区分父体变化、关系丢失和成功确认父标题为空�
     country: 'US',
     brokenGroups: 1,
     brokenByType: {
-      PARENT_CHANGED: 1,
       NO_VARIANTS: 1,
       PARENT_TITLE_EMPTY: 1,
       SP_API_ERROR: 1,
     },
     brokenASINs: [
-      {
-        asin: 'B000000001',
-        groupName: 'group',
-        splitDetection: {
-          reason: 'PARENT_CHANGED',
-          baselineParentAsin: 'B000PARENT',
-          currentParentAsin: 'B000NEWPAR',
-        },
-      },
       {
         asin: 'B000000002',
         groupName: 'group',
@@ -431,8 +422,21 @@ test('群卡片区分父体变化、关系丢失和成功确认父标题为空�
         statusSource: 'AUTO',
       },
     ],
+    parentChanges: [
+      {
+        asin: 'B000000001',
+        groupName: 'group',
+        parentHistory: {
+          status: 'CHANGED',
+          baselineParentAsin: 'B000PARENT',
+          currentParentAsin: 'B000NEWPAR',
+        },
+      },
+    ],
   });
-  assert.match(JSON.stringify(card), /父体变化：B000PARENT → B000NEWPAR/);
+  assert.match(JSON.stringify(card), /历史父体变化（不计入当前异常）：1 个/);
+  assert.match(JSON.stringify(card), /初始父体：B000PARENT/);
+  assert.doesNotMatch(JSON.stringify(card), /原父体发生变化/);
   assert.match(JSON.stringify(card), /关系丢失，原父体：B000PARENT/);
   assert.match(JSON.stringify(card), /父 ASIN 标题确认为空：1 个/);
   assert.match(JSON.stringify(card), /父 ASIN 标题确认为空：B000PARENT/);
@@ -442,6 +446,46 @@ test('群卡片区分父体变化、关系丢失和成功确认父标题为空�
     .find((line) => line.includes('[B000000004]'));
   assert.ok(errorLine);
   assert.doesNotMatch(errorLine, /标题确认为空/);
+});
+
+test('健康迁移及回到原父体都显示正常卡片，历史变化独立保留', () => {
+  const service = loadWithStubs('../src/services/feishuService', {
+    axios: {},
+    '../models/FeishuConfig': {},
+    './feishuEmergencyService': {},
+    '../utils/logger': { info() {}, warn() {}, error() {} },
+  });
+  for (const currentParentAsin of ['B000NEWPAR', 'B000PARENT']) {
+    const card = service.buildFeishuCard({
+      country: 'US',
+      totalGroups: 1,
+      brokenGroups: 0,
+      brokenASINs: [],
+      parentChanges: [
+        {
+          asin: 'B000000001',
+          groupName: '健康迁移组',
+          parentHistory: {
+            status: 'CHANGED',
+            baselineParentAsin: 'B000PARENT',
+            currentParentAsin,
+            previousParentAsin:
+              currentParentAsin === 'B000PARENT' ? 'B000NEWPAR' : 'B000PARENT',
+            changedAt: '2026-10-01T00:00:00Z',
+            observedAt: '2026-10-01T00:10:00Z',
+          },
+        },
+      ],
+    });
+    assert.equal(card.header.template, 'green');
+    assert.equal(card.header.title.content, 'ASIN变体监控通知-US正常');
+    const content = card.elements[0].text.content;
+    assert.match(content, /异常分组数量：0，异常ASIN数量：0/);
+    assert.match(content, /✅ 全部正常/);
+    assert.match(content, /历史父体变化（不计入当前异常）：1 个/);
+    assert.match(content, new RegExp(`最近确认父体：${currentParentAsin}`));
+    assert.doesNotMatch(content, /异常分类统计|原父体发生变化/);
+  }
 });
 
 test('缺少凭据时不占用冷却，电话服务异常时不会向监控任务抛错', async (t) => {

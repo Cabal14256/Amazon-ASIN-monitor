@@ -58,7 +58,9 @@ function toPublicConfig(row) {
 }
 
 function emergencyEventFilter(countries, bounded = false) {
+  // Legacy parent-change audits may have notify_enabled = 1; never count or consume them.
   return `e.country IN (${countries.map(() => '?').join(', ')})
+    AND e.reason IN ('RELATIONSHIP_LOST', 'PARENT_TITLE_EMPTY')
     AND e.occurred_at >= ? AND e.occurred_at <= ?
     ${bounded ? 'AND e.id <= ?' : ''}
     AND e.phone_attempted_at IS NULL

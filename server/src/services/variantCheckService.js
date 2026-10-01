@@ -1292,11 +1292,15 @@ async function checkVariantGroup(
     );
     for (let index = 0; index < results.length; index++) {
       const entry = results[index];
-      if (!entry?.details || entry.isDeferred) continue;
       const state = split.asins.find((item) => item.asinId === asins[index].id);
+      if (!entry) continue;
+      // Uncertain checks retain the independent, last confirmed parent history.
+      entry.parentHistory = state?.parentHistory;
+      if (!entry.details || entry.isDeferred) continue;
       const adjusted = applySplitState(entry.details, state);
       entry.details = adjusted;
       entry.splitDetection = adjusted.splitDetection;
+      entry.parentHistory = adjusted.parentHistory;
       if (state?.status !== 'BROKEN') continue;
       const previousType = entry.errorType;
       const nextType = adjusted.errorType;
@@ -1378,6 +1382,7 @@ async function checkVariantGroup(
         return {
           asin: item.asin,
           splitDetection: currentCheck?.splitDetection,
+          parentHistory: currentCheck?.parentHistory,
           errorType:
             autoBrokenInfo?.errorType ||
             (item.statusSource === 'MANUAL' ||
@@ -1487,6 +1492,17 @@ async function checkSingleASIN(asinId, forceRefresh = false) {
       );
       if (variantGroup) {
         variantGroupName = variantGroup.name || null;
+        // Single-ASIN recovery must also clear a group's former parent-change
+        // alarm, while retaining real anomalies on any other member.
+        const groupAutoBroken = (variantGroup.children || []).some(
+          (child) =>
+            Number(child.autoIsBroken ?? child.is_broken ?? child.isBroken) ===
+            1,
+        );
+        await VariantGroup.updateVariantStatusAndCheckTime(
+          asinRecord.variantGroupId,
+          groupAutoBroken,
+        );
       }
     }
 
@@ -1510,15 +1526,8 @@ async function checkSingleASIN(asinId, forceRefresh = false) {
     });
     if (
       result?.errorType === 'NOT_FOUND' ||
-      result?.errorType === 'PARENT_CHANGED' ||
       result?.errorType === 'PARENT_TITLE_EMPTY'
     ) {
-      if (asinRecord.variantGroupId) {
-        await VariantGroup.updateVariantStatusAndCheckTime(
-          asinRecord.variantGroupId,
-          true,
-        );
-      }
       clearDeferredASINCheck(asin, country);
     }
 
@@ -1530,6 +1539,7 @@ async function checkSingleASIN(asinId, forceRefresh = false) {
               {
                 asin,
                 splitDetection: result.splitDetection,
+                parentHistory: result.parentHistory,
                 errorType:
                   autoBroken || effectiveStatus.statusSource === 'AUTO+MANUAL'
                     ? result?.errorType || 'NO_VARIANTS'

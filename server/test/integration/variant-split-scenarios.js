@@ -109,23 +109,13 @@ module.exports = async function testVariantSplit({
         const fixture = await group(`split-us-${index}`);
         fixtures.push(fixture);
         assert.equal((await observe(fixture, -1)).newEvent, null);
-        const result = await observe(
-          fixture,
-          1,
-          index % 2 ? raw(false) : raw(true, changedParent),
-        );
+        const result = await observe(fixture, 1, raw(false));
         assert.equal(result.status, 'BROKEN');
         assert.equal(result.newEvent.details.triggerAsinIds.length, 2);
-        assert.equal(
-          result.newEvent.reason,
-          index % 2 ? 'RELATIONSHIP_LOST' : 'PARENT_CHANGED',
-        );
+        assert.equal(result.newEvent.reason, 'RELATIONSHIP_LOST');
         for (const change of result.newEvent.details.changes) {
           assert.equal(change.baselineParentAsin, originalParent);
-          assert.equal(
-            change.currentParentAsin,
-            index % 2 ? null : changedParent,
-          );
+          assert.equal(change.currentParentAsin, null);
         }
       }
       assert.equal((await assessment('US')).count, 11);
@@ -173,6 +163,130 @@ module.exports = async function testVariantSplit({
         (await assessment('US')).count,
         11,
         'Recovery and recurrence still count each group once in the window',
+      );
+    },
+  );
+
+  await context.test(
+    '真实父体审计独立于健康状态，正常迁移及旧版变化事件均不计入电话加急',
+    async () => {
+      const fixture = await group('parent-history');
+      await observe(fixture, 0);
+      const changed = await observe(fixture, 5, raw(true, changedParent));
+      assert.equal(changed.status, 'NORMAL');
+      assert.equal(changed.newEvent, null);
+      assert.equal(changed.newParentEvent.reason, 'PARENT_CHANGED');
+      assert.equal(changed.newParentEvent.notifyEnabled, false);
+      assert.equal(changed.newParentEvent.details.triggerAsinIds.length, 2);
+      for (const member of changed.asins) {
+        assert.equal(member.reason, null);
+        assert.deepEqual(member.parentHistory, {
+          status: 'CHANGED',
+          baselineParentAsin: originalParent,
+          currentParentAsin: changedParent,
+          previousParentAsin: originalParent,
+          changedAt: timestamp(5),
+          observedAt: timestamp(5),
+        });
+      }
+      const repeated = await observe(fixture, 6, raw(true, changedParent));
+      assert.equal(repeated.status, 'NORMAL');
+      assert.equal(repeated.newParentEvent, null);
+      assert.equal(repeated.newEvent, null);
+      assert.equal(await eventCount(fixture.id), 1);
+      const returned = await observe(fixture, 7);
+      assert.equal(returned.status, 'NORMAL');
+      assert.equal(returned.newEvent, null);
+      assert.equal(returned.newParentEvent.reason, 'PARENT_CHANGED');
+      assert.equal(returned.asins[0].parentHistory.status, 'CHANGED');
+      assert.equal(
+        returned.asins[0].parentHistory.baselineParentAsin,
+        originalParent,
+      );
+      assert.equal(
+        returned.asins[0].parentHistory.previousParentAsin,
+        changedParent,
+      );
+
+      // Recreate a pre-upgrade parent-change state and enabled audit event.
+      const legacy = await group('parent-history-legacy');
+      await observe(legacy, 0);
+      const [state] = await query(
+        `SELECT members FROM ${db}.variant_group_split_state WHERE group_id = ?`,
+        [legacy.id],
+      );
+      const members =
+        typeof state.members === 'string'
+          ? JSON.parse(state.members)
+          : state.members;
+      for (const member of Object.values(members)) {
+        delete member.parentHistory;
+        member.status = 'BROKEN';
+        member.reason = 'PARENT_CHANGED';
+        member.currentParentAsin = changedParent;
+        member.observedAt = timestamp(1);
+      }
+      await query(
+        `UPDATE ${db}.variant_group_split_state SET members = ?, status = 'BROKEN' WHERE group_id = ?`,
+        [JSON.stringify(members), legacy.id],
+      );
+      await query(
+        `INSERT INTO ${db}.variant_group_split_events
+         (variant_group_id, country, occurred_at, reason, details, notify_enabled)
+         VALUES (?, 'US', '2026-09-30 08:01:00', 'PARENT_CHANGED', ?, 1)`,
+        [
+          legacy.id,
+          JSON.stringify({
+            triggerAsinIds: legacy.members.map(({ id }) => id),
+            changes: legacy.members.map(({ id }) => ({
+              asinId: id,
+              reason: 'PARENT_CHANGED',
+              baselineParentAsin: originalParent,
+              currentParentAsin: changedParent,
+            })),
+          }),
+        ],
+      );
+      const upgraded = await observe(legacy, 10, raw(true, changedParent));
+      assert.equal(upgraded.status, 'NORMAL');
+      assert.equal(upgraded.newEvent, null);
+      assert.equal(upgraded.newParentEvent, null);
+      assert.equal(upgraded.asins[0].parentHistory.status, 'CHANGED');
+      assert.equal(
+        upgraded.asins[0].parentHistory.baselineParentAsin,
+        originalParent,
+      );
+      assert.equal(await eventCount(legacy.id), 1);
+      assert.equal((await assessment('US')).count, 11);
+
+      // Both dimensions can change in the same observation and persist separately.
+      const unhealthy = await observe(
+        fixture,
+        180,
+        raw(true, changedParent, {
+          hasVariants: false,
+          details: {
+            hasVariantRelationships: true,
+            parentAsin: changedParent,
+            parentTitle: '',
+            parentTitleStatus: 'EMPTY',
+          },
+        }),
+      );
+      assert.equal(unhealthy.status, 'BROKEN');
+      assert.equal(unhealthy.newEvent.reason, 'PARENT_TITLE_EMPTY');
+      assert.equal(unhealthy.newParentEvent.reason, 'PARENT_CHANGED');
+      assert.notEqual(unhealthy.newEvent.id, unhealthy.newParentEvent.id);
+      assert.equal(await eventCount(fixture.id), 4);
+      const recovered = await observe(fixture, 181, raw(true, changedParent));
+      assert.equal(recovered.status, 'NORMAL');
+      assert.equal(recovered.newEvent, null);
+      assert.equal(recovered.newParentEvent, null);
+      assert.equal(recovered.asins[0].parentHistory.status, 'CHANGED');
+      assert.equal(
+        (await assessment('US', '2026-09-30 11:00:00', '2026-09-30 11:30:00'))
+          .count,
+        1,
       );
     },
   );
@@ -454,6 +568,19 @@ module.exports = async function testVariantSplit({
         count: 0,
         maxEventId: null,
       });
+      const parentEvents = await query(
+        `SELECT notify_enabled, phone_attempted_at FROM ${db}.variant_group_split_events
+         WHERE reason = 'PARENT_CHANGED' AND occurred_at >= ? AND occurred_at <= ?`,
+        [startTime, dailyEnd],
+      );
+      assert.ok(parentEvents.length >= 3);
+      assert.ok(
+        parentEvents.some((event) => Number(event.notify_enabled) === 1),
+      );
+      assert.ok(
+        parentEvents.every((event) => event.phone_attempted_at === null),
+        'Parent-history events, including pre-upgrade enabled ones, must never be consumed',
+      );
     },
   );
 

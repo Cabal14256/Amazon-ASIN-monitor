@@ -43,15 +43,76 @@ function observationTime(value) {
   return Number.isFinite(date.getTime()) ? date.toISOString() : null;
 }
 
+function readParentHistory(member = {}) {
+  if (member.parentHistory) return { ...member.parentHistory };
+  const baselineParentAsin = normalizeParentAsin(member.baselineParentAsin);
+  const currentParentAsin = normalizeParentAsin(member.currentParentAsin);
+  const changed = Boolean(
+    baselineParentAsin &&
+      currentParentAsin &&
+      baselineParentAsin !== currentParentAsin,
+  );
+  return {
+    status: changed ? 'CHANGED' : baselineParentAsin ? 'UNCHANGED' : 'UNKNOWN',
+    baselineParentAsin,
+    currentParentAsin,
+    // Legacy snapshots know the original and latest parent, but their last
+    // polling time is not the change time. Existing audit events stay intact.
+    previousParentAsin: null,
+    changedAt: null,
+    observedAt: member.observedAt || null,
+  };
+}
+
+function normalizeMember(member) {
+  const parentHistory = readParentHistory(member);
+  // Legacy parent-change alerts were not evidence of unhealthy relationships.
+  // Require a fresh observation before establishing the new health baseline.
+  return member.reason === 'PARENT_CHANGED'
+    ? { ...member, parentHistory, status: SPLIT_STATUS.UNKNOWN, reason: null }
+    : { ...member, parentHistory };
+}
+
+function canObserve(result) {
+  return (
+    isRelationshipSource(result) &&
+    !result.errorType &&
+    !result.error &&
+    !result.isDeferred
+  );
+}
+
+function observeParentHistory(result, member, observedAt) {
+  const previous = readParentHistory(member);
+  if (
+    !canObserve(result) ||
+    result.details?.hasVariantRelationships !== true ||
+    (previous.observedAt && observedAt <= previous.observedAt)
+  )
+    return previous;
+  const currentParentAsin = normalizeParentAsin(result.details?.parentAsin);
+  if (!currentParentAsin) return previous;
+  const previousParentAsin =
+    previous.currentParentAsin || previous.baselineParentAsin;
+  const changed = Boolean(
+    previousParentAsin && currentParentAsin !== previousParentAsin,
+  );
+  return {
+    status: changed || previous.status === 'CHANGED' ? 'CHANGED' : 'UNCHANGED',
+    baselineParentAsin: previous.baselineParentAsin || currentParentAsin,
+    currentParentAsin,
+    previousParentAsin: changed
+      ? previousParentAsin
+      : previous.previousParentAsin,
+    changedAt: changed ? observedAt : previous.changedAt,
+    observedAt,
+  };
+}
+
 // Null means that the observation is not sufficient to change the split state.
 // A title lookup failure cannot establish or restore a normal state.
 function classifySplitObservation(result, previous = {}) {
-  if (
-    !isRelationshipSource(result) ||
-    result.errorType ||
-    result.error ||
-    result.isDeferred
-  ) {
+  if (!canObserve(result)) {
     return null;
   }
 
@@ -69,26 +130,15 @@ function classifySplitObservation(result, previous = {}) {
   }
   if (result.details?.hasVariantRelationships !== true) return null;
 
-  // An established child baseline can recover only after seeing its original
-  // parent again. A parent ASIN may legitimately have children and no parent.
+  // A child still needs a valid current parent, but it may be a different one.
+  // A parent ASIN may legitimately have children and no parent.
   if (baselineParentAsin && !currentParentAsin) return null;
   if (result.details?.parentAsin && !currentParentAsin) return null;
-  const parentChanged = Boolean(
-    baselineParentAsin && currentParentAsin !== baselineParentAsin,
-  );
-  // Proven relationship changes take precedence over unknown title evidence.
-  // Legacy cached results have no title status and must not recover a split.
-  if (!parentChanged && titleStatus === PARENT_TITLE_STATUS.UNKNOWN)
-    return null;
+  if (titleStatus === PARENT_TITLE_STATUS.UNKNOWN) return null;
   const titleEmpty = titleStatus === PARENT_TITLE_STATUS.EMPTY;
   return {
-    status:
-      parentChanged || titleEmpty ? SPLIT_STATUS.BROKEN : SPLIT_STATUS.NORMAL,
-    reason: parentChanged
-      ? 'PARENT_CHANGED'
-      : titleEmpty
-      ? 'PARENT_TITLE_EMPTY'
-      : null,
+    status: titleEmpty ? SPLIT_STATUS.BROKEN : SPLIT_STATUS.NORMAL,
+    reason: titleEmpty ? 'PARENT_TITLE_EMPTY' : null,
     baselineParentAsin: baselineParentAsin || currentParentAsin,
     currentParentAsin,
     parentTitleStatus: titleStatus,
@@ -131,7 +181,10 @@ function reduceGroupSplitState(
         old && old.asin === member.asin && old.country === member.country,
       );
       if (!sameIdentity) membershipChanged = true;
-      return [member.id, sameIdentity ? { ...old } : unknownMember(member)];
+      return [
+        member.id,
+        normalizeMember(sameIdentity ? old : unknownMember(member)),
+      ];
     }),
   );
 
@@ -173,7 +226,16 @@ function reduceGroupSplitState(
       continue;
     if (member.observedAt && observation.observedAt <= member.observedAt)
       continue;
-    const classification = classifySplitObservation(observation.result, member);
+    const parentHistory = observeParentHistory(
+      observation.result,
+      member,
+      observation.observedAt,
+    );
+    members[asinId] = { ...member, parentHistory };
+    const classification = classifySplitObservation(observation.result, {
+      ...member,
+      baselineParentAsin: parentHistory.baselineParentAsin,
+    });
     if (!classification) {
       // Preserve the last confirmed member state while blocking group recovery
       // until this newer inconclusive observation has been resolved.
@@ -184,6 +246,7 @@ function reduceGroupSplitState(
       ) {
         members[asinId] = {
           ...member,
+          parentHistory,
           pending: true,
           pendingObservedAt: observation.observedAt,
         };
@@ -193,6 +256,7 @@ function reduceGroupSplitState(
     members[asinId] = {
       ...member,
       ...classification,
+      parentHistory,
       observedAt: observation.observedAt,
       pending: false,
       pendingObservedAt: null,
@@ -200,12 +264,18 @@ function reduceGroupSplitState(
   }
 
   const values = Object.values(members);
+  const legacyHealth = Object.values(oldMembers).some(
+    (member) => member.reason === 'PARENT_CHANGED',
+  );
+  const previousHealthStatus = legacyHealth
+    ? SPLIT_STATUS.UNKNOWN
+    : previous?.status;
   const status = values.some((member) => member.status === SPLIT_STATUS.BROKEN)
     ? SPLIT_STATUS.BROKEN
     : values.some((member) => member.pending)
     ? membershipChanged
       ? SPLIT_STATUS.UNKNOWN
-      : previous?.status || SPLIT_STATUS.UNKNOWN
+      : previousHealthStatus || SPLIT_STATUS.UNKNOWN
     : values.length > 0 &&
       values.every((member) => member.status === SPLIT_STATUS.NORMAL)
     ? SPLIT_STATUS.NORMAL
@@ -222,7 +292,7 @@ function reduceGroupSplitState(
   );
   if (
     !membershipChanged &&
-    previous?.status === SPLIT_STATUS.NORMAL &&
+    previousHealthStatus === SPLIT_STATUS.NORMAL &&
     status === SPLIT_STATUS.BROKEN &&
     eventMembers.length > 0
   ) {
@@ -238,9 +308,7 @@ function reduceGroupSplitState(
       occurredAt: eventMembers
         .map(({ id }) => members[id].observedAt)
         .sort()[0],
-      reason: changes.some((change) => change.reason === 'PARENT_CHANGED')
-        ? 'PARENT_CHANGED'
-        : changes.some((change) => change.reason === 'PARENT_TITLE_EMPTY')
+      reason: changes.some((change) => change.reason === 'PARENT_TITLE_EMPTY')
         ? 'PARENT_TITLE_EMPTY'
         : 'RELATIONSHIP_LOST',
       details: {
@@ -252,11 +320,44 @@ function reduceGroupSplitState(
         eventMembers.some((member) => enabled(member.feishu_notify_enabled)),
     };
   }
+  const parentChanges = currentMembers.filter(({ id }) => {
+    const old = oldMembers[id];
+    const member = members[id];
+    const history = members[id].parentHistory;
+    return (
+      old &&
+      old.asin === member.asin &&
+      old.country === member.country &&
+      history.changedAt &&
+      history.changedAt !== readParentHistory(oldMembers[id]).changedAt
+    );
+  });
+  const newParentEvent =
+    previous?.country === group.country && parentChanges.length > 0
+      ? {
+          variantGroupId: group.id,
+          country: group.country,
+          occurredAt: parentChanges
+            .map(({ id }) => members[id].parentHistory.changedAt)
+            .sort()[0],
+          reason: 'PARENT_CHANGED',
+          details: {
+            triggerAsinIds: parentChanges.map(({ id }) => id),
+            changes: parentChanges.map(({ id }) => ({
+              asinId: id,
+              reason: 'PARENT_CHANGED',
+              ...members[id].parentHistory,
+            })),
+          },
+          notifyEnabled: false,
+        }
+      : null;
   return {
     country: group.country,
     status,
     members,
     newEvent,
+    newParentEvent,
     asins: currentMembers.map(({ id }) => ({
       asinId: id,
       status: members[id].status,
@@ -264,6 +365,7 @@ function reduceGroupSplitState(
       baselineParentAsin: members[id].baselineParentAsin,
       currentParentAsin: members[id].currentParentAsin,
       parentTitleStatus: members[id].parentTitleStatus,
+      parentHistory: members[id].parentHistory,
     })),
   };
 }
@@ -284,4 +386,5 @@ module.exports = {
   classifySplitObservation,
   reduceGroupSplitState,
   toBeijingDateTime,
+  normalizeMember,
 };

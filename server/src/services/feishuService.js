@@ -193,6 +193,7 @@ function buildFeishuCard(data) {
     brokenGroupNames = [],
     brokenGroupDetails = [],
     brokenASINs = [],
+    parentChanges = [],
     brokenByType = { SP_API_ERROR: 0, NOT_FOUND: 0, NO_VARIANTS: 0 },
     checkTime,
   } = data;
@@ -228,7 +229,6 @@ function buildFeishuCard(data) {
   const spApiErrorCount = brokenByType?.SP_API_ERROR || 0;
   const notFoundCount = brokenByType?.NOT_FOUND || 0;
   const noVariantsCount = brokenByType?.NO_VARIANTS || 0;
-  const parentChangedCount = brokenByType?.PARENT_CHANGED || 0;
   const parentTitleEmptyCount = brokenByType?.PARENT_TITLE_EMPTY || 0;
   const totalBrokenASINs = brokenASINs.length;
   const manualBrokenASINCount = brokenASINs.filter((item) =>
@@ -260,7 +260,7 @@ function buildFeishuCard(data) {
     contentText += `🚨 ${region} 区域进入紧急状态：统计时段内新增异常变体组 ${count} 个，超过阈值 ${threshold} 个。\n`;
     contentText += `统计时段（北京时间）：${startTime} 至 ${endTime}\n`;
     contentText +=
-      '按国家 + 变体组去重，仅计正常转异常且原父体变化、关系丢失或成功查询确认父 ASIN 标题为空的新发事件。\n';
+      '按国家 + 变体组去重，仅计正常转异常且关系丢失或成功查询确认父 ASIN 标题为空的新发事件；历史父体变化不计入异常。\n';
     contentText += '请相关负责人尽快检查并处理。\n\n';
   }
   contentText += `已检查分组数量：${totalGroups}，异常分组数量：${brokenGroups}，异常ASIN数量：${totalBrokenASINs}\n\n`;
@@ -276,9 +276,6 @@ function buildFeishuCard(data) {
     }
     if (noVariantsCount > 0) {
       contentText += `  ⚠️ 无父变体ASIN：${noVariantsCount} 个\n`;
-    }
-    if (parentChangedCount > 0) {
-      contentText += `  🔀 原父体发生变化：${parentChangedCount} 个\n`;
     }
     if (parentTitleEmptyCount > 0) {
       contentText += `  📝 父 ASIN 标题确认为空：${parentTitleEmptyCount} 个\n`;
@@ -370,13 +367,7 @@ function buildFeishuCard(data) {
           extraParts.push(`说明：${asinItem.manualBrokenReason}`);
         }
         const split = asinItem.splitDetection;
-        if (split?.reason === 'PARENT_CHANGED') {
-          extraParts.push(
-            `父体变化：${split.baselineParentAsin || '未知'} → ${
-              split.currentParentAsin || '无父体'
-            }`,
-          );
-        } else if (split?.reason === 'RELATIONSHIP_LOST') {
+        if (split?.reason === 'RELATIONSHIP_LOST') {
           extraParts.push(
             `关系丢失，原父体：${split.baselineParentAsin || '未知'}`,
           );
@@ -394,6 +385,27 @@ function buildFeishuCard(data) {
         }
         contentText += '\n';
       }
+    }
+  }
+
+  const historicalChanges = parentChanges.filter(
+    (item) => item?.parentHistory?.status === 'CHANGED',
+  );
+  if (historicalChanges.length > 0) {
+    contentText += `\nℹ️ 历史父体变化（不计入当前异常）：${historicalChanges.length} 个\n`;
+    for (const item of historicalChanges) {
+      const history = item.parentHistory;
+      const asinUrl = buildAmazonAsinUrl(item.asin);
+      const asinLabel = asinUrl ? `[${item.asin}](${asinUrl})` : item.asin;
+      const details = [
+        `初始父体：${history.baselineParentAsin || '未知'}`,
+        `最近确认父体：${history.currentParentAsin || '未确认'}`,
+      ];
+      if (history.previousParentAsin) {
+        details.push(`最近变化前父体：${history.previousParentAsin}`);
+      }
+      if (item.groupName) details.unshift(`分组：${item.groupName}`);
+      contentText += `- ${asinLabel}（${details.join('；')}）\n`;
     }
   }
 

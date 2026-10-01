@@ -242,7 +242,9 @@ test('首次空标题和旧状态首次确认空标题只登记存量；关系�
   assert.equal(mixed.newEvent.reason, 'RELATIONSHIP_LOST');
   assert.deepEqual(mixed.newEvent.details.triggerAsinIds, ['b']);
   const changed = reduce(legacy, [observation('a', emptyTitle(NEW_PARENT), 1)]);
-  assert.equal(changed.newEvent.reason, 'PARENT_CHANGED');
+  assert.equal(changed.newEvent, null);
+  assert.equal(changed.newParentEvent.reason, 'PARENT_CHANGED');
+  assert.equal(changed.members.a.reason, 'PARENT_TITLE_EMPTY');
 });
 
 test('空标题后查询失败不恢复，另一成员未知标题也阻止组短暂恢复', () => {
@@ -274,56 +276,142 @@ test('空标题后查询失败不恢复，另一成员未知标题也阻止组�
   assert.equal(confirmed.members.b.pending, false);
 });
 
-test('原父恢复但标题为空时保持异常，父体变更与关系丢失优先于标题未知', () => {
+test('父体变化和健康独立，标题未知只记录父体变化，关系丢失仍可判异常', () => {
   const changed = reduce(normalState(), [
     observation('a', raw(true, NEW_PARENT), 1),
   ]);
   const emptyOriginal = reduce(changed, [observation('a', emptyTitle(), 2)]);
   assert.equal(emptyOriginal.status, 'BROKEN');
   assert.equal(emptyOriginal.members.a.reason, 'PARENT_TITLE_EMPTY');
-  assert.equal(emptyOriginal.newEvent, null);
+  assert.equal(emptyOriginal.newEvent.reason, 'PARENT_TITLE_EMPTY');
+  assert.equal(emptyOriginal.newParentEvent.reason, 'PARENT_CHANGED');
   assert.equal(
     reduce(emptyOriginal, [observation('a', raw(), 3)]).status,
     'NORMAL',
   );
-  for (const [result, reason] of [
-    [raw(true, NEW_PARENT), 'PARENT_CHANGED'],
-    [raw(false), 'RELATIONSHIP_LOST'],
-  ]) {
-    result.details.parentTitleStatus = 'UNKNOWN';
-    const classified = reduce(normalState(), [observation('a', result, 1)]);
-    assert.equal(classified.status, 'BROKEN');
-    assert.equal(classified.newEvent.reason, reason);
-  }
+  const unknown = raw(true, NEW_PARENT);
+  unknown.details.parentTitleStatus = 'UNKNOWN';
+  const classified = reduce(normalState(), [observation('a', unknown, 1)]);
+  assert.equal(classified.status, 'NORMAL');
+  assert.equal(classified.members.a.pending, true);
+  assert.equal(classified.newEvent, null);
+  assert.equal(classified.newParentEvent.reason, 'PARENT_CHANGED');
+  const broken = reduce(normalState(), [observation('a', raw(false), 1)]);
+  const unresolved = reduce(broken, [observation('a', unknown, 2)]);
+  assert.equal(unresolved.status, 'BROKEN');
+  assert.equal(unresolved.members.a.reason, 'RELATIONSHIP_LOST');
+  assert.equal(
+    unresolved.members.a.parentHistory.currentParentAsin,
+    NEW_PARENT,
+  );
 });
 
-test('父体迁移触发拆分且固定原父体，直到恢复原父体才恢复正常', () => {
+test('有效新父体保持健康，父体历史固定基准且仅在迁移时记审计事件', () => {
   const changed = reduce(normalState(), [
     observation('a', raw(true, NEW_PARENT), 1),
   ]);
-  assert.equal(changed.newEvent.reason, 'PARENT_CHANGED');
-  assert.deepEqual(changed.newEvent.details.changes, [
-    {
-      asinId: 'a',
-      reason: 'PARENT_CHANGED',
-      baselineParentAsin: ORIGINAL_PARENT,
-      currentParentAsin: NEW_PARENT,
-    },
-  ]);
+  assert.equal(changed.status, 'NORMAL');
+  assert.equal(changed.newEvent, null);
+  assert.equal(changed.newParentEvent.reason, 'PARENT_CHANGED');
+  assert.equal(changed.newParentEvent.notifyEnabled, false);
+  assert.equal(
+    changed.newParentEvent.details.changes[0].previousParentAsin,
+    ORIGINAL_PARENT,
+  );
   const stillChanged = reduce(changed, [
     observation('a', raw(true, NEW_PARENT), 2),
   ]);
-  assert.equal(stillChanged.status, 'BROKEN');
+  assert.equal(stillChanged.status, 'NORMAL');
   assert.equal(stillChanged.newEvent, null);
+  assert.equal(stillChanged.newParentEvent, null);
   assert.equal(stillChanged.members.a.baselineParentAsin, ORIGINAL_PARENT);
   const missingParent = reduce(stillChanged, [
     observation('a', raw(true, null), 3),
   ]);
-  assert.equal(missingParent.status, 'BROKEN');
+  assert.equal(missingParent.status, 'NORMAL');
+  assert.equal(missingParent.members.a.pending, true);
   const restored = reduce(missingParent, [
     observation('a', raw(true, ORIGINAL_PARENT), 4),
   ]);
   assert.equal(restored.status, 'NORMAL');
+  assert.equal(restored.members.a.parentHistory.status, 'CHANGED');
+  assert.equal(restored.newEvent, null);
+  assert.equal(
+    restored.newParentEvent.details.changes[0].previousParentAsin,
+    NEW_PARENT,
+  );
+});
+
+test('新父体健康后发生真实异常会计新增，换到另一个有效父体也能恢复', () => {
+  const moved = reduce(normalState(), [
+    observation('a', raw(true, NEW_PARENT), 1),
+  ]);
+  const broken = reduce(moved, [observation('a', raw(false), 2)]);
+  assert.equal(broken.newEvent.reason, 'RELATIONSHIP_LOST');
+  assert.equal(broken.newParentEvent, null);
+  const recovered = reduce(broken, [
+    observation('a', raw(true, NEW_PARENT), 3),
+  ]);
+  assert.equal(recovered.status, 'NORMAL');
+  assert.equal(recovered.members.a.parentHistory.status, 'CHANGED');
+  assert.equal(recovered.newParentEvent, null);
+  const empty = reduce(recovered, [
+    observation('a', emptyTitle('B000000003'), 4),
+  ]);
+  assert.equal(empty.newEvent.reason, 'PARENT_TITLE_EMPTY');
+  assert.equal(empty.newParentEvent.reason, 'PARENT_CHANGED');
+  assert.equal(
+    empty.members.a.parentHistory.baselineParentAsin,
+    ORIGINAL_PARENT,
+  );
+});
+
+test('旧父体变化异常需新观测确认健康，不重复产生历史事件或健康事件', () => {
+  const legacy = normalState();
+  legacy.status = 'BROKEN';
+  Object.assign(legacy.members.a, {
+    status: 'BROKEN',
+    reason: 'PARENT_CHANGED',
+    currentParentAsin: NEW_PARENT,
+  });
+  delete legacy.members.a.parentHistory;
+  const waiting = reduce(legacy, []);
+  assert.equal(waiting.status, 'UNKNOWN');
+  assert.equal(waiting.members.a.parentHistory.status, 'CHANGED');
+  assert.equal(waiting.members.a.parentHistory.changedAt, null);
+  assert.equal(waiting.members.a.parentHistory.previousParentAsin, null);
+  const recovered = reduce(waiting, [
+    observation('a', raw(true, NEW_PARENT), 1),
+  ]);
+  assert.equal(recovered.status, 'NORMAL');
+  assert.equal(recovered.newEvent, null);
+  assert.equal(recovered.newParentEvent, null);
+  const lost = reduce(recovered, [observation('a', raw(false), 2)]);
+  assert.equal(lost.newEvent.reason, 'RELATIONSHIP_LOST');
+});
+
+test('标题未确认的父体历史独立去重且不接受过期关系，失败结果不改历史', () => {
+  const unknown = raw(true, NEW_PARENT);
+  unknown.details.parentTitleStatus = 'UNKNOWN';
+  const changed = reduce(normalState(), [observation('a', unknown, 2)]);
+  const repeat = reduce(changed, [observation('a', unknown, 2)]);
+  assert.equal(repeat.newParentEvent, null);
+  for (const result of [
+    raw(),
+    raw(true, 'B000000003', { errorType: 'SP_API_ERROR' }),
+  ]) {
+    const next = reduce(changed, [observation('a', result, 1)]);
+    assert.deepEqual(
+      next.members.a.parentHistory,
+      changed.members.a.parentHistory,
+    );
+    assert.equal(next.newParentEvent, null);
+  }
+  const resolved = reduce(changed, [
+    observation('a', raw(true, NEW_PARENT), 3),
+  ]);
+  assert.equal(resolved.members.a.pending, false);
+  assert.equal(resolved.newParentEvent, null);
 });
 
 test('父体字符串规范化且拒绝无效父体；无父体的父 ASIN 可先建立正常状态', () => {
@@ -417,6 +505,28 @@ test('删除或移走的成员不计入，其他成员保留基准，变化当�
   );
   assert.equal(broken.status, 'BROKEN');
   assert.equal(broken.newEvent, null);
+});
+
+test('其他成员增删不丢失已有成员的父体迁移审计，新成员只建基准', () => {
+  const extra = { id: 'c', asin: 'B000000013', country: 'US' };
+  const added = reduce(
+    normalState(),
+    [
+      observation('a', raw(true, NEW_PARENT), 1),
+      observation('c', raw(true, NEW_PARENT), 1),
+    ],
+    [...members, extra],
+  );
+  assert.equal(added.newEvent, null);
+  assert.deepEqual(added.newParentEvent.details.triggerAsinIds, ['a']);
+  assert.equal(added.members.c.parentHistory.status, 'UNCHANGED');
+  const removed = reduce(
+    normalState(),
+    [observation('a', raw(true, NEW_PARENT), 1)],
+    [members[0]],
+  );
+  assert.equal(removed.status, 'NORMAL');
+  assert.deepEqual(removed.newParentEvent.details.triggerAsinIds, ['a']);
 });
 
 test('相同成员 ID 更换 ASIN/国家后不能沿用旧基准，组国家变更也抑制事件', () => {
@@ -557,7 +667,7 @@ function transactionalStore() {
             return [{ affectedRows: 1 }];
           }
           if (sql.includes('INSERT INTO variant_group_split_events')) {
-            if (db.failInsert)
+            if (db.failInsert || local.events.length + 1 === db.failInsertAt)
               throw Object.assign(new Error('event insert failed'), {
                 code: 'TEST_FAILURE',
                 secret: 'never-log',
@@ -637,6 +747,49 @@ test('事件写入失败时回滚状态，重试仍能生成事件且日志不�
     (await Model.observeGroup(group.id, [observation('a', raw(false), 1)]))
       .newEvent,
   );
+});
+
+test('并发父体变化只记一次审计，健康事件与审计事件共同提交或回滚', async () => {
+  const { db, pool } = transactionalStore();
+  const Model = loadModel(pool);
+  await Model.observeGroup(
+    group.id,
+    members.map(({ id }) => observation(id)),
+  );
+  const results = await Promise.all(
+    Array.from({ length: 3 }, () =>
+      Model.observeGroup(group.id, [
+        observation('a', raw(true, NEW_PARENT), 1),
+      ]),
+    ),
+  );
+  assert.equal(results.filter((result) => result.newParentEvent).length, 1);
+  assert.ok(
+    results.every(
+      (result) => result.status === 'NORMAL' && result.newEvent === null,
+    ),
+  );
+  assert.equal(db.events.length, 1);
+  assert.equal(db.events[0][3], 'PARENT_CHANGED');
+  assert.equal(db.events[0][5], 0);
+  const before = structuredClone(db.state);
+  db.failInsertAt = 3;
+  await assert.rejects(
+    Model.observeGroup(group.id, [
+      observation('a', emptyTitle('B000000003'), 2),
+    ]),
+    /event insert failed/,
+  );
+  assert.deepEqual(db.state, before);
+  assert.equal(db.events.length, 1);
+  db.failInsertAt = null;
+  const next = await Model.observeGroup(group.id, [
+    observation('a', emptyTitle('B000000003'), 2),
+  ]);
+  assert.equal(next.status, 'BROKEN');
+  assert.equal(next.newEvent.reason, 'PARENT_TITLE_EMPTY');
+  assert.equal(next.newParentEvent.reason, 'PARENT_CHANGED');
+  assert.equal(db.events.length, 3);
 });
 
 test('事务内按当前成员过滤移走成员，已删除组不留下状态或事件', async () => {

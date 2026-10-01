@@ -220,7 +220,7 @@ test('显式更新规则使用绑定 JSON，不重置冷却时间', async () => 
   assert.equal(JSON.parse(update.params[2]).threshold, 0);
 });
 
-test('新发拆分按国家加变体组去重，只统计未尝试电话的有效通知事件', async () => {
+test('新发健康异常按国家加变体组去重，排除历史父体变化且只统计未尝试电话的有效通知事件', async () => {
   const calls = [];
   const model = loadModel(async (options, params) => {
     calls.push({ ...options, params });
@@ -237,6 +237,10 @@ test('新发拆分按国家加变体组去重，只统计未尝试电话的有�
   const call = calls[0];
   assert.match(call.sql, /COUNT\(DISTINCT e.country, e.variant_group_id\)/);
   assert.match(call.sql, /FROM variant_group_split_events e/);
+  assert.match(
+    call.sql,
+    /e.reason IN \('RELATIONSHIP_LOST', 'PARENT_TITLE_EMPTY'\)/,
+  );
   assert.match(call.sql, /e.phone_attempted_at IS NULL/);
   assert.match(call.sql, /e.notify_enabled = 1/);
   assert.match(call.sql, /e.occurred_at >= \?/);
@@ -305,6 +309,11 @@ test('原子抢占锁定区域配置，重算水位内数量并仅消费本批�
   );
   assert.deepEqual(calls[0].params, [60, 'EU']);
   for (const call of [calls[1], calls[2]]) {
+    assert.match(
+      call.sql,
+      /e.reason IN \('RELATIONSHIP_LOST', 'PARENT_TITLE_EMPTY'\)/,
+      'The claim recount and consuming UPDATE must both exclude parent-history events',
+    );
     assert.match(call.sql, /e.id <= \?/);
     assert.match(call.sql, /e.phone_attempted_at IS NULL/);
     assert.match(call.sql, /e.occurred_at >= \? AND e.occurred_at <= \?/);

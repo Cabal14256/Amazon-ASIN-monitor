@@ -183,6 +183,7 @@ async function persistDeferredASINResult(deferred, result, dependencies = {}) {
       groupIsBroken,
       errorType,
       splitDetection: result.splitDetection,
+      parentHistory: result.parentHistory,
       statusSource: effectiveASIN.statusSource || 'NORMAL',
       manualBroken: Number(effectiveASIN.manualBroken || 0) === 1 ? 1 : 0,
       manualBrokenReason: effectiveASIN.manualBrokenReason || '',

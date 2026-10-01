@@ -1,4 +1,5 @@
 const logger = require('../utils/logger');
+const { normalizeMember } = require('../utils/variantSplit');
 
 function isRelationshipObservation(result) {
   return (
@@ -29,6 +30,7 @@ async function observeVariantGroupSplit(groupId, observations, model) {
 
 function applySplitState(result, state) {
   if (!state) return result;
+  state = normalizeMember(state);
   const splitDetection = {
     status: state.status,
     reason: state.reason,
@@ -40,15 +42,14 @@ function applySplitState(result, state) {
       ...result,
       hasVariants: false,
       errorType:
-        state.reason === 'PARENT_CHANGED'
-          ? 'PARENT_CHANGED'
-          : state.reason === 'PARENT_TITLE_EMPTY'
+        state.reason === 'PARENT_TITLE_EMPTY'
           ? result.errorType || 'PARENT_TITLE_EMPTY'
           : result.errorType || 'NO_VARIANTS',
       splitDetection,
+      parentHistory: state.parentHistory,
     };
   }
-  return { ...result, splitDetection };
+  return { ...result, splitDetection, parentHistory: state.parentHistory };
 }
 
 module.exports = {

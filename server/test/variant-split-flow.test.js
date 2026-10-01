@@ -20,7 +20,7 @@ function loadService(stubs) {
   }
 }
 
-test('主监控组检查、单 ASIN 检查持久化父体变化并传递原父/新父', async () => {
+test('主监控组与单 ASIN 独立持久化当前健康及父体变化历史', async () => {
   const group = {
     id: 'g1',
     name: 'Group',
@@ -51,10 +51,12 @@ test('主监控组检查、单 ASIN 检查持久化父体变化并传递原父/�
   }));
   let state = null;
   let events = 0;
+  let parentEvents = 0;
   let parent = 'B000PARENT';
   let parentTitleMode = 'present';
   let timestamp = 0;
   const history = [];
+  const groupUpdates = [];
   const snapshots = () => ({
     ...group,
     children: children.map((c) => ({ ...c })),
@@ -77,6 +79,7 @@ test('主监控组检查、单 ASIN 检查持久化父体变化并传递原父/�
         observations.map((o) => ({ ...o, observedAt: stamp })),
       );
       if (state.newEvent) events++;
+      if (state.newParentEvent) parentEvents++;
       return state;
     },
   };
@@ -137,7 +140,11 @@ test('主监控组检查、单 ASIN 检查持久化父体变化并传递原父/�
     './legacySPAPIClient': {},
     '../models/VariantGroup': {
       findById: async () => snapshots(),
-      updateVariantStatusAndCheckTime: async () => {},
+      updateVariantStatusAndCheckTime: async (id, broken) => {
+        assert.equal(id, group.id);
+        groupUpdates.push(broken);
+        group.isBroken = broken ? 1 : 0;
+      },
       clearCache() {},
     },
     '../models/ASIN': {
@@ -233,45 +240,98 @@ test('主监控组检查、单 ASIN 检查持久化父体变化并传递原父/�
   parentTitleMode = 'present';
   await checkGroup();
   parent = 'B000NEWPAR';
-  const split = await service.checkVariantGroup('g1', true, {
+  const migrated = await service.checkVariantGroup('g1', true, {
     group: snapshots(),
     skipGroupStatus: true,
   });
-  assert.equal(split.isBroken, true);
-  assert.equal(split.brokenByType.PARENT_CHANGED, 2);
-  assert.equal(events, 3);
-  assert.ok(split.brokenASINs.every((c) => c.errorType === 'PARENT_CHANGED'));
-  assert.equal(
-    split.brokenASINs[0].splitDetection.baselineParentAsin,
-    'B000PARENT',
-  );
-  assert.equal(
-    split.brokenASINs[0].splitDetection.currentParentAsin,
-    'B000NEWPAR',
-  );
+  assert.equal(migrated.isBroken, false);
+  assert.equal(migrated.brokenByType.PARENT_CHANGED || 0, 0);
+  assert.deepEqual(migrated.brokenASINs, []);
+  assert.equal(state.status, 'NORMAL');
+  assert.equal(events, 2);
+  assert.equal(parentEvents, 1);
+  for (const entry of migrated.details.results) {
+    assert.equal(entry.isBroken, false);
+    assert.equal(entry.details.errorType, undefined);
+    assert.equal(entry.details.splitDetection.status, 'NORMAL');
+    assert.equal(entry.details.splitDetection.reason, null);
+    assert.equal(entry.details.parentHistory.status, 'CHANGED');
+    assert.equal(entry.details.parentHistory.baselineParentAsin, 'B000PARENT');
+    assert.equal(entry.details.parentHistory.currentParentAsin, 'B000NEWPAR');
+  }
   await service.checkVariantGroup('g1', true, {
     group: snapshots(),
     skipGroupStatus: true,
   });
+  assert.equal(events, 2);
+  assert.equal(parentEvents, 1);
+
+  parentTitleMode = 'empty';
+  const unhealthy = await checkGroup();
+  assert.equal(unhealthy.isBroken, true);
+  assert.equal(unhealthy.brokenByType.PARENT_TITLE_EMPTY, 2);
   assert.equal(events, 3);
+  assert.equal(parentEvents, 1);
+  assert.ok(
+    unhealthy.details.results.every(
+      (entry) =>
+        entry.details.splitDetection.reason === 'PARENT_TITLE_EMPTY' &&
+        entry.details.parentHistory.status === 'CHANGED',
+    ),
+  );
+  parentTitleMode = 'present';
+  const recovered = await checkGroup();
+  assert.equal(recovered.isBroken, false);
+  assert.equal(state.status, 'NORMAL');
+  assert.equal(events, 3);
+  assert.equal(parentEvents, 1);
+  assert.ok(
+    recovered.details.results.every(
+      (entry) => entry.details.parentHistory.status === 'CHANGED',
+    ),
+  );
   parent = 'B000PARENT';
   await service.checkVariantGroup('g1', true, {
     group: snapshots(),
     skipGroupStatus: true,
   });
   assert.equal(state.status, 'NORMAL');
+  assert.equal(parentEvents, 2);
   parent = 'B000NEWPAR';
+  // Simulate flags persisted by the old parent-change-as-broken behavior.
+  children[0].isBroken = 1;
+  group.isBroken = 1;
   const single = await service.checkSingleASIN('a1', true);
-  assert.equal(single.isBroken, true);
-  assert.equal(single.details.errorType, 'PARENT_CHANGED');
+  assert.equal(single.isBroken, false);
+  assert.equal(single.details.errorType, undefined);
+  assert.equal(single.details.splitDetection.status, 'NORMAL');
+  assert.equal(single.details.parentHistory.status, 'CHANGED');
+  assert.equal(history[0].isBroken, 0);
   assert.equal(
-    history[0].checkResult.splitDetection.baselineParentAsin,
+    history[0].checkResult.parentHistory.baselineParentAsin,
     'B000PARENT',
   );
-  assert.equal(events, 4);
+  assert.equal(history[0].checkResult.parentHistory.currentParentAsin, parent);
+  assert.equal(events, 3);
+  assert.equal(parentEvents, 3);
+  assert.equal(children[0].isBroken, 0);
+  assert.equal(groupUpdates.at(-1), false);
+  assert.equal(group.isBroken, 0);
+
+  // A healthy check of one member cannot clear another member's failure.
+  children[1].isBroken = 1;
+  group.isBroken = 1;
+  const healthyMember = await service.checkSingleASIN('a1', true);
+  assert.equal(healthyMember.isBroken, false);
+  assert.equal(healthyMember.details.parentHistory.status, 'CHANGED');
+  assert.equal(children[1].isBroken, 1);
+  assert.equal(groupUpdates.at(-1), true);
+  assert.equal(group.isBroken, 1);
+  assert.equal(events, 3);
+  assert.equal(parentEvents, 3);
 });
 
-test('延后复查应用相同父体检测，竞品不写主营拆分状态', async () => {
+test('延后复查保留父体历史且健康迁移正常，竞品不写主营状态', async () => {
   const {
     persistDeferredASINResult,
   } = require('../src/services/deferredASINPersistenceService');
@@ -315,10 +375,18 @@ test('延后复查应用相同父体检测，竞品不写主营拆分状态', as
           asins: [
             {
               asinId: 'a1',
-              status: 'BROKEN',
-              reason: 'PARENT_CHANGED',
+              status: 'NORMAL',
+              reason: null,
               baselineParentAsin: 'B000PARENT',
               currentParentAsin: 'B000NEWPAR',
+              parentHistory: {
+                status: 'CHANGED',
+                baselineParentAsin: 'B000PARENT',
+                currentParentAsin: 'B000NEWPAR',
+                previousParentAsin: 'B000PARENT',
+                changedAt: '2026-10-01T00:00:00Z',
+                observedAt: '2026-10-01T00:00:00Z',
+              },
             },
           ],
         };
@@ -344,8 +412,12 @@ test('延后复查应用相同父体检测，竞品不写主营拆分状态', as
     raw,
     dependencies,
   );
-  assert.equal(primary.errorType, 'PARENT_CHANGED');
-  assert.equal(primary.isBroken, true);
+  assert.equal(primary.errorType, null);
+  assert.equal(primary.isBroken, false);
+  assert.equal(primary.autoIsBroken, false);
+  assert.equal(primary.parentHistory.status, 'CHANGED');
+  assert.equal(histories[0].isBroken, 0);
+  assert.equal(histories[0].checkResult.parentHistory.status, 'CHANGED');
   assert.equal(
     histories[0].checkResult.splitDetection.currentParentAsin,
     'B000NEWPAR',
@@ -357,6 +429,7 @@ test('延后复查应用相同父体检测，竞品不写主营拆分状态', as
   );
   assert.equal(stateCalls, 1);
   assert.equal(histories[1].checkResult.splitDetection, undefined);
+  assert.equal(histories[1].checkResult.parentHistory, undefined);
 });
 
 function retrySplitFixture() {
@@ -370,13 +443,13 @@ function retrySplitFixture() {
     isBroken: 0,
   }));
   const now = Date.now();
-  const raw = (parent = 'B000PARENT', offset = 0) => ({
-    hasVariants: true,
-    variantCount: 1,
+  const raw = (parent = 'B000PARENT', offset = 0, relationships = true) => ({
+    hasVariants: relationships,
+    variantCount: relationships ? 1 : 0,
     details: {
-      parentAsin: parent,
-      hasVariantRelationships: true,
-      parentTitleStatus: 'PRESENT',
+      parentAsin: relationships ? parent : null,
+      hasVariantRelationships: relationships,
+      parentTitleStatus: relationships ? 'PRESENT' : 'NOT_APPLICABLE',
     },
     meta: {
       source: 'spapi',
@@ -391,6 +464,7 @@ function retrySplitFixture() {
     members.map(({ id }) => ({ asinId: id, result: raw('B000PARENT', -3000) })),
   );
   const events = [];
+  const parentEvents = [];
   const observations = [];
   const cleared = [];
   const history = [];
@@ -402,6 +476,7 @@ function retrySplitFixture() {
       calls.push('observe');
       state = reduceGroupSplitState(state, group, members, batch);
       if (state.newEvent) events.push(state.newEvent);
+      if (state.newParentEvent) parentEvents.push(state.newParentEvent);
       return state;
     },
   };
@@ -451,6 +526,7 @@ function retrySplitFixture() {
     dependencies,
     observations,
     events,
+    parentEvents,
     cleared,
     history,
     calls,
@@ -463,6 +539,43 @@ function retrySplitFixture() {
   };
 }
 
+test('延后批量复查的健康迁移只记录父体历史，之后关系丢失仍触发健康事件', async () => {
+  const {
+    processDeferredASINs,
+  } = require('../src/services/deferredASINRetryService');
+  const f = retrySplitFixture();
+  f.dependencies.checkASINVariants = async () => f.raw('B000NEWPAR', 10);
+  const migrated = await processDeferredASINs('US', 'primary', f.dependencies);
+  assert.equal(migrated.success, 2);
+  assert.equal(f.state.status, 'NORMAL');
+  assert.equal(f.events.length, 0);
+  assert.equal(f.parentEvents.length, 1);
+  assert.ok(
+    f.history.every(
+      (entry) =>
+        entry.isBroken === 0 &&
+        entry.checkResult.parentHistory.status === 'CHANGED' &&
+        entry.checkResult.splitDetection.status === 'NORMAL',
+    ),
+  );
+
+  f.dependencies.checkASINVariants = async () => f.raw(null, 20, false);
+  await processDeferredASINs('US', 'primary', f.dependencies);
+  assert.equal(f.state.status, 'BROKEN');
+  assert.equal(f.events.length, 1);
+  assert.equal(f.events[0].reason, 'RELATIONSHIP_LOST');
+  assert.equal(f.parentEvents.length, 1);
+  assert.equal(f.history[2].checkResult.parentHistory.status, 'CHANGED');
+
+  f.dependencies.checkASINVariants = async () => f.raw('B000NEWPAR', 30);
+  await processDeferredASINs('US', 'primary', f.dependencies);
+  assert.equal(f.state.status, 'NORMAL');
+  assert.equal(f.events.length, 1);
+  assert.equal(f.parentEvents.length, 1);
+  assert.equal(f.history[4].isBroken, 0);
+  assert.equal(f.history[4].checkResult.parentHistory.status, 'CHANGED');
+});
+
 test('同组延后结果一次归约，成员恢复与另一个拆分不制造新增组事件', async () => {
   const {
     processDeferredASINs,
@@ -470,12 +583,12 @@ test('同组延后结果一次归约，成员恢复与另一个拆分不制造�
   const f = retrySplitFixture();
   f.setState(
     reduceGroupSplitState(f.state, f.group, f.members, [
-      { asinId: 'a', result: f.raw('B000NEWPAR', -2000) },
+      { asinId: 'a', result: f.raw(null, -2000, false) },
     ]),
   );
   f.dependencies.checkASINVariants = async (asin) => {
     f.calls.push(`check:${asin}`);
-    return f.raw(asin === f.members[0].asin ? 'B000PARENT' : 'B000NEWPAR', 10);
+    return f.raw('B000PARENT', 10, asin === f.members[0].asin);
   };
   const result = await processDeferredASINs('US', 'primary', f.dependencies);
   assert.equal(result.success, 2);
@@ -483,7 +596,11 @@ test('同组延后结果一次归约，成员恢复与另一个拆分不制造�
   assert.equal(f.observations[0].length, 2);
   assert.equal(f.events.length, 0);
   assert.equal(f.state.status, 'BROKEN');
-  assert.equal(f.history[1].checkResult.errorType, 'PARENT_CHANGED');
+  assert.equal(f.history[1].checkResult.errorType, 'NO_VARIANTS');
+  assert.equal(
+    f.history[1].checkResult.splitDetection.reason,
+    'RELATIONSHIP_LOST',
+  );
   assert.equal(f.cleared.length, 2);
   assert.deepEqual(f.calls.slice(0, 3), [
     `check:${f.members[0].asin}`,
@@ -498,7 +615,7 @@ test('主轮保留的待确认组在延后确认拆分时不会重复生成事�
   } = require('../src/services/deferredASINRetryService');
   const f = retrySplitFixture();
   const broken = reduceGroupSplitState(f.state, f.group, f.members, [
-    { asinId: 'a', result: f.raw('B000NEWPAR', -2000) },
+    { asinId: 'a', result: f.raw(null, -2000, false) },
   ]);
   f.setState(
     reduceGroupSplitState(broken, f.group, f.members, [
@@ -514,7 +631,7 @@ test('主轮保留的待确认组在延后确认拆分时不会重复生成事�
   f.dependencies.getDeferredASINs = () => [
     { asin: f.members[1].asin, country: 'US', retryCount: 0 },
   ];
-  f.dependencies.checkASINVariants = async () => f.raw('B000NEWPAR', 10);
+  f.dependencies.checkASINVariants = async () => f.raw(null, 10, false);
   await processDeferredASINs('US', 'primary', f.dependencies);
   assert.equal(f.events.length, 0);
   assert.equal(f.state.status, 'BROKEN');
@@ -528,7 +645,7 @@ test('延后一个成员失败时保持待确认状态，正常成员不会使�
   const f = retrySplitFixture();
   f.setState(
     reduceGroupSplitState(f.state, f.group, f.members, [
-      { asinId: 'a', result: f.raw('B000NEWPAR', -2000) },
+      { asinId: 'a', result: f.raw(null, -2000, false) },
     ]),
   );
   f.dependencies.checkASINVariants = async (asin) => {
@@ -549,7 +666,7 @@ test('延后新增拆分按整组生成一次，持久化失败的成员仍保�
     processDeferredASINs,
   } = require('../src/services/deferredASINRetryService');
   const f = retrySplitFixture();
-  f.dependencies.checkASINVariants = async () => f.raw('B000NEWPAR', 10);
+  f.dependencies.checkASINVariants = async () => f.raw(null, 10, false);
   f.dependencies.monitorHistoryModel.create = async (entry) => {
     if (entry.asinId === 'b') throw new Error('history unavailable');
     f.history.push(entry);

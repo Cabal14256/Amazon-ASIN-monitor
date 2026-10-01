@@ -158,6 +158,7 @@ async function processCountry(
     brokenGroupNames: [],
     brokenGroupDetails: [],
     brokenASINs: [],
+    parentChanges: [],
     brokenByType: { SP_API_ERROR: 0, NOT_FOUND: 0, NO_VARIANTS: 0 }, // 按类型统计异常
     asinClassifications: {},
     checkedGroupKeys: [],
@@ -170,6 +171,7 @@ async function processCountry(
     ...(countryResult.brokenByType || {}),
   };
   countryResult.asinClassifications = countryResult.asinClassifications || {};
+  countryResult.parentChanges = countryResult.parentChanges || [];
   countryResult.checkedGroupKeys = countryResult.checkedGroupKeys || [];
 
   let checked = 0;
@@ -348,9 +350,6 @@ async function processCountry(
           countryResult.brokenByType.NOT_FOUND += brokenByType.NOT_FOUND || 0;
           countryResult.brokenByType.NO_VARIANTS +=
             brokenByType.NO_VARIANTS || 0;
-          countryResult.brokenByType.PARENT_CHANGED =
-            (countryResult.brokenByType.PARENT_CHANGED || 0) +
-            (brokenByType.PARENT_CHANGED || 0);
           countryResult.brokenByType.PARENT_TITLE_EMPTY =
             (countryResult.brokenByType.PARENT_TITLE_EMPTY || 0) +
             (brokenByType.PARENT_TITLE_EMPTY || 0);
@@ -412,6 +411,22 @@ async function processCountry(
             if (
               groupNotifyEnabled &&
               asinNotifyEnabled &&
+              checkOutcome.currentResult?.parentHistory?.status === 'CHANGED'
+            ) {
+              countryResult.parentChanges.push({
+                asin: asinInfo.asin,
+                asinId: asinInfo.id,
+                name: asinInfo.name || '',
+                variantGroupId: group.id,
+                groupName: variantGroupName,
+                brand: asinInfo.brand || '',
+                parentHistory: checkOutcome.currentResult.parentHistory,
+              });
+            }
+
+            if (
+              groupNotifyEnabled &&
+              asinNotifyEnabled &&
               asinInfo.isBroken === 1
             ) {
               countryResult.brokenASINs.push({
@@ -423,6 +438,7 @@ async function processCountry(
                 brand: asinInfo.brand || '',
                 errorType, // 添加错误类型
                 splitDetection: checkOutcome.currentResult?.splitDetection,
+                parentHistory: checkOutcome.currentResult?.parentHistory,
                 statusSource: asinInfo.statusSource || 'NORMAL',
                 manualBroken: asinInfo.manualBroken === 1 ? 1 : 0,
                 manualBrokenReason: asinInfo.manualBrokenReason || '',
@@ -449,6 +465,7 @@ async function processCountry(
                 isDeferred: checkOutcome.isDeferred,
                 currentResult: checkOutcome.currentResult,
                 splitDetection: checkOutcome.currentResult?.splitDetection,
+                parentHistory: checkOutcome.currentResult?.parentHistory,
                 statusSource: asinInfo.statusSource || 'NORMAL',
                 manualBrokenReason: asinInfo.manualBrokenReason || '',
               },

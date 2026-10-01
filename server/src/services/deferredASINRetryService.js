@@ -11,7 +11,6 @@ const AUTOMATIC_ERROR_TYPES = new Set([
   'SP_API_ERROR',
   'NOT_FOUND',
   'NO_VARIANTS',
-  'PARENT_CHANGED',
   'PARENT_TITLE_EMPTY',
 ]);
 
@@ -56,7 +55,7 @@ function getASINCheckOutcome(groupResult, asinInfo) {
       (currentResult.hasVariants !== true &&
         currentResult.variantCount !== undefined &&
         Number(currentResult.variantCount) === 0));
-  const automaticErrorType = isDeferred
+  const observedErrorType = isDeferred
     ? null
     : currentResult?.errorType ||
       (currentIsBroken
@@ -64,6 +63,8 @@ function getASINCheckOutcome(groupResult, asinInfo) {
         : typeof brokenASIN === 'object'
         ? brokenASIN?.errorType || null
         : null);
+  const automaticErrorType =
+    observedErrorType === 'PARENT_CHANGED' ? null : observedErrorType;
   const manualErrorType =
     asinInfo?.statusSource === 'MANUAL' ||
     asinInfo?.statusSource === 'AUTO+MANUAL'
@@ -299,6 +300,7 @@ function mergeDeferredResults(countryResults, deferredResults) {
       brokenGroupNames: [],
       brokenGroupDetails: [],
       brokenASINs: [],
+      parentChanges: [],
       brokenByType: {
         SP_API_ERROR: 0,
         NOT_FOUND: 0,
@@ -317,6 +319,7 @@ function mergeDeferredResults(countryResults, deferredResults) {
     countryResult.brokenGroupNames = countryResult.brokenGroupNames || [];
     countryResult.brokenGroupDetails = countryResult.brokenGroupDetails || [];
     countryResult.brokenASINs = countryResult.brokenASINs || [];
+    countryResult.parentChanges = countryResult.parentChanges || [];
     countryResult.asinClassifications = countryResult.asinClassifications || {};
     countryResult.checkedGroupKeys = countryResult.checkedGroupKeys || [];
 
@@ -351,7 +354,8 @@ function mergeDeferredResults(countryResults, deferredResults) {
       item.groupIsBroken === true || Number(item.groupIsBroken) === 1;
     const oldErrorType =
       countryResult.asinClassifications[classificationKey] ||
-      (AUTOMATIC_ERROR_TYPES.has(existingASIN?.errorType)
+      (AUTOMATIC_ERROR_TYPES.has(existingASIN?.errorType) ||
+      existingASIN?.errorType === 'PARENT_CHANGED'
         ? existingASIN.errorType
         : null);
     const newErrorType =
@@ -427,6 +431,25 @@ function mergeDeferredResults(countryResults, deferredResults) {
       delete countryResult.asinClassifications[classificationKey];
     }
 
+    // Missing history is not a new observation (for example, tracker failure).
+    // Explicit history replaces earlier evidence independently of health.
+    if (!item.notifyEnabled || item.parentHistory) {
+      countryResult.parentChanges = countryResult.parentChanges.filter(
+        (entry) => getASINClassificationKey(entry) !== classificationKey,
+      );
+    }
+    if (item.notifyEnabled && item.parentHistory?.status === 'CHANGED') {
+      countryResult.parentChanges.push({
+        asin: item.asin,
+        asinId: item.asinId || null,
+        name: item.asinName || '',
+        variantGroupId: item.variantGroupId || null,
+        groupName,
+        brand: item.brand || '',
+        parentHistory: item.parentHistory,
+      });
+    }
+
     if (existingASIN && (!isBroken || !item.notifyEnabled)) {
       countryResult.brokenASINs.splice(
         countryResult.brokenASINs.indexOf(existingASIN),
@@ -435,6 +458,7 @@ function mergeDeferredResults(countryResults, deferredResults) {
     } else if (existingASIN) {
       existingASIN.name = item.asinName || existingASIN.name || '';
       existingASIN.splitDetection = item.splitDetection;
+      existingASIN.parentHistory = item.parentHistory;
       existingASIN.groupName = groupName;
       existingASIN.brand = item.brand || existingASIN.brand || '';
       existingASIN.errorType =
@@ -459,6 +483,7 @@ function mergeDeferredResults(countryResults, deferredResults) {
         groupName,
         brand: item.brand || '',
         splitDetection: item.splitDetection,
+        parentHistory: item.parentHistory,
         errorType:
           item.errorType ||
           (item.statusSource === 'MANUAL' || item.statusSource === 'AUTO+MANUAL'

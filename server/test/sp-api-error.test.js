@@ -818,3 +818,195 @@ test('主监控与竞品通知按分组 ID 区分同名分组', () => {
     assert.match(content, /B0GROUPB01/);
   }
 });
+
+test('健康 ASIN 的父体变化仅作为历史透传，旧父体变化不再归类为异常', () => {
+  const parentHistory = {
+    status: 'CHANGED',
+    baselineParentAsin: 'B000PARENT',
+    currentParentAsin: 'B000NEWPAR',
+  };
+  const currentResult = {
+    asin: 'B000000001',
+    isBroken: false,
+    parentHistory,
+    splitDetection: { status: 'NORMAL', reason: null },
+  };
+  for (const errorType of [undefined, 'PARENT_CHANGED']) {
+    const outcome = getASINCheckOutcome(
+      { details: { results: [{ ...currentResult, errorType }] } },
+      { asin: currentResult.asin, isBroken: 0, statusSource: 'NORMAL' },
+    );
+    assert.deepEqual(outcome.currentResult.parentHistory, parentHistory);
+    assert.equal(outcome.errorType, null);
+    assert.equal(outcome.classificationErrorType, null);
+  }
+});
+
+test('延后健康迁移独立更新历史，缺少新证据保留历史，通知关闭或明确重置时移除', () => {
+  const countryResults = {};
+  const item = {
+    asin: 'B000000001',
+    asinId: 'asin-a',
+    country: 'US',
+    variantGroupId: 'group-a',
+    variantGroupName: '同名分组',
+    notifyEnabled: true,
+    autoIsBroken: false,
+    isBroken: false,
+    groupIsBroken: false,
+    checkTime: new Date('2026-10-01T00:00:00Z'),
+    parentHistory: {
+      status: 'CHANGED',
+      baselineParentAsin: 'B000PARENT',
+      currentParentAsin: 'B000NEWPAR',
+      previousParentAsin: 'B000PARENT',
+      changedAt: '2026-10-01T00:00:00Z',
+      observedAt: '2026-10-01T00:00:00Z',
+    },
+  };
+  const otherGroup = { ...item, asinId: 'asin-b', variantGroupId: 'group-b' };
+  mergeDeferredResults(countryResults, [item, otherGroup]);
+  assert.equal(countryResults.US.parentChanges.length, 2);
+  assert.equal(countryResults.US.brokenGroups, 0);
+  assert.deepEqual(countryResults.US.brokenASINs, []);
+  assert.deepEqual(countryResults.US.asinClassifications, {});
+  assert.equal(countryResults.US.brokenByType.PARENT_CHANGED, undefined);
+
+  const returnedHistory = {
+    ...item.parentHistory,
+    currentParentAsin: 'B000PARENT',
+    previousParentAsin: 'B000NEWPAR',
+    changedAt: '2026-10-01T00:05:00Z',
+    observedAt: '2026-10-01T00:05:00Z',
+  };
+  mergeDeferredResults(countryResults, [
+    { ...item, parentHistory: returnedHistory },
+  ]);
+  assert.equal(countryResults.US.parentChanges.length, 2);
+  const ownHistory = () =>
+    countryResults.US.parentChanges.find(
+      (entry) => entry.variantGroupId === item.variantGroupId,
+    );
+  assert.deepEqual(ownHistory().parentHistory, returnedHistory);
+  mergeDeferredResults(countryResults, [{ ...item, parentHistory: undefined }]);
+  assert.deepEqual(ownHistory().parentHistory, returnedHistory);
+
+  for (const status of ['UNKNOWN', 'UNCHANGED']) {
+    mergeDeferredResults(countryResults, [item]);
+    mergeDeferredResults(countryResults, [
+      { ...item, parentHistory: { status } },
+    ]);
+    assert.equal(ownHistory(), undefined);
+    assert.equal(countryResults.US.parentChanges.length, 1);
+  }
+  mergeDeferredResults(countryResults, [item]);
+  mergeDeferredResults(countryResults, [{ ...item, notifyEnabled: false }]);
+  assert.equal(ownHistory(), undefined);
+  assert.equal(countryResults.US.parentChanges[0].variantGroupId, 'group-b');
+});
+
+test('父体历史遵守分组及 ASIN 通知开关，但始终独立写入监控历史', async () => {
+  const parentHistory = {
+    status: 'CHANGED',
+    baselineParentAsin: 'B000PARENT',
+    currentParentAsin: 'B000NEWPAR',
+  };
+  for (const groupNotify of [0, 1]) {
+    for (const asinNotify of [0, 1]) {
+      const historyEntries = [];
+      const record = {
+        id: 'asin-a',
+        asin: 'B000000001',
+        variantGroupId: 'group-a',
+        isBroken: 0,
+        feishuNotifyEnabled: asinNotify,
+      };
+      const persisted = await persistDeferredASINResult(
+        { asin: record.asin, country: 'US' },
+        { hasVariants: true, variantCount: 2 },
+        {
+          asinRecord: record,
+          asinModel: {
+            async findById() {
+              return record;
+            },
+            async updateVariantStatusAndCheckTime() {},
+          },
+          variantGroupModel: {
+            async findById() {
+              return {
+                name: '测试分组',
+                isBroken: 0,
+                children: [record],
+                feishuNotifyEnabled: groupNotify,
+              };
+            },
+            async updateVariantStatusAndCheckTime() {},
+          },
+          monitorHistoryModel: {
+            async create(entry) {
+              historyEntries.push(entry);
+            },
+          },
+          precomputedSplit: {
+            asins: [
+              {
+                asinId: record.id,
+                status: 'NORMAL',
+                reason: null,
+                parentHistory,
+              },
+            ],
+          },
+        },
+      );
+      assert.equal(persisted.notifyEnabled, Boolean(groupNotify && asinNotify));
+      assert.equal(persisted.isBroken, false);
+      assert.deepEqual(persisted.parentHistory, parentHistory);
+      assert.deepEqual(
+        historyEntries[0].checkResult.parentHistory,
+        parentHistory,
+      );
+      const countryResults = {};
+      mergeDeferredResults(countryResults, [persisted]);
+      assert.equal(
+        countryResults.US.parentChanges.length,
+        groupNotify && asinNotify,
+      );
+      assert.deepEqual(countryResults.US.brokenASINs, []);
+    }
+  }
+});
+
+test('健康迁移的延后结果清理旧 PARENT_CHANGED 异常分类并保留独立历史', () => {
+  const item = {
+    asin: 'B000000001',
+    asinId: 'asin-a',
+    variantGroupId: 'group-a',
+    country: 'US',
+    variantGroupName: '测试分组',
+    notifyEnabled: true,
+    isBroken: false,
+    autoIsBroken: false,
+    groupIsBroken: false,
+    parentHistory: { status: 'CHANGED', currentParentAsin: 'B000NEWPAR' },
+  };
+  const countryResults = {
+    US: {
+      totalGroups: 1,
+      brokenGroups: 1,
+      brokenGroupNames: ['测试分组'],
+      brokenGroupDetails: [
+        { variantGroupId: 'group-a', groupName: '测试分组' },
+      ],
+      brokenASINs: [{ ...item, errorType: 'PARENT_CHANGED' }],
+      brokenByType: { PARENT_CHANGED: 1 },
+      checkedGroupKeys: ['group:group-a'],
+    },
+  };
+  mergeDeferredResults(countryResults, [item]);
+  assert.equal(countryResults.US.brokenGroups, 0);
+  assert.equal(countryResults.US.brokenByType.PARENT_CHANGED, 0);
+  assert.deepEqual(countryResults.US.brokenASINs, []);
+  assert.equal(countryResults.US.parentChanges.length, 1);
+});

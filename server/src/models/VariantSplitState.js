@@ -68,8 +68,8 @@ class VariantSplitState {
           groupId,
         ],
       );
-      if (reduced.newEvent) {
-        const event = reduced.newEvent;
+      const insertEvent = async (event) => {
+        if (!event) return;
         const [inserted] = await connection.query(
           `INSERT INTO variant_group_split_events
            (variant_group_id, country, occurred_at, reason, details, notify_enabled)
@@ -84,11 +84,14 @@ class VariantSplitState {
           ],
         );
         event.id = inserted.insertId;
-      }
+      };
+      await insertEvent(reduced.newEvent);
+      await insertEvent(reduced.newParentEvent);
       await connection.commit();
       return {
         status: reduced.status,
         newEvent: reduced.newEvent,
+        newParentEvent: reduced.newParentEvent,
         asins: reduced.asins,
       };
     } catch (error) {
