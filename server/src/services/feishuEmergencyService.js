@@ -70,7 +70,7 @@ async function notifyEmergency(assessment) {
       `统计时间（北京时间）：${startTime} 至 ${endTime}`,
       `新增异常变体组数：${count}，超过阈值：${threshold}`,
       '按国家 + 变体组去重，仅统计当前关系健康状态由正常转为关系丢失或成功查询确认父 ASIN 标题为空的新增事件。',
-      '历史父体变化单独记录，不计入紧急状态。标题查询失败或超时暂不判定；持续异常、人工标记、API 错误和已尝试电话通知的事件不重复计入。',
+      '标题查询失败或超时暂不判定；持续异常、人工标记、API 错误和已尝试电话通知的事件不重复计入。',
     ].join('\n');
     const result = await sendUrgentPhoneNotifications({
       userIds: config.userIds,
