@@ -75,6 +75,28 @@ CREATE TABLE IF NOT EXISTS `asins` (
   FOREIGN KEY (`variant_group_id`) REFERENCES `variant_groups`(`id`) ON DELETE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='ASIN表';
 
+-- 变体组拆分基准（仅由可信 SP-API 关系观测建立）
+CREATE TABLE IF NOT EXISTS `variant_group_split_state` (
+  `group_id` VARCHAR(50) NOT NULL PRIMARY KEY COMMENT '变体组ID',
+  `country` VARCHAR(10) NOT NULL COMMENT '所属国家',
+  `members` JSON NOT NULL COMMENT '成员、原父体基准及最近可信关系观测',
+  `status` VARCHAR(10) NOT NULL DEFAULT 'UNKNOWN' COMMENT 'UNKNOWN/NORMAL/BROKEN',
+  `updated_at` DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3) ON UPDATE CURRENT_TIMESTAMP(3)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='变体组拆分检测状态';
+
+CREATE TABLE IF NOT EXISTS `variant_group_split_events` (
+  `id` BIGINT NOT NULL AUTO_INCREMENT PRIMARY KEY,
+  `variant_group_id` VARCHAR(50) NOT NULL COMMENT '变体组ID',
+  `country` VARCHAR(10) NOT NULL COMMENT '所属国家',
+  `occurred_at` DATETIME(3) NOT NULL COMMENT '正常转拆分的观测时间（北京时间）',
+  `reason` VARCHAR(32) NOT NULL COMMENT 'RELATIONSHIP_LOST/PARENT_CHANGED',
+  `details` JSON NOT NULL COMMENT '触发成员及父体变化',
+  `notify_enabled` TINYINT(1) NOT NULL DEFAULT 0 COMMENT '事件发生时通知是否开启',
+  `phone_attempted_at` DATETIME(3) DEFAULT NULL COMMENT '电话加急占用时间（UTC）',
+  INDEX `idx_split_country_time` (`country`, `occurred_at`),
+  INDEX `idx_split_group_time` (`variant_group_id`, `occurred_at`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='变体组新增拆分事件';
+
 -- 监控历史表
 CREATE TABLE IF NOT EXISTS `monitor_history` (
   `id` BIGINT AUTO_INCREMENT PRIMARY KEY COMMENT '历史记录ID',
@@ -217,6 +239,8 @@ CREATE TABLE IF NOT EXISTS `feishu_config` (
   `country` VARCHAR(10) NOT NULL UNIQUE COMMENT '区域代码（US或EU）',
   `webhook_url` VARCHAR(500) NOT NULL COMMENT '飞书Webhook URL',
   `enabled` TINYINT(1) DEFAULT 1 COMMENT '是否启用: 0-否, 1-是',
+  `emergency_config` JSON DEFAULT NULL COMMENT '电话加急规则、时间范围、阈值和联系人',
+  `last_emergency_at` DATETIME DEFAULT NULL COMMENT '最近一次电话加急抢占时间（UTC）',
   `create_time` DATETIME DEFAULT CURRENT_TIMESTAMP,
   `update_time` DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='飞书通知配置表';

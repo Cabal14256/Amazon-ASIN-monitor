@@ -1,6 +1,20 @@
 const FeishuConfig = require('../models/FeishuConfig');
 const logger = require('../utils/logger');
 
+function sendConfigError(res, error, message) {
+  const status = error.status === 400 ? 400 : 500;
+  if (status === 400) {
+    logger.warn(message, { message: error.message });
+  } else {
+    logger.error(message);
+  }
+  return res.status(status).json({
+    success: false,
+    errorMessage: status === 400 ? error.message : message,
+    errorCode: status,
+  });
+}
+
 // 获取所有飞书配置
 exports.getFeishuConfigs = async (req, res) => {
   try {
@@ -11,12 +25,7 @@ exports.getFeishuConfigs = async (req, res) => {
       errorCode: 0,
     });
   } catch (error) {
-    logger.error('获取飞书配置错误:', error);
-    res.status(500).json({
-      success: false,
-      errorMessage: error.message || '获取失败',
-      errorCode: 500,
-    });
+    sendConfigError(res, error, '获取飞书配置失败');
   }
 };
 
@@ -38,19 +47,27 @@ exports.getFeishuConfigByCountry = async (req, res) => {
       errorCode: 0,
     });
   } catch (error) {
-    logger.error('获取飞书配置错误:', error);
-    res.status(500).json({
-      success: false,
-      errorMessage: error.message || '获取失败',
-      errorCode: 500,
-    });
+    sendConfigError(res, error, '获取飞书配置失败');
   }
 };
 
 // 创建或更新飞书配置
 exports.upsertFeishuConfig = async (req, res) => {
   try {
-    const { country, webhookUrl, enabled } = req.body;
+    const { webhookUrl, enabled } = req.body;
+    const country = req.params.country || req.body.country;
+
+    if (
+      req.params.country &&
+      req.body.country &&
+      req.params.country !== req.body.country
+    ) {
+      return res.status(400).json({
+        success: false,
+        errorMessage: '请求路径和配置区域不一致',
+        errorCode: 400,
+      });
+    }
 
     if (!country || !webhookUrl) {
       return res.status(400).json({
@@ -60,10 +77,26 @@ exports.upsertFeishuConfig = async (req, res) => {
       });
     }
 
+    if (
+      enabled !== undefined &&
+      typeof enabled !== 'boolean' &&
+      enabled !== 0 &&
+      enabled !== 1
+    ) {
+      return res.status(400).json({
+        success: false,
+        errorMessage: 'enabled参数必须是布尔值或0/1',
+        errorCode: 400,
+      });
+    }
+
     const config = await FeishuConfig.upsert({
       country,
       webhookUrl,
       enabled: enabled !== undefined ? enabled : 1,
+      ...(Object.prototype.hasOwnProperty.call(req.body, 'emergency')
+        ? { emergency: req.body.emergency }
+        : {}),
     });
 
     res.json({
@@ -72,12 +105,7 @@ exports.upsertFeishuConfig = async (req, res) => {
       errorCode: 0,
     });
   } catch (error) {
-    logger.error('创建/更新飞书配置错误:', error);
-    res.status(500).json({
-      success: false,
-      errorMessage: error.message || '操作失败',
-      errorCode: 500,
-    });
+    sendConfigError(res, error, '保存飞书配置失败');
   }
 };
 
@@ -92,12 +120,7 @@ exports.deleteFeishuConfig = async (req, res) => {
       errorCode: 0,
     });
   } catch (error) {
-    logger.error('删除飞书配置错误:', error);
-    res.status(500).json({
-      success: false,
-      errorMessage: error.message || '删除失败',
-      errorCode: 500,
-    });
+    sendConfigError(res, error, '删除飞书配置失败');
   }
 };
 
@@ -130,11 +153,6 @@ exports.toggleFeishuConfig = async (req, res) => {
       errorCode: 0,
     });
   } catch (error) {
-    logger.error('启用/禁用飞书配置错误:', error);
-    res.status(500).json({
-      success: false,
-      errorMessage: error.message || '操作失败',
-      errorCode: 500,
-    });
+    sendConfigError(res, error, '更新飞书配置状态失败');
   }
 };

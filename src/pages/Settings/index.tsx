@@ -11,6 +11,7 @@ import {
   ProFormSwitch,
   ProFormText,
 } from '@ant-design/pro-components';
+import { useAccess } from '@umijs/max';
 import {
   Alert,
   Button,
@@ -25,6 +26,10 @@ import {
 } from 'antd';
 import dayjs from 'dayjs';
 import React, { useCallback, useEffect, useState } from 'react';
+import FeishuEmergencyFields, {
+  buildFeishuEmergencyPayload,
+  buildFeishuEmergencyValues,
+} from './FeishuEmergencyFields';
 
 const { getSPAPIConfigs, updateSPAPIConfig } = services.SPAPIConfigController;
 const { getFeishuConfigs, upsertFeishuConfig } = services.FeishuController;
@@ -130,6 +135,7 @@ function pickConfigValues(
 }
 
 const SettingsPage: React.FC<unknown> = () => {
+  const access = useAccess();
   const message = useMessage();
   const [spApiConfigs, setSpApiConfigs] = useState<API.SPAPIConfig[]>([]);
   const [feishuConfigs, setFeishuConfigs] = useState<API.FeishuConfig[]>([]);
@@ -175,14 +181,17 @@ const SettingsPage: React.FC<unknown> = () => {
         (c: API.FeishuConfig) => c.country === 'EU',
       );
 
+      feishuForm.resetFields();
       feishuForm.setFieldsValue({
         US: {
           webhookUrl: usConfig?.webhookUrl || '',
           enabled: usConfig?.enabled === 1,
+          emergency: buildFeishuEmergencyValues(usConfig?.emergency),
         },
         EU: {
           webhookUrl: euConfig?.webhookUrl || '',
           enabled: euConfig?.enabled === 1,
+          emergency: buildFeishuEmergencyValues(euConfig?.emergency),
         },
       });
     },
@@ -482,17 +491,29 @@ const SettingsPage: React.FC<unknown> = () => {
 
   // 保存飞书配置
   const handleSaveFeishuConfig = async (values: any) => {
+    if (!access.canWriteSettings) {
+      return;
+    }
     try {
+      const allValues = feishuForm.getFieldsValue(true);
       await Promise.all([
         upsertFeishuConfig({
           country: 'US',
           webhookUrl: values?.US?.webhookUrl,
           enabled: values?.US?.enabled,
+          emergency: buildFeishuEmergencyPayload(
+            allValues?.US?.emergency,
+            feishuConfigs.find((config) => config.country === 'US')?.emergency,
+          ),
         }),
         upsertFeishuConfig({
           country: 'EU',
           webhookUrl: values?.EU?.webhookUrl,
           enabled: values?.EU?.enabled,
+          emergency: buildFeishuEmergencyPayload(
+            allValues?.EU?.emergency,
+            feishuConfigs.find((config) => config.country === 'EU')?.emergency,
+          ),
         }),
       ]);
       message.success('飞书配置已保存');
@@ -740,17 +761,26 @@ const SettingsPage: React.FC<unknown> = () => {
         <ProForm
           form={feishuForm}
           layout="vertical"
-          onFinish={handleSaveFeishuConfig}
-          submitter={{
-            searchConfig: {
-              submitText: '提交',
-              resetText: '重置',
-            },
-            resetButtonProps: {
-              htmlType: 'button',
-              onClick: handleResetFeishuConfig,
-            },
+          disabled={!access.canWriteSettings}
+          initialValues={{
+            US: { emergency: buildFeishuEmergencyValues() },
+            EU: { emergency: buildFeishuEmergencyValues() },
           }}
+          onFinish={handleSaveFeishuConfig}
+          submitter={
+            access.canWriteSettings
+              ? {
+                  searchConfig: {
+                    submitText: '提交',
+                    resetText: '重置',
+                  },
+                  resetButtonProps: {
+                    htmlType: 'button',
+                    onClick: handleResetFeishuConfig,
+                  },
+                }
+              : false
+          }
         >
           <Space direction="vertical" size="large" style={{ width: '100%' }}>
             <Card title="US区域配置">
@@ -772,6 +802,7 @@ const SettingsPage: React.FC<unknown> = () => {
                 checkedChildren="启用"
                 unCheckedChildren="禁用"
               />
+              <FeishuEmergencyFields region="US" />
             </Card>
 
             <Card title="EU区域配置（包括UK、DE、FR、IT、ES）">
@@ -793,6 +824,7 @@ const SettingsPage: React.FC<unknown> = () => {
                 checkedChildren="启用"
                 unCheckedChildren="禁用"
               />
+              <FeishuEmergencyFields region="EU" />
             </Card>
           </Space>
         </ProForm>

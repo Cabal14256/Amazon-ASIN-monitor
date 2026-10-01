@@ -2,11 +2,16 @@ const {
   persistDeferredASINResult,
 } = require('./deferredASINPersistenceService');
 const logger = require('../utils/logger');
+const {
+  isRelationshipObservation,
+  observeVariantGroupSplit,
+} = require('./variantSplitService');
 
 const AUTOMATIC_ERROR_TYPES = new Set([
   'SP_API_ERROR',
   'NOT_FOUND',
   'NO_VARIANTS',
+  'PARENT_TITLE_EMPTY',
 ]);
 
 function normalizeOwner(owner) {
@@ -50,7 +55,7 @@ function getASINCheckOutcome(groupResult, asinInfo) {
       (currentResult.hasVariants !== true &&
         currentResult.variantCount !== undefined &&
         Number(currentResult.variantCount) === 0));
-  const automaticErrorType = isDeferred
+  const observedErrorType = isDeferred
     ? null
     : currentResult?.errorType ||
       (currentIsBroken
@@ -58,6 +63,8 @@ function getASINCheckOutcome(groupResult, asinInfo) {
         : typeof brokenASIN === 'object'
         ? brokenASIN?.errorType || null
         : null);
+  const automaticErrorType =
+    observedErrorType === 'PARENT_CHANGED' ? null : observedErrorType;
   const manualErrorType =
     asinInfo?.statusSource === 'MANUAL' ||
     asinInfo?.statusSource === 'AUTO+MANUAL'
@@ -133,8 +140,23 @@ async function processDeferredASINs(
   let successCount = 0;
   let failedCount = 0;
   const deferredResults = [];
+  const attempts = [];
+
+  const recordFailure = (deferred, error) => {
+    failedCount++;
+    const message = error.message || String(error);
+    logger[error.isDeferred ? 'warn' : 'error'](
+      `[延后队列] ${normalizedOwner} ASIN ${deferred.asin} (${deferred.country}) 重试失败:`,
+      message,
+    );
+    if (!error.preserveDeferred) {
+      clearDeferred(deferred.asin, deferred.country, region, normalizedOwner);
+    }
+  };
 
   for (const deferred of deferredASINs) {
+    const attempt = { deferred, observedAt: new Date().toISOString() };
+    attempts.push(attempt);
     if (deferred.retryCount >= 1) {
       logger.warn(
         `[延后队列] ${normalizedOwner} ASIN ${deferred.asin} (${deferred.country}) 已达到最大重试次数，跳过`,
@@ -144,7 +166,6 @@ async function processDeferredASINs(
       continue;
     }
 
-    let shouldClearDeferred = true;
     try {
       logger.info(
         `[延后队列] 重试检查 ${normalizedOwner} ASIN ${deferred.asin} (${deferred.country})`,
@@ -162,10 +183,68 @@ async function processDeferredASINs(
         logger.warn(
           `[延后队列] ${normalizedOwner} ASIN ${deferred.asin} (${deferred.country}) 重试失败：结果无效`,
         );
+        clearDeferred(deferred.asin, deferred.country, region, normalizedOwner);
         continue;
       }
+      attempt.result = result;
+    } catch (error) {
+      recordFailure(deferred, error);
+    }
+  }
 
-      const persisted = await persistResult(deferred, result);
+  // All results for a group must enter the tracker together. Persisting each
+  // member as it finishes can briefly mark A-recovered/B-not-yet-checked NORMAL
+  // and manufacture a new group event when B's already ongoing split arrives.
+  // Custom persistence hooks without an injected ASIN model own their storage.
+  const batchSplit =
+    normalizedOwner === 'primary' &&
+    (!dependencies.persistDeferredASINResult || dependencies.asinModel);
+  if (batchSplit) {
+    const asinModel = dependencies.asinModel || require('../models/ASIN');
+    const groups = new Map();
+    for (const attempt of attempts) {
+      try {
+        const record = await asinModel.findByASIN(
+          attempt.deferred.asin,
+          attempt.deferred.country,
+        );
+        if (!record) throw new Error('延后 ASIN 数据库记录不存在');
+        attempt.asinRecord = record;
+        attempt.precomputedSplit = { asins: [] };
+        const groupId = record.variantGroupId || record.variant_group_id;
+        if (!groupId) continue;
+        if (!groups.has(groupId)) groups.set(groupId, []);
+        groups.get(groupId).push(attempt);
+      } catch (error) {
+        error.preserveDeferred = true;
+        attempt.preparationError = error;
+      }
+    }
+    for (const [groupId, groupAttempts] of groups) {
+      const split = await observeVariantGroupSplit(
+        groupId,
+        groupAttempts.map((attempt) => ({
+          asinId: attempt.asinRecord.id,
+          result: attempt.result,
+          observedAt: attempt.result?.meta?.observedAt || attempt.observedAt,
+          uncertain: !isRelationshipObservation(attempt.result),
+        })),
+        dependencies.splitStateModel,
+      );
+      for (const attempt of groupAttempts) attempt.precomputedSplit = split;
+    }
+  }
+
+  for (const attempt of attempts) {
+    if (!attempt.result) continue;
+    const { deferred, result } = attempt;
+    try {
+      if (attempt.preparationError) throw attempt.preparationError;
+      const persisted = await persistResult(deferred, result, {
+        ...dependencies,
+        asinRecord: attempt.asinRecord,
+        precomputedSplit: attempt.precomputedSplit,
+      });
       if (!persisted) {
         const persistenceError = new Error(
           `延后队列中的 ASIN ${deferred.asin} (${deferred.country}) 结果未持久化`,
@@ -182,24 +261,9 @@ async function processDeferredASINs(
       logger.info(
         `[延后队列] ${normalizedOwner} ASIN ${deferred.asin} (${deferred.country}) ${outcome}`,
       );
+      clearDeferred(deferred.asin, deferred.country, region, normalizedOwner);
     } catch (error) {
-      shouldClearDeferred = !error.preserveDeferred;
-      failedCount++;
-      const message = error.message || String(error);
-      if (error.isDeferred) {
-        logger.warn(
-          `[延后队列] ${normalizedOwner} ASIN ${deferred.asin} (${deferred.country}) 重试再次失败，已标记为最终失败: ${message}`,
-        );
-      } else {
-        logger.error(
-          `[延后队列] ${normalizedOwner} ASIN ${deferred.asin} (${deferred.country}) 重试失败:`,
-          message,
-        );
-      }
-    } finally {
-      if (shouldClearDeferred) {
-        clearDeferred(deferred.asin, deferred.country, region, normalizedOwner);
-      }
+      recordFailure(deferred, error);
     }
   }
 
@@ -236,6 +300,7 @@ function mergeDeferredResults(countryResults, deferredResults) {
       brokenGroupNames: [],
       brokenGroupDetails: [],
       brokenASINs: [],
+      parentChanges: [],
       brokenByType: {
         SP_API_ERROR: 0,
         NOT_FOUND: 0,
@@ -254,6 +319,7 @@ function mergeDeferredResults(countryResults, deferredResults) {
     countryResult.brokenGroupNames = countryResult.brokenGroupNames || [];
     countryResult.brokenGroupDetails = countryResult.brokenGroupDetails || [];
     countryResult.brokenASINs = countryResult.brokenASINs || [];
+    countryResult.parentChanges = countryResult.parentChanges || [];
     countryResult.asinClassifications = countryResult.asinClassifications || {};
     countryResult.checkedGroupKeys = countryResult.checkedGroupKeys || [];
 
@@ -288,7 +354,8 @@ function mergeDeferredResults(countryResults, deferredResults) {
       item.groupIsBroken === true || Number(item.groupIsBroken) === 1;
     const oldErrorType =
       countryResult.asinClassifications[classificationKey] ||
-      (AUTOMATIC_ERROR_TYPES.has(existingASIN?.errorType)
+      (AUTOMATIC_ERROR_TYPES.has(existingASIN?.errorType) ||
+      existingASIN?.errorType === 'PARENT_CHANGED'
         ? existingASIN.errorType
         : null);
     const newErrorType =
@@ -355,12 +422,32 @@ function mergeDeferredResults(countryResults, deferredResults) {
       countryResult.brokenByType[oldErrorType]--;
     }
     if (newErrorType && oldErrorType !== newErrorType) {
-      countryResult.brokenByType[newErrorType]++;
+      countryResult.brokenByType[newErrorType] =
+        (countryResult.brokenByType[newErrorType] || 0) + 1;
     }
     if (newErrorType) {
       countryResult.asinClassifications[classificationKey] = newErrorType;
     } else {
       delete countryResult.asinClassifications[classificationKey];
+    }
+
+    // Missing history is not a new observation (for example, tracker failure).
+    // Explicit history replaces earlier evidence independently of health.
+    if (!item.notifyEnabled || item.parentHistory) {
+      countryResult.parentChanges = countryResult.parentChanges.filter(
+        (entry) => getASINClassificationKey(entry) !== classificationKey,
+      );
+    }
+    if (item.notifyEnabled && item.parentHistory?.status === 'CHANGED') {
+      countryResult.parentChanges.push({
+        asin: item.asin,
+        asinId: item.asinId || null,
+        name: item.asinName || '',
+        variantGroupId: item.variantGroupId || null,
+        groupName,
+        brand: item.brand || '',
+        parentHistory: item.parentHistory,
+      });
     }
 
     if (existingASIN && (!isBroken || !item.notifyEnabled)) {
@@ -370,6 +457,8 @@ function mergeDeferredResults(countryResults, deferredResults) {
       );
     } else if (existingASIN) {
       existingASIN.name = item.asinName || existingASIN.name || '';
+      existingASIN.splitDetection = item.splitDetection;
+      existingASIN.parentHistory = item.parentHistory;
       existingASIN.groupName = groupName;
       existingASIN.brand = item.brand || existingASIN.brand || '';
       existingASIN.errorType =
@@ -393,6 +482,8 @@ function mergeDeferredResults(countryResults, deferredResults) {
         variantGroupId: item.variantGroupId || null,
         groupName,
         brand: item.brand || '',
+        splitDetection: item.splitDetection,
+        parentHistory: item.parentHistory,
         errorType:
           item.errorType ||
           (item.statusSource === 'MANUAL' || item.statusSource === 'AUTO+MANUAL'

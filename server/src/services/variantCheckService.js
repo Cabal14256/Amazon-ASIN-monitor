@@ -12,6 +12,11 @@ const { PRIORITY } = rateLimiter;
 const operationIdentifier = require('./spApiOperationIdentifier');
 const { batchCheckASINsHybrid } = require('./batchVariantCheckService');
 const logger = require('../utils/logger');
+const {
+  isRelationshipObservation,
+  observeVariantGroupSplit,
+  applySplitState,
+} = require('./variantSplitService');
 const { parseVariantRelationships } = require('../utils/variantParser');
 const {
   buildEffectiveStatus,
@@ -160,22 +165,32 @@ async function resolveParentTitle({
   parentAsin,
   currentAsin,
   currentTitle,
+  currentTitleObserved,
   country,
   priority,
   options = {},
 }) {
   if (!parentAsin) {
-    return '';
+    return { title: '', status: 'NOT_APPLICABLE' };
   }
 
   if (parentAsin === currentAsin) {
-    return typeof currentTitle === 'string'
-      ? currentTitle
-      : String(currentTitle || '');
+    const title =
+      typeof currentTitle === 'string'
+        ? currentTitle
+        : String(currentTitle || '');
+    return {
+      title,
+      status: currentTitleObserved
+        ? hasConcreteTitle(title)
+          ? 'PRESENT'
+          : 'EMPTY'
+        : 'UNKNOWN',
+    };
   }
 
   if (options.skipParentTitleLookup) {
-    return '';
+    return { title: '', status: 'UNKNOWN' };
   }
 
   const owner = options.owner === 'competitor' ? 'competitor' : 'primary';
@@ -202,17 +217,37 @@ async function resolveParentTitle({
     }
 
     const parentResult = await parentRequest;
-    const parentTitle = parentResult?.details?.title;
-    return typeof parentTitle === 'string'
-      ? parentTitle
-      : String(parentTitle || '');
+    const parentTitle =
+      typeof parentResult?.details?.title === 'string'
+        ? parentResult.details.title
+        : String(parentResult?.details?.title || '');
+    const successfulLookup =
+      parentResult?.meta?.source === 'spapi' &&
+      parentResult.meta.titleObserved === true &&
+      String(parentResult?.details?.asin || '')
+        .trim()
+        .toUpperCase() === String(parentAsin).trim().toUpperCase() &&
+      Object.prototype.hasOwnProperty.call(
+        parentResult?.details || {},
+        'title',
+      ) &&
+      !parentResult?.error &&
+      !parentResult?.errorType;
+    return {
+      title: parentTitle,
+      status: successfulLookup
+        ? hasConcreteTitle(parentTitle)
+          ? 'PRESENT'
+          : 'EMPTY'
+        : 'UNKNOWN',
+    };
   } catch (error) {
     logger.warn(
       `[checkASINVariants] 获取父体标题失败: ${parentAsin}: ${
         error.message || error
       }`,
     );
-    return '';
+    return { title: '', status: 'UNKNOWN' };
   } finally {
     if (pendingParentTitleRequests.get(parentRequestKey) === parentRequest) {
       pendingParentTitleRequests.delete(parentRequestKey);
@@ -224,6 +259,13 @@ function isVariantResultCacheCompatible(result) {
   const details = result?.details;
   const parentAsin = details?.parentAsin;
 
+  if (
+    result?.meta?.source === 'spapi' &&
+    !result.errorType &&
+    result.meta.titleObserved !== true
+  )
+    return false;
+
   // Results created before parent-title validation do not contain this field.
   // Parentless results do not use the new gate and remain compatible.
   if (!parentAsin) {
@@ -234,9 +276,12 @@ function isVariantResultCacheCompatible(result) {
     return false;
   }
 
-  // Parent-title validation is required for every cached parent result,
-  // including cached negative results created while the title was empty.
-  return hasConcreteTitle(details.parentTitle);
+  // Old caches cannot distinguish a failed request from a successful empty
+  // title. Refresh them once; uncertain lookups must also be retried.
+  return (
+    details.parentTitleStatus === 'PRESENT' ||
+    details.parentTitleStatus === 'EMPTY'
+  );
 }
 
 /**
@@ -828,6 +873,7 @@ async function doCheckASINVariants(
     }
 
     if (item) {
+      const relationshipObservedAt = new Date().toISOString();
       logger.debug(`[checkASINVariants] 解析到的item:`, {
         asin: item.asin,
         hasVariations: !!item.variations,
@@ -874,22 +920,27 @@ async function doCheckASINVariants(
         hasVariantASINs ||
         variationRelations.length > 0 ||
         hasParentFromSummaries;
-      const currentTitle = String(
-        item.summaries?.[0]?.itemName ||
-          item.summaries?.[0]?.title ||
-          item.attributes?.item_name?.[0]?.value ||
-          '',
+      const titleCandidates = [
+        item.summaries?.[0]?.itemName,
+        item.summaries?.[0]?.title,
+        item.attributes?.item_name?.[0]?.value,
+      ];
+      const currentTitleObserved = titleCandidates.every(
+        (value) => value == null || typeof value === 'string',
       );
-      const parentTitle = (
-        await resolveParentTitle({
-          parentAsin: finalParentASIN,
-          currentAsin: cleanASIN,
-          currentTitle,
-          country,
-          priority,
-          options,
-        })
-      ).trim();
+      const currentTitle = currentTitleObserved
+        ? titleCandidates.find(hasConcreteTitle) || ''
+        : '';
+      const parentTitleLookup = await resolveParentTitle({
+        parentAsin: finalParentASIN,
+        currentAsin: cleanASIN,
+        currentTitle,
+        currentTitleObserved,
+        country,
+        priority,
+        options,
+      });
+      const parentTitle = parentTitleLookup.title.trim();
       const finalHasVariants = applyParentTitleGate(
         baseHasVariants,
         finalParentASIN,
@@ -945,6 +996,8 @@ async function doCheckASINVariants(
             null,
           parentAsin: finalParentASIN || null,
           parentTitle,
+          hasVariantRelationships: baseHasVariants,
+          parentTitleStatus: parentTitleLookup.status,
           variations: variantASINs.map((asin) => ({
             asin,
             title: '',
@@ -954,6 +1007,10 @@ async function doCheckASINVariants(
         meta: {
           source: 'spapi',
           apiVersion,
+          relationshipsObserved:
+            Array.isArray(item.relationships) || Array.isArray(item.variations),
+          observedAt: relationshipObservedAt,
+          titleObserved: currentTitleObserved,
         },
       };
 
@@ -1131,10 +1188,14 @@ async function checkVariantGroup(
       const childRef = asinId ? asinIdToChild.get(asinId) : null;
 
       try {
-        const result =
+        let result =
           batchResults && batchResults[index]
             ? batchResults[index]
             : await checkASINVariants(asin, country, forceRefresh);
+        // Search results alone cannot confirm a missing or changed relationship.
+        if (batchResults && !isRelationshipObservation(result)) {
+          result = await checkASINVariants(asin, country, forceRefresh);
+        }
         const isBroken = !result?.hasVariants;
         const errorType = result?.errorType || (isBroken ? 'NO_VARIANTS' : '');
 
@@ -1219,6 +1280,47 @@ async function checkVariantGroup(
 
     await Promise.all(asins.map(processEntry));
 
+    const split = await observeVariantGroupSplit(
+      variantGroupId,
+      results.map((entry, index) => ({
+        asinId: asins[index].id,
+        result: entry?.details,
+        observedAt:
+          entry?.details?.meta?.observedAt || new Date().toISOString(),
+        uncertain: !isRelationshipObservation(entry?.details),
+      })),
+    );
+    for (let index = 0; index < results.length; index++) {
+      const entry = results[index];
+      const state = split.asins.find((item) => item.asinId === asins[index].id);
+      if (!entry) continue;
+      // Uncertain checks retain the independent, last confirmed parent history.
+      entry.parentHistory = state?.parentHistory;
+      if (!entry.details || entry.isDeferred) continue;
+      const adjusted = applySplitState(entry.details, state);
+      entry.details = adjusted;
+      entry.splitDetection = adjusted.splitDetection;
+      entry.parentHistory = adjusted.parentHistory;
+      if (state?.status !== 'BROKEN') continue;
+      const previousType = entry.errorType;
+      const nextType = adjusted.errorType;
+      entry.isBroken = true;
+      entry.errorType = nextType;
+      const existing = brokenASINs.find((item) => item.asin === entry.asin);
+      if (existing) existing.errorType = nextType;
+      else brokenASINs.push({ asin: entry.asin, errorType: nextType });
+      if (previousType !== nextType) {
+        if (previousType)
+          brokenByType[previousType] = Math.max(
+            0,
+            (brokenByType[previousType] || 0) - 1,
+          );
+        brokenByType[nextType] = (brokenByType[nextType] || 0) + 1;
+      }
+      await ASIN.updateVariantStatusAndCheckTime(asins[index].id, true);
+      applyEffectiveStatusToChild(asins[index], true);
+    }
+
     const autoIsBroken = brokenASINs.length > 0;
 
     await VariantGroup.updateVariantStatusAndCheckTime(
@@ -1279,6 +1381,8 @@ async function checkVariantGroup(
 
         return {
           asin: item.asin,
+          splitDetection: currentCheck?.splitDetection,
+          parentHistory: currentCheck?.parentHistory,
           errorType:
             autoBrokenInfo?.errorType ||
             (item.statusSource === 'MANUAL' ||
@@ -1352,7 +1456,18 @@ async function checkSingleASIN(asinId, forceRefresh = false) {
     const asin = asinRecord.asin;
     const country = asinRecord.country || 'US';
 
-    const result = await checkASINVariants(asin, country, forceRefresh);
+    const rawResult = await checkASINVariants(asin, country, forceRefresh);
+    const split = await observeVariantGroupSplit(asinRecord.variantGroupId, [
+      {
+        asinId,
+        result: rawResult,
+        observedAt: rawResult.meta?.observedAt,
+      },
+    ]);
+    const result = applySplitState(
+      rawResult,
+      split.asins.find((item) => item.asinId === asinId),
+    );
 
     const autoBroken = !result.hasVariants;
     const effectiveStatus = buildEffectiveStatus({
@@ -1377,6 +1492,17 @@ async function checkSingleASIN(asinId, forceRefresh = false) {
       );
       if (variantGroup) {
         variantGroupName = variantGroup.name || null;
+        // Single-ASIN recovery must also clear a group's former parent-change
+        // alarm, while retaining real anomalies on any other member.
+        const groupAutoBroken = (variantGroup.children || []).some(
+          (child) =>
+            Number(child.autoIsBroken ?? child.is_broken ?? child.isBroken) ===
+            1,
+        );
+        await VariantGroup.updateVariantStatusAndCheckTime(
+          asinRecord.variantGroupId,
+          groupAutoBroken,
+        );
       }
     }
 
@@ -1398,13 +1524,10 @@ async function checkSingleASIN(asinId, forceRefresh = false) {
         manualBrokenReason: asinRecord.manualBrokenReason || '',
       },
     });
-    if (result?.errorType === 'NOT_FOUND') {
-      if (asinRecord.variantGroupId) {
-        await VariantGroup.updateVariantStatusAndCheckTime(
-          asinRecord.variantGroupId,
-          true,
-        );
-      }
+    if (
+      result?.errorType === 'NOT_FOUND' ||
+      result?.errorType === 'PARENT_TITLE_EMPTY'
+    ) {
       clearDeferredASINCheck(asin, country);
     }
 
@@ -1415,6 +1538,8 @@ async function checkSingleASIN(asinId, forceRefresh = false) {
           ? [
               {
                 asin,
+                splitDetection: result.splitDetection,
+                parentHistory: result.parentHistory,
                 errorType:
                   autoBroken || effectiveStatus.statusSource === 'AUTO+MANUAL'
                     ? result?.errorType || 'NO_VARIANTS'

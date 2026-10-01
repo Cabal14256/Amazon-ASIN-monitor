@@ -1,4 +1,8 @@
 const logger = require('../utils/logger');
+const {
+  observeVariantGroupSplit,
+  applySplitState,
+} = require('./variantSplitService');
 
 function isNotificationEnabled(record, defaultValue) {
   const value =
@@ -23,10 +27,10 @@ async function persistDeferredASINResult(deferred, result, dependencies = {}) {
 
   const owner = deferred.owner === 'competitor' ? 'competitor' : 'primary';
   const isCompetitor = owner === 'competitor';
-  const autoIsBroken =
+  let autoIsBroken =
     result.hasVariants === false ||
     (result.variantCount !== undefined && Number(result.variantCount) === 0);
-  const errorType = result.errorType || (autoIsBroken ? 'NO_VARIANTS' : null);
+  let errorType = result.errorType || (autoIsBroken ? 'NO_VARIANTS' : null);
   const asinModel = isCompetitor
     ? dependencies.competitorAsinModel || require('../models/CompetitorASIN')
     : dependencies.asinModel || require('../models/ASIN');
@@ -38,12 +42,15 @@ async function persistDeferredASINResult(deferred, result, dependencies = {}) {
     ? dependencies.competitorVariantGroupModel ||
       require('../models/CompetitorVariantGroup')
     : dependencies.variantGroupModel || require('../models/VariantGroup');
+  // A retry batch may precompute one split observation for the whole group.
+  // `undefined` means this is a standalone persistence call and should retain
+  // the historical single-ASIN observation behavior.
+  const precomputedSplit = dependencies.precomputedSplit;
 
   try {
-    const asinRecord = await asinModel.findByASIN(
-      deferred.asin,
-      deferred.country,
-    );
+    const asinRecord =
+      dependencies.asinRecord ||
+      (await asinModel.findByASIN(deferred.asin, deferred.country));
     if (!asinRecord) {
       throw new Error(
         `延后队列中的 ASIN ${deferred.asin} (${deferred.country}) 不存在数据库记录`,
@@ -53,6 +60,32 @@ async function persistDeferredASINResult(deferred, result, dependencies = {}) {
     const checkTime = new Date();
     const variantGroupId =
       asinRecord.variantGroupId || asinRecord.variant_group_id || null;
+
+    if (!isCompetitor) {
+      const split =
+        precomputedSplit === undefined
+          ? await observeVariantGroupSplit(
+              variantGroupId,
+              [
+                {
+                  asinId: asinRecord.id,
+                  result,
+                  observedAt: result.meta?.observedAt,
+                },
+              ],
+              dependencies.splitStateModel,
+            )
+          : precomputedSplit;
+      result = applySplitState(
+        result,
+        split.asins.find((item) => item.asinId === asinRecord.id),
+      );
+      autoIsBroken =
+        result.hasVariants === false ||
+        (result.variantCount !== undefined &&
+          Number(result.variantCount) === 0);
+      errorType = result.errorType || (autoIsBroken ? 'NO_VARIANTS' : null);
+    }
 
     await asinModel.updateVariantStatusAndCheckTime(
       asinRecord.id,
@@ -149,6 +182,8 @@ async function persistDeferredASINResult(deferred, result, dependencies = {}) {
       isBroken: effectiveIsBroken,
       groupIsBroken,
       errorType,
+      splitDetection: result.splitDetection,
+      parentHistory: result.parentHistory,
       statusSource: effectiveASIN.statusSource || 'NORMAL',
       manualBroken: Number(effectiveASIN.manualBroken || 0) === 1 ? 1 : 0,
       manualBrokenReason: effectiveASIN.manualBrokenReason || '',
