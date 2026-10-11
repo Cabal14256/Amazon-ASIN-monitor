@@ -8,6 +8,11 @@ const {
 } = require('./taskCancellationService');
 const { importFromFile } = require('./importService');
 const { applyIncrementalImport } = require('./incrementalImportService');
+const {
+  attemptLimit,
+  attemptsMade,
+  willRetryAfterFailure,
+} = require('./importTaskAttempts');
 
 /**
  * 更新任务进度
@@ -90,6 +95,40 @@ async function processImportTask(job) {
         cancelled: true,
         message: error.message || '导入任务已取消',
       };
+    }
+
+    if (willRetryAfterFailure(job)) {
+      const nextAttempt = attemptsMade(job) + 2;
+      const retryMessage = `导入失败，等待第 ${nextAttempt}/${attemptLimit(
+        job,
+      )} 次重试`;
+      logger.warn(`[导入任务] 本次处理失败，等待重试 (${taskId}):`, {
+        message: error.message,
+        nextAttempt,
+      });
+      try {
+        const progress =
+          Number(
+            typeof job.progress === 'function' ? job.progress() : job.progress,
+          ) || 0;
+        await taskRegistryService.updateTaskProgress(
+          taskId,
+          progress,
+          retryMessage,
+        );
+        websocketService.sendTaskProgress(
+          taskId,
+          progress,
+          retryMessage,
+          userId,
+        );
+      } catch (statusError) {
+        logger.warn('[导入任务] 更新重试状态失败:', {
+          message: statusError.message,
+          taskId,
+        });
+      }
+      throw error;
     }
 
     logger.error(`[导入任务] 处理失败 (${taskId}):`, {

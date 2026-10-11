@@ -669,9 +669,25 @@ async function withImportLock(db, mode, handler) {
   }
 }
 
-async function applyOperations(plan, config, query) {
+async function applyOperations(plan, config, query, checkCancelled) {
+  let pendingWrites = 0;
+  let lastCheckAt = 0;
+  const checkDuringWrites = async () => {
+    if (!checkCancelled) return;
+    pendingWrites += 1;
+    const now = Date.now();
+    if (
+      pendingWrites === 1 ||
+      pendingWrites % 25 === 0 ||
+      now - lastCheckAt >= 250
+    ) {
+      lastCheckAt = now;
+      await checkCancelled('导入任务已取消（增量写入已回滚）');
+    }
+  };
   const groupIds = new Map();
   for (const item of plan.operations.groupCreates) {
+    await checkDuringWrites();
     const id = uuidv4();
     groupIds.set(item.key, id);
     const columns = config.withSite
@@ -688,6 +704,7 @@ async function applyOperations(plan, config, query) {
     );
   }
   for (const item of plan.operations.groupUpdates) {
+    await checkDuringWrites();
     const fields = item.changes.map((change) => `${change.field} = ?`);
     await query(
       `UPDATE ${config.groupTable} SET ${fields.join(
@@ -698,6 +715,7 @@ async function applyOperations(plan, config, query) {
   }
   const touchedGroupIds = new Set();
   for (const item of plan.operations.asinCreates) {
+    await checkDuringWrites();
     const groupId = item.variantGroupId || groupIds.get(item.groupKey);
     if (!groupId) throw new Error('无法确定新ASIN所属变体组');
     const columns = config.withSite
@@ -732,6 +750,7 @@ async function applyOperations(plan, config, query) {
     touchedGroupIds.add(groupId);
   }
   for (const item of plan.operations.asinUpdates) {
+    await checkDuringWrites();
     const changes = item.changes.map((change) => ({
       ...change,
       field:
@@ -760,6 +779,7 @@ async function applyOperations(plan, config, query) {
     }
   }
   for (const batch of batches([...touchedGroupIds])) {
+    await checkDuringWrites();
     await query(
       `UPDATE ${config.groupTable} SET update_time = NOW() WHERE id IN (${batch
         .map(() => '?')
@@ -814,7 +834,7 @@ async function applyIncrementalImport(
       const plan = planIncrementalImport(parsed, { ...snapshots, mode });
       if (digestPlan(fileHash, plan) !== expectedDigest) throw staleError();
       if (checkCancelled) await checkCancelled('导入任务已取消');
-      await applyOperations(plan, config, query);
+      await applyOperations(plan, config, query, checkCancelled);
       const finalResult = {
         ...plan.summary,
         errors: plan.rows
@@ -824,10 +844,14 @@ async function applyIncrementalImport(
             message: row.errors.join('；'),
           })),
       };
+      if (checkCancelled)
+        await checkCancelled('导入任务已取消（增量写入已回滚）');
       await query(
         'INSERT INTO import_confirmation_receipts (preview_id, file_hash, digest, result_json) VALUES (?, ?, ?, ?)',
         [previewId, fileHash, expectedDigest, JSON.stringify(finalResult)],
       );
+      if (checkCancelled)
+        await checkCancelled('导入任务已取消（增量写入已回滚）');
       committedBusinessChanges =
         plan.summary.createdCount > 0 ||
         plan.summary.updatedCount > 0 ||

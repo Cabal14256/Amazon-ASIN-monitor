@@ -1,6 +1,7 @@
 const Queue = require('bull');
 const logger = require('../utils/logger');
 const { getBullQueueSettings } = require('./bullQueueSettings');
+const { willRetryAfterFailure } = require('./importTaskAttempts');
 
 // 构建 Redis 连接 URL
 function buildRedisUrl() {
@@ -86,18 +87,55 @@ function getProcessorStatus() {
   };
 }
 
-importTaskQueue.on('failed', (job, err) => {
+importTaskQueue.on('failed', async (job, err) => {
+  if (willRetryAfterFailure(job, { failureRecorded: true })) {
+    logger.warn(
+      `[导入任务] 本次尝试失败，等待 Bull 重试 (Job ${job?.id}, Task ${job?.data?.taskId}):`,
+      err?.message || 'unknown error',
+    );
+    return;
+  }
   logger.error(
     `[导入任务] 任务失败 (Job ${job?.id}, Task ${job?.data?.taskId}):`,
     err?.message || 'unknown error',
   );
 
-  const websocketService = require('./websocketService');
   if (job?.data?.taskId) {
-    websocketService.sendTaskError(
-      job.data.taskId,
-      err?.message || '任务处理失败',
-    );
+    const taskId = job.data.taskId;
+    try {
+      const taskRegistryService = require('./taskRegistryService');
+      const currentTask = await taskRegistryService.readTask(taskId);
+      if (
+        currentTask?.status === 'completed' ||
+        currentTask?.status === 'cancelled'
+      ) {
+        return;
+      }
+      if (currentTask?.status !== 'failed') {
+        await taskRegistryService.markTaskFailed(
+          taskId,
+          err?.message || '任务处理失败',
+        );
+      }
+    } catch (registryError) {
+      logger.warn('[导入任务] 标记最终失败状态失败:', {
+        taskId,
+        message: registryError.message,
+      });
+    }
+    try {
+      const websocketService = require('./websocketService');
+      websocketService.sendTaskError(
+        taskId,
+        err?.message || '任务处理失败',
+        job.data.userId,
+      );
+    } catch (websocketError) {
+      logger.warn('[导入任务] 发送最终失败状态失败:', {
+        taskId,
+        message: websocketError.message,
+      });
+    }
   }
 });
 

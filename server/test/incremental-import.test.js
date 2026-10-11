@@ -1054,6 +1054,82 @@ for (const mode of ['standard', 'competitor']) {
 }
 
 for (const mode of ['standard', 'competitor']) {
+  test(`${mode} 写入中途取消回滚全部记录且同一预览可重试`, async () => {
+    const db = fakeDatabase({ mode, groups: [group()] });
+    const file = transactionFile(
+      mode,
+      Array.from({ length: 30 }, (_, index) => ({
+        asin: `B${String(index + 100).padStart(9, '0')}`,
+      })),
+    );
+    const preview = await createIncrementalPreview(file, { mode, db });
+    assert.equal(preview.summary.createdCount, 30);
+    const cacheCalls = [];
+    const original = cacheService.deleteByPrefixAsync;
+    cacheService.deleteByPrefixAsync = async (prefix) => {
+      cacheCalls.push(prefix);
+    };
+    const options = {
+      mode,
+      db,
+      previewId: `cancel-mid-write-${mode}`,
+      expectedDigest: preview.digest,
+    };
+    const asinTable = mode === 'standard' ? 'asins' : 'competitor_asins';
+    try {
+      await assert.rejects(
+        applyIncrementalImport(file, {
+          ...options,
+          checkCancelled: async () => {
+            if (db.writes.some(({ sql }) => sql.startsWith(`INSERT INTO ${asinTable} `))) {
+              const error = new Error('导入任务已取消');
+              error.code = 'IMPORT_CANCELLED';
+              throw error;
+            }
+          },
+        }),
+        (error) => error.code === 'IMPORT_CANCELLED',
+      );
+      assert.equal(db.commitCount, 0);
+      assert.equal(db.state.asins.length, 0);
+      assert.equal(db.state.receipts.length, 0);
+      assert.deepEqual(cacheCalls, []);
+      const attemptedAsinWrites = db.writes.filter(({ sql }) =>
+        sql.startsWith(`INSERT INTO ${asinTable} `),
+      ).length;
+      assert.ok(attemptedAsinWrites > 0 && attemptedAsinWrites < 30);
+      assert.ok(
+        db.writes.every(({ sql }) =>
+          !sql.startsWith('INSERT INTO import_confirmation_receipts'),
+        ),
+      );
+
+      const retried = await applyIncrementalImport(file, options);
+      assert.equal(retried.createdCount, 30);
+      assert.equal(db.commitCount, 1);
+      assert.equal(db.state.asins.length, 30);
+      assert.equal(db.state.receipts.length, 1);
+      assert.deepEqual(cacheCalls, [
+        mode === 'standard' ? 'variantGroups:' : 'competitorVariantGroups:',
+      ]);
+
+      const receiptRetry = await applyIncrementalImport(file, {
+        ...options,
+        checkCancelled: async () => {
+          throw new Error('Receipt retries must not run cancellation checks');
+        },
+      });
+      assert.deepEqual(receiptRetry, retried);
+      assert.equal(db.state.asins.length, 30);
+      assert.equal(db.state.receipts.length, 1);
+      assert.equal(cacheCalls.length, 1);
+    } finally {
+      cacheService.deleteByPrefixAsync = original;
+    }
+  });
+}
+
+for (const mode of ['standard', 'competitor']) {
   test(`${mode} 已有小写 ASIN 与旧类型 MAIN_LINK 重传判未变化，不写业务数据`, async () => {
     const db = fakeDatabase({
       mode,
