@@ -3,7 +3,8 @@ const { v4: uuidv4 } = require('uuid');
 const logger = require('../utils/logger');
 const standardDb = require('../config/database');
 const competitorDb = require('../config/competitor-database');
-const { parseIncrementalImportFile } = require('./importParserService');
+const cacheService = require('./cacheService');
+const { parseImportPayload } = require('./importService');
 
 const QUERY_BATCH_SIZE = 100;
 
@@ -604,7 +605,7 @@ function hashFile(file) {
 async function createIncrementalPreview(file, { mode = 'standard', db } = {}) {
   const config = getConfig(mode);
   if (db) config.db = db;
-  const parsed = await parseIncrementalImportFile(file, { mode });
+  const parsed = await parseImportPayload(file, { mode, kind: 'incremental' });
   const snapshots = await loadSnapshots(parsed, config, config.db.query);
   const plan = planIncrementalImport(parsed, { ...snapshots, mode });
   const fileHash = hashFile(file);
@@ -787,10 +788,11 @@ async function applyIncrementalImport(
     throw error;
   }
   if (onProgress) await onProgress(5, '正在解析导入文件');
-  const parsed = await parseIncrementalImportFile(file, { mode });
+  const parsed = await parseImportPayload(file, { mode, kind: 'incremental' });
   const fileHash = hashFile(file);
   if (onProgress) await onProgress(25, '正在重新比对数据库');
   let result;
+  let committedBusinessChanges = false;
   try {
     result = await withImportLock(config.db, mode, async ({ query }) => {
       const receipts = await query(
@@ -826,6 +828,11 @@ async function applyIncrementalImport(
         'INSERT INTO import_confirmation_receipts (preview_id, file_hash, digest, result_json) VALUES (?, ?, ?, ?)',
         [previewId, fileHash, expectedDigest, JSON.stringify(finalResult)],
       );
+      committedBusinessChanges =
+        plan.summary.createdCount > 0 ||
+        plan.summary.updatedCount > 0 ||
+        plan.summary.createdGroupCount > 0 ||
+        plan.summary.updatedGroupCount > 0;
       return finalResult;
     });
   } catch (error) {
@@ -836,6 +843,11 @@ async function applyIncrementalImport(
       throw staleError();
     }
     throw error;
+  }
+  if (committedBusinessChanges) {
+    await cacheService.deleteByPrefixAsync(
+      mode === 'competitor' ? 'competitorVariantGroups:' : 'variantGroups:',
+    );
   }
   if (onProgress) {
     try {

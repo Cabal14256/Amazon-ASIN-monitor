@@ -116,7 +116,25 @@ router.put(
 router.post(
   '/competitor/variant-groups/import-excel/preview',
   checkPermission('asin:write'),
-  incrementalImportController.receiveImportFile,
+  (req, res, next) => {
+    upload.single('file')(req, res, (error) => {
+      if (error) {
+        return res.status(400).json({
+          success: false,
+          errorMessage: error.message || '文件上传失败',
+          errorCode: 400,
+        });
+      }
+      if (!req.file) {
+        return res.status(400).json({
+          success: false,
+          errorMessage: '请上传文件',
+          errorCode: 400,
+        });
+      }
+      return next();
+    });
+  },
   incrementalImport.preview,
 );
 router.get(

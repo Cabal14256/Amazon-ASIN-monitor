@@ -1,13 +1,17 @@
 process.env.LOG_LEVEL = 'ERROR';
+process.env.IMPORT_PARSE_WORKER_ENABLED = 'true';
 
 const assert = require('node:assert/strict');
 const test = require('node:test');
+const { Readable } = require('node:stream');
 const ExcelJS = require('exceljs');
 const redisConfig = require('../src/config/redis');
+const cacheService = require('../src/services/cacheService');
 
 const {
   parseIncrementalImportFile,
 } = require('../src/services/importParserService');
+const { parseImportPayload } = require('../src/services/importService');
 const {
   planIncrementalImport,
   createIncrementalPreview,
@@ -93,6 +97,7 @@ function fakeDatabase({
     history: [{ id: 'history-untouched', asin_id: 'asin-stable-id' }],
   };
   let mutationCount = 0;
+  let commitCount = 0;
   const writes = [];
 
   async function query(sql, params = []) {
@@ -205,12 +210,17 @@ function fakeDatabase({
     get state() {
       return state;
     },
+    get commitCount() {
+      return commitCount;
+    },
     writes,
     query,
     async withTransaction(callback) {
       const before = structuredClone(state);
       try {
-        return await callback({ query });
+        const result = await callback({ query });
+        commitCount += 1;
+        return result;
       } catch (error) {
         state = before;
         throw error;
@@ -330,10 +340,8 @@ function fakeRedis() {
   return client;
 }
 
-function loadControllerWithMocks(mockModules) {
-  const controllerPath = require.resolve(
-    '../src/controllers/incrementalImportController',
-  );
+function loadModuleWithMocks(targetModule, mockModules) {
+  const controllerPath = require.resolve(targetModule);
   const modules = Object.entries(mockModules).map(([modulePath, exports]) => ({
     filename: require.resolve(modulePath),
     exports,
@@ -359,6 +367,13 @@ function loadControllerWithMocks(mockModules) {
     if (savedController) require.cache[controllerPath] = savedController;
     else delete require.cache[controllerPath];
   }
+}
+
+function loadControllerWithMocks(mockModules) {
+  return loadModuleWithMocks(
+    '../src/controllers/incrementalImportController',
+    mockModules,
+  );
 }
 
 function mockResponse() {
@@ -534,6 +549,98 @@ test('竞品旧 CSV 与导出 XLSX 均不要求站点，导出空组可解析', 
   assert.equal(exported.rows[0].groupId, 'competitor-1');
   assert.equal(exported.rows[1].groupId, 'competitor-2');
   assert.equal(exported.rows[1].asin, '');
+});
+
+test(
+  '真实解析 Worker 可处理两类 XLSX 增量预览载荷',
+  { timeout: 15000 },
+  async () => {
+    for (const mode of ['standard', 'competitor']) {
+      const headers =
+        mode === 'standard'
+          ? ['变体组ID', 'ASIN', '国家', '品牌', '站点', '变体组名称']
+          : ['变体组ID', 'ASIN', '国家', '品牌', '变体组名称'];
+      const row =
+        mode === 'standard'
+          ? ['group-worker', 'B000000071', 'US', '品牌 A', '店铺 A', 'Worker组']
+          : ['group-worker', 'B000000071', 'US', '品牌 A', 'Worker组'];
+      const parsed = await parseImportPayload(await xlsxFile(headers, [row]), {
+        mode,
+        kind: 'incremental',
+      });
+      assert.equal(parsed.rows.length, 1);
+      assert.equal(parsed.rows[0].rowNumber, 2);
+      assert.equal(parsed.rows[0].groupId, 'group-worker');
+      assert.equal(parsed.rows[0].asin, 'B000000071');
+      assert.deepEqual(parsed.rows[0].errors, []);
+    }
+  },
+);
+
+test('竞品 CSV 预览上传接受通用二进制与 Excel MIME', async () => {
+  const noOp = (_req, _res, next) => next?.();
+  const router = loadModuleWithMocks('../src/routes/competitorAsinRoutes', {
+    '../src/controllers/competitorAsinController': new Proxy(
+      {},
+      {
+        get: () => noOp,
+      },
+    ),
+    '../src/controllers/incrementalImportController': {
+      handlersForMode: () => ({
+        preview: noOp,
+        readPreview: noOp,
+        confirm: noOp,
+      }),
+    },
+    '../src/middleware/auth': {
+      authenticateToken: noOp,
+      checkPermission: () => noOp,
+    },
+  });
+  const route = router.stack.find(
+    (layer) =>
+      layer.route?.path === '/competitor/variant-groups/import-excel/preview',
+  );
+  assert.ok(route);
+  const uploadMiddleware = route.route.stack[1].handle;
+
+  for (const mimetype of [
+    'application/octet-stream',
+    'application/vnd.ms-excel',
+  ]) {
+    const boundary = `----asin-preview-${mimetype.replaceAll('/', '-')}`;
+    const csv = '变体组名称,国家,品牌,ASIN\n竞品组,US,品牌 A,B000000081';
+    const body = Buffer.from(
+      `--${boundary}\r\nContent-Disposition: form-data; name="file"; filename="import.csv"\r\nContent-Type: ${mimetype}\r\n\r\n${csv}\r\n--${boundary}--\r\n`,
+    );
+    const req = Readable.from([body]);
+    req.method = 'POST';
+    req.headers = {
+      'content-type': `multipart/form-data; boundary=${boundary}`,
+      'content-length': String(body.length),
+    };
+    const res = mockResponse();
+    const outcome = await new Promise((resolve) => {
+      res.json = (payload) => {
+        res.body = payload;
+        resolve('response');
+        return res;
+      };
+      uploadMiddleware(req, res, () => resolve('next'));
+    });
+    assert.equal(
+      outcome,
+      'next',
+      `${mimetype}: ${res.body?.errorMessage || ''}`,
+    );
+    assert.equal(req.file.mimetype, mimetype);
+    const parsed = await parseIncrementalImportFile(req.file, {
+      mode: 'competitor',
+    });
+    assert.equal(parsed.rows[0].asin, 'B000000081');
+    assert.deepEqual(parsed.rows[0].errors, []);
+  }
 });
 
 test('无效行保留原始行号，其他行仍可进入预览', async () => {
@@ -879,6 +986,70 @@ for (const mode of ['standard', 'competitor']) {
     assert.equal(db.state.asins.length, 1);
     assert.equal(db.state.receipts.length, 1);
     assert.equal(db.writes.length, writesAfterFirst);
+  });
+}
+
+for (const mode of ['standard', 'competitor']) {
+  test(`${mode} 只在业务写入提交后清理对应组缓存`, async () => {
+    const db = fakeDatabase({ mode, groups: [group()] });
+    const file = transactionFile(mode, [{ asin: 'B000000008' }]);
+    const preview = await createIncrementalPreview(file, { mode, db });
+    const calls = [];
+    const original = cacheService.deleteByPrefixAsync;
+    cacheService.deleteByPrefixAsync = async (prefix) => {
+      calls.push({ prefix, commitCount: db.commitCount });
+    };
+    try {
+      await applyIncrementalImport(file, {
+        mode,
+        db,
+        previewId: `cache-create-${mode}`,
+        expectedDigest: preview.digest,
+      });
+      assert.deepEqual(calls, [
+        {
+          prefix:
+            mode === 'standard' ? 'variantGroups:' : 'competitorVariantGroups:',
+          commitCount: 1,
+        },
+      ]);
+
+      await applyIncrementalImport(file, {
+        mode,
+        db,
+        previewId: `cache-create-${mode}`,
+        expectedDigest: preview.digest,
+      });
+      assert.equal(calls.length, 1, 'Receipt retry must not evict again');
+
+      const unchanged = await createIncrementalPreview(file, { mode, db });
+      assert.equal(unchanged.summary.unchangedCount, 1);
+      await applyIncrementalImport(file, {
+        mode,
+        db,
+        previewId: `cache-unchanged-${mode}`,
+        expectedDigest: unchanged.digest,
+      });
+      assert.equal(calls.length, 1, 'Unchanged import must not evict');
+
+      const staleFile = transactionFile(mode, [
+        { asin: 'B000000008', name: '新名称' },
+      ]);
+      const stale = await createIncrementalPreview(staleFile, { mode, db });
+      db.state.asins[0].name = '外部先改';
+      await assert.rejects(
+        applyIncrementalImport(staleFile, {
+          mode,
+          db,
+          previewId: `cache-stale-${mode}`,
+          expectedDigest: stale.digest,
+        }),
+        (error) => error.code === 'PREVIEW_STALE',
+      );
+      assert.equal(calls.length, 1, 'Stale import must not evict');
+    } finally {
+      cacheService.deleteByPrefixAsync = original;
+    }
   });
 }
 

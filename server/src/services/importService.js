@@ -3,7 +3,10 @@ const { Worker } = require('worker_threads');
 const logger = require('../utils/logger');
 const VariantGroup = require('../models/VariantGroup');
 const CompetitorVariantGroup = require('../models/CompetitorVariantGroup');
-const { parseImportFile } = require('./importParserService');
+const {
+  parseImportFile,
+  parseIncrementalImportFile,
+} = require('./importParserService');
 const { isTaskCancelledError } = require('./taskCancellationService');
 const { batchCreateASINs } = require('./asinBatchCreateService');
 
@@ -54,6 +57,7 @@ function runImportParseWorker(
   file,
   {
     mode = 'standard',
+    kind = 'legacy',
     checkCancelled,
     timeoutMs = IMPORT_PARSE_TIMEOUT_MS,
   } = {},
@@ -156,6 +160,7 @@ function runImportParseWorker(
       requestId,
       payload: {
         mode,
+        kind,
         file: {
           buffer: file.buffer,
           originalname: file.originalname,
@@ -167,14 +172,17 @@ function runImportParseWorker(
 
 async function parseImportPayload(
   file,
-  { mode = 'standard', checkCancelled } = {},
+  { mode = 'standard', kind = 'legacy', checkCancelled } = {},
 ) {
   if (!IMPORT_PARSE_WORKER_ENABLED) {
-    return parseImportFile(file, { mode });
+    const parse =
+      kind === 'incremental' ? parseIncrementalImportFile : parseImportFile;
+    return parse(file, { mode });
   }
 
   return runImportParseWorker(file, {
     mode,
+    kind,
     checkCancelled,
   });
 }
@@ -392,4 +400,5 @@ async function importFromFile(file, options = {}) {
 
 module.exports = {
   importFromFile,
+  parseImportPayload,
 };
