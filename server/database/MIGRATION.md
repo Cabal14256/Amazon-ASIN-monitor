@@ -20,7 +20,7 @@
    ```
 
 4. 使用 `SHOW CREATE TABLE`、`SHOW INDEX` 和 `INFORMATION_SCHEMA` 对照初始化 SQL 及候选迁移。确认目标列、索引或表不存在，并检查迁移依赖的前置结构。
-5. 每次只执行一个经过确认的文件。脚本内含固定 `USE`，执行前必须核对目标数据库名。
+5. 每次只执行一个经过确认的文件。多数脚本内含固定 `USE`，执行前必须核对目标数据库名；没有 `USE` 的脚本必须显式指定目标库。
 
    ```bash
    mysql --show-warnings --default-character-set=utf8mb4 -u root -p < server/database/migrations/<specific-file.sql>
@@ -77,6 +77,14 @@
 | `030_add_analytics_rollup_and_status_interval.sql` | 主营 | 增加月聚合、水位和状态区间表 | 一次性；依赖此前聚合表 |
 | `030_optimize_batch_delete_history_fks.sql` | 主营与竞品 | 回填竞品历史快照并移除历史外键 | 条件化；大表回填和约束变更 |
 | `031_optimize_analytics_refresh_indexes.sql` | 主营 | 补充分析刷新索引 | 幂等条件索引 |
+| `032_add_import_confirmation_receipts.sql` | 主营与竞品 | 保存增量导入确认回执，保证任务重试幂等 | 幂等建表；须分别对两个数据库执行 |
+
+增量导入上线前，分别在主营库和竞品库执行回执表迁移；该脚本没有固定 `USE`：
+
+```bash
+mysql --show-warnings --default-character-set=utf8mb4 -u root -p -D amazon_asin_monitor < server/database/migrations/032_add_import_confirmation_receipts.sql
+mysql --show-warnings --default-character-set=utf8mb4 -u root -p -D amazon_competitor_monitor < server/database/migrations/032_add_import_confirmation_receipts.sql
+```
 
 ## 验证清单
 

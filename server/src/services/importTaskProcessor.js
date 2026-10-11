@@ -7,6 +7,12 @@ const {
   isTaskCancelledError,
 } = require('./taskCancellationService');
 const { importFromFile } = require('./importService');
+const { applyIncrementalImport } = require('./incrementalImportService');
+const {
+  attemptLimit,
+  attemptsMade,
+  willRetryAfterFailure,
+} = require('./importTaskAttempts');
 
 /**
  * 更新任务进度
@@ -31,6 +37,9 @@ async function processImportTask(job) {
     fileBuffer,
     originalFilename,
     userId,
+    incremental = false,
+    previewId,
+    expectedDigest,
   } = job.data;
 
   try {
@@ -38,15 +47,19 @@ async function processImportTask(job) {
       taskSubType,
       message: '导入任务开始处理',
     });
-    await throwIfTaskCancelled(taskId, '导入任务已取消');
+    if (!incremental) {
+      await throwIfTaskCancelled(taskId, '导入任务已取消');
+    }
 
-    const result = await importFromFile(
+    const importHandler = incremental ? applyIncrementalImport : importFromFile;
+    const result = await importHandler(
       {
         buffer: fileBuffer,
         originalname: originalFilename,
       },
       {
         mode: taskSubType === 'competitor-asin' ? 'competitor' : 'standard',
+        ...(incremental ? { previewId, expectedDigest } : {}),
         onProgress: async (progress, message) => {
           updateProgress(job, taskId, progress, message, userId);
         },
@@ -84,7 +97,44 @@ async function processImportTask(job) {
       };
     }
 
-    logger.error(`[导入任务] 处理失败 (${taskId}):`, error);
+    if (willRetryAfterFailure(job)) {
+      const nextAttempt = attemptsMade(job) + 2;
+      const retryMessage = `导入失败，等待第 ${nextAttempt}/${attemptLimit(
+        job,
+      )} 次重试`;
+      logger.warn(`[导入任务] 本次处理失败，等待重试 (${taskId}):`, {
+        message: error.message,
+        nextAttempt,
+      });
+      try {
+        const progress =
+          Number(
+            typeof job.progress === 'function' ? job.progress() : job.progress,
+          ) || 0;
+        await taskRegistryService.updateTaskProgress(
+          taskId,
+          progress,
+          retryMessage,
+        );
+        websocketService.sendTaskProgress(
+          taskId,
+          progress,
+          retryMessage,
+          userId,
+        );
+      } catch (statusError) {
+        logger.warn('[导入任务] 更新重试状态失败:', {
+          message: statusError.message,
+          taskId,
+        });
+      }
+      throw error;
+    }
+
+    logger.error(`[导入任务] 处理失败 (${taskId}):`, {
+      message: error.message,
+      code: error.code || null,
+    });
     await taskRegistryService.markTaskFailed(
       taskId,
       error.message || '导入失败',

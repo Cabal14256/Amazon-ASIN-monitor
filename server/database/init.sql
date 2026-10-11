@@ -35,6 +35,15 @@ CREATE TABLE IF NOT EXISTS `variant_groups` (
   INDEX `idx_variant_groups_name` (`name`) COMMENT '变体组名称索引，优化LIKE查询性能'
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='变体组表';
 
+-- 增量导入回执表
+CREATE TABLE IF NOT EXISTS `import_confirmation_receipts` (
+  `preview_id` VARCHAR(100) PRIMARY KEY COMMENT '确认预览ID',
+  `file_hash` CHAR(64) NOT NULL COMMENT '上传文件SHA-256',
+  `digest` CHAR(64) NOT NULL COMMENT '预览差异SHA-256',
+  `result_json` JSON NOT NULL COMMENT '已提交的导入结果',
+  `created_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='增量导入提交回执';
+
 -- ASIN表
 CREATE TABLE IF NOT EXISTS `asins` (
   `id` VARCHAR(50) PRIMARY KEY COMMENT 'ASIN ID',
