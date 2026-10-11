@@ -17,11 +17,12 @@ function successfulChunk() {
   };
 }
 
-function createHarness(outcomes) {
+function createHarness(outcomes, options = {}) {
   const calls = {
     completed: [],
     failed: [],
     progress: [],
+    registryProgress: [],
     websocketComplete: [],
     websocketError: [],
     cacheClear: [],
@@ -41,7 +42,12 @@ function createHarness(outcomes) {
 
   const registry = {
     async markTaskProcessing() {},
-    async updateTaskProgress() {},
+    async updateTaskProgress(...args) {
+      calls.registryProgress.push(args[1]);
+      if (options.onRegistryProgress) {
+        await options.onRegistryProgress(...args);
+      }
+    },
     async markTaskCompleted(...args) {
       calls.completed.push(args);
     },
@@ -151,6 +157,9 @@ function createHarness(outcomes) {
     },
     progress(value) {
       calls.progress.push(value);
+      if (options.onJobProgress) {
+        return options.onJobProgress(value);
+      }
     },
   };
 
@@ -214,4 +223,82 @@ test('all successful chunks complete normally', async () => {
   assert.equal(harness.calls.websocketError.length, 0);
   assert.equal(harness.calls.progress.at(-1), 100);
   assert.deepEqual(harness.calls.cacheClear, ['asin']);
+});
+
+test('completion waits for the final 100% progress write', async () => {
+  let signalProgress;
+  let releaseProgress;
+  const progressEntered = new Promise((resolve) => {
+    signalProgress = resolve;
+  });
+  const progressHeld = new Promise((resolve) => {
+    releaseProgress = resolve;
+  });
+  const harness = createHarness([successfulChunk()], {
+    async onRegistryProgress(taskId, progress) {
+      if (progress === 100) {
+        signalProgress();
+        await progressHeld;
+      }
+    },
+  });
+
+  const processing = harness.process(harness.job);
+  await progressEntered;
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(harness.calls.completed.length, 0);
+  assert.equal(harness.calls.failed.length, 0);
+
+  releaseProgress();
+  await processing;
+  assert.equal(harness.calls.completed.length, 1);
+  assert.equal(harness.calls.registryProgress.at(-1), 100);
+});
+
+test('completed deletion remains completed when Bull progress fails', async () => {
+  const harness = createHarness([successfulChunk()], {
+    async onJobProgress(progress) {
+      if (progress === 100) {
+        throw new Error('queue progress write failed');
+      }
+    },
+  });
+
+  const result = await harness.process(harness.job);
+  assert.equal(result.deletedGroupCount, 1);
+  assert.equal(harness.calls.completed.length, 1);
+  assert.equal(harness.calls.failed.length, 0);
+  assert.equal(harness.calls.websocketComplete.length, 1);
+  assert.equal(harness.calls.websocketError.length, 0);
+  assert.equal(harness.calls.registryProgress.at(-1), 100);
+});
+
+test('failure waits for the final progress write', async () => {
+  let signalProgress;
+  let releaseProgress;
+  const progressEntered = new Promise((resolve) => {
+    signalProgress = resolve;
+  });
+  const progressHeld = new Promise((resolve) => {
+    releaseProgress = resolve;
+  });
+  const harness = createHarness([new Error(LOCK_TIMEOUT)], {
+    async onRegistryProgress(taskId, progress) {
+      if (progress === 95) {
+        signalProgress();
+        await progressHeld;
+      }
+    },
+  });
+
+  const processing = harness.process(harness.job);
+  await progressEntered;
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(harness.calls.failed.length, 0);
+  assert.equal(harness.calls.completed.length, 0);
+
+  releaseProgress();
+  await assert.rejects(processing, /1\/1/);
+  assert.equal(harness.calls.failed.length, 1);
+  assert.equal(harness.calls.registryProgress.at(-1), 95);
 });

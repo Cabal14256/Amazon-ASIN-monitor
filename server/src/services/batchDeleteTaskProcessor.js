@@ -16,13 +16,17 @@ const {
 } = require('./batchDeleteService');
 const { normalizeBatchDeleteTaskResult } = require('./taskResultService');
 
-function updateProgress(job, taskId, progress, message, userId = null) {
-  job.progress(progress);
-  taskRegistryService
-    .updateTaskProgress(taskId, progress, message)
-    .catch((error) => {
-      logger.warn('[批量删除任务] 更新任务注册表进度失败:', error.message);
-    });
+async function updateProgress(job, taskId, progress, message, userId = null) {
+  try {
+    await job.progress(progress);
+  } catch (error) {
+    logger.warn('[批量删除任务] 更新队列进度失败:', error.message);
+  }
+  try {
+    await taskRegistryService.updateTaskProgress(taskId, progress, message);
+  } catch (error) {
+    logger.warn('[批量删除任务] 更新任务注册表进度失败:', error.message);
+  }
   websocketService.sendTaskProgress(taskId, progress, message, userId);
 }
 
@@ -42,7 +46,7 @@ async function processBatchDeleteTask(job) {
       message: '批量删除任务开始处理',
     });
     await throwIfTaskCancelled(taskId, '批量删除任务已取消');
-    updateProgress(job, taskId, 5, '正在分析删除目标...', userId);
+    await updateProgress(job, taskId, 5, '正在分析删除目标...', userId);
 
     const analysis = await analyzeBatchDelete({
       domain,
@@ -61,7 +65,7 @@ async function processBatchDeleteTask(job) {
     });
 
     if (chunks.length === 0) {
-      updateProgress(job, taskId, 100, '批量删除完成', userId);
+      await updateProgress(job, taskId, 100, '批量删除完成', userId);
       const finalResult = normalizeBatchDeleteTaskResult(
         finalizeAggregateResult(aggregate),
       );
@@ -116,7 +120,7 @@ async function processBatchDeleteTask(job) {
         Math.floor(((index + 1) / chunks.length) * 90) + 5,
         95,
       );
-      updateProgress(
+      await updateProgress(
         job,
         taskId,
         progress,
@@ -149,7 +153,7 @@ async function processBatchDeleteTask(job) {
       throw failure;
     }
 
-    updateProgress(job, taskId, 100, '批量删除完成', userId);
+    await updateProgress(job, taskId, 100, '批量删除完成', userId);
     await taskRegistryService.markTaskCompleted(taskId, finalResult, {
       message: '批量删除完成',
     });
