@@ -691,6 +691,47 @@ for (const mode of ['standard', 'competitor']) {
     }
   });
 
+  test(`${mode} 组 ID 行留空时保留现有 ASIN 的空站点和品牌`, () => {
+    for (const blank of [null, '']) {
+      const planned = makePlan(
+        [inputRow({ groupId: 'group-old', site: '', brand: '' })],
+        {
+          mode,
+          groups: [group()],
+          asins: [asin({ site: blank, brand: blank })],
+        },
+      );
+
+      assert.equal(planned.rows[0].action, 'unchanged');
+      assert.equal(planned.summary.updatedCount, 0);
+      assert.equal(planned.operations.asinUpdates.length, 0);
+      assert.equal(planned.rows[0].target.asin.brand, blank);
+      if (mode === 'standard') {
+        assert.equal(planned.rows[0].target.asin.site, blank);
+      }
+    }
+  });
+
+  test(`${mode} 新 ASIN 的空站点和品牌仍沿用已有组属性`, () => {
+    const planned = makePlan(
+      [
+        inputRow({
+          groupId: 'group-old',
+          asin: 'B000000002',
+          site: '',
+          brand: '',
+        }),
+      ],
+      { mode, groups: [group()], asins: [asin()] },
+    );
+
+    assert.equal(planned.rows[0].action, 'create');
+    assert.equal(planned.operations.asinCreates[0].brand, '品牌 A');
+    if (mode === 'standard') {
+      assert.equal(planned.operations.asinCreates[0].site, '店铺 A');
+    }
+  });
+
   test(`${mode} 同 ASIN 新国家新增，已有国家记录保留`, () => {
     const planned = makePlan(
       [inputRow({ country: 'UK', groupName: '英国组' })],
@@ -1081,7 +1122,11 @@ for (const mode of ['standard', 'competitor']) {
         applyIncrementalImport(file, {
           ...options,
           checkCancelled: async () => {
-            if (db.writes.some(({ sql }) => sql.startsWith(`INSERT INTO ${asinTable} `))) {
+            if (
+              db.writes.some(({ sql }) =>
+                sql.startsWith(`INSERT INTO ${asinTable} `),
+              )
+            ) {
               const error = new Error('导入任务已取消');
               error.code = 'IMPORT_CANCELLED';
               throw error;
@@ -1099,8 +1144,9 @@ for (const mode of ['standard', 'competitor']) {
       ).length;
       assert.ok(attemptedAsinWrites > 0 && attemptedAsinWrites < 30);
       assert.ok(
-        db.writes.every(({ sql }) =>
-          !sql.startsWith('INSERT INTO import_confirmation_receipts'),
+        db.writes.every(
+          ({ sql }) =>
+            !sql.startsWith('INSERT INTO import_confirmation_receipts'),
         ),
       );
 

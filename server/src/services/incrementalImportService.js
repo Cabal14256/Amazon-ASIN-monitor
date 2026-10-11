@@ -418,9 +418,15 @@ function planIncrementalImport(
             input.asinType || normalizedStoredAsinType(currentAsin?.asin_type),
           country: input.country,
           ...(withSite
-            ? { site: input.site || currentAsin?.site || targetGroup.site }
+            ? {
+                site:
+                  input.site ||
+                  (currentAsin ? currentAsin.site : targetGroup.site),
+              }
             : {}),
-          brand: input.brand || currentAsin?.brand || targetGroup.brand,
+          brand:
+            input.brand ||
+            (currentAsin ? currentAsin.brand : targetGroup.brand),
           variantGroupId: targetGroup.id || null,
         };
         target = { group: targetGroup, asin: targetAsin };
