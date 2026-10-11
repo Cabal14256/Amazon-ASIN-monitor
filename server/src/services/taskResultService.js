@@ -72,6 +72,63 @@ async function buildFileTaskResult({
 }
 
 function normalizeImportTaskResult(result = {}, extra = {}) {
+  if (result.incremental || result.createdCount !== undefined) {
+    const count = (value) => Math.max(Number(value) || 0, 0);
+    const createdCount = count(result.createdCount);
+    const updatedCount = count(result.updatedCount);
+    const movedCount = count(result.movedCount);
+    const unchangedCount = count(result.unchangedCount);
+    const failedCount = count(result.failedCount);
+    const createdGroupCount = count(result.createdGroupCount);
+    const updatedGroupCount = count(result.updatedGroupCount);
+    const groupOnlyCount = count(result.groupOnlyCount);
+    const total = count(result.total);
+    const processedCount =
+      result.processedCount === undefined
+        ? total
+        : count(result.processedCount);
+    const successCount =
+      result.successCount === undefined
+        ? Math.max(processedCount - failedCount, 0)
+        : count(result.successCount);
+    const missingCount =
+      result.missingCount === undefined
+        ? Math.max(total - processedCount, 0)
+        : count(result.missingCount);
+    const verificationPassed =
+      typeof result.verificationPassed === 'boolean'
+        ? result.verificationPassed
+        : missingCount === 0;
+    const summary = `总计 ${total} 行，新增 ${createdCount}，更新 ${updatedCount}（移动 ${movedCount}），未变化 ${unchangedCount}，跳过 ${failedCount}`;
+    const warnings = [];
+    if (failedCount > 0) {
+      warnings.push(`${failedCount} 行未处理，请核对错误明细`);
+    }
+    if (missingCount > 0) {
+      warnings.push(`仍有 ${missingCount} 行未归类`);
+    }
+    return buildStructuredTaskResult({
+      ...result,
+      ...extra,
+      incremental: true,
+      total,
+      processedCount,
+      successCount,
+      createdCount,
+      updatedCount,
+      movedCount,
+      unchangedCount,
+      failedCount,
+      createdGroupCount,
+      updatedGroupCount,
+      groupOnlyCount,
+      missingCount,
+      verificationPassed,
+      summary,
+      warnings,
+    });
+  }
+
   const successCount = Number(result.successCount) || 0;
   const failedCount = Number(result.failedCount) || 0;
   const processedCount =

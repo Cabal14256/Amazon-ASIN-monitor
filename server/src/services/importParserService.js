@@ -446,6 +446,117 @@ async function parseImportFile(file, options = {}) {
   };
 }
 
+function findIncrementalColumn(headers, names) {
+  const normalized = headers.map((header) =>
+    String(header || '')
+      .trim()
+      .toLowerCase()
+      .replace(/\s+/g, ''),
+  );
+  return normalized.findIndex((header) => names.includes(header));
+}
+
+async function parseIncrementalImportFile(file, options = {}) {
+  const { mode = 'standard' } = options;
+  const isCompetitor = mode === 'competitor';
+  const workbook = await parseWorkbook(file);
+  const data = worksheetToRows(workbook.worksheets[0]);
+  if (data.length < 2) {
+    const error = new Error('Excel文件至少需要包含表头和数据行');
+    error.statusCode = 400;
+    throw error;
+  }
+
+  const headers = data[0].map(repairHeaderText);
+  const indexes = {
+    groupName: findIncrementalColumn(headers, [
+      '变体组名称',
+      '变体组',
+      '组名称',
+      'groupname',
+      'variantgroupname',
+    ]),
+    groupId: findIncrementalColumn(headers, [
+      '变体组id',
+      '组id',
+      'groupid',
+      'variantgroupid',
+    ]),
+    country: findIncrementalColumn(headers, ['国家', 'country']),
+    site: findIncrementalColumn(headers, ['站点', 'site']),
+    brand: findIncrementalColumn(headers, ['品牌', 'brand']),
+    asin: findIncrementalColumn(headers, ['asin']),
+    name: findIncrementalColumn(headers, ['asin名称', 'asinname', '名称']),
+    asinType: findIncrementalColumn(headers, ['asin类型', 'asintype', '类型']),
+  };
+  const missing = [];
+  if (indexes.groupName < 0 && indexes.groupId < 0)
+    missing.push('变体组名称或变体组ID');
+  if (indexes.country < 0) missing.push('国家');
+  if (indexes.asin < 0) missing.push('ASIN');
+  if (missing.length) {
+    const error = new Error(`Excel文件必须包含：${missing.join('、')}列`);
+    error.statusCode = 400;
+    throw error;
+  }
+
+  const valueAt = (row, index) =>
+    index < 0 ? '' : String(row[index] ?? '').trim();
+  const rows = [];
+  for (let index = 1; index < data.length; index += 1) {
+    const raw = data[index];
+    if (!Array.isArray(raw) || !raw.some((cell) => String(cell ?? '').trim()))
+      continue;
+    const row = {
+      rowNumber: index + 1,
+      groupId: valueAt(raw, indexes.groupId),
+      groupName: valueAt(raw, indexes.groupName),
+      country: valueAt(raw, indexes.country).toUpperCase(),
+      site: isCompetitor ? '' : valueAt(raw, indexes.site),
+      brand: valueAt(raw, indexes.brand),
+      asin: valueAt(raw, indexes.asin).toUpperCase(),
+      name: valueAt(raw, indexes.name),
+      asinType: valueAt(raw, indexes.asinType),
+      errors: [],
+    };
+    if (!VALID_COUNTRIES.includes(row.country)) {
+      row.errors.push(
+        `国家代码无效: ${row.country}，必须是 US/UK/DE/FR/IT/ES 之一`,
+      );
+    }
+    if (!row.groupId && !row.groupName)
+      row.errors.push('变体组名称或变体组ID不能为空');
+    if (!row.groupId && !row.brand) row.errors.push('品牌不能为空');
+    if (!isCompetitor && !row.groupId && !row.site)
+      row.errors.push('站点（店铺代号）不能为空');
+    if (!row.asin && !row.groupId) row.errors.push('空组行必须提供变体组ID');
+    if (row.asin && !/^[A-Z0-9]{10}$/.test(row.asin)) {
+      row.errors.push('ASIN编码必须是10位字母数字组合');
+    }
+    if (row.asinType && !['1', '2'].includes(row.asinType)) {
+      row.errors.push(
+        `ASIN类型无效: ${row.asinType}，必须是 1（主链）或 2（副评）`,
+      );
+    }
+    if (row.groupId.length > 50) row.errors.push('变体组ID不能超过50个字符');
+    if (row.groupName.length > 255)
+      row.errors.push('变体组名称不能超过255个字符');
+    if (row.asin.length > 20) row.errors.push('ASIN不能超过20个字符');
+    if (row.name.length > 500) row.errors.push('ASIN名称不能超过500个字符');
+    if (row.brand.length > 100) row.errors.push('品牌不能超过100个字符');
+    if (row.site.length > 100) row.errors.push('站点不能超过100个字符');
+    rows.push(row);
+  }
+  return {
+    headers,
+    indexes,
+    totalRows: data.length,
+    totalDataRows: rows.length,
+    rows,
+  };
+}
+
 module.exports = {
   parseImportFile,
+  parseIncrementalImportFile,
 };

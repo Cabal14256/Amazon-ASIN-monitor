@@ -2,7 +2,10 @@ const express = require('express');
 const multer = require('multer');
 const router = express.Router();
 const competitorAsinController = require('../controllers/competitorAsinController');
+const incrementalImportController = require('../controllers/incrementalImportController');
 const { authenticateToken, checkPermission } = require('../middleware/auth');
+const incrementalImport =
+  incrementalImportController.handlersForMode('competitor');
 
 router.use(authenticateToken);
 
@@ -110,6 +113,22 @@ router.put(
 );
 
 // Excel导入路由
+router.post(
+  '/competitor/variant-groups/import-excel/preview',
+  checkPermission('asin:write'),
+  incrementalImportController.receiveImportFile,
+  incrementalImport.preview,
+);
+router.get(
+  '/competitor/variant-groups/import-excel/preview/:previewId',
+  checkPermission('asin:write'),
+  incrementalImport.readPreview,
+);
+router.post(
+  '/competitor/variant-groups/import-excel/confirm',
+  checkPermission('asin:write'),
+  incrementalImport.confirm,
+);
 router.post(
   '/competitor/variant-groups/import-excel',
   checkPermission('asin:write'),

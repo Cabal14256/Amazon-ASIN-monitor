@@ -14,10 +14,11 @@
     "start": "npm run dev",
     "test:api-url": "node --test tests/api-url.test.js",
     "test:changed-format": "node --test tests/changed-format.test.js",
-    "test:contracts": "npm run test:api-url && npm run test:init-schema && npm run test:database-docs",
+    "test:contracts": "npm run test:api-url && npm run test:task-wait && npm run test:init-schema && npm run test:database-docs",
     "test:database-docs": "node --test tests/database-docs.test.js",
     "test:init-schema": "node --test tests/init-schema.test.js",
-    "test:pr-policy": "node --test tests/pr-policy.test.js"
+    "test:pr-policy": "node --test tests/pr-policy.test.js",
+    "test:task-wait": "node --test tests/task-wait.test.js"
   },
   "dependencies": {
     "@ant-design/icons": "^5.0.1",

@@ -60,13 +60,13 @@ function registerProcessor() {
   processorConcurrency = 1;
 
   importTaskQueue.process(processorConcurrency, async (job) => {
-    const { taskId, fileBuffer, originalFilename } = job.data || {};
+    const { taskId, fileBuffer } = job.data || {};
 
     if (!taskId || !fileBuffer) {
       throw new Error('任务ID和文件数据不能为空');
     }
 
-    logger.info(`[导入任务] 开始处理任务 ${taskId}, 文件: ${originalFilename}`);
+    logger.info(`[导入任务] 开始处理任务 ${taskId}`);
 
     const importTaskProcessor = require('./importTaskProcessor');
     return importTaskProcessor.processImportTask(job);
