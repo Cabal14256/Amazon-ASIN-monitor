@@ -126,12 +126,30 @@ async function processBatchDeleteTask(job) {
     }
 
     clearBatchDeleteCache(domain);
-    updateProgress(job, taskId, 100, '批量删除完成', userId);
-
     aggregate.totalRequested = analysis.totalRequested;
     const finalResult = normalizeBatchDeleteTaskResult(
       finalizeAggregateResult(aggregate),
     );
+
+    if (aggregate.failedCount > 0) {
+      const successfulChunks = chunks.length - aggregate.failedCount;
+      const failureMessage =
+        successfulChunks > 0
+          ? `批量删除部分失败：${aggregate.failedCount}/${
+              chunks.length
+            } 个分块失败，已删除变体组 ${
+              finalResult.deletedGroupCount
+            } 个、ASIN ${
+              finalResult.deletedDirectAsinCount +
+              finalResult.deletedNestedAsinCount
+            } 个`
+          : `批量删除失败：${aggregate.failedCount}/${chunks.length} 个分块失败，未删除任何目标`;
+      const failure = new Error(failureMessage);
+      failure.taskResult = finalResult;
+      throw failure;
+    }
+
+    updateProgress(job, taskId, 100, '批量删除完成', userId);
     await taskRegistryService.markTaskCompleted(taskId, finalResult, {
       message: '批量删除完成',
     });
@@ -166,6 +184,7 @@ async function processBatchDeleteTask(job) {
       error.message || '批量删除失败',
       {
         message: error.message || '批量删除失败',
+        ...(error.taskResult ? { result: error.taskResult } : {}),
       },
     );
     websocketService.sendTaskError(
