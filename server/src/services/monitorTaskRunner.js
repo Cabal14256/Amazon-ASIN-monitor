@@ -30,12 +30,14 @@ const {
 const {
   getMonitorScheduleConfig,
 } = require('../config/monitor-schedule-config');
+const {
+  getMonitorRunScope,
+  groupCountriesByRegion,
+} = require('./monitorTaskRegions');
+const { createMonitorTaskRunStateStore } = require('./monitorTaskRunState');
 
-let monitorSemaphore = new Semaphore(getMaxConcurrentGroupChecks());
-let isMonitorTaskRunning = false;
-let pendingRunCountries = null;
-let pendingRunBatchConfig = null;
-let pendingRunCompletion = null;
+const monitorSemaphore = new Semaphore(getMaxConcurrentGroupChecks());
+const monitorRunStates = createMonitorTaskRunStateStore();
 
 // 单次任务限制处理的变体组数量（防止单次任务过大）
 const MAX_GROUPS_PER_TASK =
@@ -534,21 +536,6 @@ function areBatchConfigsEqual(first, second) {
   );
 }
 
-function getPendingRunCompletion() {
-  if (pendingRunCompletion) {
-    return pendingRunCompletion;
-  }
-
-  let resolve;
-  let reject;
-  const promise = new Promise((resolvePromise, rejectPromise) => {
-    resolve = resolvePromise;
-    reject = rejectPromise;
-  });
-  pendingRunCompletion = { promise, resolve, reject };
-  return pendingRunCompletion;
-}
-
 async function runMonitorTask(countries, batchConfig = null, options = {}) {
   if (!countries || countries.length === 0) {
     return {
@@ -560,24 +547,89 @@ async function runMonitorTask(countries, batchConfig = null, options = {}) {
     };
   }
 
-  if (isMonitorTaskRunning) {
+  const countriesByRegion = groupCountriesByRegion(countries, REGION_MAP);
+
+  if (Object.keys(countriesByRegion).length > 1) {
+    const start = Date.now();
+    const regionResults = await Promise.all(
+      Object.entries(countriesByRegion).map(([region, regionCountries]) =>
+        runMonitorTask(regionCountries, batchConfig, options).then(
+          (result) => ({
+            region,
+            result,
+          }),
+        ),
+      ),
+    );
+    const countryResults = Object.assign(
+      {},
+      ...regionResults.map(({ result }) => result.countryResults || {}),
+    );
+    const totalChecked = regionResults.reduce(
+      (total, { result }) => total + (result.totalChecked || 0),
+      0,
+    );
+    const totalBroken = regionResults.reduce(
+      (total, { result }) => total + (result.totalBroken || 0),
+      0,
+    );
+    const notifyResults = regionResults.reduce(
+      (summary, { result }) => {
+        const current = result.notifyResults || {};
+        summary.total += current.total || 0;
+        summary.success += current.success || 0;
+        summary.failed += current.failed || 0;
+        summary.skipped += current.skipped || 0;
+        Object.assign(summary.countryResults, current.countryResults || {});
+        return summary;
+      },
+      { total: 0, success: 0, failed: 0, skipped: 0, countryResults: {} },
+    );
+
+    return {
+      success: regionResults.every(({ result }) => result.success),
+      totalChecked,
+      totalBroken,
+      totalNormal: totalChecked - totalBroken,
+      countryResults,
+      notifyResults,
+      duration: (Date.now() - start) / 1000,
+      checkTime: regionResults[0]?.result.checkTime || null,
+    };
+  }
+
+  const runScope = getMonitorRunScope(countries, REGION_MAP);
+  const runState = monitorRunStates.get(runScope);
+
+  if (runState.isRunning) {
     const alreadyHasPendingRun =
-      pendingRunCountries && pendingRunCountries.length > 0;
-    pendingRunCountries = Array.from(
-      new Set([...(pendingRunCountries || []), ...countries]),
+      runState.pendingRunCountries && runState.pendingRunCountries.length > 0;
+    runState.pendingRunCountries = Array.from(
+      new Set([...(runState.pendingRunCountries || []), ...countries]),
     );
     if (!alreadyHasPendingRun) {
-      pendingRunBatchConfig = batchConfig;
-    } else if (!areBatchConfigsEqual(pendingRunBatchConfig, batchConfig)) {
-      pendingRunBatchConfig = null;
+      runState.pendingRunBatchConfig = batchConfig;
+    } else if (
+      !areBatchConfigsEqual(runState.pendingRunBatchConfig, batchConfig)
+    ) {
+      runState.pendingRunBatchConfig = null;
     }
     logger.info(
-      `⏳ 上一个监控任务仍在运行，已缓存下一次执行的国家: ${pendingRunCountries.join(
+      `⏳ ${runScope}区域上一个监控任务仍在运行，已缓存下一次执行的国家: ${runState.pendingRunCountries.join(
         ', ',
       )}`,
     );
     if (options.waitForDeferred) {
-      return getPendingRunCompletion().promise;
+      if (!runState.pendingRunCompletion) {
+        let resolve;
+        let reject;
+        const promise = new Promise((resolvePromise, rejectPromise) => {
+          resolve = resolvePromise;
+          reject = rejectPromise;
+        });
+        runState.pendingRunCompletion = { promise, resolve, reject };
+      }
+      return runState.pendingRunCompletion.promise;
     }
     return {
       success: false,
@@ -588,7 +640,7 @@ async function runMonitorTask(countries, batchConfig = null, options = {}) {
     };
   }
 
-  isMonitorTaskRunning = true;
+  runState.isRunning = true;
   syncSemaphoreLimit();
 
   const batchInfo = batchConfig
@@ -841,19 +893,22 @@ async function runMonitorTask(countries, batchConfig = null, options = {}) {
       duration: 0,
     };
   } finally {
-    isMonitorTaskRunning = false;
+    runState.isRunning = false;
     const [seconds, nanoseconds] = process.hrtime(startTime);
     metricsService.recordSchedulerRun({
       type: 'monitor_task',
       durationSec: seconds + nanoseconds / 1e9,
     });
-    if (pendingRunCountries && pendingRunCountries.length > 0) {
-      const nextCountries = pendingRunCountries;
-      const nextBatchConfig = pendingRunBatchConfig;
-      const nextCompletion = pendingRunCompletion;
-      pendingRunCountries = null;
-      pendingRunBatchConfig = null;
-      pendingRunCompletion = null;
+    if (
+      runState.pendingRunCountries &&
+      runState.pendingRunCountries.length > 0
+    ) {
+      const nextCountries = runState.pendingRunCountries;
+      const nextBatchConfig = runState.pendingRunBatchConfig;
+      const nextCompletion = runState.pendingRunCompletion;
+      runState.pendingRunCountries = null;
+      runState.pendingRunBatchConfig = null;
+      runState.pendingRunCompletion = null;
       // 捕获错误，避免影响主任务的日志
       try {
         const nextResult = await runMonitorTask(
