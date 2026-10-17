@@ -508,6 +508,7 @@ exports.triggerManualCheck = async (req, res) => {
       {
         US: monitorTaskQueue,
         EU: monitorEuTaskQueue,
+        GLOBAL: monitorTaskQueue,
       },
       null,
       {

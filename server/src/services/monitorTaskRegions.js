@@ -20,15 +20,17 @@ async function enqueueMonitorCountries(
   options = {},
 ) {
   const groupedCountries = groupCountriesByRegion(countries, regionMap);
-  return Promise.all(
-    Object.entries(groupedCountries).map(([region, regionCountries]) => {
-      const queue = regionQueues[region];
-      if (!queue) {
-        throw new Error(`缺少 ${region} 区域的监控队列`);
-      }
-      return queue.enqueue(regionCountries, batchConfig, options);
-    }),
-  );
+  const regions = Object.keys(groupedCountries);
+  const queueRegion = regions.length > 1 ? 'GLOBAL' : regions[0];
+  const queue = regionQueues[queueRegion];
+  if (!queue) {
+    throw new Error(`缺少 ${queueRegion || 'default'} 区域的监控队列`);
+  }
+
+  const taskCountries =
+    regions.length > 1 ? countries : groupedCountries[queueRegion];
+  const job = await queue.enqueue(taskCountries, batchConfig, options);
+  return [job];
 }
 
 module.exports = {

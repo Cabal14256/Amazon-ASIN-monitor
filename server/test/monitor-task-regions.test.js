@@ -49,7 +49,7 @@ test('US 和 EU 运行状态互相独立', () => {
   assert.equal(euState.isRunning, false);
 });
 
-test('混合国家手动任务分别进入 US 和 EU 队列', async () => {
+test('混合国家手动任务进入旧监控队列并保留单个任务ID', async () => {
   const calls = [];
   const queues = {
     US: {
@@ -64,6 +64,12 @@ test('混合国家手动任务分别进入 US 和 EU 队列', async () => {
         return { id: 'eu-job' };
       },
     },
+    GLOBAL: {
+      enqueue: async (countries, batchConfig, options) => {
+        calls.push({ region: 'GLOBAL', countries, batchConfig, options });
+        return { id: 'combined-job' };
+      },
+    },
   };
 
   const jobs = await enqueueMonitorCountries(
@@ -76,14 +82,37 @@ test('混合国家手动任务分别进入 US 和 EU 队列', async () => {
 
   assert.deepEqual(
     calls.map(({ region, countries }) => ({ region, countries })),
-    [
-      { region: 'US', countries: ['US'] },
-      { region: 'EU', countries: ['UK', 'DE'] },
-    ],
+    [{ region: 'GLOBAL', countries: ['US', 'UK', 'DE'] }],
   );
   assert.deepEqual(
     jobs.map(({ id }) => id),
-    ['us-job', 'eu-job'],
+    ['combined-job'],
+  );
+});
+
+test('单一区域手动任务只进入该区域队列', async () => {
+  const calls = [];
+  const queues = {
+    US: {
+      enqueue: async (countries) => {
+        calls.push({ region: 'US', countries });
+        return { id: 'us-job' };
+      },
+    },
+    EU: {
+      enqueue: async (countries) => {
+        calls.push({ region: 'EU', countries });
+        return { id: 'eu-job' };
+      },
+    },
+  };
+
+  const jobs = await enqueueMonitorCountries(['UK', 'DE'], REGION_MAP, queues);
+
+  assert.deepEqual(calls, [{ region: 'EU', countries: ['UK', 'DE'] }]);
+  assert.deepEqual(
+    jobs.map(({ id }) => id),
+    ['eu-job'],
   );
 });
 

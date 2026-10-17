@@ -551,9 +551,10 @@ async function runMonitorTask(countries, batchConfig = null, options = {}) {
 
   if (Object.keys(countriesByRegion).length > 1) {
     const start = Date.now();
+    const regionOptions = { ...options, waitForDeferred: true };
     const regionResults = await Promise.all(
       Object.entries(countriesByRegion).map(([region, regionCountries]) =>
-        runMonitorTask(regionCountries, batchConfig, options).then(
+        runMonitorTask(regionCountries, batchConfig, regionOptions).then(
           (result) => ({
             region,
             result,
