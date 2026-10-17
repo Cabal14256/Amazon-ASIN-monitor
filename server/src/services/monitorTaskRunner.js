@@ -17,6 +17,9 @@ const cacheService = require('./cacheService');
 const { PRIORITY } = require('./rateLimiter');
 const logger = require('../utils/logger');
 const { sendSingleCountryNotification } = require('./feishuService');
+const {
+  sendCountryMonitorNotification: sendCountryMonitorNotificationImpl,
+} = require('./monitorCountryNotification');
 const MonitorHistory = require('../models/MonitorHistory');
 const { getMaxConcurrentGroupChecks } = require('../config/monitor-config');
 const Semaphore = require('./semaphore');
@@ -536,6 +539,15 @@ function areBatchConfigsEqual(first, second) {
   );
 }
 
+async function sendCountryMonitorNotification(options) {
+  return sendCountryMonitorNotificationImpl({
+    ...options,
+    sendNotification: sendSingleCountryNotification,
+    monitorHistory: MonitorHistory,
+    logger,
+  });
+}
+
 async function runMonitorTask(countries, batchConfig = null, options = {}) {
   if (!countries || countries.length === 0) {
     return {
@@ -682,6 +694,7 @@ async function runMonitorTask(countries, batchConfig = null, options = {}) {
     // 处理延后队列的region集合
     const processedRegions = new Set();
     const countryCheckRanges = {};
+    const notifiedCountries = new Set();
 
     // 串行处理每个国家
     for (const country of countries) {
@@ -695,6 +708,19 @@ async function runMonitorTask(countries, batchConfig = null, options = {}) {
       totalChecked += checked;
       totalBroken += broken;
       countryCheckRanges[country] = checkTimeRange;
+
+      // EU notifications are country-scoped so a slow country does not delay
+      // notifications for countries that already completed.
+      if (REGION_MAP[country] === 'EU') {
+        await sendCountryMonitorNotification({
+          country,
+          countryResults,
+          countryCheckRanges,
+          checkTime,
+          notifyResults,
+        });
+        notifiedCountries.add(country);
+      }
     }
 
     for (const country of countries) {
@@ -744,6 +770,22 @@ async function runMonitorTask(countries, batchConfig = null, options = {}) {
             `[延后队列] ${region}区域处理结果: 总计 ${deferredResult.total}, 成功 ${deferredResult.success}, 失败 ${deferredResult.failed}`,
           );
         }
+
+        if (region === 'EU' && deferredResult.deferredResults.length > 0) {
+          const affectedCountries = new Set(
+            deferredResult.deferredResults.map((item) => item.country),
+          );
+          for (const country of affectedCountries) {
+            await sendCountryMonitorNotification({
+              country,
+              countryResults,
+              countryCheckRanges,
+              checkTime,
+              notifyResults,
+            });
+            notifiedCountries.add(country);
+          }
+        }
       } catch (deferredError) {
         logger.error(
           `[延后队列] 处理 ${region}区域主监控延后队列失败:`,
@@ -755,62 +797,16 @@ async function runMonitorTask(countries, batchConfig = null, options = {}) {
     }
 
     for (const country of Object.keys(countryResults)) {
-      logger.info(`\n📨 开始发送 ${country} 的飞书通知...`);
-      const countryNotifyResult = await sendSingleCountryNotification(
+      if (notifiedCountries.has(country)) {
+        continue;
+      }
+      await sendCountryMonitorNotification({
         country,
-        countryResults[country],
-      );
-      notifyResults.total++;
-      if (countryNotifyResult.success) {
-        notifyResults.success++;
-        notifyResults.countryResults[country] = countryNotifyResult;
-        logger.info(`✅ ${country} 的飞书通知发送成功`);
-      } else {
-        notifyResults.failed++;
-        notifyResults.countryResults[country] = countryNotifyResult;
-        logger.warn(
-          `❌ ${country} 的飞书通知发送失败${
-            countryNotifyResult.errorCode
-              ? ` (错误码: ${countryNotifyResult.errorCode})`
-              : ''
-          }`,
-        );
-      }
-
-      // 更新已发送通知的监控历史记录状态（仅当通知发送成功且该国家有异常时）
-      if (
-        countryNotifyResult.success &&
-        !countryNotifyResult.skipped &&
-        countryResults[country] &&
-        countryResults[country].brokenGroups > 0
-      ) {
-        try {
-          const checkTimeRange = countryCheckRanges[country];
-          const updatedCount =
-            checkTimeRange?.startTime && checkTimeRange?.endTime
-              ? await MonitorHistory.updateNotificationStatusByRange(
-                  country,
-                  checkTimeRange.startTime,
-                  checkTimeRange.endTime,
-                  1, // 标记为已通知
-                )
-              : await MonitorHistory.updateNotificationStatus(
-                  country,
-                  checkTime,
-                  1, // 兼容回退
-                );
-          if (updatedCount > 0) {
-            logger.info(
-              `✅ 已更新 ${country} 的 ${updatedCount} 条监控历史记录为已通知状态`,
-            );
-          }
-        } catch (error) {
-          logger.error(
-            `❌ 更新 ${country} 监控历史记录通知状态失败:`,
-            error.message,
-          );
-        }
-      }
+        countryResults,
+        countryCheckRanges,
+        checkTime,
+        notifyResults,
+      });
     }
 
     // 汇总所有国家的异常类型统计
