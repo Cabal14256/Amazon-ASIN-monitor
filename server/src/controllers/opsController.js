@@ -3,6 +3,7 @@ const analyticsCacheService = require('../services/analyticsCacheService');
 const riskControlService = require('../services/riskControlService');
 const schedulerService = require('../services/schedulerService');
 const monitorTaskQueue = require('../services/monitorTaskQueue');
+const monitorEuTaskQueue = require('../services/monitorEuTaskQueue');
 const competitorMonitorTaskQueue = require('../services/competitorMonitorTaskQueue');
 const analyticsAggService = require('../services/analyticsAggService');
 const { getProcessRole, isApiRole } = require('../config/processRole');
@@ -49,13 +50,18 @@ exports.getOpsOverview = async (req, res) => {
     const schedulerEnabled =
       isApiRole(processRole) && schedulerService.isSchedulerEnabled();
 
-    const [monitorQueueStats, competitorQueueStats] = await Promise.all([
-      getQueueStats(monitorTaskQueue.queue, monitorTaskQueue.limiterConfig),
-      getQueueStats(
-        competitorMonitorTaskQueue.queue,
-        competitorMonitorTaskQueue.limiterConfig,
-      ),
-    ]);
+    const [monitorQueueStats, monitorEuQueueStats, competitorQueueStats] =
+      await Promise.all([
+        getQueueStats(monitorTaskQueue.queue, monitorTaskQueue.limiterConfig),
+        getQueueStats(
+          monitorEuTaskQueue.queue,
+          monitorEuTaskQueue.limiterConfig,
+        ),
+        getQueueStats(
+          competitorMonitorTaskQueue.queue,
+          competitorMonitorTaskQueue.limiterConfig,
+        ),
+      ]);
 
     res.json({
       success: true,
@@ -71,6 +77,7 @@ exports.getOpsOverview = async (req, res) => {
         analyticsAgg: analyticsAggService.getAggStatus(),
         queues: {
           monitor: monitorQueueStats,
+          monitorEu: monitorEuQueueStats,
           competitor: competitorQueueStats,
         },
       },

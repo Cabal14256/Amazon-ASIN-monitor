@@ -218,6 +218,9 @@ const OpsPage: React.FC = () => {
               <Descriptions.Item label="监控队列等待">
                 {overview?.queues?.monitor?.counts?.waiting ?? '-'}
               </Descriptions.Item>
+              <Descriptions.Item label="欧洲监控队列等待">
+                {overview?.queues?.monitorEu?.counts?.waiting ?? '-'}
+              </Descriptions.Item>
               <Descriptions.Item label="竞品队列等待">
                 {overview?.queues?.competitor?.counts?.waiting ?? '-'}
               </Descriptions.Item>

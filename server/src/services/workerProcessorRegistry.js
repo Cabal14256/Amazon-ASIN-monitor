@@ -1,5 +1,6 @@
 const logger = require('../utils/logger');
 const monitorTaskQueue = require('./monitorTaskQueue');
+const monitorEuTaskQueue = require('./monitorEuTaskQueue');
 const competitorMonitorTaskQueue = require('./competitorMonitorTaskQueue');
 const exportTaskQueue = require('./exportTaskQueue');
 const importTaskQueue = require('./importTaskQueue');
@@ -8,14 +9,20 @@ const batchDeleteTaskQueue = require('./batchDeleteTaskQueue');
 const backupTaskQueue = require('./backupTaskQueue');
 const variantCheckTaskQueue = require('./variantCheckTaskQueue');
 const { startQueueConnectionWatchdog } = require('./queueConnectionWatchdog');
+const { getWorkerQueueConfig, isQueueEnabled } = require('./workerQueueConfig');
 
 let workerQueueWatchdog = null;
 
 const queueRegistrations = [
   {
     name: 'monitor',
-    aliases: ['monitor'],
+    aliases: ['monitor', 'monitor-us', 'monitorus'],
     module: monitorTaskQueue,
+  },
+  {
+    name: 'monitorEu',
+    aliases: ['monitor-eu', 'monitoreu'],
+    module: monitorEuTaskQueue,
   },
   {
     name: 'competitor',
@@ -54,92 +61,21 @@ const queueRegistrations = [
   },
 ];
 
-function normalizeQueueToken(token) {
-  return String(token || '')
-    .trim()
-    .toLowerCase()
-    .replace(/[_\s]+/g, '-');
+function getConfiguredWorkerQueueConfig() {
+  return getWorkerQueueConfig(queueRegistrations);
 }
 
-function resolveQueueName(token) {
-  const normalizedToken = normalizeQueueToken(token);
-  const matched = queueRegistrations.find(({ name, aliases = [] }) => {
-    const candidates = [name, ...aliases].map(normalizeQueueToken);
-    return candidates.includes(normalizedToken);
-  });
-
-  return matched ? matched.name : null;
-}
-
-function getWorkerQueueConfig() {
-  const raw = String(process.env.WORKER_ENABLED_QUEUES || '').trim();
-
-  if (!raw) {
-    return {
-      enableAll: true,
-      enabledQueues: queueRegistrations.map(({ name }) => name),
-      unknownQueues: [],
-    };
-  }
-
-  const tokens = raw
-    .split(',')
-    .map((item) => item.trim())
-    .filter(Boolean);
-
-  if (tokens.length === 0) {
-    return {
-      enableAll: true,
-      enabledQueues: queueRegistrations.map(({ name }) => name),
-      unknownQueues: [],
-    };
-  }
-
-  if (
-    tokens.some((token) => ['all', '*'].includes(normalizeQueueToken(token)))
-  ) {
-    return {
-      enableAll: true,
-      enabledQueues: queueRegistrations.map(({ name }) => name),
-      unknownQueues: [],
-    };
-  }
-
-  const enabledQueues = new Set();
-  const unknownQueues = [];
-
-  tokens.forEach((token) => {
-    const normalized = normalizeQueueToken(token);
-    if (['none', 'off'].includes(normalized)) {
-      return;
-    }
-
-    const resolvedName = resolveQueueName(token);
-    if (!resolvedName) {
-      unknownQueues.push(token);
-      return;
-    }
-    enabledQueues.add(resolvedName);
-  });
-
-  return {
-    enableAll: false,
-    enabledQueues: Array.from(enabledQueues),
-    unknownQueues,
-  };
-}
-
-function isQueueEnabled(name, config = getWorkerQueueConfig()) {
-  if (config.enableAll) {
-    return true;
-  }
-  return config.enabledQueues.includes(name);
+function isRegisteredQueueEnabled(
+  name,
+  config = getConfiguredWorkerQueueConfig(),
+) {
+  return isQueueEnabled(name, config);
 }
 
 function registerWorkerProcessors() {
   const newlyRegisteredQueues = [];
   const skippedQueues = [];
-  const config = getWorkerQueueConfig();
+  const config = getConfiguredWorkerQueueConfig();
 
   if (config.unknownQueues.length > 0) {
     logger.warn(
@@ -150,7 +86,7 @@ function registerWorkerProcessors() {
   }
 
   queueRegistrations.forEach(({ name, module }) => {
-    if (!isQueueEnabled(name, config)) {
+    if (!isRegisteredQueueEnabled(name, config)) {
       skippedQueues.push(name);
       return;
     }
@@ -192,12 +128,12 @@ function getRegisteredQueueNames() {
 }
 
 function getWorkerRegistrationStatus() {
-  const config = getWorkerQueueConfig();
+  const config = getConfiguredWorkerQueueConfig();
   const details = {};
   queueRegistrations.forEach(({ name, module }) => {
     details[name] = {
       ...module.getProcessorStatus(),
-      enabledByConfig: isQueueEnabled(name, config),
+      enabledByConfig: isRegisteredQueueEnabled(name, config),
     };
   });
 
@@ -210,7 +146,7 @@ function getWorkerRegistrationStatus() {
     enabledQueues: config.enabledQueues,
     skippedQueues: queueRegistrations
       .map(({ name }) => name)
-      .filter((name) => !isQueueEnabled(name, config)),
+      .filter((name) => !isRegisteredQueueEnabled(name, config)),
     details,
   };
 }
@@ -262,7 +198,7 @@ module.exports = {
   getRegisteredQueueNames,
   getWorkerRegistrationStatus,
   getRegisteredQueueInstances,
-  getWorkerQueueConfig,
+  getWorkerQueueConfig: getConfiguredWorkerQueueConfig,
   startWorkerQueueWatchdog,
   stopWorkerQueueWatchdog,
 };

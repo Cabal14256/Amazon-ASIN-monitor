@@ -460,7 +460,11 @@ exports.triggerManualCheck = async (req, res) => {
   try {
     const { countries } = req.body || {};
     const monitorTaskQueue = require('../services/monitorTaskQueue');
+    const monitorEuTaskQueue = require('../services/monitorEuTaskQueue');
     const { REGION_MAP } = require('../services/monitorTaskRunner');
+    const {
+      enqueueMonitorCountries,
+    } = require('../services/monitorTaskRegions');
     const allCountries = Object.keys(REGION_MAP);
     let normalizedCountries = allCountries;
 
@@ -498,20 +502,32 @@ exports.triggerManualCheck = async (req, res) => {
       `[手动检查] 收到手动检查请求，国家: ${normalizedCountries.join(', ')}`,
     );
 
-    const job = await monitorTaskQueue.enqueue(normalizedCountries, null, {
-      source: 'manual',
-      requestedBy: req.user?.id || null,
-      jobOptions: {
-        priority: 1,
+    const jobs = await enqueueMonitorCountries(
+      normalizedCountries,
+      REGION_MAP,
+      {
+        US: monitorTaskQueue,
+        EU: monitorEuTaskQueue,
+        GLOBAL: monitorTaskQueue,
       },
-    });
+      null,
+      {
+        source: 'manual',
+        requestedBy: req.user?.id || null,
+        jobOptions: {
+          priority: 1,
+        },
+      },
+    );
+    const jobIds = jobs.filter(Boolean).map((queuedJob) => queuedJob.id);
 
     res.json({
       success: true,
       data: {
         message: '监控任务已入队',
         queued: true,
-        jobId: job?.id || null,
+        jobId: jobIds[0] || null,
+        jobIds,
         countries: normalizedCountries,
       },
       errorCode: 0,
