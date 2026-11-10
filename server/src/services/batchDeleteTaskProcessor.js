@@ -16,13 +16,17 @@ const {
 } = require('./batchDeleteService');
 const { normalizeBatchDeleteTaskResult } = require('./taskResultService');
 
-function updateProgress(job, taskId, progress, message, userId = null) {
-  job.progress(progress);
-  taskRegistryService
-    .updateTaskProgress(taskId, progress, message)
-    .catch((error) => {
-      logger.warn('[批量删除任务] 更新任务注册表进度失败:', error.message);
-    });
+async function updateProgress(job, taskId, progress, message, userId = null) {
+  try {
+    await job.progress(progress);
+  } catch (error) {
+    logger.warn('[批量删除任务] 更新队列进度失败:', error.message);
+  }
+  try {
+    await taskRegistryService.updateTaskProgress(taskId, progress, message);
+  } catch (error) {
+    logger.warn('[批量删除任务] 更新任务注册表进度失败:', error.message);
+  }
   websocketService.sendTaskProgress(taskId, progress, message, userId);
 }
 
@@ -42,7 +46,7 @@ async function processBatchDeleteTask(job) {
       message: '批量删除任务开始处理',
     });
     await throwIfTaskCancelled(taskId, '批量删除任务已取消');
-    updateProgress(job, taskId, 5, '正在分析删除目标...', userId);
+    await updateProgress(job, taskId, 5, '正在分析删除目标...', userId);
 
     const analysis = await analyzeBatchDelete({
       domain,
@@ -61,7 +65,7 @@ async function processBatchDeleteTask(job) {
     });
 
     if (chunks.length === 0) {
-      updateProgress(job, taskId, 100, '批量删除完成', userId);
+      await updateProgress(job, taskId, 100, '批量删除完成', userId);
       const finalResult = normalizeBatchDeleteTaskResult(
         finalizeAggregateResult(aggregate),
       );
@@ -116,7 +120,7 @@ async function processBatchDeleteTask(job) {
         Math.floor(((index + 1) / chunks.length) * 90) + 5,
         95,
       );
-      updateProgress(
+      await updateProgress(
         job,
         taskId,
         progress,
@@ -126,12 +130,30 @@ async function processBatchDeleteTask(job) {
     }
 
     clearBatchDeleteCache(domain);
-    updateProgress(job, taskId, 100, '批量删除完成', userId);
-
     aggregate.totalRequested = analysis.totalRequested;
     const finalResult = normalizeBatchDeleteTaskResult(
       finalizeAggregateResult(aggregate),
     );
+
+    if (aggregate.failedCount > 0) {
+      const successfulChunks = chunks.length - aggregate.failedCount;
+      const failureMessage =
+        successfulChunks > 0
+          ? `批量删除部分失败：${aggregate.failedCount}/${
+              chunks.length
+            } 个分块失败，已删除变体组 ${
+              finalResult.deletedGroupCount
+            } 个、ASIN ${
+              finalResult.deletedDirectAsinCount +
+              finalResult.deletedNestedAsinCount
+            } 个`
+          : `批量删除失败：${aggregate.failedCount}/${chunks.length} 个分块失败，未删除任何目标`;
+      const failure = new Error(failureMessage);
+      failure.taskResult = finalResult;
+      throw failure;
+    }
+
+    await updateProgress(job, taskId, 100, '批量删除完成', userId);
     await taskRegistryService.markTaskCompleted(taskId, finalResult, {
       message: '批量删除完成',
     });
@@ -166,6 +188,7 @@ async function processBatchDeleteTask(job) {
       error.message || '批量删除失败',
       {
         message: error.message || '批量删除失败',
+        ...(error.taskResult ? { result: error.taskResult } : {}),
       },
     );
     websocketService.sendTaskError(
