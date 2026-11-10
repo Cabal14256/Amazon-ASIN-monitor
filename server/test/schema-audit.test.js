@@ -2,6 +2,7 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
 const test = require('node:test');
+const { execFileSync } = require('node:child_process');
 const {
   auditSchemas,
   compareSchemas,
@@ -95,6 +96,72 @@ test('init parser 与相同 metadata 比较无差异', () => {
   const expected = parseInitSchema(initSql);
   const actual = parseInitSchema(initSql);
   assert.deepEqual(compareSchemas(expected, actual), []);
+});
+
+test('生成表达式保留字符串的大小写和空格，仍归一化 SQL 语法', () => {
+  const expected = parseInitSchema(initSql);
+  const drifted = parseInitSchema(initSql.replaceAll('%H:00:00', '%h:00:00'));
+  assert.ok(
+    compareSchemas(expected, drifted).some(
+      (difference) =>
+        difference.kind === 'column_generationExpression' &&
+        difference.name === 'hour_ts',
+    ),
+  );
+  const sql =
+    "CREATE DATABASE IF NOT EXISTS `sample` CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci; CREATE TABLE IF NOT EXISTS `example` (`value` VARCHAR(30), `derived` VARCHAR(30) GENERATED ALWAYS AS (concat(`value`, 'A B')) STORED) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;";
+  assert.ok(
+    compareSchemas(
+      parseInitSchema(sql),
+      parseInitSchema(sql.replace("'A B'", "'a b'")),
+    ).length > 0,
+  );
+  assert.ok(
+    compareSchemas(
+      parseInitSchema(sql),
+      parseInitSchema(sql.replace("'A B'", "'AB'")),
+    ).length > 0,
+  );
+  assert.deepEqual(
+    compareSchemas(
+      parseInitSchema(sql),
+      parseInitSchema(sql.replace('concat', 'CONCAT')),
+    ),
+    [],
+  );
+});
+
+test('审计 CLI 的 JSON 模式隔离模块加载及执行时的信息日志', () => {
+  const output = execFileSync(
+    process.execPath,
+    [
+      '-e',
+      `
+    const Module = require('node:module');
+    const load = Module._load;
+    Module._load = function(request, parent, isMain) {
+      if (request.endsWith('/schemaAuditService')) {
+        const logger = require('./src/utils/logger');
+        logger.info('config initialized');
+        return { auditSchemas: async () => {
+          logger.info('config loaded');
+          return { status: 'ok', main: { status: 'ok' }, competitor: { status: 'skipped' } };
+        } };
+      }
+      if (request.endsWith('/database') || request.endsWith('/competitor-database')) return { pool: { end: async () => {} } };
+      return load.call(this, request, parent, isMain);
+    };
+    process.argv.push('--json');
+    require('./scripts/audit-database-schema');
+  `,
+    ],
+    {
+      cwd: path.join(__dirname, '..'),
+      env: { ...process.env, LOG_LEVEL: 'INFO' },
+      encoding: 'utf8',
+    },
+  );
+  assert.equal(JSON.parse(output).status, 'ok');
 });
 
 test('外键省略动作、NO ACTION 与 MySQL RESTRICT 等价', () => {

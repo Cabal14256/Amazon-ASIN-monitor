@@ -1,6 +1,10 @@
 #!/usr/bin/env node
 
 require('dotenv').config();
+// JSON mode owns stdout, including logs emitted while modules are loading.
+if (process.argv.includes('--json') || process.env.npm_config_json === 'true') {
+  process.env.LOG_LEVEL = 'WARN';
+}
 const { auditSchemas } = require('../src/services/schemaAuditService');
 const mainDatabase = require('../src/config/database');
 const competitorDatabase = require('../src/config/competitor-database');

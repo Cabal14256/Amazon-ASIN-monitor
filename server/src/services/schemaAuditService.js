@@ -61,10 +61,14 @@ function parseIdentifierList(value) {
 
 function normalizeExpression(value) {
   if (value === undefined || value === null || value === '') return null;
+  const literals = [];
   let normalized = String(value)
-    .replace(/`/g, '')
     .replace(/_utf8mb4\\?(?=')/gi, '')
-    .replace(/\\'/g, "'")
+    .replace(/'(?:''|\\.|[^'\\])*'|"(?:""|\\.|[^"\\])*"/g, (literal) => {
+      const index = literals.push(literal) - 1;
+      return `__schema_literal_${index}__`;
+    })
+    .replace(/`/g, '')
     .replace(/\s+/g, '')
     .toLowerCase();
   normalized = normalized.replace(
@@ -75,7 +79,10 @@ function normalizeExpression(value) {
     /^timestamp\(date\(([^()]*)\)\)$/,
     'cast(cast($1asdate)asdatetime)',
   );
-  return normalized;
+  return normalized.replace(
+    /__schema_literal_(\d+)__/g,
+    (_, index) => literals[Number(index)],
+  );
 }
 
 function parseIndexParts(value) {
