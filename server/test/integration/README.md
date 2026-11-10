@@ -5,7 +5,8 @@
 - Redis 7 中真实 Lua 的全窗口、全 token 原子扣减；
 - API/Worker 两个 limiter 实例共享 response-header 元数据与窗口用量；
 - Redis 服务重启后现有客户端恢复连接；
-- MySQL 8 初始化 SQL 可重复执行，并能从真实 `sp_api_config` 行验证数据库值与空配置回退。
+- MySQL 8 的两个初始化 SQL 可重复执行，并能从真实 `sp_api_config` 行验证数据库值与空配置回退；
+- 生产旧结构 fixture 连续执行 active migrations 两次后与 canonical metadata 一致，重复索引、竞品唯一键和历史外键均完成治理，删除当前实体后快照历史仍可查询。
 
 测试要求 `RUN_INTEGRATION_TESTS=true`、回环地址 Redis/MySQL、动态测试库名以及 `INTEGRATION_ALLOW_DROP_DATABASES=true`。不满足这些保护条件时不会连接或删除数据库。测试不会启动 API/Worker，不调用 Amazon、飞书或其他外部服务。
 
