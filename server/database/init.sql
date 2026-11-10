@@ -110,7 +110,7 @@ CREATE TABLE IF NOT EXISTS `variant_group_split_state` (
   `members` JSON NOT NULL COMMENT '成员、原父体基准及最近可信关系观测',
   `status` VARCHAR(10) NOT NULL DEFAULT 'UNKNOWN' COMMENT 'UNKNOWN/NORMAL/BROKEN',
   `updated_at` DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3) ON UPDATE CURRENT_TIMESTAMP(3)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='变体组拆分检测状态';
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci COMMENT='变体组拆分检测状态';
 
 CREATE TABLE IF NOT EXISTS `variant_group_split_events` (
   `id` BIGINT NOT NULL AUTO_INCREMENT PRIMARY KEY,
@@ -123,7 +123,7 @@ CREATE TABLE IF NOT EXISTS `variant_group_split_events` (
   `phone_attempted_at` DATETIME(3) DEFAULT NULL COMMENT '电话加急占用时间（UTC）',
   INDEX `idx_split_country_time` (`country`, `occurred_at`),
   INDEX `idx_split_group_time` (`variant_group_id`, `occurred_at`)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='变体组新增拆分事件';
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci COMMENT='变体组新增拆分事件';
 
 -- 监控历史表
 CREATE TABLE IF NOT EXISTS `monitor_history` (
