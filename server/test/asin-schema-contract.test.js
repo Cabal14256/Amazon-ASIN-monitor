@@ -47,7 +47,9 @@ function column(name, tableName = 'asins', overrides = {}) {
 function compatibleMainColumns(extra = []) {
   return [
     ...ASIN_INSERT_COLUMNS.asin.map((name) =>
-      column(name, 'asins', { IS_NULLABLE: 'NO' }),
+      column(name, 'asins', {
+        IS_NULLABLE: ['name', 'asin_type'].includes(name) ? 'YES' : 'NO',
+      }),
     ),
     ...VARIANT_GROUP_INSERT_COLUMNS.asin.map((name) =>
       column(name, 'variant_groups', { IS_NULLABLE: 'NO' }),
@@ -120,6 +122,25 @@ test('schema 契约拒绝目标表及 INSERT 列缺失', async () => {
       return true;
     });
   });
+});
+
+test('可选写入列变为 NOT NULL 时在导入前阻断', async () => {
+  for (const field of ['name', 'asin_type']) {
+    const columns = compatibleMainColumns();
+    columns.find(
+      (column) => column.TABLE_NAME === 'asins' && column.COLUMN_NAME === field,
+    ).IS_NULLABLE = 'NO';
+    await withMainDatabaseStubs({ query: async () => columns }, async () => {
+      await assert.rejects(
+        assertAsinInsertSchemaCompatible('asin'),
+        (error) => {
+          assert.equal(error.code, ASIN_SCHEMA_CONTRACT_ERROR_CODE);
+          assert.deepEqual(error.details.nonNullableInsertColumns, [field]);
+          return true;
+        },
+      );
+    });
+  }
 });
 
 test('schema 类型漂移在创建组前失败，报告缩短的 ASIN 及错误数值类型', async () => {

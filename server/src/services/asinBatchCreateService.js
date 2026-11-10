@@ -118,6 +118,7 @@ function createSchemaContractError(config, table, details) {
     ...(details.requiredOmittedColumns || []),
     ...(details.generatedInsertColumns || []),
     ...(details.incompatibleTypeColumns || []),
+    ...(details.nonNullableInsertColumns || []),
   ];
   const error = new Error(
     `ASIN导入schema契约不兼容: ${table}${
@@ -143,7 +144,11 @@ function isGeneratedColumn(extra) {
 async function assertAsinInsertSchemaCompatible(domain = 'asin') {
   const config = getDomainConfig(domain);
   const tableContracts = [
-    { table: config.asinTable, insertColumns: config.insertColumns },
+    {
+      table: config.asinTable,
+      insertColumns: config.insertColumns,
+      nullableInsertColumns: ['name', 'asin_type'],
+    },
     { table: config.groupTable, insertColumns: config.groupInsertColumns },
   ];
   const columns = await config.database.query(
@@ -176,6 +181,13 @@ async function assertAsinInsertSchemaCompatible(domain = 'asin') {
       isGeneratedColumn(actualColumns.get(columnName)?.EXTRA),
     );
     const insertColumnSet = new Set(contract.insertColumns);
+    const nonNullableInsertColumns = (
+      contract.nullableInsertColumns || []
+    ).filter(
+      (columnName) =>
+        actualColumns.has(columnName) &&
+        actualColumns.get(columnName).IS_NULLABLE !== 'YES',
+    );
     const expectedColumns = CANONICAL_SCHEMAS[config.domain].tables.get(
       contract.table,
     ).columns;
@@ -209,6 +221,7 @@ async function assertAsinInsertSchemaCompatible(domain = 'asin') {
       missingInsertColumns.length > 0 ||
       generatedInsertColumns.length > 0 ||
       incompatibleTypeColumns.length > 0 ||
+      nonNullableInsertColumns.length > 0 ||
       requiredOmittedColumns.length > 0
     ) {
       const error = createSchemaContractError(config, contract.table, {
@@ -216,6 +229,7 @@ async function assertAsinInsertSchemaCompatible(domain = 'asin') {
         missingInsertColumns,
         generatedInsertColumns,
         incompatibleTypeColumns,
+        nonNullableInsertColumns,
         requiredOmittedColumns,
       });
       logger.error('[ASIN导入] schema契约检查失败', {
