@@ -251,9 +251,8 @@ function planIncrementalImport(
       continue;
     const key = groupNaturalKey(row, withSite);
     const matching = groupByNatural.get(key) || [];
-    const planned = (plannedByNatural.get(key) || []).filter(
-      (item) =>
-        !item.target.entries.some((candidate) => candidate.errors.length),
+    const planned = (plannedByNatural.get(key) || []).filter((item) =>
+      item.target.entries.some((candidate) => !candidate.errors.length),
     );
     if (
       matching.length > 1 ||

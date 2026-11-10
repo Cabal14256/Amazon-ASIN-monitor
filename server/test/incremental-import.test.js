@@ -1001,6 +1001,33 @@ test('解析错误行跳过，独立有效行仍正常新增，计数覆盖所�
 });
 
 for (const mode of ['standard', 'competitor']) {
+  test(`${mode} 更名组有错误行时，有效无 ID 成员仍加入原组`, async () => {
+    const db = fakeDatabase({ mode, groups: [group()] });
+    const file = transactionFile(mode, [
+      { groupId: 'group-old', groupName: '组新名', asin: 'B000000002' },
+      { groupId: 'group-old', groupName: '组新名', asin: 'INVALID' },
+      { groupName: '组新名', asin: 'B000000003' },
+    ]);
+    const preview = await createIncrementalPreview(file, { mode, db });
+    assert.equal(preview.summary.failedCount, 1);
+    assert.equal(preview.summary.createdGroupCount, 0);
+    assert.equal(preview.summary.updatedGroupCount, 1);
+    assert.equal(preview.summary.createdCount, 2);
+    await applyIncrementalImport(file, {
+      mode,
+      db,
+      previewId: `rename-invalid-${mode}`,
+      expectedDigest: preview.digest,
+    });
+    assert.equal(db.state.groups.length, 1);
+    assert.equal(db.state.groups[0].name, '组新名');
+    assert.equal(db.state.asins.length, 2);
+    assert.deepEqual(
+      db.state.asins.map((asin) => asin.variant_group_id),
+      ['group-old', 'group-old'],
+    );
+  });
+
   test(`${mode} 自然键空组可以预览并创建，重试不会重复创建`, async () => {
     const db = fakeDatabase({ mode });
     const file = transactionFile(mode, [
