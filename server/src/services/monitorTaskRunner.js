@@ -17,6 +17,9 @@ const cacheService = require('./cacheService');
 const { PRIORITY } = require('./rateLimiter');
 const logger = require('../utils/logger');
 const { sendSingleCountryNotification } = require('./feishuService');
+const {
+  sendCountryMonitorNotification: sendCountryMonitorNotificationImpl,
+} = require('./monitorCountryNotification');
 const MonitorHistory = require('../models/MonitorHistory');
 const { getMaxConcurrentGroupChecks } = require('../config/monitor-config');
 const Semaphore = require('./semaphore');
@@ -30,12 +33,14 @@ const {
 const {
   getMonitorScheduleConfig,
 } = require('../config/monitor-schedule-config');
+const {
+  getMonitorRunScope,
+  groupCountriesByRegion,
+} = require('./monitorTaskRegions');
+const { createMonitorTaskRunStateStore } = require('./monitorTaskRunState');
 
-let monitorSemaphore = new Semaphore(getMaxConcurrentGroupChecks());
-let isMonitorTaskRunning = false;
-let pendingRunCountries = null;
-let pendingRunBatchConfig = null;
-let pendingRunCompletion = null;
+const monitorSemaphore = new Semaphore(getMaxConcurrentGroupChecks());
+const monitorRunStates = createMonitorTaskRunStateStore();
 
 // 单次任务限制处理的变体组数量（防止单次任务过大）
 const MAX_GROUPS_PER_TASK =
@@ -559,19 +564,13 @@ function areBatchConfigsEqual(first, second) {
   );
 }
 
-function getPendingRunCompletion() {
-  if (pendingRunCompletion) {
-    return pendingRunCompletion;
-  }
-
-  let resolve;
-  let reject;
-  const promise = new Promise((resolvePromise, rejectPromise) => {
-    resolve = resolvePromise;
-    reject = rejectPromise;
+async function sendCountryMonitorNotification(options) {
+  return sendCountryMonitorNotificationImpl({
+    ...options,
+    sendNotification: sendSingleCountryNotification,
+    monitorHistory: MonitorHistory,
+    logger,
   });
-  pendingRunCompletion = { promise, resolve, reject };
-  return pendingRunCompletion;
 }
 
 async function runMonitorTask(countries, batchConfig = null, options = {}) {
@@ -585,24 +584,90 @@ async function runMonitorTask(countries, batchConfig = null, options = {}) {
     };
   }
 
-  if (isMonitorTaskRunning) {
+  const countriesByRegion = groupCountriesByRegion(countries, REGION_MAP);
+
+  if (Object.keys(countriesByRegion).length > 1) {
+    const start = Date.now();
+    const regionOptions = { ...options, waitForDeferred: true };
+    const regionResults = await Promise.all(
+      Object.entries(countriesByRegion).map(([region, regionCountries]) =>
+        runMonitorTask(regionCountries, batchConfig, regionOptions).then(
+          (result) => ({
+            region,
+            result,
+          }),
+        ),
+      ),
+    );
+    const countryResults = Object.assign(
+      {},
+      ...regionResults.map(({ result }) => result.countryResults || {}),
+    );
+    const totalChecked = regionResults.reduce(
+      (total, { result }) => total + (result.totalChecked || 0),
+      0,
+    );
+    const totalBroken = regionResults.reduce(
+      (total, { result }) => total + (result.totalBroken || 0),
+      0,
+    );
+    const notifyResults = regionResults.reduce(
+      (summary, { result }) => {
+        const current = result.notifyResults || {};
+        summary.total += current.total || 0;
+        summary.success += current.success || 0;
+        summary.failed += current.failed || 0;
+        summary.skipped += current.skipped || 0;
+        Object.assign(summary.countryResults, current.countryResults || {});
+        return summary;
+      },
+      { total: 0, success: 0, failed: 0, skipped: 0, countryResults: {} },
+    );
+
+    return {
+      success: regionResults.every(({ result }) => result.success),
+      totalChecked,
+      totalBroken,
+      totalNormal: totalChecked - totalBroken,
+      countryResults,
+      notifyResults,
+      duration: (Date.now() - start) / 1000,
+      checkTime: regionResults[0]?.result.checkTime || null,
+    };
+  }
+
+  const runScope = getMonitorRunScope(countries, REGION_MAP);
+  const runState = monitorRunStates.get(runScope);
+
+  if (runState.isRunning) {
     const alreadyHasPendingRun =
-      pendingRunCountries && pendingRunCountries.length > 0;
-    pendingRunCountries = Array.from(
-      new Set([...(pendingRunCountries || []), ...countries]),
+      runState.pendingRunCountries && runState.pendingRunCountries.length > 0;
+    runState.pendingRunCountries = Array.from(
+      new Set([...(runState.pendingRunCountries || []), ...countries]),
     );
     if (!alreadyHasPendingRun) {
-      pendingRunBatchConfig = batchConfig;
-    } else if (!areBatchConfigsEqual(pendingRunBatchConfig, batchConfig)) {
-      pendingRunBatchConfig = null;
+      runState.pendingRunBatchConfig = batchConfig;
+    } else if (
+      !areBatchConfigsEqual(runState.pendingRunBatchConfig, batchConfig)
+    ) {
+      runState.pendingRunBatchConfig = null;
     }
     logger.info(
-      `⏳ 上一个监控任务仍在运行，已缓存下一次执行的国家: ${pendingRunCountries.join(
+      `⏳ ${runScope}区域上一个监控任务仍在运行，已缓存下一次执行的国家: ${runState.pendingRunCountries.join(
         ', ',
       )}`,
     );
     if (options.waitForDeferred) {
-      return getPendingRunCompletion().promise;
+      if (!runState.pendingRunCompletion) {
+        let resolve;
+        let reject;
+        const promise = new Promise((resolvePromise, rejectPromise) => {
+          resolve = resolvePromise;
+          reject = rejectPromise;
+        });
+        runState.pendingRunCompletion = { promise, resolve, reject };
+      }
+      return runState.pendingRunCompletion.promise;
     }
     return {
       success: false,
@@ -613,7 +678,7 @@ async function runMonitorTask(countries, batchConfig = null, options = {}) {
     };
   }
 
-  isMonitorTaskRunning = true;
+  runState.isRunning = true;
   syncSemaphoreLimit();
 
   const batchInfo = batchConfig
@@ -654,6 +719,7 @@ async function runMonitorTask(countries, batchConfig = null, options = {}) {
     // 处理延后队列的region集合
     const processedRegions = new Set();
     const countryCheckRanges = {};
+    const notifiedCountries = new Set();
 
     // 串行处理每个国家
     for (const country of countries) {
@@ -667,6 +733,19 @@ async function runMonitorTask(countries, batchConfig = null, options = {}) {
       totalChecked += checked;
       totalBroken += broken;
       countryCheckRanges[country] = checkTimeRange;
+
+      // EU notifications are country-scoped so a slow country does not delay
+      // notifications for countries that already completed.
+      if (REGION_MAP[country] === 'EU') {
+        await sendCountryMonitorNotification({
+          country,
+          countryResults,
+          countryCheckRanges,
+          checkTime,
+          notifyResults,
+        });
+        notifiedCountries.add(country);
+      }
     }
 
     for (const country of countries) {
@@ -716,6 +795,22 @@ async function runMonitorTask(countries, batchConfig = null, options = {}) {
             `[延后队列] ${region}区域处理结果: 总计 ${deferredResult.total}, 成功 ${deferredResult.success}, 失败 ${deferredResult.failed}`,
           );
         }
+
+        if (region === 'EU' && deferredResult.deferredResults.length > 0) {
+          const affectedCountries = new Set(
+            deferredResult.deferredResults.map((item) => item.country),
+          );
+          for (const country of affectedCountries) {
+            await sendCountryMonitorNotification({
+              country,
+              countryResults,
+              countryCheckRanges,
+              checkTime,
+              notifyResults,
+            });
+            notifiedCountries.add(country);
+          }
+        }
       } catch (deferredError) {
         logger.error(
           `[延后队列] 处理 ${region}区域主监控延后队列失败:`,
@@ -727,62 +822,16 @@ async function runMonitorTask(countries, batchConfig = null, options = {}) {
     }
 
     for (const country of Object.keys(countryResults)) {
-      logger.info(`\n📨 开始发送 ${country} 的飞书通知...`);
-      const countryNotifyResult = await sendSingleCountryNotification(
+      if (notifiedCountries.has(country)) {
+        continue;
+      }
+      await sendCountryMonitorNotification({
         country,
-        countryResults[country],
-      );
-      notifyResults.total++;
-      if (countryNotifyResult.success) {
-        notifyResults.success++;
-        notifyResults.countryResults[country] = countryNotifyResult;
-        logger.info(`✅ ${country} 的飞书通知发送成功`);
-      } else {
-        notifyResults.failed++;
-        notifyResults.countryResults[country] = countryNotifyResult;
-        logger.warn(
-          `❌ ${country} 的飞书通知发送失败${
-            countryNotifyResult.errorCode
-              ? ` (错误码: ${countryNotifyResult.errorCode})`
-              : ''
-          }`,
-        );
-      }
-
-      // 更新已发送通知的监控历史记录状态（仅当通知发送成功且该国家有异常时）
-      if (
-        countryNotifyResult.success &&
-        !countryNotifyResult.skipped &&
-        countryResults[country] &&
-        countryResults[country].brokenGroups > 0
-      ) {
-        try {
-          const checkTimeRange = countryCheckRanges[country];
-          const updatedCount =
-            checkTimeRange?.startTime && checkTimeRange?.endTime
-              ? await MonitorHistory.updateNotificationStatusByRange(
-                  country,
-                  checkTimeRange.startTime,
-                  checkTimeRange.endTime,
-                  1, // 标记为已通知
-                )
-              : await MonitorHistory.updateNotificationStatus(
-                  country,
-                  checkTime,
-                  1, // 兼容回退
-                );
-          if (updatedCount > 0) {
-            logger.info(
-              `✅ 已更新 ${country} 的 ${updatedCount} 条监控历史记录为已通知状态`,
-            );
-          }
-        } catch (error) {
-          logger.error(
-            `❌ 更新 ${country} 监控历史记录通知状态失败:`,
-            error.message,
-          );
-        }
-      }
+        countryResults,
+        countryCheckRanges,
+        checkTime,
+        notifyResults,
+      });
     }
 
     // 汇总所有国家的异常类型统计
@@ -866,19 +915,22 @@ async function runMonitorTask(countries, batchConfig = null, options = {}) {
       duration: 0,
     };
   } finally {
-    isMonitorTaskRunning = false;
+    runState.isRunning = false;
     const [seconds, nanoseconds] = process.hrtime(startTime);
     metricsService.recordSchedulerRun({
       type: 'monitor_task',
       durationSec: seconds + nanoseconds / 1e9,
     });
-    if (pendingRunCountries && pendingRunCountries.length > 0) {
-      const nextCountries = pendingRunCountries;
-      const nextBatchConfig = pendingRunBatchConfig;
-      const nextCompletion = pendingRunCompletion;
-      pendingRunCountries = null;
-      pendingRunBatchConfig = null;
-      pendingRunCompletion = null;
+    if (
+      runState.pendingRunCountries &&
+      runState.pendingRunCountries.length > 0
+    ) {
+      const nextCountries = runState.pendingRunCountries;
+      const nextBatchConfig = runState.pendingRunBatchConfig;
+      const nextCompletion = runState.pendingRunCompletion;
+      runState.pendingRunCountries = null;
+      runState.pendingRunBatchConfig = null;
+      runState.pendingRunCompletion = null;
       // 捕获错误，避免影响主任务的日志
       try {
         const nextResult = await runMonitorTask(

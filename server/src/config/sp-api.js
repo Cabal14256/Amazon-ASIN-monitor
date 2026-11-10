@@ -512,6 +512,29 @@ function clearAccessTokenCache() {
   });
 }
 
+function isExpiredAccessTokenError(error) {
+  const statusCode = Number(error?.statusCode);
+  if (statusCode !== 401 && statusCode !== 403) {
+    return false;
+  }
+
+  const responseText = [
+    error?.message,
+    error?.responseData,
+    error?.responseBody,
+    error?.errorCode,
+  ]
+    .filter(Boolean)
+    .join(' ')
+    .toLowerCase();
+
+  return (
+    responseText.includes('unauthorized') ||
+    (responseText.includes('token') &&
+      (responseText.includes('expired') || responseText.includes('invalid')))
+  );
+}
+
 function normalizeRegion(region) {
   const normalized = normalizeConfigValue(region).toUpperCase();
   if (!normalized) {
@@ -961,6 +984,7 @@ async function callSPAPI(
     }, scheduleOptions);
 
   let lastError = null;
+  let accessTokenRefreshAttempted = false;
 
   for (let attempt = 0; attempt <= maxRetries; attempt++) {
     try {
@@ -977,6 +1001,24 @@ async function callSPAPI(
       return result;
     } catch (error) {
       lastError = error;
+
+      if (
+        !accessTokenRefreshAttempted &&
+        attempt < maxRetries &&
+        isExpiredAccessTokenError(error)
+      ) {
+        accessTokenRefreshAttempted = true;
+        clearAccessTokenCache();
+        logger.warn(
+          `[callSPAPI] ${region} 区域访问令牌已被 SP-API 拒绝，清除缓存并重载配置后重试`,
+          {
+            statusCode: error.statusCode || null,
+            errorCode: error.errorCode || null,
+          },
+        );
+        await reloadSPAPIConfig();
+        continue;
+      }
 
       // 检查是否是 429 或 QuotaExceeded 错误
       const isRateLimitError =
@@ -1084,4 +1126,5 @@ module.exports = {
   getMarketplaceId,
   loadUseAwsSignatureConfig,
   getUseAwsSignature,
+  isExpiredAccessTokenError,
 };
