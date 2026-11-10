@@ -366,7 +366,7 @@ integrationTest(
           'SELECT COUNT(*) AS count FROM information_schema.tables WHERE table_schema = ?',
           [competitorDatabase],
         );
-        assert.equal(Number(mainTableCount.count), 21);
+        assert.equal(Number(mainTableCount.count), 23);
         assert.equal(Number(competitorTableCount.count), 4);
 
         const [[backupConfigCount]] = await mysqlConnection.query(

@@ -98,6 +98,43 @@ test('init parser 与相同 metadata 比较无差异', () => {
   assert.deepEqual(compareSchemas(expected, actual), []);
 });
 
+test('毫秒时间戳默认值与 MySQL metadata 一致且精度漂移可识别', async () => {
+  const expected = parseInitSchema(initSql);
+  const updatedAt = expected.tables
+    .get('variant_group_split_state')
+    .columns.get('updated_at');
+  assert.equal(updatedAt.default, 'CURRENT_TIMESTAMP(3)');
+  const query = metadataQuery(expected);
+  const result = await auditSchemas({
+    target: 'main',
+    queryOverrides: {
+      main: async (sql) => {
+        const rows = await query(sql);
+        for (const row of rows) {
+          if (
+            row.TABLE_NAME === 'variant_group_split_state' &&
+            row.COLUMN_NAME === 'updated_at'
+          )
+            row.COLUMN_DEFAULT = 'current_timestamp(3)';
+        }
+        return rows;
+      },
+    },
+  });
+  assert.equal(result.status, 'ok', JSON.stringify(result));
+  const drifted = parseInitSchema(
+    initSql.replaceAll(
+      'DEFAULT CURRENT_TIMESTAMP(3)',
+      'DEFAULT CURRENT_TIMESTAMP(2)',
+    ),
+  );
+  assert.ok(
+    compareSchemas(expected, drifted).some(
+      (difference) => difference.kind === 'column_default',
+    ),
+  );
+});
+
 test('生成表达式保留字符串的大小写和空格，仍归一化 SQL 语法', () => {
   const expected = parseInitSchema(initSql);
   const drifted = parseInitSchema(initSql.replaceAll('%H:00:00', '%h:00:00'));
