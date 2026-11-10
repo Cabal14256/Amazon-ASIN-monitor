@@ -173,7 +173,9 @@ function normalizeBatchDeleteTaskResult(result = {}, extra = {}) {
     deletedNestedAsinCount,
     skippedCount,
     failedCount,
-    summary: `共 ${total} 项，删除变体组 ${deletedGroupCount} 个，直接删除 ASIN ${deletedDirectAsinCount} 个，组内级联 ASIN ${deletedNestedAsinCount} 个，跳过 ${skippedCount} 个`,
+    summary: `共 ${total} 项，删除变体组 ${deletedGroupCount} 个，直接删除 ASIN ${deletedDirectAsinCount} 个，组内级联 ASIN ${deletedNestedAsinCount} 个，跳过 ${skippedCount} 个${
+      failedCount > 0 ? `，失败分块 ${failedCount} 个` : ''
+    }`,
     verificationPassed: failedCount === 0,
     warnings,
   });
