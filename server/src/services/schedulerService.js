@@ -1,6 +1,7 @@
 const cron = require('node-cron');
 const logger = require('../utils/logger');
 const monitorTaskQueue = require('./monitorTaskQueue');
+const monitorEuTaskQueue = require('./monitorEuTaskQueue');
 const competitorMonitorTaskQueue = require('./competitorMonitorTaskQueue');
 const {
   getCountriesToCheck,
@@ -199,21 +200,17 @@ function runEUMonitorSchedule() {
       logger.info(
         `[定时任务] 标准监控（EU）当前批次: ${batchIndex + 1}/${TOTAL_BATCHES}`,
       );
-      // 按顺序依次加入队列，每个国家单独一个任务
-      orderedEuCountries.forEach((country, index) => {
-        setTimeout(() => {
-          monitorTaskQueue.enqueue([country], {
-            batchIndex,
-            totalBatches: TOTAL_BATCHES,
-          });
-        }, index * 1000); // 每个国家间隔1秒加入队列
-      });
+      monitorEuTaskQueue.enqueue(
+        orderedEuCountries,
+        {
+          batchIndex,
+          totalBatches: TOTAL_BATCHES,
+        },
+        { requestedAt: now.toISOString() },
+      );
     } else {
-      // 不分批，按顺序依次加入队列
-      orderedEuCountries.forEach((country, index) => {
-        setTimeout(() => {
-          monitorTaskQueue.enqueue([country]);
-        }, index * 1000); // 每个国家间隔1秒加入队列
+      monitorEuTaskQueue.enqueue(orderedEuCountries, null, {
+        requestedAt: now.toISOString(),
       });
     }
   }
@@ -327,7 +324,11 @@ function initScheduler() {
 
   if (!schedulerQueueWatchdog) {
     schedulerQueueWatchdog = startQueueConnectionWatchdog(
-      [monitorTaskQueue.queue, competitorMonitorTaskQueue.queue],
+      [
+        monitorTaskQueue.queue,
+        monitorEuTaskQueue.queue,
+        competitorMonitorTaskQueue.queue,
+      ],
       {
         scope: 'Scheduler',
         onUnhealthy: () => {
