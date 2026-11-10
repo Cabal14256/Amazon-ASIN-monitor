@@ -36,7 +36,7 @@
 
 部署步骤：
 
-1. 已有主营库先备份并在测试库验证迁移，再按 [迁移指南](./server/database/MIGRATION.md) 依次应用 `032`、`033`（已应用的迁移无需重复执行）；新装 `init.sql` 已包含所需结构。`033` 添加组基准与拆分事件存储，不回填生产监控历史大表。
+1. 已有主营库先备份并在测试库验证迁移，再按 [迁移指南](./server/database/MIGRATION.md) 依次应用 `active/20260930_006_feishu_emergency.sql`、`active/20260930_007_variant_split_tracking.sql`（已应用的迁移无需重复执行）；新装 `init.sql` 已包含所需结构。后者添加组基准与拆分事件存储，不回填生产监控历史大表。
 2. 创建飞书企业自建应用并开启机器人能力，开通发送机器人消息权限 `im:message:send_as_bot` 和电话加急权限 `im:message.urgent:phone`，发布应用版本并保证联系人在应用可用范围内。电话加急消耗企业加急额度；具体限制见 [飞书电话加急文档](https://open.feishu.cn/document/uAjLw4CM/ukTMukTMukTM/reference/im-v1/message/urgent_phone)。
 3. API 与 Worker 环境均设置 `FEISHU_APP_ID`、`FEISHU_APP_SECRET` 并重启。凭据仅保存在服务端环境，不通过设置接口返回。
 4. 在飞书配置中启用区域通知、填写群 Webhook，再设置时间模式、阈值、冷却时间及最多 10 位联系人的应用 `open_id`（以 `ou_` 开头，不是手机号），启用电话加急并保存。
