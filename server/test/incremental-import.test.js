@@ -670,6 +670,55 @@ test('无效行保留原始行号，其他行仍可进入预览', async () => {
 });
 
 for (const mode of ['standard', 'competitor']) {
+  test(`${mode} 重复行剔除后重新阻断数据库和文件内最终目标碰撞`, async () => {
+    for (const collisionInFile of [false, true]) {
+      const collision = group({
+        id: 'collision',
+        name: collisionInFile ? '另名' : '组新名',
+      });
+      const db = fakeDatabase({
+        mode,
+        groups: [group(), collision, group({ id: 'third', name: '第三组' })],
+      });
+      const entries = [
+        {
+          groupId: 'group-old',
+          groupName: '组新名',
+          brand: '品牌 B',
+          asin: 'B000000031',
+        },
+        {
+          groupId: 'group-old',
+          groupName: '组新名',
+          brand: '',
+          asin: 'B000000032',
+        },
+        { groupId: 'third', groupName: '第三组', asin: 'B000000031' },
+      ];
+      if (collisionInFile)
+        entries.push({
+          groupId: 'collision',
+          groupName: '组新名',
+          asin: 'B000000033',
+        });
+      const file = transactionFile(mode, entries);
+      const preview = await createIncrementalPreview(file, { mode, db });
+      assert.equal(preview.summary.updatedGroupCount, 0);
+      assert.equal(preview.summary.createdGroupCount, 0);
+      assert.equal(preview.summary.createdCount, 0);
+      assert.equal(preview.summary.failedCount, entries.length);
+      await applyIncrementalImport(file, {
+        mode,
+        db,
+        previewId: `final-collision-${mode}-${collisionInFile}`,
+        expectedDigest: preview.digest,
+      });
+      assert.equal(db.state.groups[0].name, '原组');
+      assert.equal(db.state.groups[1].name, collision.name);
+      assert.equal(db.state.asins.length, 0);
+    }
+  });
+
   test(`${mode} 错误显式行不会遮蔽有效更名的数据库碰撞目标`, async () => {
     for (const invalidFirst of [true, false]) {
       const db = fakeDatabase({

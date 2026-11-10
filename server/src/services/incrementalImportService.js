@@ -337,6 +337,53 @@ function planIncrementalImport(
       activeByGroup.set(entry.groupKey, []);
     activeByGroup.get(entry.groupKey).push(entry);
   }
+  function finalGroupTarget(groupEntries) {
+    const first = groupEntries[0];
+    const target = first.group
+      ? pickGroup(first.group, withSite)
+      : {
+          id: null,
+          name: first.input.groupName,
+          country: first.input.country,
+          ...(withSite ? { site: first.input.site } : {}),
+          brand: first.input.brand,
+        };
+    for (const entry of groupEntries) {
+      if (!entry.input.groupId) continue;
+      if (entry.input.groupName) target.name = entry.input.groupName;
+      if (withSite && entry.input.site) target.site = entry.input.site;
+      if (entry.input.brand) target.brand = entry.input.brand;
+    }
+    return target;
+  }
+  const finalTargetsByNatural = new Map();
+  const rejectedGroups = new Set();
+  for (const [key, groupEntries] of activeByGroup) {
+    const target = finalGroupTarget(groupEntries);
+    const natural = groupNaturalKey(target, withSite);
+    const current = groupEntries[0].group;
+    const changed = !current || natural !== groupNaturalKey(current, withSite);
+    if (!finalTargetsByNatural.has(natural))
+      finalTargetsByNatural.set(natural, []);
+    finalTargetsByNatural.get(natural).push({ key, changed });
+    if (
+      changed &&
+      (groupByNatural.get(natural) || []).some(
+        (group) => group.id !== current?.id,
+      )
+    )
+      rejectedGroups.add(key);
+  }
+  for (const matches of finalTargetsByNatural.values()) {
+    if (matches.length > 1)
+      for (const match of matches)
+        if (match.changed) rejectedGroups.add(match.key);
+  }
+  for (const key of rejectedGroups) {
+    for (const entry of activeByGroup.get(key))
+      entry.errors.push('有效行的最终变体组属性与数据库或文件中其他组冲突');
+    activeByGroup.delete(key);
+  }
   const groupTargets = new Map();
   const operations = {
     groupCreates: [],
@@ -347,29 +394,7 @@ function planIncrementalImport(
   for (const [key, groupEntries] of activeByGroup) {
     const first = groupEntries[0];
     const current = first.group;
-    const target = current
-      ? pickGroup(current, withSite)
-      : {
-          id: null,
-          name: first.input.groupName,
-          country: first.input.country,
-          ...(withSite ? { site: first.input.site } : {}),
-          brand: first.input.brand,
-        };
-    if (current && groupEntries.some((entry) => entry.input.groupId)) {
-      const specified = {};
-      for (const entry of groupEntries) {
-        if (!entry.input.groupId) continue;
-        for (const field of withSite
-          ? ['groupName', 'site', 'brand']
-          : ['groupName', 'brand']) {
-          if (entry.input[field]) specified[field] = entry.input[field];
-        }
-      }
-      if (specified.groupName) target.name = specified.groupName;
-      if (specified.site && withSite) target.site = specified.site;
-      if (specified.brand) target.brand = specified.brand;
-    }
+    const target = finalGroupTarget(groupEntries);
     groupTargets.set(key, target);
     if (!current) {
       operations.groupCreates.push({ key, ...target });
