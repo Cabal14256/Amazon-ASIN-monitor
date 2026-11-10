@@ -555,15 +555,42 @@ async function loadSnapshots(parsed, config, query, { lock = false } = {}) {
   for (const [id, rows] of explicitRows) {
     const existing = groups.get(id);
     if (!existing) continue;
-    const desired = {
-      groupName: rows.find((row) => row.groupName)?.groupName || existing.name,
-      country: existing.country,
-      ...(config.withSite
-        ? { site: rows.find((row) => row.site)?.site || existing.site }
-        : {}),
-      brand: rows.find((row) => row.brand)?.brand || existing.brand,
-    };
-    naturalRows.set(groupNaturalKey(desired, config.withSite), desired);
+    const usable = rows.filter(
+      (row) =>
+        !row.errors?.length &&
+        row.country === String(existing.country).toUpperCase(),
+    );
+    if (!usable.length) continue;
+    const fields = config.withSite
+      ? ['groupName', 'site', 'brand']
+      : ['groupName', 'brand'];
+    let targets = [
+      {
+        groupName: existing.name,
+        country: existing.country,
+        site: existing.site,
+        brand: existing.brand,
+      },
+    ];
+    for (const field of fields) {
+      const values = [
+        ...new Set(usable.map((row) => row[field]).filter(Boolean)),
+      ];
+      // Conflicting explicit attributes are rejected by the planner.
+      if (values.length > 1) {
+        targets = [];
+        break;
+      }
+      // Duplicate-ASIN rejection can remove the row supplying an optional
+      // attribute. Lock both its desired value and the existing fallback key.
+      if (values.length)
+        targets = targets.flatMap((target) => [
+          target,
+          { ...target, [field]: values[0] },
+        ]);
+    }
+    for (const desired of targets)
+      naturalRows.set(groupNaturalKey(desired, config.withSite), desired);
   }
   for (const batch of batches([...naturalRows.values()])) {
     const predicate = config.withSite

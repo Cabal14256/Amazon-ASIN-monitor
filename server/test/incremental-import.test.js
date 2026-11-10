@@ -670,6 +670,45 @@ test('无效行保留原始行号，其他行仍可进入预览', async () => {
 });
 
 for (const mode of ['standard', 'competitor']) {
+  test(`${mode} 错误显式行不会遮蔽有效更名的数据库碰撞目标`, async () => {
+    for (const invalidFirst of [true, false]) {
+      const db = fakeDatabase({
+        mode,
+        groups: [group(), group({ id: 'collision', name: '组新名' })],
+      });
+      const invalid = {
+        groupId: 'group-old',
+        groupName: '组新名',
+        brand: '错误品牌',
+        asin: 'INVALID',
+      };
+      const valid = {
+        groupId: 'group-old',
+        groupName: '组新名',
+        brand: '',
+        asin: 'B000000021',
+      };
+      const file = transactionFile(
+        mode,
+        invalidFirst ? [invalid, valid] : [valid, invalid],
+      );
+      const preview = await createIncrementalPreview(file, { mode, db });
+      assert.equal(preview.summary.failedCount, 2);
+      assert.equal(preview.summary.updatedGroupCount, 0);
+      await applyIncrementalImport(file, {
+        mode,
+        db,
+        previewId: `collision-${mode}-${invalidFirst}`,
+        expectedDigest: preview.digest,
+      });
+      assert.deepEqual(
+        db.state.groups.map((group) => group.name),
+        ['原组', '组新名'],
+      );
+      assert.equal(db.state.asins.length, 0);
+    }
+  });
+
   test(`${mode} 更名行因重复 ASIN 被拒绝后依赖行不会写入旧组`, async () => {
     const db = fakeDatabase({
       mode,
