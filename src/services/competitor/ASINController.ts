@@ -308,3 +308,39 @@ export async function importCompetitorFromExcel(
     },
   );
 }
+
+/** Compare an uploaded competitor ASIN file with existing records before writing. */
+export async function previewCompetitorImportFromExcel(
+  formData: FormData,
+  options?: { [key: string]: any },
+) {
+  return request<import('../asin/importTypes').ImportPreviewResponse>(
+    '/api/v1/competitor/variant-groups/import-excel/preview',
+    {
+      method: 'POST',
+      data: formData,
+      requestType: 'form',
+      headers: {},
+      ...(options || {}),
+    },
+  );
+}
+
+export async function getCompetitorImportPreview(
+  previewId: string,
+  params: { page: number; pageSize: number },
+) {
+  return request<import('../asin/importTypes').ImportPreviewResponse>(
+    `/api/v1/competitor/variant-groups/import-excel/preview/${encodeURIComponent(
+      previewId,
+    )}`,
+    { method: 'GET', params },
+  );
+}
+
+export async function confirmCompetitorImportPreview(previewId: string) {
+  return request<import('../asin/importTypes').ImportConfirmResponse>(
+    '/api/v1/competitor/variant-groups/import-excel/confirm',
+    { method: 'POST', data: { previewId } },
+  );
+}

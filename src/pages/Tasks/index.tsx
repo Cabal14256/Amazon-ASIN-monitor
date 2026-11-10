@@ -63,6 +63,13 @@ type StructuredTaskResult = {
   successCount?: number;
   failedCount?: number;
   missingCount?: number;
+  createdCount?: number;
+  updatedCount?: number;
+  movedCount?: number;
+  unchangedCount?: number;
+  createdGroupCount?: number;
+  updatedGroupCount?: number;
+  groupOnlyCount?: number;
   errors?: Array<{ row?: number; message?: string }>;
   failedSamples?: Array<{ groupId?: string; error?: string }>;
   deletedGroupCount?: number;
@@ -168,21 +175,30 @@ function getResultSummary(task: TaskRecord) {
   }
 
   const result = task.result || {};
-  if (typeof result.summary === 'string' && result.summary.trim()) {
-    return result.summary;
-  }
-  if (task.taskType === 'export') {
-    return task.filename || result.filename || '文件已生成';
-  }
   if (task.taskType === 'import') {
     const importResult = extractImportResult(task);
     if (!importResult) {
       return task.message || '导入已完成';
     }
+    if (importResult.incremental) {
+      return `新增 ${importResult.createdCount || 0}，更新 ${
+        importResult.updatedCount || 0
+      }（含移动 ${importResult.movedCount || 0}），未变化 ${
+        importResult.unchangedCount || 0
+      }，跳过 ${importResult.failedCount}；组新增 ${
+        importResult.createdGroupCount || 0
+      }，组更新 ${importResult.updatedGroupCount || 0}`;
+    }
     const summary = `总计 ${importResult.total}，成功 ${importResult.successCount}，失败 ${importResult.failedCount}`;
     return importResult.missingCount > 0
       ? `${summary}，缺失 ${importResult.missingCount}`
       : summary;
+  }
+  if (typeof result.summary === 'string' && result.summary.trim()) {
+    return result.summary;
+  }
+  if (task.taskType === 'export') {
+    return task.filename || result.filename || '文件已生成';
   }
   if (task.taskType === 'batch-check') {
     return `成功 ${result.successCount || 0}，失败 ${result.failedCount || 0}`;
@@ -259,7 +275,10 @@ const TaskCenterPage: React.FC = () => {
   );
 
   const detailImportResult = useMemo(
-    () => extractImportResult(detailTask),
+    () =>
+      detailTask?.taskType === 'import'
+        ? extractImportResult(detailTask)
+        : null,
     [detailTask],
   );
   const detailResult = useMemo(
@@ -518,10 +537,20 @@ const TaskCenterPage: React.FC = () => {
                         : 'warning'
                     }
                     showIcon
-                    message={`导入结果：总计 ${detailImportResult.total} 条，成功 ${detailImportResult.successCount} 条，失败 ${detailImportResult.failedCount} 条`}
+                    message={
+                      detailImportResult.incremental
+                        ? getResultSummary(detailTask)
+                        : `导入结果：总计 ${detailImportResult.total} 条，成功 ${detailImportResult.successCount} 条，失败 ${detailImportResult.failedCount} 条`
+                    }
                     description={
                       detailImportResult.verificationPassed
-                        ? '后台结果已校验：成功数 + 失败数与总计一致。'
+                        ? detailImportResult.incremental
+                          ? `后台结果已校验：${
+                              detailImportResult.processedCount
+                            }/${detailImportResult.total} 行已分类，空组行 ${
+                              detailImportResult.groupOnlyCount || 0
+                            }。`
+                          : '后台结果已校验：成功数 + 失败数与总计一致。'
                         : `后台结果校验未通过：仍有 ${detailImportResult.missingCount} 条记录未归类。`
                     }
                   />

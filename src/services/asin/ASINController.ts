@@ -349,3 +349,39 @@ export async function importFromExcel(
     },
   );
 }
+
+/** Compare an uploaded ASIN file with existing records before writing. */
+export async function previewImportFromExcel(
+  formData: FormData,
+  options?: { [key: string]: any },
+) {
+  return request<import('./importTypes').ImportPreviewResponse>(
+    '/api/v1/variant-groups/import-excel/preview',
+    {
+      method: 'POST',
+      data: formData,
+      requestType: 'form',
+      headers: {},
+      ...(options || {}),
+    },
+  );
+}
+
+export async function getImportPreview(
+  previewId: string,
+  params: { page: number; pageSize: number },
+) {
+  return request<import('./importTypes').ImportPreviewResponse>(
+    `/api/v1/variant-groups/import-excel/preview/${encodeURIComponent(
+      previewId,
+    )}`,
+    { method: 'GET', params },
+  );
+}
+
+export async function confirmImportPreview(previewId: string) {
+  return request<import('./importTypes').ImportConfirmResponse>(
+    '/api/v1/variant-groups/import-excel/confirm',
+    { method: 'POST', data: { previewId } },
+  );
+}

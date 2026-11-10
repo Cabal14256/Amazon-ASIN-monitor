@@ -2,7 +2,10 @@ const express = require('express');
 const multer = require('multer');
 const router = express.Router();
 const competitorAsinController = require('../controllers/competitorAsinController');
+const incrementalImportController = require('../controllers/incrementalImportController');
 const { authenticateToken, checkPermission } = require('../middleware/auth');
+const incrementalImport =
+  incrementalImportController.handlersForMode('competitor');
 
 router.use(authenticateToken);
 
@@ -110,6 +113,40 @@ router.put(
 );
 
 // Excel导入路由
+router.post(
+  '/competitor/variant-groups/import-excel/preview',
+  checkPermission('asin:write'),
+  (req, res, next) => {
+    upload.single('file')(req, res, (error) => {
+      if (error) {
+        return res.status(400).json({
+          success: false,
+          errorMessage: error.message || '文件上传失败',
+          errorCode: 400,
+        });
+      }
+      if (!req.file) {
+        return res.status(400).json({
+          success: false,
+          errorMessage: '请上传文件',
+          errorCode: 400,
+        });
+      }
+      return next();
+    });
+  },
+  incrementalImport.preview,
+);
+router.get(
+  '/competitor/variant-groups/import-excel/preview/:previewId',
+  checkPermission('asin:write'),
+  incrementalImport.readPreview,
+);
+router.post(
+  '/competitor/variant-groups/import-excel/confirm',
+  checkPermission('asin:write'),
+  incrementalImport.confirm,
+);
 router.post(
   '/competitor/variant-groups/import-excel',
   checkPermission('asin:write'),

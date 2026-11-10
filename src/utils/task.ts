@@ -41,6 +41,14 @@ export interface AsyncImportResult {
   failedCount: number;
   missingCount: number;
   verificationPassed: boolean;
+  incremental: boolean;
+  createdCount?: number;
+  updatedCount?: number;
+  movedCount?: number;
+  unchangedCount?: number;
+  createdGroupCount?: number;
+  updatedGroupCount?: number;
+  groupOnlyCount?: number;
   errors?: Array<{ row?: number; message: string }>;
 }
 
@@ -144,11 +152,24 @@ export function extractImportResult(payload: any): AsyncImportResult | null {
     return null;
   }
 
-  const successCount = toNumber(raw.successCount);
+  const incremental =
+    typeof raw.createdCount === 'number' ||
+    typeof raw.updatedCount === 'number' ||
+    typeof raw.unchangedCount === 'number';
   const failedCount = toNumber(raw.failedCount);
-  const processedCount =
-    toNumber(raw.processedCount, successCount + failedCount) ||
-    successCount + failedCount;
+  const successCount = toNumber(
+    raw.successCount,
+    incremental
+      ? toNumber(raw.createdCount) +
+          toNumber(raw.updatedCount) +
+          toNumber(raw.unchangedCount) +
+          toNumber(raw.groupOnlyCount)
+      : 0,
+  );
+  const processedCount = toNumber(
+    raw.processedCount,
+    successCount + failedCount,
+  );
   const total = Math.max(toNumber(raw.total, processedCount), processedCount);
   const missingCount = Math.max(
     toNumber(raw.missingCount, total - processedCount),
@@ -166,6 +187,18 @@ export function extractImportResult(payload: any): AsyncImportResult | null {
     failedCount,
     missingCount,
     verificationPassed,
+    incremental,
+    createdCount: incremental ? toNumber(raw.createdCount) : undefined,
+    updatedCount: incremental ? toNumber(raw.updatedCount) : undefined,
+    movedCount: incremental ? toNumber(raw.movedCount) : undefined,
+    unchangedCount: incremental ? toNumber(raw.unchangedCount) : undefined,
+    createdGroupCount: incremental
+      ? toNumber(raw.createdGroupCount)
+      : undefined,
+    updatedGroupCount: incremental
+      ? toNumber(raw.updatedGroupCount)
+      : undefined,
+    groupOnlyCount: incremental ? toNumber(raw.groupOnlyCount) : undefined,
     errors: Array.isArray(raw.errors)
       ? raw.errors
           .filter(
@@ -209,7 +242,11 @@ function buildTaskError(task: AsyncTaskStatus) {
     task.error ||
     task.message ||
     (task.status === 'cancelled' ? '任务已取消' : '任务执行失败');
-  return new Error(message);
+  const error = new Error(message) as Error & {
+    taskStatus: 'failed' | 'cancelled';
+  };
+  error.taskStatus = task.status === 'cancelled' ? 'cancelled' : 'failed';
+  return error;
 }
 
 export async function waitForTaskResult(
@@ -272,12 +309,9 @@ export async function waitForTaskResult(
 
   const refreshAndResolve = async () => {
     const latestTask = await fetchTaskStatus(taskId);
-    const terminalTask = settleWithTask(latestTask);
-    if (terminalTask) {
-      cleanup();
-      return terminalTask;
-    }
-    return null;
+    // A WebSocket refresh only updates the snapshot. The polling loop owns
+    // completion of this promise, so it must stay active after this refresh.
+    settleWithTask(latestTask);
   };
 
   try {

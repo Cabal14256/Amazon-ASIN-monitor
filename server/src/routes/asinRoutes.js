@@ -1,8 +1,11 @@
 const express = require('express');
 const router = express.Router();
 const asinController = require('../controllers/asinController');
+const incrementalImportController = require('../controllers/incrementalImportController');
 const upload = require('../middleware/fileUpload');
 const { authenticateToken, checkPermission } = require('../middleware/auth');
+const incrementalImport =
+  incrementalImportController.handlersForMode('standard');
 
 // 文件上传验证中间件（检查文件是否存在）
 const validateFileUpload = (req, res, next) => {
@@ -62,6 +65,25 @@ router.put(
 );
 
 // Excel导入路由
+router.post(
+  '/variant-groups/import-excel/preview',
+  authenticateToken,
+  checkPermission('asin:write'),
+  incrementalImportController.receiveImportFile,
+  incrementalImport.preview,
+);
+router.get(
+  '/variant-groups/import-excel/preview/:previewId',
+  authenticateToken,
+  checkPermission('asin:write'),
+  incrementalImport.readPreview,
+);
+router.post(
+  '/variant-groups/import-excel/confirm',
+  authenticateToken,
+  checkPermission('asin:write'),
+  incrementalImport.confirm,
+);
 router.post(
   '/variant-groups/import-excel',
   authenticateToken,

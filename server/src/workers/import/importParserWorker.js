@@ -1,5 +1,8 @@
 const { parentPort } = require('worker_threads');
-const { parseImportFile } = require('../../services/importParserService');
+const {
+  parseImportFile,
+  parseIncrementalImportFile,
+} = require('../../services/importParserService');
 
 if (!parentPort) {
   throw new Error('导入解析 Worker 缺少 parentPort');
@@ -9,7 +12,11 @@ parentPort.on('message', async (message) => {
   const { requestId, payload } = message || {};
 
   try {
-    const result = await parseImportFile(payload?.file || {}, {
+    const parse =
+      payload?.kind === 'incremental'
+        ? parseIncrementalImportFile
+        : parseImportFile;
+    const result = await parse(payload?.file || {}, {
       mode: payload?.mode || 'standard',
     });
     parentPort.postMessage({
