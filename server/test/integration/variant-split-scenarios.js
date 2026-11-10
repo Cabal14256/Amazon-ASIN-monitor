@@ -130,7 +130,7 @@ module.exports = async function testVariantSplit({
         .readFileSync(
           path.join(
             __dirname,
-            '../../database/migrations/033_add_variant_split_tracking.sql',
+            '../../database/migrations/active/20260930_007_variant_split_tracking.sql',
           ),
           'utf8',
         )
