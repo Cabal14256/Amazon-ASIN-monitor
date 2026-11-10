@@ -225,15 +225,19 @@ function buildIndexSignature(index) {
 }
 
 function buildForeignKeySignature(foreignKey, localSchema) {
+  const normalizeRule = (rule) =>
+    !rule || rule.toUpperCase() === 'NO ACTION'
+      ? 'RESTRICT'
+      : rule.toUpperCase();
   const referencedSchema =
     foreignKey.referencedSchema === localSchema
       ? '<local>'
       : foreignKey.referencedSchema;
   return `${foreignKey.columns.join(',')}->${referencedSchema}.${
     foreignKey.referencedTable
-  }(${foreignKey.referencedColumns.join(',')}):${foreignKey.deleteRule}:${
-    foreignKey.updateRule
-  }`;
+  }(${foreignKey.referencedColumns.join(',')}):${normalizeRule(
+    foreignKey.deleteRule,
+  )}:${normalizeRule(foreignKey.updateRule)}`;
 }
 
 function isCharacterColumnType(type) {
@@ -668,7 +672,7 @@ function compareSchemas(expected, actual) {
   return differences;
 }
 
-async function auditTarget(target, queryOverride) {
+async function auditTarget(target, queryOverride, sharedDatabase = false) {
   const config = SCHEMA_TARGETS[target];
   if (!config) throw new Error(`不支持的schema审计目标: ${target}`);
   try {
@@ -676,7 +680,15 @@ async function auditTarget(target, queryOverride) {
     const actual = await loadActualSchema(
       queryOverride || config.database.query,
     );
-    const differences = compareSchemas(expected, actual);
+    const peer = target === 'main' ? 'competitor' : 'main';
+    const peerTables = sharedDatabase
+      ? parseInitSchema(fs.readFileSync(SCHEMA_TARGETS[peer].initPath, 'utf8'))
+          .tables
+      : new Map();
+    const differences = compareSchemas(expected, actual).filter(
+      (difference) =>
+        difference.kind !== 'extra_table' || !peerTables.has(difference.table),
+    );
     return {
       status: differences.length === 0 ? 'ok' : 'degraded',
       database: actual.databaseName,
@@ -694,12 +706,43 @@ async function auditTarget(target, queryOverride) {
   }
 }
 
-async function auditSchemas({ target = 'all', queryOverrides = {} } = {}) {
+function usesSharedDatabase() {
+  return ['HOST', 'PORT', 'NAME'].every((key) => {
+    const defaults = {
+      HOST: 'localhost',
+      PORT: '3306',
+      NAME: 'amazon_asin_monitor',
+    };
+    const main = process.env[`DB_${key}`] || defaults[key];
+    const competitor = process.env[`COMPETITOR_DB_${key}`] || main;
+    return String(main) === String(competitor);
+  });
+}
+
+async function auditSchemas({
+  target = 'all',
+  queryOverrides = {},
+  sharedDatabase = usesSharedDatabase(),
+  competitorEnabled,
+} = {}) {
+  if (
+    competitorEnabled === undefined &&
+    !queryOverrides.competitor &&
+    target === 'all'
+  ) {
+    const config = require('../config/competitor-monitor-config');
+    await config.loadCompetitorMonitorConfig();
+    competitorEnabled = config.isCompetitorMonitorEnabled();
+  }
   const targets = target === 'all' ? ['main', 'competitor'] : [target];
   const checkedAt = new Date().toISOString();
   const next = { ...cachedAudit, checkedAt };
   const results = await Promise.all(
-    targets.map((item) => auditTarget(item, queryOverrides[item])),
+    targets.map((item) =>
+      item === 'competitor' && competitorEnabled === false
+        ? { status: 'skipped', differenceCount: 0, differences: [] }
+        : auditTarget(item, queryOverrides[item], sharedDatabase),
+    ),
   );
   targets.forEach((item, index) => {
     next[item] = results[index];

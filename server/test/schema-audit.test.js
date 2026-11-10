@@ -97,6 +97,67 @@ test('init parser 与相同 metadata 比较无差异', () => {
   assert.deepEqual(compareSchemas(expected, actual), []);
 });
 
+test('外键省略动作、NO ACTION 与 MySQL RESTRICT 等价', () => {
+  const expected = parseInitSchema(initSql);
+  const actual = parseInitSchema(initSql);
+  for (const table of actual.tables.values()) {
+    for (const key of table.foreignKeys) {
+      if (key.updateRule === 'NO ACTION') key.updateRule = 'RESTRICT';
+      if (key.deleteRule === 'NO ACTION') key.deleteRule = 'RESTRICT';
+    }
+  }
+  assert.deepEqual(compareSchemas(expected, actual), []);
+});
+
+test('共享数据库分别审计两个域，竞品关闭时允许仅主营表', async () => {
+  const main = parseInitSchema(initSql);
+  const competitor = parseInitSchema(competitorInitSql);
+  const shared = {
+    ...main,
+    tables: new Map([...main.tables, ...competitor.tables]),
+  };
+  for (const table of competitor.tables.values()) {
+    for (const key of table.foreignKeys)
+      key.referencedSchema = main.databaseName;
+  }
+  const result = await auditSchemas({
+    sharedDatabase: true,
+    competitorEnabled: true,
+    queryOverrides: {
+      main: metadataQuery(shared),
+      competitor: metadataQuery(shared),
+    },
+  });
+  assert.equal(result.status, 'ok');
+  const disabled = await auditSchemas({
+    sharedDatabase: true,
+    competitorEnabled: false,
+    queryOverrides: {
+      main: metadataQuery(main),
+      competitor: async () => {
+        throw new Error('disabled database queried');
+      },
+    },
+  });
+  assert.equal(disabled.status, 'ok');
+  assert.equal(disabled.competitor.status, 'skipped');
+  shared.tables.set('unexpected_business_table', {
+    name: 'unexpected_business_table',
+    columns: new Map(),
+    indexes: [],
+    foreignKeys: [],
+  });
+  const drift = await auditSchemas({
+    sharedDatabase: true,
+    competitorEnabled: true,
+    queryOverrides: {
+      main: metadataQuery(shared),
+      competitor: metadataQuery(shared),
+    },
+  });
+  assert.equal(drift.status, 'degraded');
+});
+
 test('审计比较列、索引、外键并忽略运维备份表', () => {
   const expected = parseInitSchema(initSql);
   const actual = parseInitSchema(initSql);

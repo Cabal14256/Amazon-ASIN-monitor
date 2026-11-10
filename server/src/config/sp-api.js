@@ -6,6 +6,10 @@ const logger = require('../utils/logger');
 const responseAnalyzer = require('../services/spApiResponseAnalyzer');
 const rateLimiter = require('../services/rateLimiter');
 const spApiScheduler = require('../services/spApiScheduler');
+const {
+  attachHttpRequestTimeout,
+  getHttpRequestTimeoutMs,
+} = require('../utils/httpRequestTimeout');
 
 // 创建全局HTTP连接池（keep-alive）
 const httpsAgent = new https.Agent({
@@ -307,12 +311,14 @@ async function requestAccessTokenOnce(normalizedRegion, regionConfig) {
   logger.info(`[getAccessToken] 正在获取 ${normalizedRegion} 区域访问令牌...`);
 
   return new Promise((resolve, reject) => {
+    let stopTimeout = () => {};
     const req = https.request(options, (res) => {
       let data = '';
       res.on('data', (chunk) => {
         data += chunk;
       });
       res.on('end', () => {
+        stopTimeout();
         if (res.statusCode === 200) {
           try {
             const response = JSON.parse(data);
@@ -355,7 +361,16 @@ async function requestAccessTokenOnce(normalizedRegion, regionConfig) {
       });
     });
 
+    stopTimeout = attachHttpRequestTimeout(req, {
+      timeoutMs: getHttpRequestTimeoutMs(),
+      label: `LWA ${normalizedRegion} token request`,
+      onTimeout: (error) => {
+        req.destroy(error);
+        reject(error);
+      },
+    });
     req.on('error', (error) => {
+      stopTimeout();
       reject(error);
     });
 
@@ -495,6 +510,29 @@ function clearAccessTokenCache() {
   Object.keys(ACCESS_TOKEN_CACHE).forEach((region) => {
     ACCESS_TOKEN_CACHE[region] = null;
   });
+}
+
+function isExpiredAccessTokenError(error) {
+  const statusCode = Number(error?.statusCode);
+  if (statusCode !== 401 && statusCode !== 403) {
+    return false;
+  }
+
+  const responseText = [
+    error?.message,
+    error?.responseData,
+    error?.responseBody,
+    error?.errorCode,
+  ]
+    .filter(Boolean)
+    .join(' ')
+    .toLowerCase();
+
+  return (
+    responseText.includes('unauthorized') ||
+    (responseText.includes('token') &&
+      (responseText.includes('expired') || responseText.includes('invalid')))
+  );
 }
 
 function normalizeRegion(region) {
@@ -718,6 +756,7 @@ async function callSPAPIInternal(
   });
 
   return new Promise((resolve, reject) => {
+    let stopTimeout = () => {};
     const options = {
       hostname: urlObj.hostname,
       path: urlObj.pathname + (urlObj.search || ''),
@@ -732,6 +771,7 @@ async function callSPAPIInternal(
         data += chunk;
       });
       res.on('end', () => {
+        stopTimeout();
         logger.debug(`[callSPAPI] 响应状态码: ${res.statusCode}`);
         logger.debug(`[callSPAPI] 响应数据长度: ${data ? data.length : 0}`);
 
@@ -885,7 +925,16 @@ async function callSPAPIInternal(
       });
     });
 
+    stopTimeout = attachHttpRequestTimeout(req, {
+      timeoutMs: getHttpRequestTimeoutMs(),
+      label: `SP-API ${method} ${path}`,
+      onTimeout: (error) => {
+        req.destroy(error);
+        reject(error);
+      },
+    });
     req.on('error', (error) => {
+      stopTimeout();
       reject(error);
     });
 
@@ -935,6 +984,7 @@ async function callSPAPI(
     }, scheduleOptions);
 
   let lastError = null;
+  let accessTokenRefreshAttempted = false;
 
   for (let attempt = 0; attempt <= maxRetries; attempt++) {
     try {
@@ -951,6 +1001,24 @@ async function callSPAPI(
       return result;
     } catch (error) {
       lastError = error;
+
+      if (
+        !accessTokenRefreshAttempted &&
+        attempt < maxRetries &&
+        isExpiredAccessTokenError(error)
+      ) {
+        accessTokenRefreshAttempted = true;
+        clearAccessTokenCache();
+        logger.warn(
+          `[callSPAPI] ${region} 区域访问令牌已被 SP-API 拒绝，清除缓存并重载配置后重试`,
+          {
+            statusCode: error.statusCode || null,
+            errorCode: error.errorCode || null,
+          },
+        );
+        await reloadSPAPIConfig();
+        continue;
+      }
 
       // 检查是否是 429 或 QuotaExceeded 错误
       const isRateLimitError =
@@ -1058,4 +1126,5 @@ module.exports = {
   getMarketplaceId,
   loadUseAwsSignatureConfig,
   getUseAwsSignature,
+  isExpiredAccessTokenError,
 };

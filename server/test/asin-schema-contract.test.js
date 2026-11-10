@@ -3,6 +3,18 @@ const fs = require('node:fs');
 const path = require('node:path');
 const test = require('node:test');
 const mainDatabase = require('../src/config/database');
+const { parseInitSchema } = require('../src/services/schemaAuditService');
+const canonicalSchemas = [
+  parseInitSchema(
+    fs.readFileSync(path.join(__dirname, '../database/init.sql'), 'utf8'),
+  ),
+  parseInitSchema(
+    fs.readFileSync(
+      path.join(__dirname, '../database/competitor-init.sql'),
+      'utf8',
+    ),
+  ),
+];
 const { closeRedis } = require('../src/config/redis');
 const {
   ASIN_INSERT_COLUMNS,
@@ -20,6 +32,11 @@ function column(name, tableName = 'asins', overrides = {}) {
   return {
     TABLE_NAME: tableName,
     COLUMN_NAME: name,
+    COLUMN_TYPE:
+      canonicalSchemas
+        .find((schema) => schema.tables.has(tableName))
+        ?.tables.get(tableName)
+        .columns.get(name)?.type || 'text',
     IS_NULLABLE: 'YES',
     COLUMN_DEFAULT: null,
     EXTRA: '',
@@ -103,6 +120,49 @@ test('schema 契约拒绝目标表及 INSERT 列缺失', async () => {
       return true;
     });
   });
+});
+
+test('schema 类型漂移在创建组前失败，报告缩短的 ASIN 及错误数值类型', async () => {
+  for (const [field, type] of [
+    ['asin', 'varchar(5)'],
+    ['is_broken', 'datetime'],
+  ]) {
+    const columns = compatibleMainColumns();
+    columns.find(
+      (column) => column.TABLE_NAME === 'asins' && column.COLUMN_NAME === field,
+    ).COLUMN_TYPE = type;
+    let transactionStarted = false;
+    await withMainDatabaseStubs(
+      {
+        query: async () => columns,
+        withTransaction: async () => {
+          transactionStarted = true;
+        },
+      },
+      async () => {
+        await assert.rejects(
+          batchCreateASINs({
+            items: [
+              {
+                asin: 'B000000001',
+                country: 'US',
+                site: '12',
+                brand: 'Brand',
+                parentId: 'group-1',
+              },
+            ],
+            clearCache: false,
+          }),
+          (error) => {
+            assert.equal(error.code, ASIN_SCHEMA_CONTRACT_ERROR_CODE);
+            assert.deepEqual(error.details.incompatibleTypeColumns, [field]);
+            return true;
+          },
+        );
+        assert.equal(transactionStarted, false);
+      },
+    );
+  }
 });
 
 test('schema 契约单独报告缺失的 INSERT 列', async () => {

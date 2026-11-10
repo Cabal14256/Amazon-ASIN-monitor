@@ -441,6 +441,8 @@ integrationTest(
              DROP INDEX ix_asins_parent_lookup,
              ADD INDEX ix_asins_parent_lookup (parent_asin, country),
              ADD INDEX idx_asins_asin (asin),
+             DROP INDEX idx_asin,
+             ADD INDEX idx_asin (name),
              ADD INDEX idx_asins_variant_group_id (variant_group_id),
              MODIFY COLUMN asin VARCHAR(20)
                CHARACTER SET utf8mb4 COLLATE utf8mb4_bin NOT NULL`,

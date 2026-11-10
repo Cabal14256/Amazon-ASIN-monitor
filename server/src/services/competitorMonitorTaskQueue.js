@@ -5,6 +5,7 @@ const {
   evaluateScheduledJobFreshness,
   buildScheduledJobId,
 } = require('./monitorQueuePolicy');
+const { getBullQueueSettings } = require('./bullQueueSettings');
 
 // 构建 Redis 连接 URL
 // 支持两种方式：
@@ -52,6 +53,7 @@ const competitorMonitorTaskQueue = new Queue(
   redisUrl,
   {
     prefix: bullPrefix,
+    settings: getBullQueueSettings(),
     defaultJobOptions: {
       attempts: 3,
       backoff: {

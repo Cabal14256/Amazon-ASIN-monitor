@@ -190,7 +190,7 @@ npm --prefix server run monitor-quota
 | `api` | 是 | 由 `SCHEDULER_ENABLED` 控制 | 否 | 生产 API 实例 |
 | `worker` | 否 | 否 | 是 | 生产队列消费者 |
 
-`WORKER_ENABLED_QUEUES` 可限制 Worker 注册的队列，留空或设为 `all` 时注册全部队列。可选队列及并发参数以 [`server/.env.example`](./server/.env.example) 为准。
+`WORKER_ENABLED_QUEUES` 可限制 Worker 注册的队列，留空或设为 `all` 时注册全部队列。`monitor` 会同时启用 US 和 EU 标准监控；也可以使用 `monitor-us`、`monitor-eu` 分别启用区域队列。可选队列及并发参数以 [`server/.env.example`](./server/.env.example) 为准。
 
 生产环境需要注意：
 

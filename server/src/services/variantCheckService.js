@@ -21,6 +21,10 @@ const {
   buildASINNotFoundResult,
   isCatalogItemNotFoundError,
 } = require('../utils/spApiError');
+const {
+  applyParentTitleGate,
+  hasConcreteTitle,
+} = require('../utils/variantTitle');
 
 /**
  * 每次最多同时检查的 ASIN 数（降低并发以减少限流风险）
@@ -44,6 +48,9 @@ let ENABLE_LEGACY_CLIENT_FALLBACK = false;
 
 // 用于去重请求的 Map
 const pendingRequests = new Map();
+// 父体标题查询由正在运行的 ASIN 检查触发，不能再排入同一个并发队列。
+// 该 Map 只合并当前正在执行的父体查询，查询完成后立即移除。
+const pendingParentTitleRequests = new Map();
 const MAX_PENDING_REQUESTS = 1000; // 防止无限增长
 
 /**
@@ -99,13 +106,25 @@ async function getCachedVariantResult(asin, country) {
   if (cached) {
     if (typeof cached === 'string') {
       try {
-        return JSON.parse(cached);
+        const parsed = JSON.parse(cached);
+        if (isVariantResultCacheCompatible(parsed)) {
+          return parsed;
+        }
+        logger.debug(
+          `[getCachedVariantResult] 忽略缺少父体标题校验字段的旧缓存: ${asin} (${country})`,
+        );
+        return null;
       } catch (e) {
         logger.warn(`[getCachedVariantResult] 缓存解析失败: ${e.message}`);
         return null;
       }
     }
-    return cached;
+    if (isVariantResultCacheCompatible(cached)) {
+      return cached;
+    }
+    logger.debug(
+      `[getCachedVariantResult] 忽略缺少父体标题校验字段的旧缓存: ${asin} (${country})`,
+    );
   }
   return null;
 }
@@ -135,6 +154,89 @@ async function setVariantResultCache(asin, country, result, ttlSeconds = 600) {
 function getVariantCacheKey(asin, country) {
   const cleanASIN = asin ? asin.trim().toUpperCase() : asin;
   return `variant:${country}:${cleanASIN}`;
+}
+
+async function resolveParentTitle({
+  parentAsin,
+  currentAsin,
+  currentTitle,
+  country,
+  priority,
+  options = {},
+}) {
+  if (!parentAsin) {
+    return '';
+  }
+
+  if (parentAsin === currentAsin) {
+    return typeof currentTitle === 'string'
+      ? currentTitle
+      : String(currentTitle || '');
+  }
+
+  if (options.skipParentTitleLookup) {
+    return '';
+  }
+
+  const owner = options.owner === 'competitor' ? 'competitor' : 'primary';
+  const parentRequestKey = `${parentAsin}:${country}:${owner}`;
+  let parentRequest;
+
+  try {
+    parentRequest = pendingParentTitleRequests.get(parentRequestKey);
+    if (!parentRequest) {
+      // doCheckASINVariants is intentionally called directly here. Calling
+      // checkASINVariants would enqueue the parent behind the active child
+      // checks and can deadlock when all concurrency slots await that parent.
+      parentRequest = doCheckASINVariants(
+        parentAsin,
+        country,
+        false,
+        priority,
+        {
+          ...options,
+          skipParentTitleLookup: true,
+        },
+      );
+      pendingParentTitleRequests.set(parentRequestKey, parentRequest);
+    }
+
+    const parentResult = await parentRequest;
+    const parentTitle = parentResult?.details?.title;
+    return typeof parentTitle === 'string'
+      ? parentTitle
+      : String(parentTitle || '');
+  } catch (error) {
+    logger.warn(
+      `[checkASINVariants] 获取父体标题失败: ${parentAsin}: ${
+        error.message || error
+      }`,
+    );
+    return '';
+  } finally {
+    if (pendingParentTitleRequests.get(parentRequestKey) === parentRequest) {
+      pendingParentTitleRequests.delete(parentRequestKey);
+    }
+  }
+}
+
+function isVariantResultCacheCompatible(result) {
+  const details = result?.details;
+  const parentAsin = details?.parentAsin;
+
+  // Results created before parent-title validation do not contain this field.
+  // Parentless results do not use the new gate and remain compatible.
+  if (!parentAsin) {
+    return true;
+  }
+
+  if (!Object.prototype.hasOwnProperty.call(details || {}, 'parentTitle')) {
+    return false;
+  }
+
+  // Parent-title validation is required for every cached parent result,
+  // including cached negative results created while the title was empty.
+  return hasConcreteTitle(details.parentTitle);
 }
 
 /**
@@ -611,18 +713,46 @@ async function doCheckASINVariants(
         );
 
         const variantASINs = htmlResult.details.variantAsins || [];
-        const parentASIN = htmlResult.details.parentAsin || null;
-        const hasVariants = htmlResult.hasVariants;
-        const variantCount = variantASINs.length;
+        const parentASIN = htmlResult.details.parentAsin
+          ? String(htmlResult.details.parentAsin).trim().toUpperCase()
+          : null;
+        const currentTitle = String(htmlResult.details.title || '');
+        let parentTitle = '';
+        if (parentASIN && parentASIN === cleanASIN) {
+          parentTitle = currentTitle;
+        } else if (parentASIN) {
+          try {
+            const parentHtmlResult =
+              await htmlScraperService.checkASINVariantsByHTML(
+                parentASIN,
+                country,
+              );
+            parentTitle = String(parentHtmlResult.details?.title || '');
+          } catch (parentHtmlError) {
+            logger.warn(
+              `[checkASINVariants] HTML获取父体标题失败: ${parentASIN}: ${
+                parentHtmlError.message || parentHtmlError
+              }`,
+            );
+          }
+        }
+        const baseHasVariants = htmlResult.hasVariants;
+        const hasVariants = applyParentTitleGate(
+          baseHasVariants,
+          parentASIN,
+          parentTitle.trim(),
+        );
+        const variantCount = hasVariants ? variantASINs.length : 0;
 
         const result = {
           hasVariants,
           variantCount,
           details: {
             asin: cleanASIN,
-            title: htmlResult.details.title || '',
+            title: currentTitle,
             brand: htmlResult.details.brand || null,
             parentAsin: parentASIN,
+            parentTitle: parentTitle.trim(),
             variations: variantASINs.map((asin) => ({
               asin,
               title: '',
@@ -737,15 +867,47 @@ async function doCheckASINVariants(
       // 如果 parseVariantRelationships 没有获取到父ASIN，使用从 summaries 获取的
       const finalParentASIN = parentASIN || parentASINFromSummaries;
 
-      const hasVariants = variantASINs.length > 0;
+      const hasVariantASINs = variantASINs.length > 0;
       const hasParentFromSummaries = !!parentASINFromSummaries;
 
-      const finalHasVariants =
-        hasVariants || variationRelations.length > 0 || hasParentFromSummaries;
-      const variantCount =
+      const baseHasVariants =
+        hasVariantASINs ||
+        variationRelations.length > 0 ||
+        hasParentFromSummaries;
+      const currentTitle = String(
+        item.summaries?.[0]?.itemName ||
+          item.summaries?.[0]?.title ||
+          item.attributes?.item_name?.[0]?.value ||
+          '',
+      );
+      const parentTitle = (
+        await resolveParentTitle({
+          parentAsin: finalParentASIN,
+          currentAsin: cleanASIN,
+          currentTitle,
+          country,
+          priority,
+          options,
+        })
+      ).trim();
+      const finalHasVariants = applyParentTitleGate(
+        baseHasVariants,
+        finalParentASIN,
+        parentTitle,
+      );
+      const baseVariantCount =
         variantASINs.length ||
         variationRelations.length ||
         (hasParentFromSummaries ? 1 : 0);
+      const variantCount = finalHasVariants ? baseVariantCount : 0;
+
+      if (finalParentASIN) {
+        logger.debug(
+          `[checkASINVariants] 父体标题校验: parentAsin=${finalParentASIN}, hasTitle=${hasConcreteTitle(
+            parentTitle,
+          )}`,
+        );
+      }
 
       logger.debug(`
 ========== ASIN变体检查结果 ==========`);
@@ -776,16 +938,13 @@ async function doCheckASINVariants(
         variantCount,
         details: {
           asin: item.asin,
-          title:
-            item.summaries?.[0]?.itemName ||
-            item.summaries?.[0]?.title ||
-            item.attributes?.item_name?.[0]?.value ||
-            '',
+          title: currentTitle,
           brand:
             item.summaries?.[0]?.brand ||
             item.summaries?.[0]?.manufacturer ||
             null,
           parentAsin: finalParentASIN || null,
+          parentTitle,
           variations: variantASINs.map((asin) => ({
             asin,
             title: '',
@@ -1357,6 +1516,7 @@ async function batchQueryParentAsin(asinList, country, options = {}) {
         hasParentAsin,
         parentAsin,
         title: result?.details?.title || '',
+        parentTitle: result?.details?.parentTitle || '',
         brand: result?.details?.brand || null,
         hasVariants: result?.hasVariants || false,
         variantCount: result?.variantCount || 0,
@@ -1373,6 +1533,7 @@ async function batchQueryParentAsin(asinList, country, options = {}) {
         hasParentAsin: false,
         parentAsin: null,
         title: '',
+        parentTitle: '',
         brand: null,
         hasVariants: false,
         variantCount: 0,
@@ -1405,6 +1566,11 @@ async function batchQueryParentAsin(asinList, country, options = {}) {
       continue;
     }
 
+    if (hasConcreteTitle(result.parentTitle)) {
+      parentTitleMap.set(parentAsin, result.parentTitle.trim());
+      continue;
+    }
+
     parentTitleTasks.push({
       parentAsin,
     });
@@ -1428,12 +1594,23 @@ async function batchQueryParentAsin(asinList, country, options = {}) {
     }
   });
 
-  const results = queryResults.map((result) => ({
-    ...result,
-    parentTitle: result.parentAsin
+  const results = queryResults.map((result) => {
+    const parentTitle = result.parentAsin
       ? parentTitleMap.get(result.parentAsin) || ''
-      : '',
-  }));
+      : '';
+    const hasVariants = applyParentTitleGate(
+      result.hasVariants,
+      result.parentAsin,
+      parentTitle,
+    );
+
+    return {
+      ...result,
+      parentTitle,
+      hasVariants,
+      variantCount: hasVariants ? result.variantCount : 0,
+    };
+  });
 
   logger.info(
     `[batchQueryParentAsin] 批量查询完成，成功: ${

@@ -36,3 +36,5 @@ npm 11 在部分 Windows 环境需要在参数前再加一个分隔符：`npm --
 退出码：无差异为 `0`，结构漂移为 `1`，参数、配置或连接错误为 `2`。API 与 worker 启动时各审计一次并缓存结果，健康检查默认每 60 秒最多刷新一次（可通过 `SCHEMA_AUDIT_CACHE_TTL_MS` 调整），应用绝不自动执行 DDL；`/health` 会返回 `schema.status`、`schema.checkedAt`、主营/竞品状态及限量差异摘要。
 
 已有数据库必须遵循 [MIGRATION.md](./MIGRATION.md)。生产 DDL 只能在独立维护窗口人工执行，本仓库合并或应用启动不会自动执行迁移。
+
+未配置独立竞品库时，审计支持主营与竞品共用数据库：各域仅忽略另一域的已知 canonical 表，未知业务表仍报告漂移。竞品监控关闭时，健康检查跳过竞品库；显式 `--target=competitor` 仍可单独核对其结构。外键的 `NO ACTION` 与 `RESTRICT` 按 MySQL 等价语义比较。导入前还会核对写入列类型与长度，避免创建变体组后才发现结构不兼容。

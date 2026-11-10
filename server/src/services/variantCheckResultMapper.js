@@ -1,3 +1,5 @@
+const { applyParentTitleGate } = require('../utils/variantTitle');
+
 function buildVariantViewFromResult(serviceResult) {
   if (!serviceResult || typeof serviceResult !== 'object') {
     return {
@@ -13,7 +15,13 @@ function buildVariantViewFromResult(serviceResult) {
   }
 
   const { isBroken, details } = serviceResult;
-  const d = details || {};
+  const nestedResult =
+    details &&
+    typeof details === 'object' &&
+    (details.details || typeof details.hasVariants === 'boolean')
+      ? details
+      : serviceResult;
+  const d = nestedResult.details || {};
 
   const asin = (d.asin || '').toString().trim().toUpperCase();
   const title = d.title || '';
@@ -30,9 +38,15 @@ function buildVariantViewFromResult(serviceResult) {
     .filter((variationAsin) => variationAsin && variationAsin !== asin);
 
   const relationships = Array.isArray(d.relationships) ? d.relationships : [];
-  let parentAsin = null;
+  let parentAsin = d.parentAsin
+    ? d.parentAsin.toString().trim().toUpperCase()
+    : null;
 
   for (const rel of relationships) {
+    if (parentAsin) {
+      break;
+    }
+
     if (Array.isArray(rel.parentAsins) && rel.parentAsins.length > 0) {
       parentAsin = (rel.parentAsins[0] || '').toString().trim().toUpperCase();
       if (parentAsin) {
@@ -54,10 +68,16 @@ function buildVariantViewFromResult(serviceResult) {
     }
   }
 
-  let hasVariation = brotherAsins.length > 0;
-  if (parentAsin && !hasVariation) {
-    hasVariation = true;
-  }
+  const derivedHasVariation = brotherAsins.length > 0 || Boolean(parentAsin);
+  const serviceHasVariants =
+    typeof nestedResult.hasVariants === 'boolean'
+      ? nestedResult.hasVariants
+      : derivedHasVariation;
+  const hasVariation = applyParentTitleGate(
+    serviceHasVariants,
+    parentAsin,
+    d.parentTitle,
+  );
 
   const brand = d.brand || null;
 

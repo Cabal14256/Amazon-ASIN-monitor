@@ -8,6 +8,20 @@ const {
   VARIANT_GROUP_INSERT_COLUMNS,
 } = require('../config/asinInsertContracts');
 const logger = require('../utils/logger');
+const fs = require('fs');
+const path = require('path');
+const { parseInitSchema } = require('./schemaAuditService');
+const CANONICAL_SCHEMAS = {
+  asin: parseInitSchema(
+    fs.readFileSync(path.join(__dirname, '../../database/init.sql'), 'utf8'),
+  ),
+  competitor: parseInitSchema(
+    fs.readFileSync(
+      path.join(__dirname, '../../database/competitor-init.sql'),
+      'utf8',
+    ),
+  ),
+};
 
 const DEFAULT_CHUNK_SIZE = 100;
 const ASIN_CODE_PATTERN = /^[A-Z0-9]{10}$/;
@@ -103,6 +117,7 @@ function createSchemaContractError(config, table, details) {
     ...(details.missingInsertColumns || []),
     ...(details.requiredOmittedColumns || []),
     ...(details.generatedInsertColumns || []),
+    ...(details.incompatibleTypeColumns || []),
   ];
   const error = new Error(
     `ASIN导入schema契约不兼容: ${table}${
@@ -132,7 +147,7 @@ async function assertAsinInsertSchemaCompatible(domain = 'asin') {
     { table: config.groupTable, insertColumns: config.groupInsertColumns },
   ];
   const columns = await config.database.query(
-    `SELECT TABLE_NAME, COLUMN_NAME, IS_NULLABLE, COLUMN_DEFAULT, EXTRA
+    `SELECT TABLE_NAME, COLUMN_NAME, COLUMN_TYPE, IS_NULLABLE, COLUMN_DEFAULT, EXTRA
      FROM information_schema.COLUMNS
      WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME IN (?, ?)
      ORDER BY TABLE_NAME, ORDINAL_POSITION`,
@@ -161,6 +176,21 @@ async function assertAsinInsertSchemaCompatible(domain = 'asin') {
       isGeneratedColumn(actualColumns.get(columnName)?.EXTRA),
     );
     const insertColumnSet = new Set(contract.insertColumns);
+    const expectedColumns = CANONICAL_SCHEMAS[config.domain].tables.get(
+      contract.table,
+    ).columns;
+    const incompatibleTypeColumns = contract.insertColumns.filter(
+      (columnName) => {
+        const column = actualColumns.get(columnName);
+        return (
+          column &&
+          String(column.COLUMN_TYPE || '')
+            .toLowerCase()
+            .replace(/\s+/g, ' ')
+            .trim() !== expectedColumns.get(columnName).type
+        );
+      },
+    );
     const requiredOmittedColumns = tableColumns
       .filter(
         (column) =>
@@ -178,12 +208,14 @@ async function assertAsinInsertSchemaCompatible(domain = 'asin') {
       tableColumns.length === 0 ||
       missingInsertColumns.length > 0 ||
       generatedInsertColumns.length > 0 ||
+      incompatibleTypeColumns.length > 0 ||
       requiredOmittedColumns.length > 0
     ) {
       const error = createSchemaContractError(config, contract.table, {
         tableMissing: tableColumns.length === 0,
         missingInsertColumns,
         generatedInsertColumns,
+        incompatibleTypeColumns,
         requiredOmittedColumns,
       });
       logger.error('[ASIN导入] schema契约检查失败', {
