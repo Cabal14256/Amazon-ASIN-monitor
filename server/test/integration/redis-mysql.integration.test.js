@@ -20,7 +20,7 @@ const {
   initRedis,
   isRedisAvailable,
 } = require('../../src/config/redis');
-const { auditSchemas } = require('../../src/services/schemaAuditService');
+const testVariantSplit = require('./variant-split-scenarios');
 
 const runIntegrationTests = process.env.RUN_INTEGRATION_TESTS === 'true';
 const integrationTest = runIntegrationTests ? test : test.skip;
@@ -167,7 +167,12 @@ integrationTest(
       retryStrategy: (attempt) => Math.min(attempt * 50, 1000),
     });
     directRedis.on('error', () => {});
+    let applicationPool = null;
+    let competitorApplicationPool = null;
+    let auditSchemas;
     context.after(async () => {
+      if (applicationPool) await applicationPool.end();
+      if (competitorApplicationPool) await competitorApplicationPool.end();
       await closeRedis();
       await closeRedisClient(directRedis);
     });
@@ -361,7 +366,7 @@ integrationTest(
           'SELECT COUNT(*) AS count FROM information_schema.tables WHERE table_schema = ?',
           [competitorDatabase],
         );
-        assert.equal(Number(mainTableCount.count), 21);
+        assert.equal(Number(mainTableCount.count), 23);
         assert.equal(Number(competitorTableCount.count), 4);
 
         const [[backupConfigCount]] = await mysqlConnection.query(
@@ -413,6 +418,49 @@ integrationTest(
         assert.equal(defaults.competitorEnabled, true);
       },
     );
+
+    // 延迟加载真实模型，防止 .env 或开发库设置影响隔离测试。
+    const databaseModule = require.resolve('../../src/config/database');
+    assert.equal(
+      require.cache[databaseModule],
+      undefined,
+      'Application database must not be loaded before CI settings are installed',
+    );
+    const safeEnvironment = {
+      DB_HOST: mysqlHost,
+      DB_PORT: String(Number(process.env.INTEGRATION_MYSQL_PORT) || 3306),
+      DB_USER: process.env.INTEGRATION_MYSQL_USER || 'root',
+      DB_PASSWORD: '',
+      DB_NAME: mainDatabase,
+      COMPETITOR_DB_HOST: mysqlHost,
+      COMPETITOR_DB_PORT: String(
+        Number(process.env.INTEGRATION_MYSQL_PORT) || 3306,
+      ),
+      COMPETITOR_DB_USER: process.env.INTEGRATION_MYSQL_USER || 'root',
+      COMPETITOR_DB_PASSWORD: '',
+      COMPETITOR_DB_NAME: competitorDatabase,
+      DB_CONNECTION_LIMIT: '10',
+    };
+    const previousEnvironment = Object.fromEntries(
+      Object.keys(safeEnvironment).map((key) => [key, process.env[key]]),
+    );
+    let FeishuConfig;
+    let VariantSplitState;
+    try {
+      Object.assign(process.env, safeEnvironment);
+      applicationPool = require('../../src/config/database').pool;
+      competitorApplicationPool =
+        require('../../src/config/competitor-database').pool;
+      auditSchemas =
+        require('../../src/services/schemaAuditService').auditSchemas;
+      FeishuConfig = require('../../src/models/FeishuConfig');
+      VariantSplitState = require('../../src/models/VariantSplitState');
+    } finally {
+      for (const [key, value] of Object.entries(previousEnvironment)) {
+        if (value === undefined) delete process.env[key];
+        else process.env[key] = value;
+      }
+    }
 
     await context.test(
       '生产旧结构 fixture 连续迁移两次后与 canonical metadata 一致',
@@ -604,6 +652,79 @@ integrationTest(
         );
       },
     );
+
+    await context.test(
+      '电话加急迁移可升级旧表并重复执行，保留既有通知配置',
+      async () => {
+        await mysqlConnection.query(
+          `INSERT INTO \`${mainDatabase}\`.feishu_config (country, webhook_url, enabled)
+         VALUES ('US', 'https://example.invalid/us-hook', 1), ('EU', 'https://example.invalid/eu-hook', 1)`,
+        );
+        // 只在已验证名称的本次 CI 隔离库模拟升级前结构。
+        await mysqlConnection.query(
+          `ALTER TABLE \`${mainDatabase}\`.feishu_config
+         DROP COLUMN emergency_config, DROP COLUMN last_emergency_at`,
+        );
+        const migration = rewriteDatabaseName(
+          fs.readFileSync(
+            path.join(
+              __dirname,
+              '../../database/migrations/active/20260930_006_feishu_emergency.sql',
+            ),
+            'utf8',
+          ),
+          'amazon_asin_monitor',
+          mainDatabase,
+        );
+        await mysqlConnection.query(migration);
+        await mysqlConnection.query(migration);
+
+        const [columns] = await mysqlConnection.query(
+          `SELECT COLUMN_NAME AS name, DATA_TYPE AS type
+         FROM information_schema.columns
+         WHERE table_schema = ? AND table_name = 'feishu_config'
+           AND column_name IN ('emergency_config', 'last_emergency_at')
+         ORDER BY column_name`,
+          [mainDatabase],
+        );
+        assert.deepEqual(
+          columns.map((column) => ({ ...column })),
+          [
+            { name: 'emergency_config', type: 'json' },
+            { name: 'last_emergency_at', type: 'datetime' },
+          ],
+        );
+        const [rows] = await mysqlConnection.query(
+          `SELECT country, webhook_url, emergency_config, last_emergency_at
+         FROM \`${mainDatabase}\`.feishu_config ORDER BY country`,
+        );
+        assert.deepEqual(
+          rows.map((row) => ({ ...row })),
+          [
+            {
+              country: 'EU',
+              webhook_url: 'https://example.invalid/eu-hook',
+              emergency_config: null,
+              last_emergency_at: null,
+            },
+            {
+              country: 'US',
+              webhook_url: 'https://example.invalid/us-hook',
+              emergency_config: null,
+              last_emergency_at: null,
+            },
+          ],
+        );
+      },
+    );
+
+    await testVariantSplit({
+      context,
+      mysqlConnection,
+      mainDatabase,
+      FeishuConfig,
+      VariantSplitState,
+    });
 
     await context.test('Redis 重启后现有客户端恢复连接', async () => {
       const containerId = String(

@@ -40,8 +40,11 @@ function normalizeDefault(value) {
   }
   const normalized = String(value).replace(/^'|'$/g, '');
   if (normalized.toUpperCase() === 'NULL') return null;
-  if (/^CURRENT_TIMESTAMP(?:\(\))?$/i.test(normalized)) {
-    return 'CURRENT_TIMESTAMP';
+  const timestamp = normalized.match(/^CURRENT_TIMESTAMP(?:\((\d*)\))?$/i);
+  if (timestamp) {
+    return Number(timestamp[1] || 0) === 0
+      ? 'CURRENT_TIMESTAMP'
+      : `CURRENT_TIMESTAMP(${Number(timestamp[1])})`;
   }
   return normalized;
 }
@@ -190,7 +193,7 @@ function parseColumnDefinition(definition) {
   const { endIndex, type } = readColumnType(remainder);
   const options = remainder.slice(endIndex);
   const defaultMatch = options.match(
-    /\bDEFAULT\s+(NULL|CURRENT_TIMESTAMP(?:\(\))?|'(?:''|[^'])*'|[^\s,]+)/i,
+    /\bDEFAULT\s+(NULL|CURRENT_TIMESTAMP(?:\(\d*\))?|'(?:''|[^'])*'|[^\s,]+)/i,
   );
   const generationMatch = options.match(
     /\bGENERATED\s+ALWAYS\s+AS\s*\(([\s\S]*)\)\s+(VIRTUAL|STORED)\b/i,

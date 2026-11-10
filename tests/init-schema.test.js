@@ -33,8 +33,8 @@ function normalizeSQL(statement) {
   return statement.replace(/\s+/g, ' ').trim();
 }
 
-test('canonical init 固定 21+4 张表及统一排序规则', () => {
-  assert.equal(mainSchema.tables.size, 21);
+test('canonical init 固定 23+4 张表及统一排序规则', () => {
+  assert.equal(mainSchema.tables.size, 23);
   assert.equal(competitorSchema.tables.size, 4);
   assert.equal(mainSchema.collation, 'utf8mb4_0900_ai_ci');
   assert.equal(competitorSchema.collation, 'utf8mb4_0900_ai_ci');

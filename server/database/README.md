@@ -6,7 +6,7 @@
 
 | 路径 | 用途 |
 | --- | --- |
-| `init.sql` | 主营库 `amazon_asin_monitor` 的 21 张 canonical 表 |
+| `init.sql` | 主营库 `amazon_asin_monitor` 的 23 张 canonical 表 |
 | `competitor-init.sql` | 竞品库 `amazon_competitor_monitor` 的 4 张 canonical 表 |
 | `migrations/active/` | 现有环境按固定顺序人工审查执行的当前迁移 |
 | `migrations/legacy/` | 原历史迁移的只读归档；不得作为连续迁移链执行 |
