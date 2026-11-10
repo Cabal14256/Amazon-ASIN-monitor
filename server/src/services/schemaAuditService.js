@@ -63,6 +63,10 @@ function normalizeExpression(value) {
   if (value === undefined || value === null || value === '') return null;
   const literals = [];
   let normalized = String(value)
+    .replace(
+      /_utf8mb4\\'([\s\S]*?)\\'/gi,
+      (_, literal) => `'${literal.replace(/'/g, "''")}'`,
+    )
     .replace(/_utf8mb4\\?(?=')/gi, '')
     .replace(/'(?:''|\\.|[^'\\])*'|"(?:""|\\.|[^"\\])*"/g, (literal) => {
       const index = literals.push(literal) - 1;

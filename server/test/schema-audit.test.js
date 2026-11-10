@@ -131,6 +131,30 @@ test('生成表达式保留字符串的大小写和空格，仍归一化 SQL 语
   );
 });
 
+test('MySQL metadata 转义的字符集字面量仍与 canonical 表达式等价', async () => {
+  const schema = parseInitSchema(initSql);
+  const query = metadataQuery(schema);
+  const result = await auditSchemas({
+    target: 'main',
+    queryOverrides: {
+      main: async (sql) => {
+        const rows = await query(sql);
+        if (sql.includes('information_schema.COLUMNS')) {
+          for (const row of rows) {
+            if (row.GENERATION_EXPRESSION)
+              row.GENERATION_EXPRESSION = row.GENERATION_EXPRESSION.replace(
+                /'([^']*)'/g,
+                "_utf8mb4\\'$1\\'",
+              );
+          }
+        }
+        return rows;
+      },
+    },
+  });
+  assert.equal(result.status, 'ok', JSON.stringify(result));
+});
+
 test('审计 CLI 的 JSON 模式隔离模块加载及执行时的信息日志', () => {
   const output = execFileSync(
     process.execPath,
