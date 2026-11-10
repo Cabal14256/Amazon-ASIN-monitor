@@ -63,7 +63,7 @@ export interface AsinIncrementalImportModalProps {
   visible?: boolean;
   open?: boolean;
   onCancel: () => void;
-  onSuccess: () => void;
+  onSuccess: () => void | Promise<void>;
   competitor: boolean;
   api: ImportApi;
 }
@@ -561,7 +561,12 @@ const AsinIncrementalImportModal: React.FC<AsinIncrementalImportModalProps> = ({
           (completedResult.updatedGroupCount || 0) >
         0
       ) {
-        await Promise.resolve(onSuccess());
+        try {
+          await onSuccess();
+        } catch (refreshError) {
+          debugError('ASIN 导入完成后刷新失败:', refreshError);
+          message.warning('导入已完成，列表刷新失败，请手动刷新页面');
+        }
       }
       message[completedResult.failedCount > 0 ? 'warning' : 'success'](
         '增量处理完成',

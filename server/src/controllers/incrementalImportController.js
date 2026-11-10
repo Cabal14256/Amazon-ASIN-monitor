@@ -118,11 +118,15 @@ function handlersForMode(mode) {
               errorMessage: '预览不存在',
             });
           }
-          return res.json({
-            success: true,
-            data: { taskId, status: existingTask.status || 'pending' },
-            errorCode: 0,
-          });
+          if (
+            ['completed', 'failed', 'cancelled'].includes(existingTask.status)
+          ) {
+            return res.json({
+              success: true,
+              data: { taskId, status: existingTask.status },
+              errorCode: 0,
+            });
+          }
         }
 
         const existingJob = await importTaskQueue.getJob(taskId);
@@ -144,20 +148,42 @@ function handlersForMode(mode) {
           });
         }
 
-        const { meta, file } = await previewStore.getPreviewFile({
-          previewId,
-          userId,
-          mode,
-        });
+        if (existingTask?.status === 'cancelling') {
+          await taskRegistryService.markTaskCancelled(taskId);
+          return res.json({
+            success: true,
+            data: { taskId, status: 'cancelled' },
+            errorCode: 0,
+          });
+        }
 
-        await taskRegistryService.createTask({
-          taskId,
-          taskType: 'import',
-          taskSubType,
-          title: mode === 'competitor' ? '竞品ASIN增量导入' : 'ASIN增量导入',
-          userId,
-          message: '增量导入任务已创建，等待处理',
-        });
+        let previewFile;
+        try {
+          previewFile = await previewStore.getPreviewFile({
+            previewId,
+            userId,
+            mode,
+          });
+        } catch (error) {
+          if (existingTask && error.statusCode === 410) {
+            await taskRegistryService.markTaskFailed(
+              taskId,
+              '导入任务未入队且预览已过期，请重新预览',
+            );
+          }
+          throw error;
+        }
+        const { meta, file } = previewFile;
+
+        if (!existingTask)
+          await taskRegistryService.createTask({
+            taskId,
+            taskType: 'import',
+            taskSubType,
+            title: mode === 'competitor' ? '竞品ASIN增量导入' : 'ASIN增量导入',
+            userId,
+            message: '增量导入任务已创建，等待处理',
+          });
         try {
           await importTaskQueue.enqueue({
             taskId,

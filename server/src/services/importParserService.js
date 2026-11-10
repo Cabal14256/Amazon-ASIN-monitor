@@ -529,7 +529,6 @@ async function parseIncrementalImportFile(file, options = {}) {
     if (!row.groupId && !row.brand) row.errors.push('品牌不能为空');
     if (!isCompetitor && !row.groupId && !row.site)
       row.errors.push('站点（店铺代号）不能为空');
-    if (!row.asin && !row.groupId) row.errors.push('空组行必须提供变体组ID');
     if (row.asin && !/^[A-Z0-9]{10}$/.test(row.asin)) {
       row.errors.push('ASIN编码必须是10位字母数字组合');
     }

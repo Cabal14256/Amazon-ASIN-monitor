@@ -1,5 +1,6 @@
 process.env.LOG_LEVEL = 'ERROR';
 process.env.IMPORT_PARSE_WORKER_ENABLED = 'true';
+process.env.IMPORT_CANCEL_POLL_INTERVAL_MS = '1';
 
 const assert = require('node:assert/strict');
 const test = require('node:test');
@@ -1000,6 +1001,52 @@ test('解析错误行跳过，独立有效行仍正常新增，计数覆盖所�
 });
 
 for (const mode of ['standard', 'competitor']) {
+  test(`${mode} 自然键空组可以预览并创建，重试不会重复创建`, async () => {
+    const db = fakeDatabase({ mode });
+    const file = transactionFile(mode, [
+      { groupName: '全新空组', asin: '', name: '', asinType: '' },
+    ]);
+    const parsed = await parseIncrementalImportFile(file, { mode });
+    assert.deepEqual(parsed.rows[0].errors, []);
+    const preview = await createIncrementalPreview(file, { mode, db });
+    assert.equal(preview.summary.createdGroupCount, 1);
+    const options = {
+      mode,
+      db,
+      previewId: `empty-${mode}`,
+      expectedDigest: preview.digest,
+    };
+    await applyIncrementalImport(file, options);
+    await applyIncrementalImport(file, options);
+    assert.equal(db.state.groups.length, 1);
+    assert.equal(db.state.asins.length, 0);
+  });
+
+  test(`${mode} 解析阶段取消会终止 Worker，不进入写事务`, async () => {
+    const db = fakeDatabase({ mode });
+    let checks = 0;
+    await assert.rejects(
+      applyIncrementalImport(transactionFile(mode, [{ asin: 'B000000009' }]), {
+        mode,
+        db,
+        previewId: `parse-cancel-${mode}`,
+        expectedDigest: 'digest',
+        checkCancelled: async () => {
+          checks += 1;
+          if (checks > 1) {
+            const error = new Error('cancelled during parsing');
+            error.code = 'TASK_CANCELLED';
+            throw error;
+          }
+        },
+      }),
+      { code: 'TASK_CANCELLED' },
+    );
+    assert.equal(db.commitCount, 0);
+    assert.equal(db.writes.length, 0);
+    assert.ok(checks > 1);
+  });
+
   test(`${mode} 确认后重试命中事务回执，不重复写入`, async () => {
     const db = fakeDatabase({ mode, groups: [group()] });
     const file = transactionFile(mode, [{ asin: 'B000000008' }]);
@@ -1476,4 +1523,79 @@ test('预览过期后重复确认仍返回本人的原任务，其他用户和�
     status: 'completed',
   });
   assert.equal(previewReads, 0);
+});
+
+test('确认修复孤立 pending 任务且重复确认仅保留一个队列任务', async () => {
+  let job = null;
+  let enqueued = 0;
+  let recreated = 0;
+  const controller = loadControllerWithMocks({
+    '../src/services/taskRegistryService': {
+      readTask: async () => ({
+        taskId: 'orphan',
+        userId: 7,
+        taskSubType: 'asin',
+        status: 'pending',
+      }),
+      createTask: async () => {
+        recreated += 1;
+      },
+    },
+    '../src/services/importTaskQueue': {
+      getJob: async () => job,
+      enqueue: async (data) => {
+        enqueued += 1;
+        job = { data, getState: async () => 'waiting' };
+      },
+    },
+    '../src/services/incrementalImportPreviewStore': {
+      getPreviewFile: async () => ({
+        meta: { digest: 'digest' },
+        file: { buffer: Buffer.from('file'), originalname: 'file.csv' },
+      }),
+    },
+  });
+  const req = { user: { userId: 7 }, body: { previewId: 'orphan' } };
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    const response = mockResponse();
+    await controller.handlersForMode('standard').confirm(req, response);
+    assert.equal(response.statusCode, 200);
+  }
+  assert.equal(enqueued, 1);
+  assert.equal(recreated, 0);
+});
+
+test('孤立任务预览过期时标记失败，取消中任务不会重新入队', async () => {
+  let status = 'pending';
+  let failed = 0;
+  let cancelled = 0;
+  const controller = loadControllerWithMocks({
+    '../src/services/taskRegistryService': {
+      readTask: async () => ({ userId: 7, taskSubType: 'asin', status }),
+      markTaskFailed: async () => {
+        failed += 1;
+      },
+      markTaskCancelled: async () => {
+        cancelled += 1;
+      },
+    },
+    '../src/services/importTaskQueue': { getJob: async () => null },
+    '../src/services/incrementalImportPreviewStore': {
+      getPreviewFile: async () => {
+        const error = new Error('expired');
+        error.statusCode = 410;
+        throw error;
+      },
+    },
+  });
+  const req = { user: { userId: 7 }, body: { previewId: 'orphan' } };
+  const expired = mockResponse();
+  await controller.handlersForMode('standard').confirm(req, expired);
+  assert.equal(expired.statusCode, 410);
+  assert.equal(failed, 1);
+  status = 'cancelling';
+  const cancelling = mockResponse();
+  await controller.handlersForMode('standard').confirm(req, cancelling);
+  assert.equal(cancelling.body.data.status, 'cancelled');
+  assert.equal(cancelled, 1);
 });

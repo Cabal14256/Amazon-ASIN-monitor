@@ -813,9 +813,27 @@ async function applyIncrementalImport(
     error.statusCode = 400;
     throw error;
   }
-  if (onProgress) await onProgress(5, '正在解析导入文件');
-  const parsed = await parseImportPayload(file, { mode, kind: 'incremental' });
   const fileHash = hashFile(file);
+  // A committed receipt wins over cancellation and avoids reparsing on Bull retries.
+  const existingReceipts = await config.db.query(
+    'SELECT file_hash, digest, result_json FROM import_confirmation_receipts WHERE preview_id = ?',
+    [previewId],
+  );
+  if (existingReceipts.length) {
+    const receipt = existingReceipts[0];
+    if (receipt.file_hash !== fileHash || receipt.digest !== expectedDigest)
+      throw staleError();
+    return typeof receipt.result_json === 'string'
+      ? JSON.parse(receipt.result_json)
+      : receipt.result_json;
+  }
+  if (checkCancelled) await checkCancelled('导入任务已取消');
+  if (onProgress) await onProgress(5, '正在解析导入文件');
+  const parsed = await parseImportPayload(file, {
+    mode,
+    kind: 'incremental',
+    checkCancelled,
+  });
   if (onProgress) await onProgress(25, '正在重新比对数据库');
   let result;
   let committedBusinessChanges = false;

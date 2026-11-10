@@ -288,7 +288,7 @@ function getConfigDescription(key) {
     SP_API_ACCESS_KEY_ID: 'AWS Access Key ID（US+EU共用）',
     SP_API_SECRET_ACCESS_KEY: 'AWS Secret Access Key（US+EU共用）',
     SP_API_ROLE_ARN: 'AWS IAM Role ARN（US+EU共用）',
-    MONITOR_MAX_CONCURRENT_GROUP_CHECKS: '每次并发检查的变体组数量',
+    MONITOR_MAX_CONCURRENT_GROUP_CHECKS: 'US/EU 共享的并发检查变体组数量',
     MONITOR_US_SCHEDULE_MINUTES: 'US 区域定时监控间隔（分钟）',
     MONITOR_EU_SCHEDULE_MINUTES: 'EU 区域定时监控间隔（分钟）',
     COMPETITOR_MONITOR_ENABLED: '竞品监控开关',
