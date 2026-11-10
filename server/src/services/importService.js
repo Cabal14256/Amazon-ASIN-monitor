@@ -8,7 +8,10 @@ const {
   parseIncrementalImportFile,
 } = require('./importParserService');
 const { isTaskCancelledError } = require('./taskCancellationService');
-const { batchCreateASINs } = require('./asinBatchCreateService');
+const {
+  assertAsinInsertSchemaCompatible,
+  batchCreateASINs,
+} = require('./asinBatchCreateService');
 
 const IMPORT_PARSE_WORKER_SCRIPT = path.join(
   __dirname,
@@ -229,6 +232,8 @@ async function importFromFile(file, options = {}) {
       groupedItems.length
     }，耗时=${Date.now() - parseStartedAt}ms`,
   );
+
+  await assertAsinInsertSchemaCompatible(isCompetitor ? 'competitor' : 'asin');
 
   await runOptionalHook(checkCancelled, '导入任务已取消');
   await runOptionalHook(onProgress, 50, 'Excel解析完成，正在准备写入...');

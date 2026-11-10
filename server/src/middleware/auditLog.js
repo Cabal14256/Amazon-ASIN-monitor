@@ -176,6 +176,12 @@ async function auditLogMiddleware(req, res, next) {
 
   // 准备请求数据（排除敏感信息）
   const requestData = { ...req.body };
+  if (resource === 'feishu_config') {
+    if (requestData.webhookUrl) requestData.webhookUrl = '***';
+    if (requestData.emergency && typeof requestData.emergency === 'object') {
+      requestData.emergency = { ...requestData.emergency, userIds: '***' };
+    }
+  }
   if (requestData.password) {
     requestData.password = '***';
   }

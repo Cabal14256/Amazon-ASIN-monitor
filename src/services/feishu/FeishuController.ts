@@ -30,6 +30,7 @@ export async function upsertFeishuConfig(
     country: string;
     webhookUrl: string;
     enabled?: boolean;
+    emergency?: API.FeishuEmergencyConfig;
   },
   options?: { [key: string]: any },
 ) {
@@ -51,6 +52,7 @@ export async function updateFeishuConfig(
   body: {
     webhookUrl: string;
     enabled?: boolean;
+    emergency?: API.FeishuEmergencyConfig;
   },
   options?: { [key: string]: any },
 ) {

@@ -1,5 +1,8 @@
 const { query } = require('../config/database');
 const { v4: uuidv4 } = require('uuid');
+const {
+  VARIANT_GROUP_INSERT_COLUMNS,
+} = require('../config/asinInsertContracts');
 const cacheService = require('../services/cacheService');
 const logger = require('../utils/logger');
 const MonitorHistory = require('./MonitorHistory');
@@ -590,7 +593,9 @@ class VariantGroup {
     const id = uuidv4();
     const { name, country, site, brand } = data;
     await query(
-      `INSERT INTO variant_groups (id, name, country, site, brand, is_broken, variant_status) 
+      `INSERT INTO variant_groups (${VARIANT_GROUP_INSERT_COLUMNS.asin.join(
+        ', ',
+      )})
        VALUES (?, ?, ?, ?, ?, 0, 'NORMAL')`,
       [id, name, country, site, brand],
     );

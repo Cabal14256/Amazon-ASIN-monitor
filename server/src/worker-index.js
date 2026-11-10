@@ -6,6 +6,7 @@ const {
   testConnection: testCompetitorConnection,
 } = require('./config/competitor-database');
 const { getProcessRole, isWorkerRole } = require('./config/processRole');
+const { runStartupSchemaAudit } = require('./services/schemaAuditService');
 const {
   registerWorkerProcessors,
   getWorkerRegistrationStatus,
@@ -75,6 +76,8 @@ async function startWorkerProcess() {
   if (!competitorDbConnected) {
     logger.error('[Worker] 竞品数据库连接失败，请检查配置');
   }
+
+  await runStartupSchemaAudit();
 
   const registrationResult = registerWorkerProcessors();
   const registrationStatus = getWorkerRegistrationStatus();
