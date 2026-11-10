@@ -175,8 +175,8 @@ function handlersForMode(mode) {
         }
         const { meta, file } = previewFile;
 
-        if (!existingTask)
-          await taskRegistryService.createTask({
+        if (!existingTask) {
+          const registered = await taskRegistryService.createTaskIfAbsent({
             taskId,
             taskType: 'import',
             taskSubType,
@@ -184,6 +184,26 @@ function handlersForMode(mode) {
             userId,
             message: '增量导入任务已创建，等待处理',
           });
+          if (
+            String(registered.userId) !== String(userId) ||
+            registered.taskSubType !== taskSubType
+          ) {
+            const error = new Error('预览不存在');
+            error.statusCode = 404;
+            throw error;
+          }
+          if (
+            ['completed', 'failed', 'cancelled', 'cancelling'].includes(
+              registered.status,
+            )
+          ) {
+            return res.json({
+              success: true,
+              data: { taskId, status: registered.status },
+              errorCode: 0,
+            });
+          }
+        }
         try {
           await importTaskQueue.enqueue({
             taskId,

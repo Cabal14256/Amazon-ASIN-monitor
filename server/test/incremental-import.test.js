@@ -670,6 +670,34 @@ test('无效行保留原始行号，其他行仍可进入预览', async () => {
 });
 
 for (const mode of ['standard', 'competitor']) {
+  test(`${mode} 更名行因重复 ASIN 被拒绝后依赖行不会写入旧组`, async () => {
+    const db = fakeDatabase({
+      mode,
+      groups: [group(), group({ id: 'group-other', name: '另组' })],
+    });
+    const file = transactionFile(mode, [
+      { groupId: 'group-old', groupName: '组新名', asin: 'B000000011' },
+      { groupName: '组新名', asin: 'B000000012' },
+      { groupId: 'group-other', groupName: '另组', asin: 'B000000011' },
+    ]);
+    const preview = await createIncrementalPreview(file, { mode, db });
+    assert.equal(preview.summary.failedCount, 3);
+    assert.equal(preview.summary.createdGroupCount, 0);
+    assert.equal(preview.summary.updatedGroupCount, 0);
+    assert.equal(preview.summary.createdCount, 0);
+    await applyIncrementalImport(file, {
+      mode,
+      db,
+      previewId: `rename-rejected-${mode}`,
+      expectedDigest: preview.digest,
+    });
+    assert.deepEqual(
+      db.state.groups.map((group) => group.name),
+      ['原组', '另组'],
+    );
+    assert.equal(db.state.asins.length, 0);
+  });
+
   test(`${mode} 相同文件再次上传应全部未变化且无写入操作`, () => {
     const planned = makePlan(
       [inputRow(mode === 'competitor' ? { site: '' } : {})],
@@ -1625,4 +1653,110 @@ test('孤立任务预览过期时标记失败，取消中任务不会重新入�
   await controller.handlersForMode('standard').confirm(req, cancelling);
   assert.equal(cancelling.body.data.status, 'cancelled');
   assert.equal(cancelled, 1);
+});
+
+test('并发确认使用真实注册表保留先入队任务的取消请求', async () => {
+  const registry = loadModuleWithMocks('../src/services/taskRegistryService', {
+    '../src/config/redis': { isRedisAvailable: () => false },
+  });
+  let releaseSecond;
+  const firstEnqueued = new Promise((resolve) => {
+    releaseSecond = resolve;
+  });
+  let reads = 0;
+  let enqueued = 0;
+  const controller = loadControllerWithMocks({
+    '../src/services/taskRegistryService': registry,
+    '../src/services/importTaskQueue': {
+      getJob: async () => null,
+      enqueue: async ({ taskId }) => {
+        enqueued += 1;
+        await registry.markTaskProcessing(taskId);
+        await registry.requestTaskCancellation(taskId);
+        releaseSecond();
+      },
+    },
+    '../src/services/incrementalImportPreviewStore': {
+      getPreviewFile: async () => {
+        reads += 1;
+        if (reads === 2) await firstEnqueued;
+        return {
+          meta: { digest: 'digest' },
+          file: { buffer: Buffer.from('file'), originalname: 'file.csv' },
+        };
+      },
+    },
+  });
+  const req = {
+    user: { userId: 7 },
+    body: { previewId: 'concurrent-preview' },
+  };
+  const responses = [mockResponse(), mockResponse()];
+  await Promise.all(
+    responses.map((res) =>
+      controller.handlersForMode('standard').confirm(req, res),
+    ),
+  );
+  assert.ok(responses.every((res) => res.statusCode === 200));
+  assert.equal(enqueued, 1);
+  const task = await registry.readTask('concurrent-preview');
+  assert.equal(task.status, 'cancelling');
+  assert.ok(task.cancelRequestedAt);
+});
+
+test('Redis 任务创建用 NX 保留另一进程写入的状态且连接错误不会回退覆盖', async () => {
+  const values = new Map();
+  const client = {
+    async get(key) {
+      return values.get(key) || null;
+    },
+    async set(key, value, expiry, seconds, mode) {
+      assert.equal(mode, 'NX');
+      assert.equal(expiry, 'EX');
+      if (values.has(key)) return null;
+      values.set(key, value);
+      return 'OK';
+    },
+    zadd: async () => 1,
+    expire: async () => 1,
+  };
+  const previousMemoryOnly = process.env.TASK_REGISTRY_MEMORY_ONLY;
+  delete process.env.TASK_REGISTRY_MEMORY_ONLY;
+  try {
+    const registry = loadModuleWithMocks(
+      '../src/services/taskRegistryService',
+      {
+        '../src/config/redis': {
+          isRedisAvailable: () => true,
+          getRedisClient: () => client,
+        },
+      },
+    );
+    const candidate = {
+      taskId: 'shared-preview',
+      userId: 7,
+      taskSubType: 'asin',
+    };
+    await registry.createTaskIfAbsent(candidate);
+    const key = 'task:meta:shared-preview';
+    const cancelling = {
+      ...JSON.parse(values.get(key)),
+      status: 'cancelling',
+      cancelRequestedAt: '2026-11-10T00:00:00Z',
+    };
+    values.set(key, JSON.stringify(cancelling));
+    assert.deepEqual(await registry.createTaskIfAbsent(candidate), cancelling);
+    assert.deepEqual(JSON.parse(values.get(key)), cancelling);
+    client.set = async () => {
+      throw new Error('Redis unavailable');
+    };
+    await assert.rejects(
+      registry.createTaskIfAbsent(candidate),
+      /Redis unavailable/,
+    );
+  } finally {
+    if (previousMemoryOnly === undefined)
+      delete process.env.TASK_REGISTRY_MEMORY_ONLY;
+    else process.env.TASK_REGISTRY_MEMORY_ONLY = previousMemoryOnly;
+  }
 });

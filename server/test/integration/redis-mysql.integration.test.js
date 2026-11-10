@@ -726,6 +726,43 @@ integrationTest(
       VariantSplitState,
     });
 
+    await context.test(
+      '真实 Redis 的并发任务创建不会覆盖处理中任务的取消状态',
+      async () => {
+        const client = await initRedis();
+        assert.ok(client);
+        const registry = require('../../src/services/taskRegistryService');
+        const taskId = `integration-confirm-${Date.now()}`;
+        const userId = `integration-user-${Date.now()}`;
+        const task = {
+          taskId,
+          userId,
+          taskType: 'import',
+          taskSubType: 'asin',
+        };
+        try {
+          await Promise.all(
+            Array.from({ length: 8 }, () => registry.createTaskIfAbsent(task)),
+          );
+          await registry.markTaskProcessing(taskId);
+          const cancelled = await registry.requestTaskCancellation(taskId);
+          const repeated = await Promise.all(
+            Array.from({ length: 8 }, () => registry.createTaskIfAbsent(task)),
+          );
+          assert.ok(
+            repeated.every(
+              (record) =>
+                record.status === 'cancelling' &&
+                record.cancelRequestedAt === cancelled.cancelRequestedAt,
+            ),
+          );
+          assert.equal(await registry.isCancellationRequested(taskId), true);
+        } finally {
+          await client.del(`task:meta:${taskId}`, `task:user:${userId}`);
+        }
+      },
+    );
+
     await context.test('Redis 重启后现有客户端恢复连接', async () => {
       const containerId = String(
         process.env.INTEGRATION_REDIS_CONTAINER_ID || '',

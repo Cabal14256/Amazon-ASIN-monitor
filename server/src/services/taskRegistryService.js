@@ -144,9 +144,9 @@ async function readTask(taskId) {
   return cloneTask(memoryTasks.get(taskId) || null);
 }
 
-async function createTask(task) {
+function buildTask(task) {
   const now = getNowISOString();
-  return persistTask({
+  return {
     progress: 0,
     status: 'pending',
     message: '任务已创建，等待处理',
@@ -158,7 +158,46 @@ async function createTask(task) {
     error: null,
     result: null,
     ...task,
-  });
+  };
+}
+
+async function createTask(task) {
+  return persistTask(buildTask(task));
+}
+
+async function createTaskIfAbsent(task) {
+  const candidate = buildTask(task);
+  const redisClient = getRedisClient();
+  if (!redisClient) {
+    const existing = memoryTasks.get(task.taskId);
+    if (existing) return cloneTask(existing);
+    syncMemoryIndex(candidate);
+    return cloneTask(candidate);
+  }
+  // Fail on Redis errors instead of risking a cross-process overwrite.
+  const created = await redisClient.set(
+    getTaskKey(task.taskId),
+    JSON.stringify(candidate),
+    'EX',
+    TASK_TTL_SECONDS,
+    'NX',
+  );
+  if (created && candidate.userId) {
+    try {
+      const indexKey = getUserTaskKey(candidate.userId);
+      await redisClient.zadd(
+        indexKey,
+        Date.parse(candidate.createdAt),
+        candidate.taskId,
+      );
+      await redisClient.expire(indexKey, TASK_TTL_SECONDS);
+    } catch (error) {
+      logger.warn('[任务注册表] 创建任务索引失败:', { message: error.message });
+    }
+  }
+  const persisted = await readTask(task.taskId);
+  if (!persisted) throw new Error('任务记录创建后不可读取，请重试确认');
+  return persisted;
 }
 
 async function updateTask(taskId, patch = {}) {
@@ -344,6 +383,7 @@ function serializeTaskForClient(task) {
 
 module.exports = {
   createTask,
+  createTaskIfAbsent,
   updateTask,
   readTask,
   listUserTasks,

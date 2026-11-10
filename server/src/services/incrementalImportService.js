@@ -265,6 +265,7 @@ function planIncrementalImport(
     } else if (planned.length === 1) {
       entry.group = planned[0].group;
       entry.groupKey = planned[0].key;
+      entry.plannedTarget = planned[0];
     } else if (matching.length === 1) {
       entry.group = matching[0];
       entry.groupKey = `id:${matching[0].id}`;
@@ -298,6 +299,34 @@ function planIncrementalImport(
       const valid = duplicates.filter((entry) => !entry.errors.length);
       for (const entry of valid.slice(1))
         entry.errors.push('同一ASIN和国家在文件中重复');
+    }
+  }
+
+  // Duplicate rejection can invalidate the explicit rows that supplied a rename.
+  // Never retain a natural-key binding whose surviving target no longer matches.
+  for (const entry of entries) {
+    if (entry.errors.length || !entry.plannedTarget) continue;
+    const planned = entry.plannedTarget;
+    const surviving = planned.target.entries.filter(
+      (candidate) => !candidate.errors.length,
+    );
+    const desired = pickGroup(planned.group, withSite);
+    for (const candidate of surviving) {
+      for (const [inputField, field] of [
+        ['groupName', 'name'],
+        ['site', 'site'],
+        ['brand', 'brand'],
+      ]) {
+        if (inputField === 'site' && !withSite) continue;
+        if (candidate.input[inputField])
+          desired[field] = candidate.input[inputField];
+      }
+    }
+    if (
+      groupNaturalKey(desired, withSite) !==
+      groupNaturalKey(entry.input, withSite)
+    ) {
+      entry.errors.push('目标变体组更名依赖的行已被跳过，请修正冲突后重新导入');
     }
   }
 
