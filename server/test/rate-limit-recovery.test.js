@@ -168,3 +168,36 @@ test('低于默认保护下限的配置也不会在降速时被抬高', () => {
     process.env.SP_API_RATE_LIMIT_PER_HOUR = '1000';
   }
 });
+
+for (const composite of [false, true]) {
+  test(`Redis 等待请求在恢复后读取新限额（composite=${composite}）`, async () => {
+    limiter.initializeRateLimiters();
+    const regionLimiter = limiter.getRateLimiter('US');
+    const operationLimiter = new limiter.MultiLevelRateLimiter({
+      name: 'US:operation:test',
+      perMinute: 120,
+      perHour: 7200,
+    });
+    const seen = [];
+    const client = {
+      async get() {
+        return null;
+      },
+      async eval(script, count, ...payload) {
+        seen.push(payload[count + 4]);
+        if (seen.length === 1) {
+          regionLimiter.minuteLimiter.capacity = 72;
+          return [0, 25];
+        }
+        return [1, 0];
+      },
+    };
+    regionLimiter.getDistributedRedisClient = async () => client;
+    if (composite) {
+      await limiter.acquireWithLimiters(regionLimiter, operationLimiter, 1, 2);
+    } else {
+      await regionLimiter.acquireDistributed(1, 2);
+    }
+    assert.deepEqual(seen, [60, 72]);
+  });
+}

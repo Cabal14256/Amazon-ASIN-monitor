@@ -13,6 +13,7 @@ const {
   SP_API_CONFIG,
 } = require('../config/sp-api');
 const logger = require('../utils/logger');
+const { recordAPIAttempt } = require('./riskControlService');
 const rateLimiter = require('./rateLimiter');
 const spApiScheduler = require('./spApiScheduler');
 const operationIdentifier = require('./spApiOperationIdentifier');
@@ -38,8 +39,8 @@ async function callLegacySPAPI(
   body = null,
   options = {},
 ) {
+  const region = getRegionByCountry(country);
   try {
-    const region = getRegionByCountry(country);
     const regionConfig = SP_API_CONFIG.regionConfigs[region];
 
     if (
@@ -185,11 +186,19 @@ async function callLegacySPAPI(
         req.end();
       });
 
-    return spApiScheduler.schedule(async () => {
+    const result = await spApiScheduler.schedule(async () => {
       await rateLimiter.acquire(region, 1, priority, operation);
       return executeRequest();
     }, scheduleOptions);
+    recordAPIAttempt(region, { success: true });
+    return result;
   } catch (error) {
+    recordAPIAttempt(region, {
+      success: false,
+      isRateLimit:
+        error.statusCode === 429 ||
+        /QuotaExceeded|TooManyRequests/.test(error.message || ''),
+    });
     logger.error('[Legacy SP-API] 调用错误:', {
       message: error.message,
       statusCode: error.statusCode || null,

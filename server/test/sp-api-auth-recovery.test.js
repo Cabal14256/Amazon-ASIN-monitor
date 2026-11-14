@@ -39,11 +39,11 @@ const https = {
           }));
         } else if (requestCount === 2 || scenario === 'persistent') {
           usedTokens.push(options.headers['x-amz-access-token']);
-          response.statusCode = scenario === 'throttle' ? 429 : 403;
+          response.statusCode = scenario.includes('throttle') ? 429 : 403;
           callback(response);
           response.emit('data', JSON.stringify({
             errors: [{
-              code: scenario === 'throttle' ? 'QuotaExceeded' : scenario === 'permission' ? 'AccessDenied' : 'Unauthorized',
+              code: scenario.includes('throttle') ? 'QuotaExceeded' : scenario === 'permission' ? 'AccessDenied' : 'Unauthorized',
               details: scenario === 'permission' ? 'Insufficient permissions.' : 'The LWA secret token you provided has expired.',
             }],
           }));
@@ -105,7 +105,11 @@ Module._load = function loadWithStubs(request, parent, isMain) {
     null,
     { maxRetries, operation: 'getCatalogItem', initialDelay: 1 },
   );
-  if (scenario === 'throttle') {
+  if (scenario === 'legacy-throttle') {
+    const { callLegacySPAPI } = require('./src/services/legacySPAPIClient');
+    await assert.rejects(() => callLegacySPAPI('GET', '/catalog/2022-04-01/items/B000000001', 'US'), {statusCode: 429});
+    assert.deepEqual(apiAttempts, [{region: 'US', success: false, isRateLimit: true}]);
+  } else if (scenario === 'throttle') {
     const response = await call();
     assert.ok(Array.isArray(response.items));
     assert.deepEqual(apiAttempts, [
@@ -164,4 +168,8 @@ test('SP-API禁用重试时不会刷新令牌', () => {
 
 test('429 重试成功仍保留区域限流样本', () => {
   runAuthScenario('throttle');
+});
+
+test('旧客户端 429 同样保留区域限流样本', () => {
+  runAuthScenario('legacy-throttle');
 });

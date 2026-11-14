@@ -472,18 +472,24 @@ async function acquireDistributedWindows(
   windows,
   tokens = 1,
   priority = PRIORITY.SCHEDULED,
+  refreshWindows = null,
 ) {
   if (!client || windows.length === 0) {
     return false;
   }
 
   const tokenCount = normalizeTokenCount(tokens);
-  validateTokenCapacity(
-    tokenCount,
-    windows.map((window) => window.limit),
-  );
+  let firstAttempt = true;
 
   while (true) {
+    if (!firstAttempt && refreshWindows) {
+      windows = await refreshWindows();
+    }
+    firstAttempt = false;
+    validateTokenCapacity(
+      tokenCount,
+      windows.map((window) => window.limit),
+    );
     const now = Date.now();
     const keys = windows.map((window) => window.key);
     const args = [
@@ -618,6 +624,7 @@ class MultiLevelRateLimiter {
         windows,
         tokens,
         priority,
+        async () => (await this.getEffectiveWindowConfigs(client)).windows,
       );
       if (acquired) {
         this.lastMode = 'redis-distributed';
@@ -1048,6 +1055,14 @@ async function acquireWithLimiters(
         windows,
         tokens,
         priority,
+        async () => {
+          const configs = await Promise.all(
+            limiters.map((limiter) =>
+              limiter.getEffectiveWindowConfigs(client),
+            ),
+          );
+          return configs.flatMap((config) => config.windows);
+        },
       );
       if (acquired) {
         for (const limiter of limiters) {
