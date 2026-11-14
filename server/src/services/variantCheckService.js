@@ -620,6 +620,7 @@ async function doCheckASINVariants(
       success = true;
       isSpApiError = false;
       riskControlService.recordCheck({
+        region: getRegionByCountry(country),
         success: true,
         isRateLimit: false,
         isSpApiError: false,
@@ -1019,6 +1020,7 @@ async function doCheckASINVariants(
       const responseTime = (Date.now() - startTime) / 1000;
       success = true;
       riskControlService.recordCheck({
+        region: getRegionByCountry(country),
         success: true,
         isRateLimit,
         isSpApiError,
@@ -1040,6 +1042,7 @@ async function doCheckASINVariants(
     isSpApiError = !isRateLimit;
 
     riskControlService.recordCheck({
+      region: getRegionByCountry(country),
       success,
       isRateLimit,
       isSpApiError,

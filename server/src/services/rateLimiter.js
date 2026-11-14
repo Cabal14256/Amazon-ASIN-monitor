@@ -855,12 +855,23 @@ const operationRateLimiters = {
   EU: {},
 };
 
+const regionAdjustmentState = {};
+
 function initializeRateLimiters() {
   const perMinute =
     Number(process.env.SP_API_RATE_LIMIT_PER_MINUTE) ||
     DEFAULT_REGION_PER_MINUTE;
   const perHour =
     Number(process.env.SP_API_RATE_LIMIT_PER_HOUR) || DEFAULT_REGION_PER_HOUR;
+
+  for (const region of ['US', 'EU']) {
+    regionAdjustmentState[region] = {
+      baselinePerMinute: perMinute,
+      baselinePerHour: perHour,
+      healthyWindows: 0,
+      lastEvaluatedAt: null,
+    };
+  }
 
   rateLimiters.US = new MultiLevelRateLimiter({
     name: buildLimiterName('US'),
@@ -1084,55 +1095,96 @@ function getAllOperationStatus(region = null) {
   return status;
 }
 
-function adjustRateLimit(region, recentRateLimitCount, errorRate = 0) {
+// Called every five minutes with fresh, region-specific API check samples.
+function adjustRateLimit(
+  region,
+  recentRateLimitCount,
+  errorRate = 0,
+  sampleCount = 0,
+) {
   const normalizedRegion = region === 'US' ? 'US' : 'EU';
   const limiter = getRateLimiter(normalizedRegion);
+  const state = regionAdjustmentState[normalizedRegion];
   const currentPerMinute = limiter.minuteLimiter.capacity;
   const currentPerHour = limiter.hourLimiter.capacity;
-
-  const ERROR_RATE_THRESHOLD = 0.3;
-  const RATE_LIMIT_THRESHOLD = 10;
-  const ADJUSTMENT_FACTOR = 0.8;
-  const MIN_PER_MINUTE = 30;
-  const MIN_PER_HOUR = 500;
-
-  let adjusted = false;
   let newPerMinute = currentPerMinute;
   let newPerHour = currentPerHour;
+  let direction = null;
+  const now = Date.now();
 
+  // Prevent repeated evaluations from turning one healthy window into a ramp.
   if (
-    errorRate > ERROR_RATE_THRESHOLD ||
-    recentRateLimitCount > RATE_LIMIT_THRESHOLD
+    state.lastEvaluatedAt === null ||
+    now - state.lastEvaluatedAt >= 5 * 60 * 1000
   ) {
-    newPerMinute = Math.max(
-      MIN_PER_MINUTE,
-      Math.floor(currentPerMinute * ADJUSTMENT_FACTOR),
-    );
-    newPerHour = Math.max(
-      MIN_PER_HOUR,
-      Math.floor(currentPerHour * ADJUSTMENT_FACTOR),
-    );
-
-    if (newPerMinute !== currentPerMinute || newPerHour !== currentPerHour) {
-      adjusted = true;
-      rateLimiters[normalizedRegion] = new MultiLevelRateLimiter({
-        name: buildLimiterName(normalizedRegion),
-        perMinute: newPerMinute,
-        perHour: newPerHour,
-      });
-
-      logger.info(
-        `[RateLimiter] ${normalizedRegion}区域限流频繁（限流${recentRateLimitCount}次，错误率${(
-          errorRate * 100
-        ).toFixed(
-          1,
-        )}%），降低速率: ${currentPerMinute}/分钟 -> ${newPerMinute}/分钟, ${currentPerHour}/小时 -> ${newPerHour}/小时`,
+    state.lastEvaluatedAt = now;
+    if (errorRate > 0.3 || recentRateLimitCount > 10) {
+      state.healthyWindows = 0;
+      newPerMinute = Math.max(
+        Math.min(30, state.baselinePerMinute),
+        Math.floor(currentPerMinute * 0.8),
       );
+      newPerHour = Math.max(
+        Math.min(500, state.baselinePerHour),
+        Math.floor(currentPerHour * 0.8),
+      );
+      direction = 'decrease';
+    } else if (
+      sampleCount >= 20 &&
+      errorRate < 0.1 &&
+      recentRateLimitCount === 0
+    ) {
+      state.healthyWindows += 1;
+      if (state.healthyWindows >= 2) {
+        newPerMinute = Math.min(
+          state.baselinePerMinute,
+          currentPerMinute + Math.max(1, Math.floor(currentPerMinute * 0.2)),
+        );
+        newPerHour = Math.min(
+          state.baselinePerHour,
+          currentPerHour + Math.max(1, Math.floor(currentPerHour * 0.2)),
+        );
+        direction = 'increase';
+      }
+    } else {
+      state.healthyWindows = 0;
     }
+  }
+
+  const adjusted =
+    newPerMinute !== currentPerMinute || newPerHour !== currentPerHour;
+  if (adjusted) {
+    // Preserve pending acquires, Redis window history and available tokens.
+    for (const [bucket, capacity, seconds] of [
+      [limiter.minuteLimiter, newPerMinute, 60],
+      [limiter.hourLimiter, newPerHour, 3600],
+    ]) {
+      bucket.refill();
+      bucket.capacity = capacity;
+      bucket.refillRate = capacity / seconds;
+      bucket.tokens = Math.min(bucket.tokens, capacity);
+    }
+    logger.info(
+      `[RateLimiter] ${normalizedRegion}区域${
+        direction === 'increase'
+          ? '持续健康，逐步恢复速率'
+          : '错误率高或限流频繁，降低速率'
+      }`,
+      {
+        previousPerMinute: currentPerMinute,
+        newPerMinute,
+        previousPerHour: currentPerHour,
+        newPerHour,
+        sampleCount,
+        recentRateLimitCount,
+        errorRate,
+      },
+    );
   }
 
   return {
     adjusted,
+    direction: adjusted ? direction : null,
     newPerMinute,
     newPerHour,
     previousPerMinute: currentPerMinute,

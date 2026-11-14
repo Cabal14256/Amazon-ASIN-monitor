@@ -60,6 +60,8 @@ const ADJUSTMENT_CONFIG = {
   ADJUSTMENT_COOLDOWN: 5 * 60 * 1000, // 5分钟
 };
 
+const pendingRegionChecks = { US: [], EU: [] };
+
 let lastAdjustmentTime = 0;
 let currentConcurrency = null; // 当前并发数（由外部设置）
 
@@ -80,6 +82,14 @@ function recordCheck(checkResult) {
   } = checkResult;
 
   const timestamp = Date.now();
+  if (pendingRegionChecks[checkResult.region]) {
+    const checks = pendingRegionChecks[checkResult.region];
+    // Cache and HTML fallback results do not carry a region sample.
+    checks.push({ timestamp, success, isRateLimit, isSpApiError });
+    while (checks.length && checks[0].timestamp < timestamp - 5 * 60 * 1000) {
+      checks.shift();
+    }
+  }
 
   // 记录到最近检查窗口
   metrics.recentChecks.push({
@@ -285,6 +295,8 @@ function setCurrentConcurrency(concurrency) {
  * 重置指标（用于测试或重置）
  */
 function resetMetrics() {
+  pendingRegionChecks.US = [];
+  pendingRegionChecks.EU = [];
   metrics.recentChecks = [];
   metrics.rateLimitErrors = {
     count: 0,
@@ -310,21 +322,21 @@ function resetMetrics() {
  */
 function adjustRateLimiter(region) {
   const rateLimiter = require('./rateLimiter');
-  const errorRate = getRecentErrorRate(50);
-  const rateLimitCount = getRecentRateLimitCount();
+  const samples = pendingRegionChecks[region]
+    .splice(0)
+    .filter((check) => check.timestamp >= Date.now() - 5 * 60 * 1000);
+  const failed = samples.filter(
+    (check) => !check.success || check.isRateLimit || check.isSpApiError,
+  ).length;
+  const rateLimitCount = samples.filter((check) => check.isRateLimit).length;
+  const errorRate = samples.length ? failed / samples.length : 0;
 
-  // 调用限流器的动态调整函数
   const adjustment = rateLimiter.adjustRateLimit(
     region,
     rateLimitCount,
     errorRate,
+    samples.length,
   );
-
-  if (adjustment.adjusted) {
-    logger.info(
-      `[风控服务] ${region}区域限流器已调整: ${adjustment.previousPerMinute}/分钟 -> ${adjustment.newPerMinute}/分钟`,
-    );
-  }
 
   return adjustment;
 }
