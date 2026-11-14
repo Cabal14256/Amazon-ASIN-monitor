@@ -3,6 +3,7 @@ const crypto = require('crypto');
 const https = require('https');
 const SPAPIConfig = require('../models/SPAPIConfig');
 const logger = require('../utils/logger');
+const { recordAPIAttempt } = require('../services/riskControlService');
 const responseAnalyzer = require('../services/spApiResponseAnalyzer');
 const rateLimiter = require('../services/rateLimiter');
 const spApiScheduler = require('../services/spApiScheduler');
@@ -980,7 +981,26 @@ async function callSPAPI(
   const executeOnce = async () =>
     spApiScheduler.schedule(async () => {
       await rateLimiter.acquire(region, 1, priority, operation);
-      return callSPAPIInternal(method, path, country, params, body, operation);
+      try {
+        const result = await callSPAPIInternal(
+          method,
+          path,
+          country,
+          params,
+          body,
+          operation,
+        );
+        recordAPIAttempt(region, { success: true });
+        return result;
+      } catch (error) {
+        recordAPIAttempt(region, {
+          success: false,
+          isRateLimit:
+            error.statusCode === 429 ||
+            /QuotaExceeded|TooManyRequests/.test(error.message || ''),
+        });
+        throw error;
+      }
     }, scheduleOptions);
 
   let lastError = null;
