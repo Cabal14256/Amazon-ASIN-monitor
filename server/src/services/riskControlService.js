@@ -82,14 +82,6 @@ function recordCheck(checkResult) {
   } = checkResult;
 
   const timestamp = Date.now();
-  if (pendingRegionChecks[checkResult.region]) {
-    const checks = pendingRegionChecks[checkResult.region];
-    // Cache and HTML fallback results do not carry a region sample.
-    checks.push({ timestamp, success, isRateLimit, isSpApiError });
-    while (checks.length && checks[0].timestamp < timestamp - 5 * 60 * 1000) {
-      checks.shift();
-    }
-  }
 
   // 记录到最近检查窗口
   metrics.recentChecks.push({
@@ -151,6 +143,17 @@ function recordCheck(checkResult) {
     if (metrics.responseTimes.length > 1000) {
       metrics.responseTimes.shift();
     }
+  }
+}
+
+// Count actual request attempts so a successful retry cannot hide throttling.
+function recordAPIAttempt(region, { success, isRateLimit = false }) {
+  if (!pendingRegionChecks[region]) return;
+  const timestamp = Date.now();
+  const checks = pendingRegionChecks[region];
+  checks.push({ timestamp, success, isRateLimit });
+  while (checks.length && checks[0].timestamp < timestamp - 5 * 60 * 1000) {
+    checks.shift();
   }
 }
 
@@ -380,6 +383,7 @@ startRateLimiterAutoAdjustment();
 
 module.exports = {
   recordCheck,
+  recordAPIAttempt,
   calculateOptimalConcurrency,
   getMetrics,
   setCurrentConcurrency,

@@ -16,6 +16,7 @@ process.env.SP_API_US_REFRESH_TOKEN = 'refresh-token';
 process.env.SP_API_USE_AWS_SIGNATURE = 'false';
 
 let requestCount = 0;
+const apiAttempts = [];
 const usedTokens = [];
 let reloadCount = 0;
 const https = {
@@ -38,11 +39,11 @@ const https = {
           }));
         } else if (requestCount === 2 || scenario === 'persistent') {
           usedTokens.push(options.headers['x-amz-access-token']);
-          response.statusCode = 403;
+          response.statusCode = scenario === 'throttle' ? 429 : 403;
           callback(response);
           response.emit('data', JSON.stringify({
             errors: [{
-              code: scenario === 'permission' ? 'AccessDenied' : 'Unauthorized',
+              code: scenario === 'throttle' ? 'QuotaExceeded' : scenario === 'permission' ? 'AccessDenied' : 'Unauthorized',
               details: scenario === 'permission' ? 'Insufficient permissions.' : 'The LWA secret token you provided has expired.',
             }],
           }));
@@ -67,6 +68,7 @@ const spApiScheduler = { schedule: (task) => task() };
 const httpRequestTimeout = { attachHttpRequestTimeout: () => () => {}, getHttpRequestTimeoutMs: () => 1000 };
 const stubs = new Map([
   ['https', https],
+  ['services/riskControlService', { recordAPIAttempt: (region, outcome) => apiAttempts.push({region, ...outcome}) }],
   ['models/SPAPIConfig', spApiConfig],
   ['utils/logger', logger],
   ['services/spApiResponseAnalyzer', responseAnalyzer],
@@ -101,9 +103,16 @@ Module._load = function loadWithStubs(request, parent, isMain) {
     'US',
     {},
     null,
-    { maxRetries, operation: 'getCatalogItem' },
+    { maxRetries, operation: 'getCatalogItem', initialDelay: 1 },
   );
-  if (scenario === 'success') {
+  if (scenario === 'throttle') {
+    const response = await call();
+    assert.ok(Array.isArray(response.items));
+    assert.deepEqual(apiAttempts, [
+      { region: 'US', success: false, isRateLimit: true },
+      { region: 'US', success: true },
+    ]);
+  } else if (scenario === 'success') {
     const response = await call();
     assert.ok(Array.isArray(response.items));
     assert.equal(requestCount, 4);
@@ -151,4 +160,8 @@ test('SP-API权限不足时不会刷新令牌或重试', () => {
 
 test('SP-API禁用重试时不会刷新令牌', () => {
   runAuthScenario('persistent', 0);
+});
+
+test('429 重试成功仍保留区域限流样本', () => {
+  runAuthScenario('throttle');
 });

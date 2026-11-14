@@ -32,7 +32,7 @@ function scenario(run) {
   };
   const record = (region, success = true, count = 20, isRateLimit = false) => {
     for (let i = 0; i < count; i++)
-      risk.recordCheck({ region, success, isRateLimit });
+      risk.recordAPIAttempt(region, { success, isRateLimit });
   };
   try {
     run({
