@@ -322,9 +322,9 @@ function resetMetrics() {
  */
 function adjustRateLimiter(region) {
   const rateLimiter = require('./rateLimiter');
-  const samples = pendingRegionChecks[region]
-    .splice(0)
-    .filter((check) => check.timestamp >= Date.now() - 5 * 60 * 1000);
+  const samples = pendingRegionChecks[region].filter(
+    (check) => check.timestamp >= Date.now() - 5 * 60 * 1000,
+  );
   const failed = samples.filter(
     (check) => !check.success || check.isRateLimit || check.isSpApiError,
   ).length;
@@ -337,6 +337,8 @@ function adjustRateLimiter(region) {
     errorRate,
     samples.length,
   );
+  // Retain fresh observations if timer jitter makes this evaluation early.
+  pendingRegionChecks[region] = adjustment.evaluated ? [] : samples;
 
   return adjustment;
 }

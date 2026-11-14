@@ -35,7 +35,13 @@ function scenario(run) {
       risk.recordCheck({ region, success, isRateLimit });
   };
   try {
-    run({ tick, record });
+    run({
+      tick,
+      record,
+      advance: (ms) => {
+        now += ms;
+      },
+    });
   } finally {
     Date.now = originalNow;
   }
@@ -113,6 +119,39 @@ test('过期健康样本不能恢复速率', () =>
     tick();
     record('US');
     assert.equal(risk.adjustRateLimiter('US').adjusted, false);
+  }));
+
+test('提前 1ms 的错误评估不能丢样本或跨过限流窗口恢复', () =>
+  scenario(({ tick, record, advance }) => {
+    record('US', false);
+    risk.adjustRateLimiter('US');
+    tick();
+    record('US');
+    risk.adjustRateLimiter('US');
+    advance(299999);
+    record('US', false, 20, true);
+    assert.equal(risk.adjustRateLimiter('US').evaluated, false);
+    // A callback 1ms later must still see and act on the retained errors.
+    advance(1);
+    assert.equal(risk.adjustRateLimiter('US').newPerMinute, 38);
+    tick();
+    record('US');
+    assert.equal(risk.adjustRateLimiter('US').adjusted, false);
+  }));
+
+test('提前评估的限流即使到下一轮已过期，也会重置健康连续计数', () =>
+  scenario(({ tick, record, advance }) => {
+    record('US', false);
+    risk.adjustRateLimiter('US');
+    tick();
+    record('US');
+    risk.adjustRateLimiter('US');
+    advance(299999);
+    record('US', false, 20, true);
+    risk.adjustRateLimiter('US');
+    advance(300001);
+    record('US');
+    assert.equal(risk.adjustRateLimiter('US').newPerMinute, 48);
   }));
 
 test('低于默认保护下限的配置也不会在降速时被抬高', () => {

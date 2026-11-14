@@ -1111,12 +1111,17 @@ function adjustRateLimit(
   let newPerHour = currentPerHour;
   let direction = null;
   const now = Date.now();
+  const evaluated =
+    state.lastEvaluatedAt === null ||
+    now - state.lastEvaluatedAt >= 5 * 60 * 1000;
+
+  // Even an early callback must interrupt recovery when it observes trouble.
+  if (!evaluated && (errorRate >= 0.1 || recentRateLimitCount > 0)) {
+    state.healthyWindows = 0;
+  }
 
   // Prevent repeated evaluations from turning one healthy window into a ramp.
-  if (
-    state.lastEvaluatedAt === null ||
-    now - state.lastEvaluatedAt >= 5 * 60 * 1000
-  ) {
+  if (evaluated) {
     state.lastEvaluatedAt = now;
     if (errorRate > 0.3 || recentRateLimitCount > 10) {
       state.healthyWindows = 0;
@@ -1183,6 +1188,7 @@ function adjustRateLimit(
   }
 
   return {
+    evaluated,
     adjusted,
     direction: adjusted ? direction : null,
     newPerMinute,
